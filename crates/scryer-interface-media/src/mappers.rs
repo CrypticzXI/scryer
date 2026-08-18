@@ -3861,7 +3861,7 @@ mod tests {
             download_client_item_id: "10495".to_string(),
             download_id: None,
             name: "10495".to_string(),
-            nzb_name: None,
+            release_name: None,
             dest_dir: "/downloads/Example.Show.S01E01.1080p.WEB-DL".to_string(),
             category: Some("anime".to_string()),
             size_bytes: None,

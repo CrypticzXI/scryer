@@ -547,7 +547,7 @@ pub(super) async fn maybe_resolve_title_from_completed_download(
     };
 
     let mut release_candidates = completed
-        .nzb_name
+        .release_name
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())

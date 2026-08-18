@@ -3415,8 +3415,16 @@ pub trait ImportRepository: Send + Sync {
         identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>>;
 
-    /// Returns recent completed manual imports for bounded tracked-download recovery.
-    async fn list_completed_manual_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
+    /// Returns completed manual imports updated at or after `updated_after`
+    /// (newest first, at most `limit`) for bounded tracked-download recovery.
+    /// The time bound keeps the recovery sweep from re-reading the whole
+    /// manual-import history every tick and from matching a fresh download
+    /// that merely reuses an old client item id against a stale record.
+    async fn list_completed_manual_imports(
+        &self,
+        _updated_after: DateTime<Utc>,
+        _limit: usize,
+    ) -> AppResult<Vec<ImportRecord>> {
         Ok(Vec::new())
     }
 

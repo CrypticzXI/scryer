@@ -92,7 +92,7 @@ async fn check_requires_canonical_completion_evidence_for_title_parse_observatio
         completed_dir.path().to_string_lossy().as_ref(),
         Some("movie"),
     );
-    completed.nzb_name = Some("unrecognized-completed-release".to_string());
+    completed.release_name = Some("unrecognized-completed-release".to_string());
     let lookup =
         index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
     let app = build_app(vec![title.clone()], vec![], vec![], vec![]);
@@ -161,7 +161,7 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
         completed_dir.to_string_lossy().as_ref(),
         Some("movie"),
     );
-    completed.nzb_name = Some("downloader-provided-name".to_string());
+    completed.release_name = Some("downloader-provided-name".to_string());
     completed.client_type = "qbittorrent".to_string();
     completed.client_id = "client-1".to_string();
     completed.download_client_item_id = info_hash.to_string();

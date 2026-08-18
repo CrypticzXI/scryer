@@ -151,7 +151,11 @@ fn resolve_completed_download_origin(
                 &completed.parameters,
                 &matched.submission,
             );
-            resolved.nzb_name = matched.submission.source_title.clone();
+            // The persisted indexer release title is THE name for a Scryer
+            // grab. A submission recorded without one must not blank a real
+            // client-reported name; the completed download keeps it.
+            resolved.release_name = submission_source_title(&matched.submission)
+                .or_else(|| completed_observed_release_name(completed));
             CompletedDownloadOriginResolution::Ready(Box::new(resolved))
         }
         _ => CompletedDownloadOriginResolution::NoScryerOrigin,

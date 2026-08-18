@@ -17,7 +17,7 @@ async fn run_category_admission_check(
         temp_dir.path().to_string_lossy().as_ref(),
         category,
     );
-    completed.nzb_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
     if external_manager {
         completed
             .parameters

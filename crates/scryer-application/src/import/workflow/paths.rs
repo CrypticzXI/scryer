@@ -62,46 +62,87 @@ pub(crate) enum ReleaseEvidence {
     ScryerSubmission {
         title_id: String,
         facet: String,
-        source_title: String,
+        /// The indexer release title persisted at grab time
+        /// (`download_submissions.source_title`). `None` when the grab was
+        /// recorded without one (an `addTitle{sourceHint}` API grab, or a
+        /// legacy row); the Scryer identity still stands and only the name
+        /// degrades to `observed_release_name`, then the source video's stem.
+        #[serde(default)]
+        source_title: Option<String>,
+        /// The client-reported release name observed at completion. Only the
+        /// fallback name when `source_title` is missing; never the identity.
+        #[serde(default)]
+        observed_release_name: Option<String>,
         purpose: crate::DownloadSubmissionPurpose,
         scope: SubmissionScope,
     },
     DownloaderObservation {
-        #[serde(default)]
-        nzb_name: Option<String>,
+        #[serde(default, alias = "nzb_name")]
+        release_name: Option<String>,
     },
 }
 
-impl ReleaseEvidence {
-    fn from_submission(submission: &DownloadSubmission) -> AppResult<Self> {
-        let source_title = submission
-            .source_title
-            .as_deref()
+/// The persisted indexer release title of a Scryer grab, or `None` when the
+/// submission row carries no usable one (NULL/blank).
+fn submission_source_title(submission: &DownloadSubmission) -> Option<String> {
+    submission
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn completed_observed_release_name(completed: &CompletedDownload) -> Option<String> {
+    completed
+        .release_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn source_video_stem(source_video: Option<&Path>) -> Option<String> {
+    source_video.and_then(|path| {
+        path.file_stem()
+            .and_then(|name| name.to_str())
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| {
-                AppError::Validation(
-                    "Scryer-submitted download is missing its durable source title".to_string(),
-                )
-            })?;
-        Ok(Self::ScryerSubmission {
+    })
+}
+
+impl ReleaseEvidence {
+    /// Durable Scryer-grab evidence. A submission without a persisted release
+    /// title keeps its identity (title/facet/scope/purpose) and degrades only
+    /// the name to what the client reported at completion; it never fails, so
+    /// the download stays importable (automatic, manual, and retry).
+    fn from_submission(submission: &DownloadSubmission, completed: &CompletedDownload) -> Self {
+        let source_title = submission_source_title(submission);
+        let observed_release_name = completed_observed_release_name(completed);
+        if source_title.is_none() {
+            tracing::warn!(
+                client_id = ?submission.download_client_id,
+                client_type = %submission.download_client_type,
+                download_client_item_id = %submission.download_client_item_id,
+                title_id = %submission.title_id,
+                observed_release_name = ?observed_release_name,
+                "import: Scryer submission has no persisted release title; using the client-reported release name for parsing"
+            );
+        }
+        Self::ScryerSubmission {
             title_id: submission.title_id.clone(),
             facet: submission.facet.clone(),
             source_title,
+            observed_release_name,
             purpose: submission.purpose,
             scope: submission.scope.clone(),
-        })
+        }
     }
 
     fn from_completed_observation(completed: &CompletedDownload) -> Self {
         Self::DownloaderObservation {
-            nzb_name: completed
-                .nzb_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
+            release_name: completed_observed_release_name(completed),
         }
     }
 
@@ -133,40 +174,41 @@ impl ReleaseEvidence {
         }
     }
 
+    /// The release name to parse and score: the persisted indexer title for a
+    /// Scryer grab, else the client-reported release name observed at
+    /// completion, else the source video's file stem.
     pub(crate) fn release_title<'a>(&'a self, source_video: Option<&'a Path>) -> Option<String> {
         match self {
-            Self::ScryerSubmission { source_title, .. } => Some(source_title.clone()),
-            Self::DownloaderObservation { nzb_name } => nzb_name.clone().or_else(|| {
-                source_video.and_then(|path| {
-                    path.file_stem()
-                        .and_then(|name| name.to_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string)
-                })
-            }),
+            Self::ScryerSubmission {
+                source_title,
+                observed_release_name,
+                ..
+            } => source_title
+                .clone()
+                .or_else(|| observed_release_name.clone())
+                .or_else(|| source_video_stem(source_video)),
+            Self::DownloaderObservation { release_name } => release_name
+                .clone()
+                .or_else(|| source_video_stem(source_video)),
         }
     }
-
 }
 
 fn release_evidence_for_resolution(
     completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
-) -> AppResult<ReleaseEvidence> {
+) -> ReleaseEvidence {
     match resolution {
         CompletedDownloadSubmissionResolution::Matched(matched)
             if submission_has_scryer_origin(&matched.submission) =>
         {
-            ReleaseEvidence::from_submission(&matched.submission)
+            ReleaseEvidence::from_submission(&matched.submission, completed)
         }
-        CompletedDownloadSubmissionResolution::Matched(_) => {
-            Ok(ReleaseEvidence::from_completed_observation(completed))
-        }
-        CompletedDownloadSubmissionResolution::DownloaderObservation
+        CompletedDownloadSubmissionResolution::Matched(_)
+        | CompletedDownloadSubmissionResolution::DownloaderObservation
         | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
         | CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. } => {
-            Ok(ReleaseEvidence::from_completed_observation(completed))
+            ReleaseEvidence::from_completed_observation(completed)
         }
     }
 }
@@ -177,7 +219,7 @@ pub(crate) async fn resolve_release_evidence_for_completed_download(
     item: Option<&DownloadQueueItem>,
 ) -> AppResult<ReleaseEvidence> {
     let resolution = resolve_completed_download_submission(app, completed, item).await?;
-    release_evidence_for_resolution(completed, &resolution)
+    Ok(release_evidence_for_resolution(completed, &resolution))
 }
 
 const DOWNLOAD_SUBMISSION_VISIBILITY_GRACE_SECONDS: i64 = 15;
@@ -424,7 +466,7 @@ pub(crate) async fn resolve_completed_download_origin_for_import(
     item: Option<&DownloadQueueItem>,
 ) -> AppResult<ResolvedCompletedDownloadOriginForImport> {
     let submission_resolution = resolve_completed_download_submission(app, completed, item).await?;
-    let release_evidence = release_evidence_for_resolution(completed, &submission_resolution)?;
+    let release_evidence = release_evidence_for_resolution(completed, &submission_resolution);
     Ok(
         match resolve_completed_download_origin(completed, &submission_resolution) {
             CompletedDownloadOriginResolution::Ready(completed) => {
@@ -777,6 +819,11 @@ async fn try_import_completed_downloads_with_policy(
             CompletedDownloadSubmissionResolution::Matched(matched)
                 if submission_has_scryer_origin(&matched.submission)
         );
+        // For a downloader observation the queue item's title is the validated
+        // import target (its category must match that title's route); it is
+        // threaded into the import so the target is not re-derived from a
+        // context-free parse of the release name.
+        let mut observation_target_title_id: Option<String> = None;
         if !has_scryer_submission {
             if completed
                 .parameters
@@ -820,6 +867,7 @@ async fn try_import_completed_downloads_with_policy(
             {
                 continue;
             }
+            observation_target_title_id = Some(title_id.to_string());
         }
 
         if let Ok(Some(state)) =
@@ -975,7 +1023,19 @@ async fn try_import_completed_downloads_with_policy(
             "import: triggering import for completed download"
         );
         let import_start = std::time::Instant::now();
-        match import_completed_download(app, actor, &completed).await {
+        let import = match observation_target_title_id.as_deref() {
+            Some(target_title_id) => {
+                import_completed_download_with_target_title(
+                    app,
+                    actor,
+                    &completed,
+                    target_title_id,
+                )
+                .await
+            }
+            None => import_completed_download(app, actor, &completed).await,
+        };
+        match import {
             Ok(result) => {
                 if matches!(
                     result.decision,

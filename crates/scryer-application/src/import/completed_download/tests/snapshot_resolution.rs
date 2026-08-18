@@ -18,7 +18,7 @@ async fn completed_download_reresolution_ignores_conflicting_display_label() {
         "/tmp/does-not-matter",
         Some("movie"),
     );
-    completed.nzb_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
 
     maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
 
@@ -41,7 +41,7 @@ async fn completed_download_reresolution_enriches_matching_id_only_title() {
         "/tmp/does-not-matter",
         Some("movie"),
     );
-    completed.nzb_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
 
     maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
 
@@ -56,7 +56,7 @@ async fn completed_download_reresolution_enriches_matching_id_only_title() {
 }
 
 #[tokio::test]
-async fn completed_download_reresolution_replaces_title_parse_from_canonical_nzb_name() {
+async fn completed_download_reresolution_replaces_title_parse_from_canonical_release_name() {
     let original_title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
     let completed_title = build_title("title-2", "The Other Movie", MediaFacet::Movie);
     let app = build_app(
@@ -72,7 +72,7 @@ async fn completed_download_reresolution_replaces_title_parse_from_canonical_nzb
         "/tmp/does-not-matter",
         Some("movie"),
     );
-    completed.nzb_name = Some("The.Other.Movie.2020.1080p.WEB-DL".to_string());
+    completed.release_name = Some("The.Other.Movie.2020.1080p.WEB-DL".to_string());
 
     maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
 
@@ -94,7 +94,7 @@ fn submission_match_without_scryer_origin_does_not_bypass_category_admission() {
 }
 
 #[tokio::test]
-async fn completed_download_proof_uses_media_basename_when_nzb_name_is_absent() {
+async fn completed_download_proof_uses_media_basename_when_release_name_is_absent() {
     let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
     let app = build_app(vec![title.clone()], vec![], vec![], vec![]);
     let completed_dir = tempfile::tempdir().expect("create completed directory");
@@ -110,7 +110,7 @@ async fn completed_download_proof_uses_media_basename_when_nzb_name_is_absent() 
         completed_dir.path().to_string_lossy().as_ref(),
         Some("movie"),
     );
-    completed.nzb_name = None;
+    completed.release_name = None;
     let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
     td.match_type = TitleMatchType::TitleParse;
     td.source_title = None;

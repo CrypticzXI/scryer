@@ -3,6 +3,7 @@ use super::lookup::{
 };
 use super::result_state::apply_import_result_with_completed;
 use super::*;
+use crate::import_workflow::import_completed_download_with_target_title;
 
 pub(crate) fn mark_importing(td: &mut TrackedDownload) {
     td.state = TrackedDownloadState::Importing;
@@ -99,8 +100,9 @@ async fn import_inner(
     td.import_attempted = true;
 
     let import_actor = actor_for_tracked_download_import(app, actor, td).await;
-    let import = match release_evidence.as_ref() {
-        Some(release_evidence) => {
+    let target_title_id = tracked_import_target_title_id(td, release_evidence.as_ref());
+    let import = match (release_evidence.as_ref(), target_title_id.as_deref()) {
+        (Some(release_evidence), _) => {
             import_completed_download_with_release_evidence(
                 app,
                 &import_actor,
@@ -109,7 +111,16 @@ async fn import_inner(
             )
             .await
         }
-        None => import_completed_download(app, &import_actor, &completed).await,
+        (None, Some(target_title_id)) => {
+            import_completed_download_with_target_title(
+                app,
+                &import_actor,
+                &completed,
+                target_title_id,
+            )
+            .await
+        }
+        (None, None) => import_completed_download(app, &import_actor, &completed).await,
     };
     match import {
         Ok(result) => {
@@ -145,6 +156,43 @@ async fn import_inner(
             td.status_messages = vec![format!("Import failed: {error}")];
             false
         }
+    }
+}
+
+/// The title the import must land in for this tracked download.
+///
+/// A durable Scryer submission (the only release evidence
+/// `resolve_completed_download_origin_for_import` returns) is authoritative:
+/// its title drives target resolution and no separate target is passed. For a
+/// downloader observation — a parse match the completed-check proved, or an
+/// operator assignment — the tracked download's validated title is the target,
+/// so the import does not re-derive it from a context-free parse of the
+/// release name and land elsewhere.
+pub(super) fn tracked_import_target_title_id(
+    td: &TrackedDownload,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
+) -> Option<String> {
+    let tracked_title_id = td
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match release_evidence.and_then(crate::import_workflow::ReleaseEvidence::title_id) {
+        Some(submission_title_id) => {
+            if let Some(tracked_title_id) = tracked_title_id
+                && tracked_title_id != submission_title_id
+            {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    tracked_title_id,
+                    submission_title_id,
+                    "import: tracked download title disagrees with the durable Scryer submission; importing into the submission title"
+                );
+            }
+            None
+        }
+        None => tracked_title_id.map(str::to_string),
     }
 }
 

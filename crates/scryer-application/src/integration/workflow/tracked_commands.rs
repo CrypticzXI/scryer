@@ -1384,54 +1384,50 @@ async fn handle_tracked_download_command(
             }
             let _ = reply.send(result);
         }
-        TrackedDownloadCommand::MarkImportedIfNonterminal {
+        TrackedDownloadCommand::MarkImportedIfAwaitingImport {
             source_identity,
+            record_completed_at,
             reply,
         } => {
+            use crate::tracked_downloads::{
+                ManualImportRecoveryOutcome, ManualImportRecoveryVerdict,
+                manual_import_recovery_verdict,
+            };
+
             let Some(id) = tracker.cached_id_for_source_identity(&source_identity) else {
-                let _ = reply.send(Ok(false));
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Untracked));
                 return;
             };
             if tracked_work_in_flight.contains(&id) {
-                let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {} is busy processing",
-                    source_identity.item_id
-                ))));
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Busy));
                 return;
             }
-            let Some(tracked) = tracker.find(&id) else {
-                let _ = reply.send(Ok(false));
+            let Some(tracked) = tracker.find_mut(&id) else {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Untracked));
                 return;
             };
-            if tracked.state == TrackedDownloadState::Imported {
-                let _ = reply.send(Ok(true));
-                return;
-            }
-            if tracked.state.is_terminal() {
-                let _ = reply.send(Ok(false));
+            // A stale record must never terminalize a fresh download that
+            // merely reuses the item id (see `manual_import_recovery_verdict`),
+            // and an already-imported download is reported as unchanged so the
+            // caller does not keep acting on it every tick.
+            if manual_import_recovery_verdict(tracked, record_completed_at)
+                != ManualImportRecoveryVerdict::MarkImported
+            {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Unchanged));
                 return;
             }
 
-            let mut activity_item = None;
-            let result = if let Some(tracked) = tracker.find_mut(&id) {
-                tracked.state = TrackedDownloadState::Imported;
-                tracked.status = TrackedDownloadStatus::Ok;
-                tracked.status_messages.clear();
-                activity_item = Some(tracked_download_activity_queue_item(tracked));
-                tracker
-                    .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
-                    .await;
-                finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
-                    .await;
-                Ok(true)
-            } else {
-                Ok(false)
-            };
-            if matches!(result, Ok(true)) {
-                publish_runtime_tracked_download_and_activity_item(app, tracker, activity_item)
-                    .await;
-            }
-            let _ = reply.send(result);
+            tracked.state = TrackedDownloadState::Imported;
+            tracked.status = TrackedDownloadStatus::Ok;
+            tracked.status_messages.clear();
+            let activity_item = Some(tracked_download_activity_queue_item(tracked));
+            tracker
+                .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
+                .await;
+            finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
+                .await;
+            publish_runtime_tracked_download_and_activity_item(app, tracker, activity_item).await;
+            let _ = reply.send(Ok(ManualImportRecoveryOutcome::Marked));
         }
         TrackedDownloadCommand::Ignore { id, reply } => {
             let requested_id = id;

@@ -1691,7 +1691,7 @@ pub(super) fn completed_download_fixture_item(
         download_client_item_id: download_client_item_id.to_string(),
         download_id: None,
         name: name.to_string(),
-        nzb_name: None,
+        release_name: None,
         dest_dir: dest_dir.to_string(),
         category: Some("movie".to_string()),
         size_bytes: None,

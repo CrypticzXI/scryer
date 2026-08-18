@@ -1960,12 +1960,21 @@ fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<Str
         .map(str::to_string)
 }
 
-fn extract_sabnzbd_nzb_name(slot: &serde_json::Map<String, Value>) -> Option<String> {
+/// SABnzbd history `nzb_name` is `nzo.filename`: the raw filename the job was
+/// added with (an `addfile` upload name, or the Content-Disposition/URL-derived
+/// name of an `addurl` fetch), fixed at add time — unlike `name`
+/// (`nzo.final_name`), which the `nzbname` API parameter, user renames,
+/// pre-queue scripts, and the replace_spaces/dots options all rewrite. It
+/// almost always carries the `.nzb` (or `.par2`) extension, which would
+/// otherwise parse into the release group (`-NTb.nzb` → group `NTb.nzb`), so
+/// strip it exactly the way SAB's own `create_work_name` does.
+fn extract_sabnzbd_release_name(slot: &serde_json::Map<String, Value>) -> Option<String> {
     slot.get("nzb_name")
         .or_else(|| slot.get("nzbName"))
         .or_else(|| slot.get("nzbname"))
         .and_then(Value::as_str)
         .map(str::trim)
+        .map(|value| strip_sab_nzb_extension(value.trim_end_matches(['.', ' '])).trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
@@ -2022,7 +2031,7 @@ fn completed_downloads_from_sab_slots(
                 download_client_item_id: nzo_id.clone(),
                 download_id: Some(nzo_id),
                 name,
-                nzb_name: extract_sabnzbd_nzb_name(slot),
+                release_name: extract_sabnzbd_release_name(slot),
                 dest_dir,
                 category,
                 size_bytes,

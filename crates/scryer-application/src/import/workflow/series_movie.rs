@@ -933,7 +933,8 @@ async fn import_movie_download(
         ..
     } = resolve_import_paths(app, title).await?;
 
-    let parsed = build_augmented_movie_import_metadata(&source_video, release_evidence);
+    let parsed =
+        build_augmented_movie_import_metadata_for_title(&source_video, release_evidence, title);
     let existing_files = app
         .services
         .library
@@ -1634,7 +1635,15 @@ async fn import_series_movie_download(
         specials_folder_template,
     } = resolve_import_paths(app, title).await?;
 
-    let parsed = build_augmented_movie_import_metadata(&source_video, release_evidence);
+    // A series movie is searched and grabbed under the movie's identity
+    // (`series_movie_search_title` swaps in the movie's name, facet, year and
+    // ids), so the import parse must use that same identity for parity.
+    let search_title = crate::acquisition_release_search::series_movie_search_title(title, &link);
+    let parsed = build_augmented_movie_import_metadata_for_title(
+        &source_video,
+        release_evidence,
+        &search_title,
+    );
 
     let ext = scryer_domain::canonical_video_extension(&source_video)
         .unwrap_or("mkv")

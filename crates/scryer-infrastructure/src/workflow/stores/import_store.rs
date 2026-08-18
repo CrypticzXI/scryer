@@ -232,16 +232,22 @@ impl ImportRepository for ImportStore {
         .await
     }
 
-    async fn list_completed_manual_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
+    async fn list_completed_manual_imports(
+        &self,
+        updated_after: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> AppResult<Vec<ImportRecord>> {
         fetch_imports(
             self.datastore.read_exec(),
             &format!(
                 "SELECT {IMPORT_COLUMNS} FROM imports
                  WHERE import_type = {{}} AND status = 'completed'
+                   AND updated_at >= {{}}
                  ORDER BY updated_at DESC LIMIT {{}}"
             ),
             &[
                 SqlArg::Text(ImportType::ManualImport.as_str().to_string()),
+                SqlArg::Timestamp(updated_after),
                 SqlArg::I64((limit as i64).clamp(1, 500)),
             ],
         )

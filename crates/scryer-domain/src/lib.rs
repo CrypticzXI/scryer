@@ -1503,13 +1503,24 @@ pub struct CompletedDownload {
     pub download_id: Option<String>,
     /// Downloader-provided display/group label. This is non-semantic: import
     /// identity and scoring must use durable submission provenance or
-    /// `nzb_name`, never this value.
+    /// `release_name`, never this value.
     pub name: String,
-    /// Canonical original NZB/release name when the downloader exposes one.
-    /// Unlike `name`, this is artifact provenance and may seed release parsing
-    /// for an observed (non-Scryer-submitted) download.
-    #[serde(default)]
-    pub nzb_name: Option<String>,
+    /// The release name to parse and score.
+    ///
+    /// For a download Scryer grabbed this is the indexer release title that was
+    /// persisted at grab time (`download_submissions.source_title`) and is
+    /// stamped here when the completed download is resolved against its
+    /// submission (a submission recorded without one keeps the client-reported
+    /// name below). For a download Scryer merely observes it is the best
+    /// client-reported original release/artifact name, which is
+    /// client-specific and only as good as the client's field:
+    /// SABnzbd `nzb_name` (upload filename, extension stripped), Weaver
+    /// `originalTitle` (stamped at submit), NZBGet `NZBName` (which NZBGet
+    /// keeps identical to the mutable `Name`), or a plugin-provided value
+    /// (torrent clients rarely have one). `None` when the client exposes
+    /// nothing better than `name`.
+    #[serde(default, alias = "nzb_name")]
+    pub release_name: Option<String>,
     pub dest_dir: String,
     pub category: Option<String>,
     pub size_bytes: Option<i64>,

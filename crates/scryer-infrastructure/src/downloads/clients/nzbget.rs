@@ -1480,7 +1480,7 @@ fn completed_download_from_nzbget_history_entry(
         download_client_item_id: nzb_id.to_string(),
         download_id: observed_identity.download_id,
         name,
-        nzb_name: history_entry_nzb_name(entry),
+        release_name: history_entry_release_name(entry),
         dest_dir,
         category,
         size_bytes: size_to_bytes(size_mb),
@@ -1834,14 +1834,21 @@ fn history_entry_name(entry: &serde_json::Map<String, Value>) -> String {
         .to_string()
 }
 
-/// Extracts the canonical original NZB name without falling back to the
-/// downloader's display/group name.
-fn history_entry_nzb_name(entry: &serde_json::Map<String, Value>) -> Option<String> {
+/// Extracts NZBGet's `NZBName` for a history entry.
+///
+/// NZBGet has no immutable release-name field: `NZBName`, the deprecated
+/// `NZBNicename`, and the history `Name` are all formatted from the same
+/// `NzbInfo::m_name` (`XmlRpc.cpp` `AppendNzbInfoFields` /
+/// `HistoryInfo::GetName`), which starts as the NZB filename minus `.nzb` and
+/// is rewritten by `GroupSetName` (UI rename), scan/PP-script `NZBNAME`
+/// directives, and URL-fetch flows. This is therefore only as canonical as
+/// `Name`; the durable release identity for a Scryer grab is the persisted
+/// submission title, not this field.
+fn history_entry_release_name(entry: &serde_json::Map<String, Value>) -> Option<String> {
     entry
         .get("NZBName")
         .or_else(|| entry.get("NzbName"))
         .or_else(|| entry.get("nzbName"))
-        .or_else(|| entry.get("nzb_name"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

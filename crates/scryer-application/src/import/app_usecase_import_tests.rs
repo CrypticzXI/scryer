@@ -92,7 +92,7 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
         download_client_item_id: "job-1".to_string(),
         download_id: None,
         name: name.to_string(),
-        nzb_name: None,
+        release_name: None,
         dest_dir: dest_dir.to_string_lossy().to_string(),
         category: None,
         size_bytes: None,
@@ -103,8 +103,50 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
 
 fn observation_evidence(completed: &CompletedDownload) -> ReleaseEvidence {
     ReleaseEvidence::DownloaderObservation {
-        nzb_name: completed.nzb_name.clone(),
+        release_name: completed.release_name.clone(),
     }
+}
+
+fn titled(facet: MediaFacet, name: &str, year: Option<i32>) -> Title {
+    let mut title = test_title(facet);
+    title.name = name.to_string();
+    title.year = year;
+    title
+}
+
+/// The grab-time parse of `release_title` for `title`: what `discovery.rs`
+/// scores a candidate against.
+fn grab_time_parse(release_title: &str, title: &Title) -> crate::ParsedReleaseMetadata {
+    let evidence = crate::acquisition_release_search::canonical_title_evidence(title);
+    crate::parse_release_metadata_for_target(release_title, &evidence.parse_context)
+}
+
+fn assert_score_bearing_facts_match(
+    actual: &crate::ParsedReleaseMetadata,
+    expected: &crate::ParsedReleaseMetadata,
+) {
+    assert_eq!(actual.quality, expected.quality, "quality");
+    assert_eq!(actual.source, expected.source, "source");
+    assert_eq!(actual.release_group, expected.release_group, "release group");
+    assert_eq!(actual.edition, expected.edition, "edition");
+    assert_eq!(actual.languages_audio, expected.languages_audio, "audio languages");
+    assert_eq!(actual.video_codec, expected.video_codec, "video codec");
+    assert_eq!(actual.audio, expected.audio, "audio codec");
+    assert_eq!(actual.is_remux, expected.is_remux, "remux");
+    assert_eq!(actual.year, expected.year, "year");
+    assert_eq!(
+        actual
+            .guide_facts
+            .iter()
+            .map(|fact| fact.code.as_str())
+            .collect::<Vec<_>>(),
+        expected
+            .guide_facts
+            .iter()
+            .map(|fact| fact.code.as_str())
+            .collect::<Vec<_>>(),
+        "guide facts"
+    );
 }
 
 // ── extract_parameter ─────────────────────────────────────────────────────────
@@ -251,9 +293,13 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"movie").expect("write file");
     let mut completed = test_completed_download("downloader display label", &dest_dir);
-    completed.nzb_name = Some("Paper.Lantern.2012.1080p.BluRay.x264-GRP".to_string());
+    completed.release_name = Some("Paper.Lantern.2012.1080p.BluRay.x264-GRP".to_string());
 
-    let parsed = build_augmented_movie_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_movie_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Movie, "Paper Lantern", Some(2012)),
+    );
 
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
@@ -273,7 +319,11 @@ fn build_augmented_movie_import_metadata_does_not_use_parent_for_obfuscated_file
     std::fs::write(&file_path, b"movie").expect("write file");
     let completed = test_completed_download("job-123", &dest_dir);
 
-    let parsed = build_augmented_movie_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_movie_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Movie, "Paper Lantern", Some(2012)),
+    );
 
     assert_ne!(parsed.normalized_title, "PAPER LANTERN");
     assert_eq!(parsed.year, None);
@@ -291,10 +341,13 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
     let mut completed = test_completed_download("downloader display label", &dest_dir);
-    completed.nzb_name = Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+    completed.release_name = Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
 
-    let parsed =
-        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+    );
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(1));
@@ -308,7 +361,7 @@ fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
     let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
     let mut completed = test_completed_download("downloader display label", dir.path());
-    completed.nzb_name = Some(
+    completed.release_name = Some(
         "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]"
             .to_string(),
     );
@@ -348,8 +401,11 @@ fn build_augmented_episode_import_metadata_does_not_use_parent_for_obfuscated_fi
     std::fs::write(&file_path, b"episode").expect("write file");
     let completed = test_completed_download("job-123", &dest_dir);
 
-    let parsed =
-        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+    );
     assert!(parsed.episode.is_none());
     assert_ne!(parsed.normalized_title, "HARBOR PALS");
     assert_eq!(parsed.quality, None);
@@ -364,8 +420,11 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
     std::fs::write(&file_path, b"episode").expect("write file");
     let completed = test_completed_download("Harbor.Pals.S01.Complete.720p.WEB-DL.AV1", &dest_dir);
 
-    let parsed =
-        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+    );
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(1));
@@ -382,8 +441,11 @@ fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as
     let completed =
         test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
 
-    let parsed =
-        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+    );
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(3));
@@ -408,11 +470,132 @@ fn build_augmented_episode_import_metadata_does_not_score_downloader_display_tit
     let completed =
         test_completed_download("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
 
-    let parsed =
-        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+    );
 
     assert!(parsed.episode.is_none());
     assert_eq!(parsed.quality, None);
+}
+
+#[test]
+fn canonical_movie_import_parse_matches_grab_time_parse_for_aliased_title() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"movie").expect("write file");
+    let release_title = "Paper.Lantern.2012.Directors.Cut.1080p.BluRay.DTS.x264-GRP";
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some(release_title.to_string());
+    let mut title = titled(MediaFacet::Movie, "The Lantern Keeper", Some(2012));
+    title.aliases = vec!["Paper Lantern".to_string()];
+
+    let parsed = build_augmented_movie_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &title,
+    );
+
+    let expected = grab_time_parse(release_title, &title);
+    assert_score_bearing_facts_match(&parsed, &expected);
+    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
+    assert_eq!(parsed.edition.as_deref(), Some("Director's Cut"));
+    assert_eq!(parsed.release_group.as_deref(), Some("GRP"));
+    // Title-anchored like the grab parse: the alias resolves to the title's
+    // canonical name instead of the context-free "PAPER LANTERN".
+    assert_eq!(parsed.normalized_title, expected.normalized_title);
+    assert_ne!(
+        parsed.normalized_title,
+        crate::parse_release_metadata(release_title).normalized_title
+    );
+}
+
+#[test]
+fn canonical_episode_import_parse_matches_grab_time_parse_for_aliased_title() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let release_title = "Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb";
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some(release_title.to_string());
+    let mut title = titled(MediaFacet::Series, "Sh\u{14d}gun", Some(2024));
+    title.aliases = vec!["Shogun".to_string()];
+
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &title,
+    );
+
+    let expected = grab_time_parse(release_title, &title);
+    assert_score_bearing_facts_match(&parsed, &expected);
+    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
+    let episode = parsed.episode.expect("episode from the release title");
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![3]);
+}
+
+#[test]
+fn canonical_import_parse_derives_title_facet_guide_facts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let release_title = "Test.Title.2160p.WEB-DL.DDP5.1.H.264-BiTOR";
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some(release_title.to_string());
+    let title = titled(MediaFacet::Series, "Test Title", Some(2024));
+
+    // The context-free parse carries no facet-specific guide facts; the
+    // canonical (grab-equivalent) parse does, in a single pass.
+    assert!(
+        !crate::parse_release_metadata(release_title)
+            .guide_facts
+            .iter()
+            .any(|fact| fact.code == "trash.blocked.lq_release_title")
+    );
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &title,
+    );
+    assert!(
+        parsed
+            .guide_facts
+            .iter()
+            .any(|fact| fact.code == "trash.blocked.lq_release_title")
+    );
+}
+
+#[test]
+fn episode_import_parse_keeps_release_name_episode_when_title_context_does_not_match() {
+    // A user-assigned or parameter-matched download can carry a release name
+    // that does not match the title's canonical identity. The title-anchored
+    // parse still yields the score-bearing facts but drops the numbering; the
+    // release name's own numbering must still win over an obfuscated file stem.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let release_title = "Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some(release_title.to_string());
+    let title = titled(MediaFacet::Series, "Completely Different Name", Some(1999));
+    assert!(
+        grab_time_parse(release_title, &title).episode.is_none(),
+        "fixture must exercise the mismatching-context fallback"
+    );
+
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &observation_evidence(&completed),
+        &title,
+    );
+
+    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+    assert_eq!(parsed.release_group.as_deref(), Some("NTb"));
+    let episode = parsed.episode.expect("episode from the release name");
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![1]);
 }
 
 #[test]
@@ -1674,5 +1857,438 @@ async fn maybe_remove_completed_manual_import_download_deletes_history_for_episo
     assert_eq!(
         *download_client.deleted_items.lock().await,
         vec![("job-episode-set".to_string(), true)]
+    );
+}
+
+// ── completed manual-import recovery loop ────────────────────────────────────
+
+struct RecoveryImportRepo {
+    records: Vec<scryer_domain::ImportRecord>,
+    windows: Mutex<Vec<chrono::DateTime<chrono::Utc>>>,
+    deleted_sources: Mutex<Vec<crate::DownloadSourceIdentity>>,
+}
+
+#[async_trait]
+impl crate::ImportRepository for RecoveryImportRepo {
+    async fn queue_import_request(
+        &self,
+        _: crate::DownloadSourceIdentity,
+        _: String,
+        _: String,
+    ) -> AppResult<String> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_import_by_id(&self, _: &str) -> AppResult<Option<scryer_domain::ImportRecord>> {
+        Ok(None)
+    }
+
+    async fn update_import_status(
+        &self,
+        _: &str,
+        _: scryer_domain::ImportStatus,
+        _: Option<String>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_import_transfer_progress(
+        &self,
+        _: &str,
+        _: scryer_domain::ImportTransferPhase,
+        _: i64,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn recover_stale_processing_imports(&self, _: i64) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+        _: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_imports_for_identities(
+        &self,
+        _: &[crate::DownloadSourceIdentity],
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_completed_manual_imports(
+        &self,
+        updated_after: chrono::DateTime<chrono::Utc>,
+        _: usize,
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        self.windows.lock().await.push(updated_after);
+        Ok(self.records.clone())
+    }
+
+    async fn is_already_imported(&self, _: &crate::DownloadSourceIdentity) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn delete_manual_import_selections_for_source(
+        &self,
+        source_identity: &crate::DownloadSourceIdentity,
+    ) -> AppResult<()> {
+        self.deleted_sources.lock().await.push(source_identity.clone());
+        Ok(())
+    }
+
+    async fn list_imports(&self, _: usize) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(Vec::new())
+    }
+}
+
+fn completed_manual_import_record_for(import_id: &str, item_id: &str) -> scryer_domain::ImportRecord {
+    let result = ManualImportExecutionResult {
+        import_id: import_id.to_string(),
+        client_type: "qbittorrent".to_string(),
+        download_client_item_id: item_id.to_string(),
+        title_id: Some("title-1".to_string()),
+        status: scryer_domain::ImportStatus::Completed,
+        error_code: None,
+        error_message: None,
+        file_results: vec![ManualImportFileResult {
+            file_path: format!("/downloads/{item_id}/movie.mkv"),
+            episode_id: None,
+            series_movie_link_id: None,
+            success: true,
+            skipped: false,
+            dest_path: Some("/library/movie.mkv".to_string()),
+            error_code: None,
+            error_message: None,
+        }],
+        completed_at: chrono::Utc::now(),
+    };
+    scryer_domain::ImportRecord {
+        id: import_id.to_string(),
+        source_client_id: Some("client-1".to_string()),
+        source_system: "qbittorrent".to_string(),
+        source_ref: item_id.to_string(),
+        import_type: scryer_domain::ImportType::ManualImport,
+        status: scryer_domain::ImportStatus::Completed,
+        payload_json: "{}".to_string(),
+        result_json: Some(serde_json::to_string(&result).expect("result JSON")),
+        download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
+        started_at: None,
+        finished_at: None,
+        created_at: "2026-08-17T00:00:00Z".to_string(),
+        updated_at: "2026-08-17T00:00:00Z".to_string(),
+    }
+}
+
+/// A scripted tracked-download runtime: answers `MarkImportedIfAwaitingImport`
+/// per item id from `script` (falling back to `Unchanged`) and records every
+/// (item id, record completion time) it was asked about.
+fn scripted_tracked_download_runtime(
+    script: Vec<(&'static str, Vec<crate::tracked_downloads::ManualImportRecoveryOutcome>)>,
+) -> (
+    crate::tracked_downloads::TrackedDownloadHandle,
+    Arc<Mutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>,
+) {
+    use crate::tracked_downloads::{ManualImportRecoveryOutcome, TrackedDownloadCommand};
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let asked_task = asked.clone();
+    tokio::spawn(async move {
+        let mut script = script
+            .into_iter()
+            .map(|(item_id, outcomes)| (item_id, outcomes.into_iter()))
+            .collect::<Vec<_>>();
+        while let Some(command) = rx.recv().await {
+            let TrackedDownloadCommand::MarkImportedIfAwaitingImport {
+                source_identity,
+                record_completed_at,
+                reply,
+            } = command
+            else {
+                continue;
+            };
+            asked_task
+                .lock()
+                .await
+                .push((source_identity.item_id.clone(), record_completed_at));
+            let outcome = script
+                .iter_mut()
+                .find(|(item_id, _)| *item_id == source_identity.item_id)
+                .and_then(|(_, outcomes)| outcomes.next())
+                .unwrap_or(ManualImportRecoveryOutcome::Unchanged);
+            let _ = reply.send(Ok(outcome));
+        }
+    });
+    (crate::tracked_downloads::TrackedDownloadHandle::new(tx), asked)
+}
+
+#[tokio::test]
+async fn completed_manual_import_recovery_decides_each_record_once_and_only_marks_eligible_sources() {
+    use crate::tracked_downloads::ManualImportRecoveryOutcome;
+
+    let repo = Arc::new(RecoveryImportRepo {
+        records: vec![
+            completed_manual_import_record_for("import-marked", "hash-marked"),
+            completed_manual_import_record_for("import-already-imported", "hash-already"),
+            completed_manual_import_record_for("import-fresh-download", "hash-fresh"),
+        ],
+        windows: Mutex::new(Vec::new()),
+        deleted_sources: Mutex::new(Vec::new()),
+    });
+    let (handle, asked) = scripted_tracked_download_runtime(vec![
+        ("hash-marked", vec![ManualImportRecoveryOutcome::Marked]),
+        // Already `Imported` and a fresh `Downloading` re-grab of the same
+        // info-hash both come back unchanged; neither may be acted on again.
+        ("hash-already", vec![ManualImportRecoveryOutcome::Unchanged]),
+        ("hash-fresh", vec![ManualImportRecoveryOutcome::Unchanged]),
+    ]);
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    )
+    .with_test_overrides(|builder| {
+        builder
+            .with_imports(repo.clone())
+            .with_tracked_download_handle(handle)
+    });
+    let worker = PollingWorker::new(
+        "manual_import_recovery_test",
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let mut reconciled = HashSet::new();
+
+    let before = chrono::Utc::now();
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+
+    let asked = asked.lock().await.clone();
+    let mut asked_items = asked
+        .iter()
+        .map(|(item_id, _)| item_id.clone())
+        .collect::<Vec<_>>();
+    asked_items.sort();
+    assert_eq!(
+        asked_items,
+        vec![
+            "hash-already".to_string(),
+            "hash-fresh".to_string(),
+            "hash-marked".to_string()
+        ],
+        "every record is decided exactly once per process, not once per tick"
+    );
+    let record_completed_at = "2026-08-17T00:00:00Z"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .expect("fixture updated_at");
+    assert!(
+        asked
+            .iter()
+            .all(|(_, completed_at)| *completed_at == record_completed_at),
+        "the runtime is told when each record completed (finished_at, else updated_at): {asked:?}"
+    );
+    assert_eq!(
+        *repo.deleted_sources.lock().await,
+        vec![crate::DownloadSourceIdentity::new(
+            Some("client-1"),
+            "qbittorrent",
+            "hash-marked"
+        )],
+        "selections are cleaned up only for the source that was actually marked"
+    );
+    assert_eq!(
+        reconciled,
+        HashSet::from([
+            "import-marked".to_string(),
+            "import-already-imported".to_string(),
+            "import-fresh-download".to_string(),
+        ])
+    );
+    let windows = repo.windows.lock().await.clone();
+    assert_eq!(windows.len(), 3);
+    for window in windows {
+        let lookback = before - window;
+        assert!(
+            lookback >= chrono::Duration::hours(24) - chrono::Duration::minutes(1)
+                && lookback <= chrono::Duration::hours(24) + chrono::Duration::minutes(1),
+            "recovery scans a 24h window, got {lookback}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn completed_manual_import_recovery_retries_busy_and_untracked_sources_on_later_ticks() {
+    use crate::tracked_downloads::ManualImportRecoveryOutcome;
+
+    let repo = Arc::new(RecoveryImportRepo {
+        records: vec![
+            completed_manual_import_record_for("import-busy", "hash-busy"),
+            completed_manual_import_record_for("import-untracked", "hash-untracked"),
+        ],
+        windows: Mutex::new(Vec::new()),
+        deleted_sources: Mutex::new(Vec::new()),
+    });
+    let (handle, asked) = scripted_tracked_download_runtime(vec![
+        (
+            "hash-busy",
+            vec![
+                ManualImportRecoveryOutcome::Busy,
+                ManualImportRecoveryOutcome::Marked,
+            ],
+        ),
+        (
+            "hash-untracked",
+            vec![
+                ManualImportRecoveryOutcome::Untracked,
+                ManualImportRecoveryOutcome::Untracked,
+                ManualImportRecoveryOutcome::Marked,
+            ],
+        ),
+    ]);
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    )
+    .with_test_overrides(|builder| {
+        builder
+            .with_imports(repo.clone())
+            .with_tracked_download_handle(handle)
+    });
+    let worker = PollingWorker::new(
+        "manual_import_recovery_retry_test",
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let mut reconciled = HashSet::new();
+
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    assert!(reconciled.is_empty(), "busy/untracked sources are not decided");
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    assert_eq!(reconciled, HashSet::from(["import-busy".to_string()]));
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+
+    let asked = asked.lock().await.clone();
+    assert_eq!(
+        asked
+            .iter()
+            .filter(|(item, _)| item.as_str() == "hash-busy")
+            .count(),
+        2,
+        "a busy source is retried once, then remembered"
+    );
+    assert_eq!(
+        asked
+            .iter()
+            .filter(|(item, _)| item.as_str() == "hash-untracked")
+            .count(),
+        3,
+        "an untracked source is retried until the runtime knows it"
+    );
+    assert_eq!(
+        reconciled,
+        HashSet::from(["import-busy".to_string(), "import-untracked".to_string()])
+    );
+    let mut deleted = repo.deleted_sources.lock().await.clone();
+    deleted.sort_by(|left, right| left.item_id.cmp(&right.item_id));
+    assert_eq!(
+        deleted,
+        vec![
+            crate::DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "hash-busy"),
+            crate::DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "hash-untracked"),
+        ]
+    );
+}
+
+// ── manual import preview candidates ─────────────────────────────────────────
+
+#[tokio::test]
+async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_series() {
+    let app = build_manual_import_cleanup_app(
+        Vec::new(),
+        Arc::new(ManualImportCleanupDownloadClient::default()),
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let primary = dir.path().join("Manual.Movie.2024.1080p.WEB-DL.mkv");
+    std::fs::File::create(&primary)
+        .expect("create primary")
+        .set_len(64 * 1024 * 1024)
+        .expect("size primary past the sample threshold");
+    let named_sample = dir.path().join("Manual.Movie.2024.1080p.WEB-DL-sample.mkv");
+    std::fs::write(&named_sample, b"sample").expect("write sample");
+    let tiny_extra = dir.path().join("Manual.Movie.2024.Making.Of.mkv");
+    std::fs::write(&tiny_extra, b"extra").expect("write extra");
+    let completed = test_completed_download("Manual.Movie.2024.1080p.WEB-DL", dir.path());
+    let evidence = observation_evidence(&completed);
+
+    let movie_preview = preview_manual_import(
+        &app,
+        &completed,
+        "title-1",
+        &MediaFacet::Movie,
+        &evidence,
+        &[],
+    )
+    .await
+    .expect("movie preview");
+    let mut movie_files = movie_preview
+        .files
+        .iter()
+        .map(|file| file.file_name.as_str())
+        .collect::<Vec<_>>();
+    movie_files.sort_unstable();
+    assert_eq!(
+        movie_files,
+        vec![
+            "Manual.Movie.2024.1080p.WEB-DL.mkv",
+            "Manual.Movie.2024.Making.Of.mkv",
+        ],
+        "movie previews drop sample-named files but never size-filter (a small movie stays importable)"
+    );
+
+    let series_preview = preview_manual_import(
+        &app,
+        &completed,
+        "title-1",
+        &MediaFacet::Series,
+        &evidence,
+        &[],
+    )
+    .await
+    .expect("series preview");
+    let mut series_files = series_preview
+        .files
+        .iter()
+        .map(|file| file.file_name.as_str())
+        .collect::<Vec<_>>();
+    series_files.sort_unstable();
+    assert_eq!(
+        series_files,
+        vec![
+            "Manual.Movie.2024.1080p.WEB-DL-sample.mkv",
+            "Manual.Movie.2024.1080p.WEB-DL.mkv",
+            "Manual.Movie.2024.Making.Of.mkv",
+        ],
+        "series previews keep every video for explicit mapping"
     );
 }

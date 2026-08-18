@@ -2,6 +2,7 @@ use super::*;
 use super::{check::*, execute::*, lookup::*, path_state::*, result_state::*, verification::*};
 
 mod category_admission;
+mod import_target;
 mod lookup_identity;
 mod notifications;
 mod path_state;
@@ -514,6 +515,201 @@ impl ShowRepository for TestShowRepo {
         _: Vec<ScopedExternalId>,
     ) -> AppResult<()> {
         Ok(())
+    }
+}
+
+/// In-memory `imports` table: queued requests are appended (newest first on
+/// listing, like the store), status updates are recorded per import id.
+#[derive(Default)]
+struct TestImportRepo {
+    records: Arc<Mutex<Vec<scryer_domain::ImportRecord>>>,
+    status_updates: Arc<Mutex<Vec<(String, ImportStatus, Option<String>)>>>,
+}
+
+impl TestImportRepo {
+    fn with_records(records: Vec<scryer_domain::ImportRecord>) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(records)),
+            status_updates: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// The most recent `ImportResult` recorded through a status update.
+    async fn last_import_result(&self) -> Option<ImportResult> {
+        self.status_updates
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find_map(|(_, _, result_json)| {
+                result_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<ImportResult>(json).ok())
+            })
+    }
+
+    /// `target_title_id` persisted in the most recently queued request payload.
+    async fn last_queued_target_title_id(&self) -> Option<String> {
+        let records = self.records.lock().await;
+        let record = records.last()?;
+        let payload: serde_json::Value = serde_json::from_str(&record.payload_json).ok()?;
+        payload
+            .get("target_title_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    }
+}
+
+fn test_import_record(
+    id: &str,
+    source_identity: &DownloadSourceIdentity,
+    status: ImportStatus,
+    payload_json: String,
+) -> scryer_domain::ImportRecord {
+    let now = Utc::now().to_rfc3339();
+    scryer_domain::ImportRecord {
+        id: id.to_string(),
+        source_client_id: source_identity.client_id.clone(),
+        source_system: source_identity.client_type.clone(),
+        source_ref: source_identity.item_id.clone(),
+        import_type: scryer_domain::ImportType::MovieDownload,
+        status,
+        payload_json,
+        result_json: None,
+        download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
+        started_at: Some(now.clone()),
+        finished_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+#[async_trait]
+impl crate::ImportRepository for TestImportRepo {
+    async fn queue_import_request(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        let import_id = Id::new().0;
+        let import_type = scryer_domain::ImportType::parse(&import_type)
+            .unwrap_or(scryer_domain::ImportType::MovieDownload);
+        let mut record = test_import_record(
+            &import_id,
+            &source_identity,
+            ImportStatus::Pending,
+            payload_json,
+        );
+        record.import_type = import_type;
+        self.records.lock().await.push(record);
+        Ok(import_id)
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .find(|record| record.id == id)
+            .cloned())
+    }
+
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        if let Some(record) = self
+            .records
+            .lock()
+            .await
+            .iter_mut()
+            .find(|record| record.id == import_id)
+        {
+            record.status = status;
+            record.result_json = result_json.clone();
+        }
+        self.status_updates
+            .lock()
+            .await
+            .push((import_id.to_string(), status, result_json));
+        Ok(())
+    }
+
+    async fn update_import_transfer_progress(
+        &self,
+        _: &str,
+        _: scryer_domain::ImportTransferPhase,
+        _: i64,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn recover_stale_processing_imports(&self, _: i64) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+        _: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(vec![])
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(vec![])
+    }
+
+    async fn list_imports_for_identities(
+        &self,
+        identities: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .filter(|record| {
+                identities.iter().any(|identity| {
+                    record.source_client_id.as_deref().unwrap_or("")
+                        == identity.client_id_or_empty()
+                        && record.source_system == identity.client_type
+                        && record.source_ref == identity.item_id
+                })
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        Ok(self.records.lock().await.iter().any(|record| {
+            record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
+                && record.source_system == identity.client_type
+                && record.source_ref == identity.item_id
+                && record.status == ImportStatus::Completed
+        }))
+    }
+
+    async fn list_imports(&self, _: usize) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(self.records.lock().await.clone())
     }
 }
 
@@ -1497,7 +1693,7 @@ fn build_completed_download(
         download_client_item_id: "dl-1".to_string(),
         download_id: None,
         name: name.to_string(),
-        nzb_name: None,
+        release_name: None,
         dest_dir: dest_dir.to_string(),
         category: category.map(str::to_string),
         size_bytes: None,

@@ -579,6 +579,22 @@ impl AppUseCase {
                         .await;
                     return Err(error);
                 }
+                if source_title_for_attempt.is_none() {
+                    // The persisted indexer release title is THE name the
+                    // import parses at completion. Only the API/SDK
+                    // `addTitle{sourceHint}` grab can omit it (candidate-token,
+                    // best-release, RSS, pending, and auto-search grabs always
+                    // carry one); the import then degrades to the client-
+                    // reported release name, so leave a grab-time breadcrumb.
+                    tracing::info!(
+                        title_id = %title.id,
+                        client_id = ?grab.client_id,
+                        client_type = %grab.client_type,
+                        download_client_item_id = %grab.job_id,
+                        source_hint = ?source_hint_for_attempt,
+                        "queued download submission without a release title; import will parse the client-reported release name"
+                    );
+                }
                 let submission_identity = DownloadSourceIdentity::new(
                     grab.client_id.as_deref(),
                     &grab.client_type,
@@ -1253,4 +1269,196 @@ fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// Grab-time persistence of the indexer release title for the manual queue
+/// path (`queue_manual_release_for_title`), which every interactive/API grab
+/// funnels through. The best-release, RSS, pending-release, and auto-search
+/// paths already assert their persisted `source_title` in `lib_tests`.
+#[cfg(test)]
+mod grab_time_release_title_tests {
+    use crate::{
+        AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+        QueuedReleaseSelection, SubmissionConflictPolicy, SubmissionScope,
+    };
+    use async_trait::async_trait;
+    use scryer_domain::{MediaFacet, NewTitle};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingDownloadSubmissionRepo {
+        rows: Arc<Mutex<Vec<DownloadSubmission>>>,
+    }
+
+    #[async_trait]
+    impl DownloadSubmissionRepository for RecordingDownloadSubmissionRepo {
+        async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+            self.rows.lock().await.push(submission);
+            Ok(())
+        }
+
+        async fn find_by_client_item_id(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|row| DownloadSourceIdentity::from_submission(row) == *identity)
+                .cloned())
+        }
+
+        async fn list_for_client_items(
+            &self,
+            client_items: &[DownloadSourceIdentity],
+        ) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|row| client_items.contains(&DownloadSourceIdentity::from_submission(row)))
+                .cloned()
+                .collect())
+        }
+
+        async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|row| row.title_id == title_id)
+                .cloned()
+                .collect())
+        }
+
+        async fn find_by_title_and_request_signature(
+            &self,
+            title_id: &str,
+            request_signature: &str,
+            purpose: crate::DownloadSubmissionPurpose,
+            scope: &SubmissionScope,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|row| {
+                    row.title_id == title_id
+                        && row.request_signature.as_deref() == Some(request_signature)
+                        && row.purpose == purpose
+                        && &row.scope == scope
+                })
+                .cloned())
+        }
+
+        async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+            self.rows.lock().await.retain(|row| row.title_id != title_id);
+            Ok(())
+        }
+
+        async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+            self.rows
+                .lock()
+                .await
+                .retain(|row| DownloadSourceIdentity::from_submission(row) != *identity);
+            Ok(())
+        }
+
+        async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn movie_request(name: &str) -> NewTitle {
+        NewTitle {
+            name: name.to_string(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_queue_persists_the_indexer_release_title_on_the_submission_row() {
+        let (base_app, user) = crate::lib_tests::bootstrap();
+        let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
+        let app = base_app
+            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+        let title = app
+            .add_title(&user, movie_request("Paper Lantern"))
+            .await
+            .expect("create title");
+
+        // The shape a candidate token / best-release selection arrives in.
+        app.queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some("https://indexer.invalid/get/paper-lantern.nzb".to_string()),
+                source_kind: None,
+                source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect("queue release");
+
+        let rows = submissions.rows.lock().await.clone();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].title_id, title.id);
+        assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(
+            rows[0].source_title.as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL-GRP"),
+            "the indexer release title must be persisted (trimmed) at grab time"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_title_source_hint_only_grab_records_no_release_title() {
+        // The API/SDK `addTitleAndQueueDownload{sourceHint}` path may omit the
+        // release title; the row is still a non-orphan Scryer submission (the
+        // import degrades only the parsed name, see ReleaseEvidence).
+        let (base_app, user) = crate::lib_tests::bootstrap();
+        let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
+        let app = base_app
+            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+
+        let (title, _job_id) = app
+            .add_title_and_queue_download(
+                &user,
+                movie_request("Harbor Lights"),
+                QueuedReleaseSelection {
+                    indexer_id: None,
+                    source_hint: Some("https://indexer.invalid/get/harbor-lights.nzb".to_string()),
+                    source_kind: None,
+                    source_title: None,
+                    source_password: None,
+                },
+            )
+            .await
+            .expect("add title and queue");
+
+        let rows = submissions.rows.lock().await.clone();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].title_id, title.id);
+        assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(rows[0].source_title, None);
+        assert!(crate::import_parameters::submission_has_scryer_origin(&rows[0]));
+    }
 }

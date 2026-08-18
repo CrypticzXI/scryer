@@ -639,7 +639,8 @@ async fn import_single_episode_file(
     nfo_enabled: bool,
     expected_episode_ids: Option<&HashSet<String>>,
 ) -> AppResult<EpisodeImportOutcome> {
-    let parsed = build_augmented_episode_import_metadata(source_video, release_evidence);
+    let parsed =
+        build_augmented_episode_import_metadata_for_title(source_video, release_evidence, title);
 
     // Must have episode info to proceed
     let ep_meta = match parsed.episode.as_ref() {
@@ -1502,14 +1503,19 @@ async fn persist_file_import_artifact(
 }
 // 50 MB
 
-pub(crate) fn is_sample_file(path: &Path) -> bool {
-    let filename = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+/// Name-only sample detection: the file stem contains "sample"
+/// (case-insensitive). Unlike `is_sample_file` this carries no size heuristic,
+/// so a legitimately small movie (short film, old cartoon, low-bitrate SD) is
+/// never mistaken for a sample; the automatic movie path never size-filters,
+/// and manual import must not be stricter than it.
+pub(crate) fn is_sample_named_file(path: &Path) -> bool {
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|stem| stem.contains("sample"))
+}
 
-    if filename.contains("sample") {
+pub(crate) fn is_sample_file(path: &Path) -> bool {
+    if is_sample_named_file(path) {
         return true;
     }
 
@@ -1539,19 +1545,31 @@ fn resolve_title_from_release_candidate(
         .map(|resolved| resolved.title.clone())
     }
 }
-fn build_augmented_episode_import_metadata(
+/// Canonical import-time release metadata for an episode file: the release
+/// evidence parsed with the title's canonical grab-time context (see
+/// `parse_import_release_for_title`), plus episode numbering from the release
+/// name itself and then the file stem when the canonical parse names none.
+fn build_augmented_episode_import_metadata_for_title(
     source_video: &Path,
     release_evidence: &ReleaseEvidence,
+    title: &scryer_domain::Title,
 ) -> ParsedReleaseMetadata {
     let Some(release_title) = release_evidence.release_title(Some(source_video)) else {
         return ParsedReleaseMetadata::default();
     };
 
-    let mut parsed = normalize_release_title_signal(parse_release_metadata(&release_title));
-    // With canonical release evidence, the file name may locate an episode but
-    // cannot supplement score-bearing release metadata.
+    let mut parsed =
+        normalize_release_title_signal(parse_import_release_for_title(&release_title, title));
     if parsed.episode.is_none() {
-        parsed.episode = parsed_release_from_file_stem(source_video).episode;
+        // The title-anchored parse keeps score-bearing facts but drops the
+        // release name's own numbering when that name does not match the
+        // title's canonical identity (a user-assigned or parameter-matched
+        // download). The release name is still the best episode evidence, and
+        // only after it the file name — which may locate an episode but cannot
+        // supplement score-bearing release metadata.
+        parsed.episode = parse_release_metadata(&release_title)
+            .episode
+            .or_else(|| parsed_release_from_file_stem(source_video).episode);
     }
     parsed
 }

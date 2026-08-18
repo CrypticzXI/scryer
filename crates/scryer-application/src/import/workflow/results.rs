@@ -23,21 +23,65 @@ pub async fn retry_failed_import(
 
     let payload: StoredCompletedImportRequestPayload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
-    let (mut completed, persisted_release_evidence, manual_title_id) = match payload {
+    let (mut completed, persisted_release_evidence, persisted_target_title_id) = match payload {
         StoredCompletedImportRequestPayload::Current(payload) => (
             payload.completed,
             Some(payload.release_evidence),
-            payload.manual_title_id,
+            payload.target_title_id,
         ),
         StoredCompletedImportRequestPayload::Legacy(completed) => (completed, None, None),
     };
     remap_completed_download_for_client(app, &mut completed).await;
 
-    let authorization_title_id = persisted_release_evidence
-        .as_ref()
-        .and_then(ReleaseEvidence::title_id)
+    // A live submission row is authoritative over what the failed attempt
+    // persisted (an operator may have reassigned the download since). The
+    // persisted evidence is the fallback for a lost row or a transient lookup
+    // failure only.
+    let fresh_resolution = match resolve_completed_download_submission(app, &completed, None).await
+    {
+        Ok(resolution) => Some(match resolution {
+            CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
+            | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => {
+                CompletedDownloadSubmissionResolution::DownloaderObservation
+            }
+            resolution => resolution,
+        }),
+        Err(error) => {
+            if persisted_release_evidence.is_none() {
+                return Err(error);
+            }
+            tracing::warn!(
+                import_id,
+                error = %error,
+                "retry import: live submission lookup failed; retrying with the persisted release evidence"
+            );
+            None
+        }
+    };
+    let SelectedCompletedImportEvidence {
+        release_evidence,
+        target_title_id,
+        source: _,
+    } = select_completed_import_evidence(CompletedImportEvidenceInputs {
+        identity_policy: CompletedImportIdentityPolicy::RequireSubmission,
+        fresh_resolution: fresh_resolution.as_ref(),
+        release_evidence_override: None,
+        persisted_release_evidence: persisted_release_evidence.as_ref(),
+        persisted_target_title_id: persisted_target_title_id.as_deref(),
+        requested_target_title_id: None,
+        completed: &completed,
+    });
+    if let Some(CompletedDownloadSubmissionResolution::Matched(matched)) = fresh_resolution.as_ref()
+        && submission_has_scryer_origin(&matched.submission)
+    {
+        completed.parameters =
+            authoritative_scryer_origin_parameters(&completed.parameters, &matched.submission);
+    }
+
+    let authorization_title_id = release_evidence
+        .title_id()
         .map(str::to_string)
-        .or_else(|| manual_title_id.clone())
+        .or_else(|| target_title_id.clone())
         .or_else(|| {
             extract_parameter(&completed.parameters, "*scryer_title_id")
                 .map(|value| value.trim().to_string())
@@ -76,28 +120,13 @@ pub async fn retry_failed_import(
         .await?;
 
     let started_at = Utc::now();
-    let release_evidence = match persisted_release_evidence {
-        Some(release_evidence) => release_evidence,
-        None => {
-            let mut submission_resolution =
-                resolve_completed_download_submission(app, &completed, None).await?;
-            if matches!(
-                submission_resolution,
-                CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-                    | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
-            ) {
-                submission_resolution = CompletedDownloadSubmissionResolution::DownloaderObservation;
-            }
-            release_evidence_for_resolution(&completed, &submission_resolution)?
-        }
-    };
     match run_import(
         app,
         actor,
         import_id,
         &completed,
         &release_evidence,
-        manual_title_id.as_deref(),
+        target_title_id.as_deref(),
         started_at,
         password,
     )

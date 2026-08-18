@@ -1011,7 +1011,7 @@ fn weaver_item_to_completed_download(job: &WeaverQueueItem) -> Option<CompletedD
         download_client_item_id: job.id.to_string(),
         download_id: observed_identity.download_id,
         name: job.name.clone(),
-        nzb_name: job.original_title.clone(),
+        release_name: job.original_title.clone(),
         dest_dir: output_dir,
         category: job.category.clone(),
         size_bytes: Some(job.total_bytes as i64),

@@ -1,6 +1,13 @@
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
 const MANUAL_IMPORT_RECOVERY_BATCH_SIZE: usize = 500;
+/// How far back the completed-manual-import recovery sweep looks. Older
+/// records have long since terminalized (or their source is gone), and a
+/// stale record must not be matched against a fresh download that merely
+/// reuses the same client item id.
+const MANUAL_IMPORT_RECOVERY_WINDOW_HOURS: i64 = 24;
 const MANUAL_IMPORT_SOURCE_UNAVAILABLE: &str = "download is no longer available for manual import";
+const MANUAL_MOVIE_NO_PRIMARY_FILE: &str =
+    "no primary movie file to import: every mapped video is named as a sample";
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
@@ -13,6 +20,9 @@ pub async fn start_background_manual_import_poller(
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
         MANUAL_IMPORT_POLLER_INTERVAL_SECONDS,
     ));
+    // Completed manual-import records already reconciled against their
+    // tracked download in this process; each record is decided once.
+    let mut reconciled_manual_import_ids: HashSet<String> = HashSet::new();
     loop {
         if !worker.wait_for_tick(&mut interval).await {
             return;
@@ -37,7 +47,7 @@ pub async fn start_background_manual_import_poller(
             _ => {}
         }
 
-        recover_completed_manual_imports(&app, &worker).await;
+        recover_completed_manual_imports(&app, &worker, &mut reconciled_manual_import_ids).await;
 
         let pending = match app
             .services
@@ -606,12 +616,22 @@ async fn preview_manual_import(
     app: &AppUseCase,
     completed: &CompletedDownload,
     title_id: &str,
+    facet: &MediaFacet,
     release_evidence: &ReleaseEvidence,
     available_episodes: &[scryer_domain::Episode],
 ) -> AppResult<ManualImportPreview> {
-    // Scan for video files (recursive, no sample filtering - let user see everything)
+    // Series/anime: recursive, no sample filtering — the user maps every file
+    // explicitly and small specials are legitimate. Movies: a movie import
+    // lands exactly one primary file, so sample-named files never become
+    // candidates (offering one only invites a mapping that would be recorded
+    // as skipped). Name only, never size: the automatic movie path does not
+    // size-filter either, and a legitimately small movie must stay importable
+    // by hand.
     let dest_dir = Path::new(&completed.dest_dir);
-    let video_files = find_video_files(dest_dir, false)?;
+    let mut video_files = find_video_files(dest_dir, false)?;
+    if *facet == MediaFacet::Movie {
+        video_files.retain(|path| !is_sample_named_file(path));
+    }
     let grabbed_episode_ids = match release_evidence.scope() {
         Some(SubmissionScope::Episode { episode_id }) => {
             HashSet::from([episode_id.clone()])
@@ -725,12 +745,16 @@ async fn preview_manual_import(
             }
         }
 
+        let is_grabbed_fallback_path = grabbed_fallback_path
+            .as_ref()
+            .is_some_and(|fallback| fallback == path);
         let scoped_suggestion = manual_episode_suggestion_for_grabbed_scope(
             suggested_episode_id.clone(),
             &grabbed_episode_ids,
-            grabbed_fallback_path
-                .as_ref()
-                .is_some_and(|fallback| fallback == path),
+            manual_grabbed_episode_fallback_applies(
+                is_grabbed_fallback_path,
+                parsed.episode.as_ref(),
+            ),
         );
         if scoped_suggestion != suggested_episode_id {
             suggested_episode_label = scoped_suggestion.as_deref().and_then(|episode_id| {
@@ -764,10 +788,34 @@ async fn preview_manual_import(
     Ok(ManualImportPreview { files: previews })
 }
 
+/// Whether the preview may pre-select the single grabbed episode for a file.
+///
+/// The grabbed episode is a starting point only for the largest video that
+/// carries no episode evidence of its own. A file that positively parses to an
+/// episode — inside or outside the grabbed scope — keeps its own parse (and is
+/// left to the user when that parse falls outside the scope): "largest file"
+/// says nothing about which episode a file that names a different one holds,
+/// and pre-selecting the grabbed episode there would silently import the
+/// wrong episode under the right number.
+fn manual_grabbed_episode_fallback_applies(
+    is_largest_video: bool,
+    file_episode: Option<&crate::ParsedEpisodeMetadata>,
+) -> bool {
+    is_largest_video && file_episode.is_none()
+}
+
+/// Constrain a file's parsed episode suggestion to the grabbed scope.
+///
+/// A parsed suggestion inside the scope (or any suggestion when nothing was
+/// grabbed) stands. Otherwise the single grabbed episode is offered only when
+/// the caller established that the fallback applies to this file —
+/// `manual_grabbed_episode_fallback_applies`, i.e. the largest video with no
+/// episode parse of its own, so a file that parsed to an episode outside the
+/// scope never gets the grabbed episode — and nothing is suggested otherwise.
 fn manual_episode_suggestion_for_grabbed_scope(
     parsed_suggestion: Option<String>,
     grabbed_episode_ids: &HashSet<String>,
-    use_single_episode_fallback: bool,
+    grabbed_episode_fallback_applies: bool,
 ) -> Option<String> {
     if grabbed_episode_ids.is_empty()
         || parsed_suggestion
@@ -776,7 +824,7 @@ fn manual_episode_suggestion_for_grabbed_scope(
     {
         return parsed_suggestion;
     }
-    if use_single_episode_fallback && grabbed_episode_ids.len() == 1 {
+    if grabbed_episode_fallback_applies && grabbed_episode_ids.len() == 1 {
         return grabbed_episode_ids.iter().next().cloned();
     }
     None
@@ -810,7 +858,7 @@ pub async fn begin_manual_import_selection(
     let client_id = client_id.trim();
     let client_type = client_type.trim().to_ascii_lowercase();
     let source_ref = download_client_item_id.trim();
-    let completed = resolve_current_manual_import_source(
+    let authorized = authorize_manual_import_source(
         app,
         actor,
         client_id,
@@ -819,6 +867,7 @@ pub async fn begin_manual_import_selection(
         title_id,
     )
     .await?;
+    let completed = resolve_authorized_manual_import_source(app, &authorized.identity).await?;
     let release_evidence =
         resolve_release_evidence_for_completed_download(app, &completed, None).await?;
     if let Some(submission_title_id) = release_evidence.title_id()
@@ -862,6 +911,7 @@ pub async fn begin_manual_import_selection(
         app,
         &completed,
         title_id,
+        &authorized.facet,
         &release_evidence,
         &all_episodes,
     )
@@ -973,6 +1023,50 @@ fn manual_import_mapping_target<'a>(
     }
 }
 
+/// A movie import lands exactly one file. Among the mappings that address the
+/// movie itself, the primary is the largest readable video that is not named
+/// as a sample; every other movie mapping is a sample, trailer, or featurette
+/// that the user mapped along with it and must be recorded as skipped rather
+/// than pushed through the movie importer (which would reject it or, worse,
+/// treat it as a replacement for the primary it just imported).
+///
+/// Sample detection is by name only (`is_sample_named_file`): the automatic
+/// movie path never size-filters, and manual import — the user's escape hatch —
+/// must not be stricter than it, so a legitimately small movie still imports.
+///
+/// Returns the index into `files` of the primary mapping, or `None` when no
+/// mapped movie file is importable (all sample-named, missing, or unreadable).
+/// Ties on size resolve to the earliest mapping so the choice is stable.
+fn select_manual_movie_primary_index(
+    files: &[ManualImportFileMapping],
+    facet: &MediaFacet,
+    trusted_source_root: &Path,
+) -> Option<usize> {
+    let mut primary: Option<(usize, u64)> = None;
+    for (index, mapping) in files.iter().enumerate() {
+        if !matches!(
+            manual_import_mapping_target(mapping, facet),
+            Ok(ManualImportMappingTarget::Movie)
+        ) {
+            continue;
+        }
+        let source = stored_path_to_path_buf(&mapping.file_path);
+        if validate_manual_import_source_under_trusted_root(&source, trusted_source_root).is_err()
+            || !source.is_file()
+            || is_sample_named_file(&source)
+        {
+            continue;
+        }
+        let Ok(size) = std::fs::metadata(&source).map(|metadata| metadata.len()) else {
+            continue;
+        };
+        if primary.is_none_or(|(_, primary_size)| size > primary_size) {
+            primary = Some((index, size));
+        }
+    }
+    primary.map(|(index, _)| index)
+}
+
 pub(crate) fn validate_manual_import_candidate_mapping_targets(
     files: &[ManualImportCandidateMapping],
     facet: &MediaFacet,
@@ -1079,6 +1173,11 @@ pub struct ManualImportFileResult {
     #[serde(default)]
     pub series_movie_link_id: Option<String>,
     pub success: bool,
+    /// The mapping was deliberately not imported (for example a non-primary
+    /// movie file such as a sample or featurette). A skipped mapping is neither
+    /// a success nor a failure: it does not block the import from completing.
+    #[serde(default)]
+    pub skipped: bool,
     pub dest_path: Option<String>,
     pub error_code: Option<ImportErrorCode>,
     pub error_message: Option<String>,
@@ -1096,9 +1195,21 @@ fn manual_import_file_result(
         episode_id: mapping.episode_id.clone(),
         series_movie_link_id: mapping.series_movie_link_id.clone(),
         success,
+        skipped: false,
         dest_path,
         error_code,
         error_message,
+    }
+}
+
+fn manual_import_skipped_file_result(
+    mapping: &ManualImportFileMapping,
+    message: String,
+) -> ManualImportFileResult {
+    ManualImportFileResult {
+        skipped: true,
+        error_message: Some(message),
+        ..manual_import_file_result(mapping, false, None, None, None)
     }
 }
 
@@ -1321,23 +1432,37 @@ pub(crate) async fn fail_active_manual_import_for_source(
         );
     }
 }
+/// A manual import is `Completed` when every mapping that was actually
+/// attempted succeeded and at least one file landed. Skipped mappings (movie
+/// samples/extras beside the primary) are deliberate non-imports and never
+/// count against completion; an import that attempted nothing is not complete.
 fn manual_import_terminal_status_and_error(
     results: &[ManualImportFileResult],
 ) -> (ImportStatus, Option<ImportErrorCode>, Option<String>) {
-    let failures = results
-        .iter()
-        .filter(|result| !result.success)
-        .collect::<Vec<_>>();
-    if failures.is_empty() {
-        return (ImportStatus::Completed, None, None);
+    let attempted = results.iter().filter(|result| !result.skipped);
+    let mut succeeded = 0usize;
+    let mut first_failure = None;
+    for result in attempted {
+        if result.success {
+            succeeded += 1;
+        } else if first_failure.is_none() {
+            first_failure = Some(result);
+        }
     }
 
-    let primary = failures[0];
-    (
-        ImportStatus::Failed,
-        primary.error_code.or(Some(ImportErrorCode::Unknown)),
-        primary.error_message.clone(),
-    )
+    match first_failure {
+        None if succeeded > 0 => (ImportStatus::Completed, None, None),
+        None => (
+            ImportStatus::Failed,
+            Some(ImportErrorCode::Unknown),
+            Some("manual import did not import any file".to_string()),
+        ),
+        Some(failure) => (
+            ImportStatus::Failed,
+            failure.error_code.or(Some(ImportErrorCode::Unknown)),
+            failure.error_message.clone(),
+        ),
+    }
 }
 
 #[expect(
@@ -1392,7 +1517,11 @@ async fn execute_manual_series_movie_import(
         }
     };
 
-    let parsed = build_augmented_movie_import_metadata(source, release_evidence);
+    // Same identity the series movie was grabbed under (see
+    // `import_series_movie_download`).
+    let search_title = crate::acquisition_release_search::series_movie_search_title(title, &link);
+    let parsed =
+        build_augmented_movie_import_metadata_for_title(source, release_evidence, &search_title);
     let ext = scryer_domain::canonical_video_extension(source)
         .unwrap_or("mkv")
         .to_string();
@@ -1651,7 +1780,7 @@ pub async fn execute_manual_import(
         Some(completed) => {
             resolve_release_evidence_for_completed_download(app, completed, None).await?
         }
-        None => ReleaseEvidence::DownloaderObservation { nzb_name: None },
+        None => ReleaseEvidence::DownloaderObservation { release_name: None },
     };
     execute_manual_import_with_release_evidence(
         app,
@@ -1731,10 +1860,13 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
     let full_folder_path = effective_title_folder_path(&media_root, &title, &folder_template, None);
     ensure_import_title_folder_available(app, &title, &full_folder_path).await?;
     let quality_profile = resolve_import_quality_profile(app, &title).await?;
+    let movie_primary_index = (title.facet == MediaFacet::Movie)
+        .then(|| select_manual_movie_primary_index(&files, &title.facet, &trusted_source_root))
+        .flatten();
 
     let mut results = Vec::new();
 
-    for mapping in &files {
+    for (mapping_index, mapping) in files.iter().enumerate() {
         let source = stored_path_to_path_buf(&mapping.file_path);
         if let Err(err) =
             validate_manual_import_source_under_trusted_root(&source, &trusted_source_root)
@@ -1778,6 +1910,29 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
         let episode_id = match target {
             ManualImportMappingTarget::Episode(episode_id) => episode_id,
             ManualImportMappingTarget::Movie => {
+                // Only the primary movie file is imported; the other mapped
+                // videos are samples/extras and are recorded as skipped so they
+                // neither reach the movie importer nor block completion.
+                match movie_primary_index {
+                    Some(primary_index) if primary_index == mapping_index => {}
+                    Some(_) => {
+                        results.push(manual_import_skipped_file_result(
+                            mapping,
+                            "skipped: not the primary movie file".to_string(),
+                        ));
+                        continue;
+                    }
+                    None => {
+                        results.push(manual_import_file_result(
+                            mapping,
+                            false,
+                            None,
+                            Some(ImportErrorCode::PolicyMismatch),
+                            Some(MANUAL_MOVIE_NO_PRIMARY_FILE.to_string()),
+                        ));
+                        continue;
+                    }
+                }
                 // Reuse the canonical movie import rather than re-deriving
                 // destination and naming here: a manually chosen file must land
                 // exactly where the automatic path would have put it, or the
@@ -1905,7 +2060,8 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
         }
 
         // Parse release metadata for quality/codec tokens
-        let parsed = build_augmented_episode_import_metadata(&source, release_evidence);
+        let parsed =
+            build_augmented_episode_import_metadata_for_title(&source, release_evidence, &title);
 
         let season_num: u32 = episode
             .season_number
@@ -2056,12 +2212,28 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
     Ok(results)
 }
 
-async fn recover_completed_manual_imports(app: &AppUseCase, worker: &PollingWorker) {
+/// Backstop for a manual import whose record reached `Completed` but whose
+/// tracked download was never terminalized (crash, dropped reply, restart).
+///
+/// Bounded three ways: the store query only returns records updated inside
+/// the recovery window, `reconciled_import_ids` makes each record a one-time
+/// decision per process, and the tracked-download runtime only marks a source
+/// the client finished before the record completed and that is waiting on
+/// import (a fresh download reusing an old item id is left alone). Busy or
+/// not-yet-tracked sources are retried on a later tick without logging.
+async fn recover_completed_manual_imports(
+    app: &AppUseCase,
+    worker: &PollingWorker,
+    reconciled_import_ids: &mut HashSet<String>,
+) {
+    use crate::tracked_downloads::ManualImportRecoveryOutcome;
+
+    let updated_after = Utc::now() - chrono::Duration::hours(MANUAL_IMPORT_RECOVERY_WINDOW_HOURS);
     let records = match app
         .services
         .workflow
         .imports
-        .list_completed_manual_imports(MANUAL_IMPORT_RECOVERY_BATCH_SIZE)
+        .list_completed_manual_imports(updated_after, MANUAL_IMPORT_RECOVERY_BATCH_SIZE)
         .await
     {
         Ok(records) => records,
@@ -2075,15 +2247,21 @@ async fn recover_completed_manual_imports(app: &AppUseCase, worker: &PollingWork
     };
 
     for record in records {
+        if reconciled_import_ids.contains(&record.id) {
+            continue;
+        }
         let Some(recovery) = completed_manual_import_recovery(&record) else {
+            // Partial, malformed, or identity-less: it will never recover.
+            reconciled_import_ids.insert(record.id);
             continue;
         };
         let source_identity = recovery.source_identity;
         match handle
-            .mark_imported_if_nonterminal(source_identity.clone())
+            .mark_imported_if_awaiting_import(source_identity.clone(), recovery.record_completed_at)
             .await
         {
-            Ok(true) => {
+            Ok(ManualImportRecoveryOutcome::Marked) => {
+                reconciled_import_ids.insert(record.id);
                 if let Err(error) = app
                     .services
                     .workflow
@@ -2094,7 +2272,10 @@ async fn recover_completed_manual_imports(app: &AppUseCase, worker: &PollingWork
                     worker.warn_error("cleanup_recovered_manual_import_selection", &error);
                 }
             }
-            Ok(false) => {}
+            Ok(ManualImportRecoveryOutcome::Unchanged) => {
+                reconciled_import_ids.insert(record.id);
+            }
+            Ok(ManualImportRecoveryOutcome::Untracked | ManualImportRecoveryOutcome::Busy) => {}
             Err(error) => worker.warn_error("recover_completed_manual_import", &error),
         }
     }
@@ -2102,6 +2283,23 @@ async fn recover_completed_manual_imports(app: &AppUseCase, worker: &PollingWork
 
 struct CompletedManualImportRecovery {
     source_identity: DownloadSourceIdentity,
+    /// When the record reached `Completed`: `finished_at`, falling back to
+    /// `updated_at`. Only a tracked download the client finished before this
+    /// may be terminalized on the strength of the record.
+    record_completed_at: DateTime<Utc>,
+}
+
+fn import_record_completed_at(record: &ImportRecord) -> Option<DateTime<Utc>> {
+    record
+        .finished_at
+        .as_deref()
+        .into_iter()
+        .chain(std::iter::once(record.updated_at.as_str()))
+        .find_map(|value| {
+            DateTime::parse_from_rfc3339(value.trim())
+                .ok()
+                .map(|value| value.with_timezone(&Utc))
+        })
 }
 
 fn completed_manual_import_recovery(
@@ -2112,10 +2310,17 @@ fn completed_manual_import_recovery(
     }
     let result =
         serde_json::from_str::<ManualImportExecutionResult>(record.result_json.as_deref()?).ok()?;
+    // Skipped mappings (movie samples/extras beside the primary) were never
+    // attempted; only attempted mappings must have succeeded.
+    let attempted = result
+        .file_results
+        .iter()
+        .filter(|file| !file.skipped)
+        .collect::<Vec<_>>();
     if result.import_id != record.id
         || result.status != ImportStatus::Completed
-        || result.file_results.is_empty()
-        || result.file_results.iter().any(|file| !file.success)
+        || attempted.is_empty()
+        || attempted.iter().any(|file| !file.success)
         || !result
             .client_type
             .eq_ignore_ascii_case(&record.source_system)
@@ -2130,12 +2335,16 @@ fn completed_manual_import_recovery(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
+    // Without a usable completion time the record cannot prove it predates the
+    // tracked download's completion, so it cannot safely recover anything.
+    let record_completed_at = import_record_completed_at(record)?;
     Some(CompletedManualImportRecovery {
         source_identity: DownloadSourceIdentity::new(
             Some(client_id),
             &record.source_system,
             &record.source_ref,
         ),
+        record_completed_at,
     })
 }
 
@@ -2293,9 +2502,6 @@ async fn execute_queued_manual_import_with_outcome(
             ));
         }
     };
-    let expected_mapping_count =
-        (!payload.files.is_empty()).then_some(payload.files.len());
-
     if payload.files.is_empty() {
         return Ok(QueuedManualImportOutcome {
             status: ImportStatus::Failed,
@@ -2310,7 +2516,7 @@ async fn execute_queued_manual_import_with_outcome(
             files_imported_this_pass: 0,
             completed: Some(completed),
             title_id: Some(title_id.to_string()),
-            expected_mapping_count,
+            expected_mapping_count: None,
             prior_import_proven: false,
         });
     }
@@ -2327,6 +2533,9 @@ async fn execute_queued_manual_import_with_outcome(
     )
     .await?;
     let files_imported_this_pass = results.iter().filter(|result| result.success).count();
+    // Verification compares imported files against what the import attempted;
+    // skipped mappings (movie samples/extras) were never expected to land.
+    let expected_mapping_count = Some(results.iter().filter(|result| !result.skipped).count());
     let (status, error_code, error_message) = manual_import_terminal_status_and_error(&results);
 
     if status == ImportStatus::Completed
@@ -2375,6 +2584,84 @@ pub async fn execute_queued_manual_import(
 }
 
 #[cfg(test)]
+mod manual_preview_suggestion_tests {
+    use super::*;
+
+    fn file_episode(stem: &str) -> Option<crate::ParsedEpisodeMetadata> {
+        parse_release_metadata(stem).episode
+    }
+
+    fn suggestion(
+        parsed_suggestion: Option<&str>,
+        grabbed: &HashSet<String>,
+        is_largest_video: bool,
+        file_stem: &str,
+    ) -> Option<String> {
+        let episode = file_episode(file_stem);
+        manual_episode_suggestion_for_grabbed_scope(
+            parsed_suggestion.map(str::to_string),
+            grabbed,
+            manual_grabbed_episode_fallback_applies(is_largest_video, episode.as_ref()),
+        )
+    }
+
+    #[test]
+    fn largest_file_that_parses_to_a_different_episode_is_left_unselected() {
+        let grabbed = HashSet::from(["episode-3".to_string()]);
+        assert!(file_episode("Show.S01E04.720p.WEB-DL").is_some());
+
+        assert_eq!(
+            suggestion(Some("episode-4"), &grabbed, true, "Show.S01E04.720p.WEB-DL"),
+            None,
+            "a positive parse outside the grabbed scope must not be overridden"
+        );
+    }
+
+    #[test]
+    fn largest_file_without_an_episode_parse_starts_from_the_single_grabbed_episode() {
+        let grabbed = HashSet::from(["episode-3".to_string()]);
+        assert!(file_episode("4f8e2c7a91b6d3e0").is_none());
+
+        assert_eq!(
+            suggestion(None, &grabbed, true, "4f8e2c7a91b6d3e0").as_deref(),
+            Some("episode-3")
+        );
+        assert_eq!(
+            suggestion(None, &grabbed, false, "4f8e2c7a91b6d3e0"),
+            None,
+            "only the largest video inherits the grabbed episode"
+        );
+    }
+
+    #[test]
+    fn largest_file_with_an_unresolved_episode_parse_is_left_to_the_user() {
+        // Parses to S01E99, which the catalog does not know (no parsed
+        // suggestion), but the file still names an episode: do not guess.
+        let grabbed = HashSet::from(["episode-3".to_string()]);
+        assert!(file_episode("Show.S01E99.720p.WEB-DL").is_some());
+
+        assert_eq!(
+            suggestion(None, &grabbed, true, "Show.S01E99.720p.WEB-DL"),
+            None
+        );
+    }
+
+    #[test]
+    fn parsed_suggestion_inside_the_grabbed_scope_always_stands() {
+        let grabbed = HashSet::from(["episode-3".to_string(), "episode-4".to_string()]);
+
+        assert_eq!(
+            suggestion(Some("episode-4"), &grabbed, false, "Show.S01E04.720p.WEB-DL").as_deref(),
+            Some("episode-4")
+        );
+        assert_eq!(
+            suggestion(Some("episode-8"), &grabbed, true, "Show.S01E08.720p.WEB-DL"),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod manual_import_recovery_tests {
     use super::*;
 
@@ -2393,6 +2680,7 @@ mod manual_import_recovery_tests {
                 episode_id: Some("episode-1".to_string()),
                 series_movie_link_id: None,
                 success: file_success,
+                skipped: false,
                 dest_path: file_success.then(|| "/library/episode.mkv".to_string()),
                 error_code: None,
                 error_message: None,
@@ -2463,6 +2751,253 @@ mod manual_import_recovery_tests {
     fn completed_manual_import_recovery_only_requires_the_queued_mappings() {
         let record = completed_manual_import_record("nzbget", true);
         assert!(completed_manual_import_recovery(&record).is_some());
+    }
+
+    #[test]
+    fn completed_manual_import_recovery_dates_the_record_by_finished_at_then_updated_at() {
+        let mut record = completed_manual_import_record("nzbget", true);
+        record.updated_at = "2026-08-17T10:05:00+00:00".to_string();
+        record.finished_at = Some("2026-08-17T10:00:00Z".to_string());
+        assert_eq!(
+            completed_manual_import_recovery(&record)
+                .expect("recoverable")
+                .record_completed_at,
+            "2026-08-17T10:00:00Z"
+                .parse::<DateTime<Utc>>()
+                .expect("finished_at")
+        );
+
+        record.finished_at = None;
+        assert_eq!(
+            completed_manual_import_recovery(&record)
+                .expect("recoverable")
+                .record_completed_at,
+            "2026-08-17T10:05:00Z"
+                .parse::<DateTime<Utc>>()
+                .expect("updated_at")
+        );
+
+        // A record that cannot be dated cannot prove it predates the tracked
+        // download's completion; it is not recoverable.
+        record.finished_at = Some("not a time".to_string());
+        record.updated_at = "also not a time".to_string();
+        assert!(completed_manual_import_recovery(&record).is_none());
+    }
+
+    fn skipped_movie_extra(path: &str) -> ManualImportFileResult {
+        ManualImportFileResult {
+            file_path: path.to_string(),
+            episode_id: None,
+            series_movie_link_id: None,
+            success: false,
+            skipped: true,
+            dest_path: None,
+            error_code: None,
+            error_message: Some("skipped: not the primary movie file".to_string()),
+        }
+    }
+
+    #[test]
+    fn completed_manual_import_recovery_ignores_skipped_movie_extras() {
+        let mut record = completed_manual_import_record("qbittorrent", true);
+        let mut result = serde_json::from_str::<ManualImportExecutionResult>(
+            record.result_json.as_deref().expect("result JSON"),
+        )
+        .expect("parse result JSON");
+        result.file_results.push(skipped_movie_extra("/downloads/sample.mkv"));
+        result.file_results.push(skipped_movie_extra("/downloads/featurette.mkv"));
+        record.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
+
+        assert!(
+            completed_manual_import_recovery(&record).is_some(),
+            "skipped extras beside a successful primary must not block recovery"
+        );
+
+        // Skipped mappings alone prove nothing was imported.
+        let mut only_skipped = completed_manual_import_record("qbittorrent", true);
+        let mut result = serde_json::from_str::<ManualImportExecutionResult>(
+            only_skipped.result_json.as_deref().expect("result JSON"),
+        )
+        .expect("parse result JSON");
+        result.file_results = vec![skipped_movie_extra("/downloads/sample.mkv")];
+        only_skipped.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
+        assert!(completed_manual_import_recovery(&only_skipped).is_none());
+    }
+
+    #[test]
+    fn manual_import_file_result_json_without_skipped_field_deserializes_as_attempted() {
+        let legacy = serde_json::json!({
+            "file_path": "/downloads/episode.mkv",
+            "success": true,
+            "dest_path": "/library/episode.mkv",
+            "error_code": null,
+            "error_message": null
+        });
+        let result: ManualImportFileResult =
+            serde_json::from_value(legacy).expect("legacy result JSON should deserialize");
+        assert!(!result.skipped);
+        assert!(result.success);
+    }
+
+    fn attempted(path: &str, success: bool, message: Option<&str>) -> ManualImportFileResult {
+        ManualImportFileResult {
+            file_path: path.to_string(),
+            episode_id: None,
+            series_movie_link_id: None,
+            success,
+            skipped: false,
+            dest_path: success.then(|| format!("/library/{path}")),
+            error_code: (!success).then_some(ImportErrorCode::PolicyMismatch),
+            error_message: message.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn manual_import_terminal_status_completes_when_every_attempted_mapping_succeeded() {
+        let (status, code, message) = manual_import_terminal_status_and_error(&[
+            attempted("movie.mkv", true, None),
+            skipped_movie_extra("sample.mkv"),
+            skipped_movie_extra("featurette.mkv"),
+        ]);
+        assert_eq!(status, ImportStatus::Completed);
+        assert_eq!(code, None);
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn manual_import_terminal_status_fails_on_any_attempted_failure_and_on_nothing_imported() {
+        let (status, code, message) = manual_import_terminal_status_and_error(&[
+            attempted("movie.mkv", true, None),
+            attempted("other.mkv", false, Some("no space left on device")),
+            skipped_movie_extra("sample.mkv"),
+        ]);
+        assert_eq!(status, ImportStatus::Failed);
+        assert_eq!(code, Some(ImportErrorCode::PolicyMismatch));
+        assert_eq!(message.as_deref(), Some("no space left on device"));
+
+        let (status, code, message) =
+            manual_import_terminal_status_and_error(&[skipped_movie_extra("sample.mkv")]);
+        assert_eq!(status, ImportStatus::Failed);
+        assert_eq!(code, Some(ImportErrorCode::Unknown));
+        assert_eq!(
+            message.as_deref(),
+            Some("manual import did not import any file")
+        );
+
+        let (status, ..) = manual_import_terminal_status_and_error(&[]);
+        assert_eq!(status, ImportStatus::Failed);
+    }
+}
+
+#[cfg(test)]
+mod manual_movie_primary_selection_tests {
+    use super::*;
+
+    fn write_video(dir: &Path, name: &str, len: u64) -> ManualImportFileMapping {
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).expect("create video");
+        file.set_len(len).expect("size video");
+        ManualImportFileMapping {
+            file_path: path_to_stored_string(&path),
+            episode_id: None,
+            series_movie_link_id: None,
+        }
+    }
+
+    const PAST_SAMPLE_THRESHOLD: u64 = 64 * 1024 * 1024;
+
+    #[test]
+    fn movie_primary_is_the_largest_non_sample_mapping() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+        // Deliberately not the largest: a movie sample can be big, and a
+        // trailer bigger than the film is a data error, not the primary.
+        let sample = write_video(&root, "Movie.2024.1080p-sample.mkv", PAST_SAMPLE_THRESHOLD + 2);
+        let movie = write_video(&root, "Movie.2024.1080p.mkv", PAST_SAMPLE_THRESHOLD + 1);
+        let featurette = write_video(&root, "Making.Of.mkv", 1024);
+        let files = vec![sample, movie, featurette];
+
+        assert_eq!(
+            select_manual_movie_primary_index(&files, &MediaFacet::Movie, &root),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn movie_primary_prefers_earliest_mapping_on_size_ties_and_ignores_missing_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+        let missing = ManualImportFileMapping {
+            file_path: path_to_stored_string(&root.join("gone.mkv")),
+            episode_id: None,
+            series_movie_link_id: None,
+        };
+        let first = write_video(&root, "Movie.2024.1080p.mkv", PAST_SAMPLE_THRESHOLD);
+        let second = write_video(&root, "Movie.2024.1080p.PROPER.mkv", PAST_SAMPLE_THRESHOLD);
+        let files = vec![missing, first, second];
+
+        assert_eq!(
+            select_manual_movie_primary_index(&files, &MediaFacet::Movie, &root),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn movie_primary_is_none_when_every_mapping_is_named_as_a_sample() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+        let named_sample = write_video(&root, "Movie.2024.sample.mkv", PAST_SAMPLE_THRESHOLD);
+        let shouting_sample = write_video(&root, "Movie.2024.SAMPLE.Trailer.mkv", 1024);
+        let files = vec![named_sample, shouting_sample];
+
+        assert_eq!(
+            select_manual_movie_primary_index(&files, &MediaFacet::Movie, &root),
+            None
+        );
+    }
+
+    #[test]
+    fn movie_primary_accepts_a_small_normally_named_movie() {
+        // The automatic movie path never size-filters; a short film, old
+        // cartoon, or low-bitrate SD file well under the 50 MB heuristic must
+        // stay importable by hand.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+        assert!(1024 * 1024 < SAMPLE_SIZE_THRESHOLD);
+        let small_movie = write_video(&root, "Short.Film.1998.480p.DVDRip.mkv", 1024 * 1024);
+        assert!(is_sample_file(Path::new(&small_movie.file_path)));
+        assert!(!is_sample_named_file(Path::new(&small_movie.file_path)));
+
+        assert_eq!(
+            select_manual_movie_primary_index(
+                std::slice::from_ref(&small_movie),
+                &MediaFacet::Movie,
+                &root
+            ),
+            Some(0)
+        );
+
+        // A sample-named file beside a bigger main file is still not the primary.
+        let sample = write_video(&root, "Short.Film.1998.480p.DVDRip-sample.mkv", 2048);
+        let files = vec![sample, small_movie];
+        assert_eq!(
+            select_manual_movie_primary_index(&files, &MediaFacet::Movie, &root),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn movie_primary_only_considers_mappings_that_address_the_movie() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+        let mut episode_mapping = write_video(&root, "Movie.2024.1080p.mkv", PAST_SAMPLE_THRESHOLD);
+        episode_mapping.episode_id = Some("episode-1".to_string());
+        let files = vec![episode_mapping];
+
+        assert_eq!(
+            select_manual_movie_primary_index(&files, &MediaFacet::Movie, &root),
+            None
+        );
     }
 }
 

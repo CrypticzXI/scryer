@@ -1006,6 +1006,77 @@ pub(crate) async fn assign_title_to_tracked_download(
 
 // ── Command Channel ──────────────────────────────────────────────────────────
 
+/// Result of a manual-import recovery attempt against a tracked download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualImportRecoveryOutcome {
+    /// The tracked download was transitioned to `Imported`.
+    Marked,
+    /// The source is tracked but must be left alone: still downloading,
+    /// already terminal (including already `Imported`), or not yet reported
+    /// complete by the client. This is a final decision for the record; the
+    /// caller must not treat it as success and need not retry.
+    Unchanged,
+    /// The source is not in the tracked-download cache (not observed since
+    /// boot, or evicted). No decision was made; retry on a later tick.
+    Untracked,
+    /// The tracked download is mid background work; retry on a later tick.
+    Busy,
+}
+
+/// What a completed manual-import record is allowed to do to the tracked
+/// download that shares its (client, item id) identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualImportRecoveryVerdict {
+    /// Client-complete and waiting on import: the record may terminalize it.
+    MarkImported,
+    /// Leave the tracked download alone.
+    Leave,
+}
+
+/// Decide whether a completed manual-import record (completed at
+/// `record_completed_at`) may mark `tracked` as `Imported`.
+///
+/// The record is keyed only by (client id, client type, item id), and item ids
+/// are reused: qBittorrent ids are info-hashes (a re-grab or cross-seed of the
+/// same release shares one), NZBGet ids restart after a queue-database reset.
+/// A record from a previous life of that identity must therefore never touch a
+/// download that is still `Downloading` or awaiting failure handling — that
+/// download has not been imported and would silently never be. Only a download
+/// the client has finished (`completed_source` retained) and that is waiting
+/// on import (`ImportPending`, `Importing`, `ImportBlocked`) is eligible; a
+/// terminal download (including one already `Imported`) is left as is.
+///
+/// The record can also only vouch for the download it was produced from: one
+/// the client finished *before* the record completed. A same-id re-grab that
+/// finished after the record (delete + re-grab inside the recovery window,
+/// now sitting in `ImportBlocked`) is a different download and is left alone.
+/// When the client reported no completion time the check cannot run and the
+/// state rules alone decide.
+pub fn manual_import_recovery_verdict(
+    tracked: &TrackedDownload,
+    record_completed_at: DateTime<Utc>,
+) -> ManualImportRecoveryVerdict {
+    let awaiting_import = matches!(
+        tracked.state,
+        TrackedDownloadState::ImportPending
+            | TrackedDownloadState::Importing
+            | TrackedDownloadState::ImportBlocked
+    );
+    let Some(completed_source) = tracked.completed_source.as_ref() else {
+        return ManualImportRecoveryVerdict::Leave;
+    };
+    if !awaiting_import {
+        return ManualImportRecoveryVerdict::Leave;
+    }
+    if completed_source
+        .completed_at
+        .is_some_and(|client_completed_at| client_completed_at > record_completed_at)
+    {
+        return ManualImportRecoveryVerdict::Leave;
+    }
+    ManualImportRecoveryVerdict::MarkImported
+}
+
 /// Commands sent from GraphQL mutations to the poller's TrackedDownloadService.
 pub enum TrackedDownloadCommand {
     ReconcileManualImport {
@@ -1018,9 +1089,15 @@ pub enum TrackedDownloadCommand {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
     },
-    MarkImportedIfNonterminal {
+    /// Recovery for a manual-import record that reached `Completed` (at
+    /// `record_completed_at`) without terminalizing its tracked download
+    /// (crash, dropped reply, restart). Only a download the client finished
+    /// before that time and that is waiting on import may be marked; see
+    /// [`manual_import_recovery_verdict`].
+    MarkImportedIfAwaitingImport {
         source_identity: DownloadSourceIdentity,
-        reply: oneshot::Sender<AppResult<bool>>,
+        record_completed_at: DateTime<Utc>,
+        reply: oneshot::Sender<AppResult<ManualImportRecoveryOutcome>>,
     },
     Ignore {
         id: String,
@@ -1193,14 +1270,16 @@ impl TrackedDownloadHandle {
         })?
     }
 
-    pub async fn mark_imported_if_nonterminal(
+    pub async fn mark_imported_if_awaiting_import(
         &self,
         source_identity: DownloadSourceIdentity,
-    ) -> AppResult<bool> {
+        record_completed_at: DateTime<Utc>,
+    ) -> AppResult<ManualImportRecoveryOutcome> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(TrackedDownloadCommand::MarkImportedIfNonterminal {
+            .send(TrackedDownloadCommand::MarkImportedIfAwaitingImport {
                 source_identity,
+                record_completed_at,
                 reply: reply_tx,
             })
             .await
@@ -2963,7 +3042,7 @@ mod tests {
             download_client_item_id: item_id.to_string(),
             download_id: None,
             name: name.to_string(),
-            nzb_name: None,
+            release_name: None,
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
             size_bytes: None,
@@ -4434,6 +4513,162 @@ mod tests {
                 .1
                 .as_deref()
                 .is_some_and(|json| json.contains("\"import_id\":\"import-match\""))
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_marks_only_client_complete_downloads_awaiting_import() {
+        for state in [
+            TrackedDownloadState::ImportPending,
+            TrackedDownloadState::Importing,
+            TrackedDownloadState::ImportBlocked,
+        ] {
+            let mut tracked = build_tracked_download("awaiting-import");
+            tracked.state = state;
+            tracked.completed_source = Some(build_completed_download(
+                "nzbget",
+                "awaiting-import",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::MarkImported,
+                "{state:?} with a completed source"
+            );
+
+            // Without the client's completion the download has not finished.
+            tracked.completed_source = None;
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?} without a completed source"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_fresh_downloads_that_reuse_an_item_id() {
+        // A re-grab or cross-seed of the same release shares the old item id
+        // (qBittorrent info-hash; NZBGet ids restart after a queue reset). A
+        // completed manual-import record from the previous life of that id
+        // must not terminalize the new download.
+        for state in [
+            TrackedDownloadState::Downloading,
+            TrackedDownloadState::FailedPending,
+        ] {
+            let mut tracked = build_tracked_download("reused-item-id");
+            tracked.state = state;
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?}"
+            );
+            tracked.completed_source = Some(build_completed_download(
+                "qbittorrent",
+                "reused-item-id",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?} even with a retained completed source"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_terminal_downloads_including_already_imported() {
+        for state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::Failed,
+            TrackedDownloadState::Ignored,
+        ] {
+            let mut tracked = build_tracked_download("terminal");
+            tracked.state = state;
+            tracked.completed_source = Some(build_completed_download(
+                "nzbget",
+                "terminal",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?}"
+            );
+        }
+    }
+
+    fn awaiting_import_with_client_completion(
+        completed_at: Option<chrono::DateTime<Utc>>,
+    ) -> TrackedDownload {
+        let mut tracked = build_tracked_download("same-info-hash");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        let mut completed = build_completed_download(
+            "qbittorrent",
+            "same-info-hash",
+            "Release",
+            "/downloads/release",
+            Some("movies"),
+        );
+        completed.completed_at = completed_at;
+        tracked.completed_source = Some(completed);
+        tracked
+    }
+
+    #[test]
+    fn manual_import_recovery_marks_a_download_the_client_finished_before_the_record() {
+        let record_completed_at = Utc::now();
+        let tracked =
+            awaiting_import_with_client_completion(Some(record_completed_at - Duration::hours(1)));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+
+        // Completion at the very same instant still predates the record.
+        let tracked = awaiting_import_with_client_completion(Some(record_completed_at));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_a_same_id_download_that_finished_after_the_record() {
+        // Import completed at 10:00; the user deleted and re-grabbed the same
+        // release (same info-hash); the re-grab completed at 11:30 and sits in
+        // ImportBlocked inside the recovery window. The old record must not
+        // mark it Imported.
+        let record_completed_at = Utc::now() - Duration::hours(2);
+        let tracked = awaiting_import_with_client_completion(Some(
+            record_completed_at + Duration::minutes(90),
+        ));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::Leave
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_without_a_client_completion_time_uses_the_state_rules_alone() {
+        let record_completed_at = Utc::now() - Duration::hours(2);
+        let tracked = awaiting_import_with_client_completion(None);
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+
+        let mut downloading = awaiting_import_with_client_completion(None);
+        downloading.state = TrackedDownloadState::Downloading;
+        assert_eq!(
+            manual_import_recovery_verdict(&downloading, record_completed_at),
+            ManualImportRecoveryVerdict::Leave
         );
     }
 }

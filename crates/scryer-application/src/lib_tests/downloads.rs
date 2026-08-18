@@ -3991,7 +3991,7 @@ async fn try_import_recent_completed_downloads_uses_recent_lookup_and_preserves_
     );
     completed.client_id = item.client_id.clone();
     completed.client_type = item.client_type.clone();
-    completed.nzb_name = Some("Recent.Completed.2026.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Recent.Completed.2026.1080p.WEB-DL".to_string());
     completed.parameters.clear();
     *download_client.recent_completed_downloads.lock().await = Some(vec![completed]);
 
@@ -4048,7 +4048,7 @@ async fn try_import_provided_completed_downloads_uses_provided_rows_and_preserve
     );
     completed.client_id = item.client_id.clone();
     completed.client_type = item.client_type.clone();
-    completed.nzb_name = Some("Targeted.Completed.2026.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Targeted.Completed.2026.1080p.WEB-DL".to_string());
     completed.parameters.clear();
     let processed = crate::import::import::try_import_provided_completed_downloads(
         &app,
@@ -5023,7 +5023,8 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
     let evidence = crate::import_workflow::ReleaseEvidence::ScryerSubmission {
         title_id: title.id.clone(),
         facet: "series".to_string(),
-        source_title: "Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string(),
+        source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
+        observed_release_name: None,
         purpose: DownloadSubmissionPurpose::Standard,
         scope: SubmissionScope::Episode {
             episode_id: grabbed_episode.id,
@@ -5110,7 +5111,7 @@ async fn try_import_completed_downloads_treats_ambiguous_download_id_as_observat
     );
     completed.client_id = client_id.to_string();
     completed.client_type = "weaver".to_string();
-    completed.nzb_name = Some("Fresh.Identity.2026.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Fresh.Identity.2026.1080p.WEB-DL".to_string());
     completed.parameters.clear();
     completed.parameters.push((
         "*scryer_download_id".to_string(),
@@ -5194,7 +5195,7 @@ async fn try_import_completed_downloads_defers_recent_then_observes_stale_missin
     );
     completed.client_id = client_id.to_string();
     completed.client_type = "weaver".to_string();
-    completed.nzb_name = Some("Missing.Durable.2026.1080p.WEB-DL".to_string());
+    completed.release_name = Some("Missing.Durable.2026.1080p.WEB-DL".to_string());
     completed.parameters.push((
         "*scryer_download_id".to_string(),
         "scryer-download:missing".to_string(),

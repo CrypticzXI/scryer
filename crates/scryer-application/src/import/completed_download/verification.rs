@@ -326,13 +326,9 @@ async fn expected_episode_units_with_release_evidence(
         }
     }
 
-    let release_title = td
-        .source_title
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(td.client_item.title_name.as_str());
+    let release_title = expected_episode_release_title(td, release_evidence);
     let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
-    let parsed = crate::parse_release_metadata_for_target(release_title, &parse_context);
+    let parsed = crate::parse_release_metadata_for_target(&release_title, &parse_context);
     let Some(ep_meta) = parsed.episode.as_ref() else {
         return ExpectedEpisodeResolution::NotApplicable;
     };
@@ -402,6 +398,33 @@ async fn expected_episode_units_with_release_evidence(
     }
 
     ExpectedEpisodeResolution::Resolved(expected_episode_ids)
+}
+
+/// The release name used to derive the expected episode units when the
+/// submission scope does not name them outright.
+///
+/// Preference order: the grab-history release name on the tracked download,
+/// then the durable release evidence (the indexer release title for a Scryer
+/// grab, or the client's original artifact name), and only last the download
+/// client's mutable display label — the same precedence import parsing uses,
+/// so verification never expects episodes a relabelled item merely appears to
+/// hold.
+fn expected_episode_release_title(
+    td: &TrackedDownload,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
+) -> String {
+    td.source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            release_evidence
+                .and_then(|evidence| evidence.release_title(None))
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| td.client_item.title_name.clone())
 }
 
 pub(super) async fn current_visible_video_file_count(
@@ -672,4 +695,115 @@ fn normalized_source_file_name(file: &Path) -> String {
         .and_then(|name| name.to_str())
         .map(|name| name.to_ascii_lowercase())
         .unwrap_or_else(|| file.to_string_lossy().to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod expected_episode_release_title_tests {
+    use super::*;
+    use scryer_domain::Id;
+
+    fn tracked_download(source_title: Option<&str>, display_label: &str) -> TrackedDownload {
+        TrackedDownload {
+            id: "client-1:dl-1".to_string(),
+            client_id: "client-1".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item: DownloadQueueItem {
+                id: Id::new().0,
+                title_id: Some("title-1".to_string()),
+                episode_id: None,
+                title_name: display_label.to_string(),
+                facet: Some("series".to_string()),
+                category: None,
+                client_id: "client-1".to_string(),
+                client_name: "qBittorrent".to_string(),
+                client_type: "qbittorrent".to_string(),
+                state: DownloadQueueState::Completed,
+                progress_percent: 100,
+                import_transfer_phase: None,
+                import_transfer_bytes: None,
+                import_transfer_total_bytes: None,
+                import_transfer_started_at: None,
+                import_transfer_updated_at: None,
+                size_bytes: None,
+                remaining_seconds: None,
+                queued_at: None,
+                last_updated_at: None,
+                attention_required: false,
+                attention_reason: None,
+                download_client_item_id: "dl-1".to_string(),
+                download_id: None,
+                import_status: None,
+                import_error_code: None,
+                import_error_message: None,
+                imported_at: None,
+                delete_status: None,
+                delete_error_message: None,
+                source_provider: None,
+                is_scryer_origin: false,
+                tracked_state: None,
+                tracked_status: None,
+                tracked_status_messages: vec![],
+                tracked_match_type: None,
+            },
+            completed_source: None,
+            state: TrackedDownloadState::ImportPending,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: vec![],
+            title_id: Some("title-1".to_string()),
+            facet: Some("series".to_string()),
+            source_title: source_title.map(str::to_string),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::TitleParse,
+            is_trackable: true,
+            import_attempted: false,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            snapshot_missing_since: None,
+        }
+    }
+
+    #[test]
+    fn expected_episode_release_title_prefers_release_evidence_over_display_label() {
+        let td = tracked_download(None, "Renamed by the user in the client");
+        let evidence = crate::import_workflow::ReleaseEvidence::DownloaderObservation {
+            release_name: Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+        };
+
+        assert_eq!(
+            expected_episode_release_title(&td, Some(&evidence)),
+            "Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb"
+        );
+    }
+
+    #[test]
+    fn expected_episode_release_title_keeps_grab_history_first_and_display_label_last() {
+        let td = tracked_download(
+            Some("Harbor.Pals.S01E02.1080p.WEB-DL.H264-GRP"),
+            "Renamed by the user in the client",
+        );
+        let evidence = crate::import_workflow::ReleaseEvidence::DownloaderObservation {
+            release_name: Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+        };
+        assert_eq!(
+            expected_episode_release_title(&td, Some(&evidence)),
+            "Harbor.Pals.S01E02.1080p.WEB-DL.H264-GRP"
+        );
+
+        let no_evidence = tracked_download(Some("  "), "Renamed by the user in the client");
+        let empty_evidence =
+            crate::import_workflow::ReleaseEvidence::DownloaderObservation { release_name: None };
+        assert_eq!(
+            expected_episode_release_title(&no_evidence, Some(&empty_evidence)),
+            "Renamed by the user in the client"
+        );
+        assert_eq!(
+            expected_episode_release_title(&no_evidence, None),
+            "Renamed by the user in the client"
+        );
+    }
 }
