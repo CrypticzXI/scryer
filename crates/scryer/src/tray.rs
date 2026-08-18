@@ -354,7 +354,7 @@ mod windows {
                     SCRYER_ICON_RESOURCE_ID as *const u16,
                 )
             };
-            if icon == 0 {
+            if icon.is_null() {
                 return Err(format!(
                     "failed to load Scryer tray icon: {}",
                     std::io::Error::last_os_error()
