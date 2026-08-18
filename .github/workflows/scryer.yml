@@ -1000,7 +1000,7 @@ jobs:
             artifact_name: scryer-windows-x86_64
             release_profile: release
             install_nasm: true
-            use_clang_cl: false
+            use_clang_cl: true
             use_lld_link: true
           - arch: arm64
             msi_arch: arm64
@@ -1147,11 +1147,27 @@ jobs:
           $env:SCRYER_SMG_REGISTRATION_SECRET = "${{ secrets.SMG_REGISTRATION_SECRET }}"
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -W linker-messages"
+          # Native C/C++ (aws-lc-sys via its cc builder, libsqlite3-sys, zstd-sys,
+          # our own cc::Build) only reaches sccache when CC/CXX name the wrapper
+          # explicitly: cc-rs applies the RUSTC_WRAPPER fallback to its default
+          # compiler, never to the vswhere-located cl.exe, so a plain MSVC lane
+          # compiles every native file uncached on every run. clang-cl is on PATH
+          # on the hosted Windows images (the LLVM install that also provides
+          # lld-link) and locates the MSVC SDK itself, so no developer shell is
+          # needed; the arm64 lane has run this exact wiring with C/C++ and
+          # assembler cache hits. cl.exe stays available as the escape hatch
+          # (use_clang_cl: false) but is deliberately left unwrapped: `sccache cl`
+          # would need INCLUDE/LIB/PATH from a vcvars shell that this job does
+          # not set up. NASM-driven asm (aws-lc x86_64) is outside sccache either
+          # way. The CMake launcher variables cover the aws-lc-sys cmake fallback
+          # (Ninja generator honours them; the VS generator ignores them).
           if ($env:USE_CLANG_CL -eq "true") {
             $compiler = "clang-cl"
             if ($env:SCRYER_SCCACHE_ENABLED -eq "true") {
               $env:CC = "sccache $compiler"
               $env:CXX = "sccache $compiler"
+              $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
+              $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
             } else {
               $env:CC = $compiler
               $env:CXX = $compiler
