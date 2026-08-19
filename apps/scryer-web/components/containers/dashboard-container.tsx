@@ -1,6 +1,8 @@
 import * as React from "react";
-import { useClient } from "urql";
+import { useClient, useMutation } from "urql";
 
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { ManualImportDialog } from "@/components/dialogs/manual-import-dialog";
 import { DashboardView } from "@/components/views/dashboard-view";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -11,7 +13,11 @@ import {
 } from "@/lib/events/navigation-badges";
 import {
   approveMediaRequestMutation,
+  beginManualImportSelectionMutation,
+  deleteDownloadMutation,
   dismissMediaRequestMutation,
+  markTrackedDownloadFailedMutation,
+  queueManualImportMutation,
 } from "@/lib/graphql/mutations";
 import {
   dashboardOverviewQuery,
@@ -30,6 +36,11 @@ import type {
   DownloadQueueItem,
 } from "@/lib/types";
 import { isBreakingVersionChange } from "@/lib/utils/dashboard";
+import { isHistoryQueueState } from "@/lib/utils/download-queue";
+import {
+  type DirectMovieManualImportCandidate,
+  directMovieManualImportMappings,
+} from "@/lib/utils/manual-import-actions";
 
 /** Trailing window the two 24h tiles compare against the window before it. */
 const ACTIVITY_WINDOW_HOURS = 24;
@@ -67,6 +78,22 @@ export function DashboardContainer() {
   const [queueTotal, setQueueTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
   const [actionRequestId, setActionRequestId] = React.useState<string | null>(null);
+  const [manualImportItem, setManualImportItem] =
+    React.useState<DownloadQueueItem | null>(null);
+  const [deleteConfirmItem, setDeleteConfirmItem] =
+    React.useState<DownloadQueueItem | null>(null);
+  const [importActionItemId, setImportActionItemId] = React.useState<string | null>(
+    null,
+  );
+  const [deleteInProgress, setDeleteInProgress] = React.useState(false);
+  const [, executeBeginManualImportSelection] = useMutation(
+    beginManualImportSelectionMutation,
+  );
+  const [, executeQueueManualImport] = useMutation(queueManualImportMutation);
+  const [, executeMarkTrackedDownloadFailed] = useMutation(
+    markTrackedDownloadFailedMutation,
+  );
+  const [, executeDeleteDownload] = useMutation(deleteDownloadMutation);
 
   const reportError = React.useCallback(
     (error: unknown) => {
@@ -202,6 +229,128 @@ export function DashboardContainer() {
     setQueueItems((data?.downloadQueuePage?.items ?? []) as DownloadQueueItem[]);
     setQueueTotal(data?.downloadQueuePage?.totalCount ?? 0);
   }, [client]);
+
+  // One import-affecting action finished: the nav badge shrinks and every panel
+  // the action touched re-reads its source.
+  const refreshAfterImportAction = React.useCallback(() => {
+    dispatchNavigationBadgesRefresh({ delta: -1 });
+    void refreshOverview();
+    void refreshImportActivity();
+    void refreshQueue();
+  }, [refreshImportActivity, refreshOverview, refreshQueue]);
+
+  // The activity page's action subset: movies import directly, series and anime
+  // open the mapper dialog. Everything richer lives on the import page.
+  const importItem = React.useCallback(
+    async (item: DownloadQueueItem) => {
+      if (!item.titleId) {
+        setGlobalStatus(t("queue.assignTitleBeforeImport"));
+        return;
+      }
+      if (item.facet === "SERIES" || item.facet === "ANIME") {
+        setManualImportItem(item);
+        return;
+      }
+      setImportActionItemId(item.id);
+      try {
+        const selection = await executeBeginManualImportSelection({
+          input: {
+            clientId: item.clientId,
+            clientType: item.clientType,
+            downloadClientItemId: item.downloadClientItemId,
+            titleId: item.titleId,
+          },
+        });
+        if (selection.error) {
+          setGlobalStatus(selection.error.message ?? t("queue.manualImportFailed"));
+          return;
+        }
+        const preview = selection.data?.beginManualImportSelection;
+        const candidates: DirectMovieManualImportCandidate[] = preview?.files ?? [];
+        const files = directMovieManualImportMappings(candidates);
+        if (!preview?.selectionId || files.length === 0) {
+          setGlobalStatus(t("queue.manualImportFailed"));
+          return;
+        }
+        const result = await executeQueueManualImport({
+          input: { selectionId: preview.selectionId, files },
+        });
+        if (result.error) {
+          setGlobalStatus(result.error.message ?? t("queue.manualImportFailed"));
+          return;
+        }
+        setGlobalStatus(t("queue.manualImportQueued"));
+        refreshAfterImportAction();
+      } finally {
+        setImportActionItemId(null);
+      }
+    },
+    [
+      executeBeginManualImportSelection,
+      executeQueueManualImport,
+      refreshAfterImportAction,
+      setGlobalStatus,
+      t,
+    ],
+  );
+
+  const markImportFailed = React.useCallback(
+    async (item: DownloadQueueItem) => {
+      setImportActionItemId(item.id);
+      try {
+        const result = await executeMarkTrackedDownloadFailed({
+          input: {
+            clientId: item.clientId,
+            clientType: item.clientType,
+            downloadClientItemId: item.downloadClientItemId,
+            skipReacquire: false,
+          },
+        });
+        if (result.error) {
+          setGlobalStatus(result.error.message ?? t("queue.markFailedFailed"));
+          return;
+        }
+        setGlobalStatus(t("queue.markFailedSearchSuccess"));
+        refreshAfterImportAction();
+      } finally {
+        setImportActionItemId(null);
+      }
+    },
+    [executeMarkTrackedDownloadFailed, refreshAfterImportAction, setGlobalStatus, t],
+  );
+
+  const removeFromClient = React.useCallback(async () => {
+    const item = deleteConfirmItem;
+    if (!item) {
+      return;
+    }
+    setDeleteInProgress(true);
+    try {
+      const result = await executeDeleteDownload({
+        input: {
+          clientId: item.clientId,
+          clientType: item.clientType,
+          downloadClientItemId: item.downloadClientItemId,
+          isHistory: isHistoryQueueState(item.state),
+        },
+      });
+      if (result.error) {
+        setGlobalStatus(result.error.message ?? t("queue.deleteFailed"));
+        return;
+      }
+      setGlobalStatus(t("queue.deleteQueued"));
+      setDeleteConfirmItem(null);
+      refreshAfterImportAction();
+    } finally {
+      setDeleteInProgress(false);
+    }
+  }, [
+    deleteConfirmItem,
+    executeDeleteDownload,
+    refreshAfterImportAction,
+    setGlobalStatus,
+    t,
+  ]);
 
   const refreshAll = React.useCallback(async () => {
     try {
@@ -349,23 +498,58 @@ export function DashboardContainer() {
   }, [mutatingPluginIds.length, refreshPluginsRegistry]);
 
   return (
-    <DashboardView
-      loading={loading}
-      overview={overview}
-      requests={requests}
-      importActivity={importActivity}
-      importActivityTotal={importActivityTotal}
-      recentImports={recentImports}
-      queueItems={queueItems}
-      queueTotal={queueTotal}
-      pluginUpdates={pluginUpdates}
-      updatingPluginIds={mutatingPluginIds}
-      actionRequestId={actionRequestId}
-      onApproveRequest={(request) => void approveRequest(request)}
-      onDismissRequest={(request) => void dismissRequest(request)}
-      onUpdatePlugin={updatePlugin}
-      onUpdateAllPlugins={updateAllPlugins}
-    />
+    <>
+      <DashboardView
+        loading={loading}
+        overview={overview}
+        requests={requests}
+        importActivity={importActivity}
+        importActivityTotal={importActivityTotal}
+        recentImports={recentImports}
+        queueItems={queueItems}
+        queueTotal={queueTotal}
+        pluginUpdates={pluginUpdates}
+        updatingPluginIds={mutatingPluginIds}
+        actionRequestId={actionRequestId}
+        importActionItemId={importActionItemId}
+        onApproveRequest={(request) => void approveRequest(request)}
+        onDismissRequest={(request) => void dismissRequest(request)}
+        onImportItem={(item) => void importItem(item)}
+        onMarkImportFailed={(item) => void markImportFailed(item)}
+        onRemoveImportItem={setDeleteConfirmItem}
+        onUpdatePlugin={updatePlugin}
+        onUpdateAllPlugins={updateAllPlugins}
+      />
+      <ConfirmDialog
+        open={deleteConfirmItem !== null}
+        title={t("queue.deleteConfirmTitle")}
+        description={t("queue.deleteConfirmDescription")}
+        confirmLabel={t("queue.removeFromDownloader")}
+        cancelLabel={t("label.cancel")}
+        isBusy={deleteInProgress}
+        onConfirm={() => void removeFromClient()}
+        onCancel={() => setDeleteConfirmItem(null)}
+      />
+      {manualImportItem?.titleId ? (
+        <ManualImportDialog
+          open={manualImportItem !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              setManualImportItem(null);
+            }
+          }}
+          titleId={manualImportItem.titleId}
+          titleName={manualImportItem.titleName}
+          clientId={manualImportItem.clientId}
+          clientType={manualImportItem.clientType}
+          downloadClientItemId={manualImportItem.downloadClientItemId}
+          onImportComplete={() => {
+            setManualImportItem(null);
+            refreshAfterImportAction();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -134,10 +134,7 @@ impl AppUseCase {
             .await?;
 
         let mut seen_paths = std::collections::HashSet::new();
-        #[cfg(unix)]
         let mut results = Vec::new();
-        #[cfg(not(unix))]
-        let results = Vec::new();
 
         for library in libraries {
             for root in library.roots {
@@ -146,7 +143,6 @@ impl AppUseCase {
                     continue;
                 }
 
-                #[cfg(unix)]
                 if let Some(space) = filesystem_space(&path) {
                     let total = space.total_bytes;
                     let free = space.available_bytes;
@@ -160,14 +156,6 @@ impl AppUseCase {
                     });
                 } else {
                     tracing::warn!(path = path.as_str(), "failed to query disk space");
-                }
-                #[cfg(not(unix))]
-                {
-                    tracing::debug!(
-                        path = path.as_str(),
-                        "disk space reporting not available on this platform"
-                    );
-                    let _ = path;
                 }
             }
         }

@@ -137,7 +137,6 @@ const de: LocaleDictionary = {
   "dashboard.viewAll": "Alle",
   "dashboard.approveRequest": "{{name}} genehmigen",
   "dashboard.dismissRequest": "{{name}} ablehnen",
-  "dashboard.resolveImport": "Auflösen",
   "dashboard.upgradeBadge": "Upgrade",
   "dashboard.emptyRequests": "Keine Anfragen offen.",
   "dashboard.emptyImports": "Keine Importe erfordern Aufmerksamkeit.",

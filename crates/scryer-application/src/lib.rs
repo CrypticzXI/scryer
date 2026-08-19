@@ -368,7 +368,6 @@ pub(crate) use helpers::{
     to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
-#[cfg(unix)]
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
 pub use jobs::definitions::{

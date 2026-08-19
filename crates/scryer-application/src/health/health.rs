@@ -350,13 +350,6 @@ impl AppUseCase {
             }
         };
 
-        #[cfg(not(unix))]
-        {
-            let _ = root_folders;
-            Vec::new()
-        }
-
-        #[cfg(unix)]
         {
             let mut seen = HashSet::new();
             let mut results = Vec::new();

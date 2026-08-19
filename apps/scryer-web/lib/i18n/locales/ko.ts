@@ -137,7 +137,6 @@ const ko: LocaleDictionary = {
   "dashboard.viewAll": "전체",
   "dashboard.approveRequest": "{{name}} 승인",
   "dashboard.dismissRequest": "{{name}} 거부",
-  "dashboard.resolveImport": "해결",
   "dashboard.upgradeBadge": "업그레이드",
   "dashboard.emptyRequests": "대기 중인 요청이 없습니다.",
   "dashboard.emptyImports": "조치가 필요한 가져오기가 없습니다.",

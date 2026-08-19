@@ -8857,6 +8857,8 @@ pub struct TitleHistoryEventPayload {
     pub title_id: ID,
     /// Title name, or null when no name was available.
     pub title_name: Option<String>,
+    /// Poster URL of the title, or null when the title is gone or has no poster.
+    pub poster_url: Option<String>,
     /// Library owning the title, or null when the event cannot be attributed.
     pub library_id: Option<ID>,
     /// Media facet, or null when the event is not facet-specific.

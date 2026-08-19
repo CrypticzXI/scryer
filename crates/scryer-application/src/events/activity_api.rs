@@ -526,6 +526,7 @@ fn media_request_title_history_records(
             id: format!("{}:{}", event.event_id, title.id),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            poster_url: title.poster_url.clone(),
             library_id: Some(title.library_id.clone()),
             facet: Some(title.facet.clone()),
             episode_id: None,
@@ -652,7 +653,10 @@ async fn hydrate_title_history_record_contexts(
     let missing_title_ids = records
         .iter()
         .filter(|record| {
-            record.title_name.is_none() || record.facet.is_none() || record.library_id.is_none()
+            record.title_name.is_none()
+                || record.facet.is_none()
+                || record.library_id.is_none()
+                || record.poster_url.is_none()
         })
         .map(|record| record.title_id.clone())
         .collect::<HashSet<_>>();
@@ -674,6 +678,9 @@ async fn hydrate_title_history_record_contexts(
             }
             if record.library_id.is_none() {
                 record.library_id = Some(title.library_id.clone());
+            }
+            if record.poster_url.is_none() {
+                record.poster_url = title.poster_url.clone();
             }
         }
     }

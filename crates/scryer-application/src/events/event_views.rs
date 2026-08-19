@@ -740,7 +740,9 @@ pub(crate) fn title_history_record_from_domain_event(
         title_id,
         title_name,
         // Resolved from the titles lookup during projection hydration; the
-        // event payload itself does not carry the owning library.
+        // event payload itself does not carry the owning library, and the
+        // poster comes from the live title row rather than the event snapshot.
+        poster_url: None,
         library_id: None,
         facet,
         episode_id: None,

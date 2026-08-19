@@ -2024,6 +2024,10 @@ pub struct TitleHistoryRecord {
     pub title_id: String,
     #[serde(default)]
     pub title_name: Option<String>,
+    /// Poster of the title, resolved during projection hydration like
+    /// `library_id`. `None` when the title row is gone or has no poster.
+    #[serde(default)]
+    pub poster_url: Option<String>,
     /// Library owning the title, resolved during projection hydration. `None`
     /// when the title row is gone and the event cannot be attributed.
     #[serde(default)]

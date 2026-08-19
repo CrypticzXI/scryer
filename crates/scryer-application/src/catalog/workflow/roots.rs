@@ -1,3 +1,8 @@
+/// How long one root-folder stat may take before its usage reports as
+/// unavailable. Generous for a healthy mount; a dead network mount never
+/// answers at all.
+const STORAGE_ROOT_STAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LibraryRootFolder {
     pub library_id: String,
@@ -237,31 +242,58 @@ impl AppUseCase {
             .await?;
         let roots = library_root_folders_from_libraries(&libraries, None);
 
-        let mut usage_by_path: HashMap<String, Option<(i64, i64)>> = HashMap::new();
         let mut seen = HashSet::new();
-        let mut rows = Vec::new();
+        let mut unique_paths: HashMap<String, String> = HashMap::new();
+        let mut dedup_roots = Vec::new();
         for root in roots {
             if !seen.insert((root.library_id.clone(), root.normalized_path.clone())) {
                 continue;
             }
-            let usage = match usage_by_path.get(&root.normalized_path) {
-                Some(usage) => *usage,
-                None => {
-                    let usage = library_root_filesystem_usage(&root.path);
-                    usage_by_path.insert(root.normalized_path.clone(), usage);
-                    usage
-                }
-            };
-            rows.push(StorageRootUsage {
-                path: root.path,
-                library_id: root.library_id,
-                library_name: root.library_name,
-                facet: root.facet,
-                used_bytes: usage.map(|(used, _)| used),
-                total_bytes: usage.map(|(_, total)| total),
+            unique_paths
+                .entry(root.normalized_path.clone())
+                .or_insert_with(|| root.path.clone());
+            dedup_roots.push(root);
+        }
+
+        // Stat each unique filesystem path once, on blocking threads and each
+        // behind its own timeout: a dead network mount (an unresponsive NFS or
+        // SMB server) blocks the stat syscall indefinitely, and one such mount
+        // must not hang the dashboard or blank the healthy roots beside it.
+        let mut stats = tokio::task::JoinSet::new();
+        for (normalized, path) in unique_paths {
+            stats.spawn(async move {
+                let usage = tokio::time::timeout(
+                    STORAGE_ROOT_STAT_TIMEOUT,
+                    tokio::task::spawn_blocking(move || library_root_filesystem_usage(&path)),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+                (normalized, usage)
             });
         }
-        Ok(rows)
+        let mut usage_by_path: HashMap<String, Option<(i64, i64)>> = HashMap::new();
+        while let Some(joined) = stats.join_next().await {
+            if let Ok((normalized, usage)) = joined {
+                usage_by_path.insert(normalized, usage);
+            }
+        }
+
+        Ok(dedup_roots
+            .into_iter()
+            .map(|root| {
+                let usage = usage_by_path.get(&root.normalized_path).copied().flatten();
+                StorageRootUsage {
+                    path: root.path,
+                    library_id: root.library_id,
+                    library_name: root.library_name,
+                    facet: root.facet,
+                    used_bytes: usage.map(|(used, _)| used),
+                    total_bytes: usage.map(|(_, total)| total),
+                }
+            })
+            .collect())
     }
 }
 
@@ -269,7 +301,6 @@ impl AppUseCase {
 /// cannot be inspected. It is the *available* figure that excludes the blocks
 /// reserved for root, so the used figure reported here (total minus available)
 /// includes them.
-#[cfg(unix)]
 fn library_root_filesystem_usage(path: &str) -> Option<(i64, i64)> {
     let space = crate::filesystem_space(path)?;
     let used = space.total_bytes.saturating_sub(space.available_bytes);
@@ -277,11 +308,6 @@ fn library_root_filesystem_usage(path: &str) -> Option<(i64, i64)> {
         i64::try_from(used).ok()?,
         i64::try_from(space.total_bytes).ok()?,
     ))
-}
-
-#[cfg(not(unix))]
-fn library_root_filesystem_usage(_path: &str) -> Option<(i64, i64)> {
-    None
 }
 impl AppUseCase {
     /// Return the configured root folders for a concrete library.

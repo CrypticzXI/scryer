@@ -71,57 +71,8 @@ fn destination_directory(dest_path: &Path) -> &Path {
     }
 }
 
-#[cfg(unix)]
 fn available_disk_space(path: &Path) -> std::io::Result<u64> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|error| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("disk-space path contains an interior NUL: {error}"),
-        )
-    })?;
-    Ok(crate::filesystem_space_raw(&c_path)?.available_bytes)
-}
-
-#[cfg(windows)]
-fn windows_path_wide(path: &Path) -> Vec<u16> {
-    use std::iter;
-    use std::os::windows::ffi::OsStrExt;
-
-    path.as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect()
-}
-
-#[cfg(windows)]
-fn available_disk_space(path: &Path) -> std::io::Result<u64> {
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-
-    let wide_path = windows_path_wide(path);
-    let mut available = 0_u64;
-    let result = unsafe {
-        GetDiskFreeSpaceExW(
-            wide_path.as_ptr(),
-            &mut available,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(available)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn available_disk_space(_path: &Path) -> std::io::Result<u64> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "disk-space queries are unsupported on this platform",
-    ))
+    Ok(crate::filesystem_space_raw(path)?.available_bytes)
 }
 
 // ── Individual checks ────────────────────────────────────────────────────────
@@ -455,20 +406,6 @@ mod tests {
         assert_eq!(
             destination_directory(Path::new("movie.mkv")),
             Path::new(".")
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_disk_space_path_is_null_terminated_utf16() {
-        use std::os::windows::ffi::OsStrExt;
-
-        let path = Path::new(r"C:\media\日本語");
-        let wide = windows_path_wide(path);
-        assert_eq!(wide.last(), Some(&0));
-        assert_eq!(
-            &wide[..wide.len() - 1],
-            path.as_os_str().encode_wide().collect::<Vec<_>>()
         );
     }
 

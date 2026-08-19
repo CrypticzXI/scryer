@@ -137,7 +137,6 @@ const ja: LocaleDictionary = {
   "dashboard.viewAll": "すべて",
   "dashboard.approveRequest": "{{name}} を承認",
   "dashboard.dismissRequest": "{{name}} を却下",
-  "dashboard.resolveImport": "解決",
   "dashboard.upgradeBadge": "アップグレード",
   "dashboard.emptyRequests": "保留中のリクエストはありません。",
   "dashboard.emptyImports": "対応が必要なインポートはありません。",

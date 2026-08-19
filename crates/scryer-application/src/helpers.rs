@@ -243,9 +243,9 @@ pub(crate) fn to_hex(value: &[u8]) -> String {
 /// Total and available bytes of the filesystem backing a path.
 ///
 /// `available_bytes` is the space an unprivileged writer can use (the
-/// `f_bavail` figure), so `total - available` counts root-reserved blocks as
-/// used, matching what an operator expects a usage percentage to mean.
-#[cfg(unix)]
+/// `f_bavail` figure on unix, the caller-available figure on Windows), so
+/// `total - available` counts reserved blocks as used, matching what an
+/// operator expects a usage percentage to mean.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FilesystemSpace {
     pub total_bytes: u64,
@@ -262,12 +262,24 @@ fn statvfs_field_to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
+#[cfg(unix)]
+fn unix_c_path(path: &std::path::Path) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("disk-space path contains an interior NUL: {error}"),
+        )
+    })
+}
+
 /// `statfs`, not `statvfs`: Darwin's `statvfs` interface carries 32-bit block
 /// counts (`fsblkcnt_t` is `unsigned int`), so any volume larger than
 /// `2^32 * f_frsize` bytes wraps — a 23 TB SMB share reads back as ~1 TB.
 /// Darwin's `statfs` carries 64-bit counts sized in `f_bsize` units.
 #[cfg(target_os = "macos")]
-pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<FilesystemSpace> {
+pub(crate) fn filesystem_space_raw(path: &std::path::Path) -> std::io::Result<FilesystemSpace> {
+    let c_path = unix_c_path(path)?;
     unsafe {
         let mut buf: libc::statfs = std::mem::zeroed();
         if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
@@ -282,13 +294,19 @@ pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<F
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<FilesystemSpace> {
+pub(crate) fn filesystem_space_raw(path: &std::path::Path) -> std::io::Result<FilesystemSpace> {
+    let c_path = unix_c_path(path)?;
     unsafe {
         let mut buf: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut buf) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let frsize = statvfs_field_to_u64(buf.f_frsize);
+        // Some FUSE filesystems report only `f_bsize`; POSIX says counts are
+        // in `f_frsize` units, so prefer it but fall back when it is zero.
+        let mut frsize = statvfs_field_to_u64(buf.f_frsize);
+        if frsize == 0 {
+            frsize = statvfs_field_to_u64(buf.f_bsize);
+        }
         Ok(FilesystemSpace {
             total_bytes: statvfs_field_to_u64(buf.f_blocks).saturating_mul(frsize),
             available_bytes: statvfs_field_to_u64(buf.f_bavail).saturating_mul(frsize),
@@ -296,10 +314,50 @@ pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<F
     }
 }
 
-#[cfg(unix)]
+#[cfg(windows)]
+pub(crate) fn filesystem_space_raw(path: &std::path::Path) -> std::io::Result<FilesystemSpace> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    let mut available = 0_u64;
+    let mut total = 0_u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide_path.as_ptr(),
+            &mut available,
+            &mut total,
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(FilesystemSpace {
+        total_bytes: total,
+        available_bytes: available,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn filesystem_space_raw(_path: &std::path::Path) -> std::io::Result<FilesystemSpace> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "disk-space queries are unsupported on this platform",
+    ))
+}
+
+/// Filesystem usage for `path`, or `None` when it cannot be inspected or the
+/// filesystem reports a degenerate zero total (some FUSE and network mounts).
 pub(crate) fn filesystem_space(path: &str) -> Option<FilesystemSpace> {
-    let c_path = std::ffi::CString::new(path).ok()?;
-    filesystem_space_raw(&c_path).ok()
+    filesystem_space_raw(std::path::Path::new(path))
+        .ok()
+        .filter(|space| space.total_bytes > 0)
 }
 
 fn normalize_tag(raw: String) -> String {

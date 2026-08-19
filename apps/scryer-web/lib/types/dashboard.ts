@@ -104,6 +104,7 @@ export type DashboardImportedItem = {
   id: string;
   titleId: string;
   titleName: string | null;
+  posterUrl: string | null;
   facet: string | null;
   libraryId: string | null;
   /** `FILE_UPGRADED` rows carry the upgrade badge. */

@@ -3712,6 +3712,7 @@ export const dashboardRecentImportsQuery = `query DashboardRecentImports($limit:
       id
       titleId
       titleName
+      posterUrl
       facet
       libraryId
       eventType

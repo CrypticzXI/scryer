@@ -16258,6 +16258,10 @@ type TitleHistoryEventPayload {
 	"""
 	titleName: String
 	"""
+	Poster URL of the title, or null when the title is gone or has no poster.
+	"""
+	posterUrl: String
+	"""
 	Library owning the title, or null when the event cannot be attributed.
 	"""
 	libraryId: ID

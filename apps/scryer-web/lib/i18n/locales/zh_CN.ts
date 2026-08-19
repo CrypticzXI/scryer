@@ -135,7 +135,6 @@ const zh_CN: LocaleDictionary = {
   "dashboard.viewAll": "全部",
   "dashboard.approveRequest": "批准 {{name}}",
   "dashboard.dismissRequest": "忽略 {{name}}",
-  "dashboard.resolveImport": "处理",
   "dashboard.upgradeBadge": "升级",
   "dashboard.emptyRequests": "没有待处理的请求。",
   "dashboard.emptyImports": "没有需要处理的导入。",

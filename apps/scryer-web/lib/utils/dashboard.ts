@@ -341,6 +341,29 @@ export function aggregateClientActivity(
  * How many things are waiting on the operator right now: the number the header
  * line leads with. Zero means the header prints the all-clear instead.
  */
+export type ProviderSortEntry = {
+  needsAttention: boolean;
+  usage: number;
+  name: string;
+};
+
+/**
+ * Dashboard provider ordering: rows needing attention first, then the most
+ * used descending, then name so equally quiet providers keep a stable order.
+ */
+export function compareProviderRows(
+  left: ProviderSortEntry,
+  right: ProviderSortEntry,
+): number {
+  if (left.needsAttention !== right.needsAttention) {
+    return left.needsAttention ? -1 : 1;
+  }
+  if (left.usage !== right.usage) {
+    return right.usage - left.usage;
+  }
+  return left.name.localeCompare(right.name);
+}
+
 export function attentionTotal(counts: {
   requests: number;
   imports: number;

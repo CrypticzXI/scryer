@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   aggregateClientActivity,
   attentionTotal,
+  compareProviderRows,
   formatCompactAge,
   formatTerabytes,
   groupStorageRootsByLibrary,
@@ -168,5 +169,29 @@ test("attention total sums the four operator queues", () => {
   assert.equal(
     attentionTotal({ requests: 0, imports: 0, pluginUpdates: 0, indexerErrors: 0 }),
     0,
+  );
+});
+
+test("provider rows needing attention sort ahead of busier healthy rows", () => {
+  const rows = [
+    { needsAttention: false, usage: 500, name: "Busy" },
+    { needsAttention: true, usage: 0, name: "Broken" },
+    { needsAttention: false, usage: 20, name: "Quiet" },
+  ];
+  assert.deepEqual(
+    [...rows].sort(compareProviderRows).map((row) => row.name),
+    ["Broken", "Busy", "Quiet"],
+  );
+});
+
+test("equally healthy providers sort by usage then name", () => {
+  const rows = [
+    { needsAttention: false, usage: 10, name: "Beta" },
+    { needsAttention: false, usage: 10, name: "Alpha" },
+    { needsAttention: false, usage: 90, name: "Zulu" },
+  ];
+  assert.deepEqual(
+    [...rows].sort(compareProviderRows).map((row) => row.name),
+    ["Zulu", "Alpha", "Beta"],
   );
 });

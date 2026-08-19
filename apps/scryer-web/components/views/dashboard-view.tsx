@@ -1,7 +1,9 @@
 import * as React from "react";
 import {
+  ArrowDownToLine,
+  ActivitySquare,
   ArrowUp,
-  Clock,
+  CircleAlert,
   Database,
   Download,
   FileVideo,
@@ -9,8 +11,8 @@ import {
   HardDrive,
   Inbox,
   Puzzle,
+  Trash2,
   TriangleAlert,
-  WandSparkles,
   X,
   Check,
 } from "lucide-react";
@@ -65,6 +67,7 @@ import {
 import {
   aggregateClientActivity,
   attentionTotal,
+  compareProviderRows,
   formatCompactAge,
   formatTerabytes,
   groupStorageRootsByLibrary,
@@ -79,6 +82,8 @@ import { buildViewPath } from "@/lib/utils/routing";
 /** Rows visible before the top panels start scrolling. */
 const PREVIEW_PANE_CLASS = "max-h-[172px] overflow-y-auto";
 const QUEUE_PREVIEW_LIMIT = 5;
+/** Provider tables show about five rows before scrolling. */
+const TABLE_PANE_CLASS = "max-h-[218px] overflow-y-auto overflow-x-auto";
 
 export type DashboardViewProps = {
   loading: boolean;
@@ -92,8 +97,13 @@ export type DashboardViewProps = {
   pluginUpdates: DashboardPluginUpdate[];
   updatingPluginIds: string[];
   actionRequestId: string | null;
+  /** Import-activity row currently running an action, disabling its buttons. */
+  importActionItemId: string | null;
   onApproveRequest: (request: DashboardRequest) => void;
   onDismissRequest: (request: DashboardRequest) => void;
+  onImportItem: (item: DownloadQueueItem) => void;
+  onMarkImportFailed: (item: DownloadQueueItem) => void;
+  onRemoveImportItem: (item: DownloadQueueItem) => void;
   onUpdatePlugin: (pluginId: string) => void;
   onUpdateAllPlugins: () => void;
 };
@@ -110,8 +120,12 @@ export function DashboardView({
   pluginUpdates,
   updatingPluginIds,
   actionRequestId,
+  importActionItemId,
   onApproveRequest,
   onDismissRequest,
+  onImportItem,
+  onMarkImportFailed,
+  onRemoveImportItem,
   onUpdatePlugin,
   onUpdateAllPlugins,
 }: DashboardViewProps) {
@@ -154,6 +168,10 @@ export function DashboardView({
         <ManualImportsPanel
           items={importActivity}
           totalCount={importActivityTotal}
+          busyItemId={importActionItemId}
+          onImport={onImportItem}
+          onMarkFailed={onMarkImportFailed}
+          onRemove={onRemoveImportItem}
         />
         <RecentlyImportedPanel items={recentImports} />
       </div>
@@ -504,7 +522,7 @@ function RequestsPanel({
                 key={request.id}
                 className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-[7px] last:border-b-0"
               >
-                <RequestPoster request={request} />
+                <RowPoster posterUrl={request.posterUrl} facet={request.facet} />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-[12px] font-medium text-[var(--scry-ink2)]">
                     {request.title}
@@ -561,12 +579,18 @@ function RequestsPanel({
   );
 }
 
-function RequestPoster({ request }: { request: DashboardRequest }) {
+function RowPoster({
+  posterUrl,
+  facet,
+}: {
+  posterUrl: string | null;
+  facet: Facet | null;
+}) {
   const [failed, setFailed] = React.useState(false);
-  const posterUrl = selectPosterVariantUrl(request.posterUrl, "w70");
-  const Icon = facetById(request.facet)?.icon;
+  const variantUrl = selectPosterVariantUrl(posterUrl, "w70");
+  const Icon = facet ? facetById(facet)?.icon : null;
 
-  if (!posterUrl || failed) {
+  if (!variantUrl || failed) {
     return (
       <span className="flex h-[35px] w-6 shrink-0 items-center justify-center rounded-[3px] bg-[var(--scry-chip)]">
         {Icon ? (
@@ -578,7 +602,7 @@ function RequestPoster({ request }: { request: DashboardRequest }) {
 
   return (
     <TitlePoster
-      src={posterUrl}
+      src={variantUrl}
       alt=""
       className="h-[35px] w-6 shrink-0 rounded-[3px] object-cover"
       onError={() => setFailed(true)}
@@ -591,9 +615,17 @@ function RequestPoster({ request }: { request: DashboardRequest }) {
 function ManualImportsPanel({
   items,
   totalCount,
+  busyItemId,
+  onImport,
+  onMarkFailed,
+  onRemove,
 }: {
   items: DownloadQueueItem[];
   totalCount: number;
+  busyItemId: string | null;
+  onImport: (item: DownloadQueueItem) => void;
+  onMarkFailed: (item: DownloadQueueItem) => void;
+  onRemove: (item: DownloadQueueItem) => void;
 }) {
   const t = useTranslate();
 
@@ -611,7 +643,14 @@ function ManualImportsPanel({
       ) : (
         <ul>
           {items.map((item) => (
-            <ImportActivityRow key={item.id} item={item} />
+            <ImportActivityRow
+              key={item.id}
+              item={item}
+              busy={busyItemId === item.id}
+              onImport={onImport}
+              onMarkFailed={onMarkFailed}
+              onRemove={onRemove}
+            />
           ))}
         </ul>
       )}
@@ -619,7 +658,19 @@ function ManualImportsPanel({
   );
 }
 
-function ImportActivityRow({ item }: { item: DownloadQueueItem }) {
+function ImportActivityRow({
+  item,
+  busy,
+  onImport,
+  onMarkFailed,
+  onRemove,
+}: {
+  item: DownloadQueueItem;
+  busy: boolean;
+  onImport: (item: DownloadQueueItem) => void;
+  onMarkFailed: (item: DownloadQueueItem) => void;
+  onRemove: (item: DownloadQueueItem) => void;
+}) {
   const t = useTranslate();
   // The same derivation Activity → Imports uses, so the dashboard can never
   // disagree with that page about what an import is doing or why it stopped.
@@ -662,14 +713,40 @@ function ImportActivityRow({ item }: { item: DownloadQueueItem }) {
         </span>
       </span>
       <AgeLabel isoDate={item.queuedAt ?? item.lastUpdatedAt} />
-      <Link
-        to="/activity/import"
-        aria-label={t("dashboard.resolveImport")}
-        title={t("dashboard.resolveImport")}
-        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.2)]"
-      >
-        <WandSparkles className="h-3.5 w-3.5" aria-hidden="true" />
-      </Link>
+      <span className="flex shrink-0 items-center gap-1">
+        {presentation.canInteractiveManualImport ||
+        presentation.canDirectManualImport ? (
+          <IconButton
+            tone="accent"
+            className="h-6 w-6"
+            label={t("queue.manualImportTooltip")}
+            disabled={busy}
+            onClick={() => onImport(item)}
+          >
+            <ArrowDownToLine className="h-3.5 w-3.5" aria-hidden="true" />
+          </IconButton>
+        ) : null}
+        {presentation.canMarkFailed ? (
+          <IconButton
+            tone="neutral"
+            className="h-6 w-6"
+            label={t("queue.markFailedSearchAgain")}
+            disabled={busy}
+            onClick={() => onMarkFailed(item)}
+          >
+            <CircleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+          </IconButton>
+        ) : null}
+        <IconButton
+          tone="delete"
+          className="h-6 w-6"
+          label={t("queue.removeFromDownloader")}
+          disabled={busy}
+          onClick={() => onRemove(item)}
+        >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+        </IconButton>
+      </span>
     </li>
   );
 }
@@ -693,21 +770,12 @@ function RecentlyImportedPanel({ items }: { items: DashboardImportedItem[] }) {
         <ul>
           {items.map((item) => {
             const facet = normalizeFacet(item.facet);
-            const Icon = facet ? facetById(facet)?.icon : null;
             return (
               <li
                 key={item.id}
                 className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-[7px] last:border-b-0"
               >
-                <span className="flex h-[35px] w-6 shrink-0 items-center justify-center rounded-[3px] bg-[var(--scry-chip)]">
-                  {Icon ? (
-                    <Icon
-                      className="h-3 w-3"
-                      style={facet ? { color: facetPillStyle(facet).color } : undefined}
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                </span>
+                <RowPoster posterUrl={item.posterUrl} facet={facet} />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-[12px] font-medium text-[var(--scry-ink2)]">
                     {item.titleName ?? item.titleId}
@@ -752,6 +820,24 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
     return map;
   }, [overview?.indexerStats]);
   const health = React.useMemo(() => summarizeIndexerHealth(indexers), [indexers]);
+  // Attention first, then busiest: an erroring indexer outranks a heavily used
+  // healthy one, and unused healthy ones settle to the bottom.
+  const sortedIndexers = React.useMemo(() => {
+    const entry = (indexer: (typeof indexers)[number]) => ({
+      needsAttention: isProviderErroring(
+        indexer.isEnabled,
+        indexer.lastHealthStatus,
+        indexer.lastErrorMessage,
+      ),
+      usage:
+        (statsById.get(indexer.id)?.queriesLast24H ?? 0) +
+        (statsById.get(indexer.id)?.grabsLast24H ?? 0),
+      name: indexer.name,
+    });
+    return [...indexers].sort((left, right) =>
+      compareProviderRows(entry(left), entry(right)),
+    );
+  }, [indexers, statsById]);
 
   return (
     <DashboardPanel
@@ -777,6 +863,7 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
       }
       linkTo="/integrations/indexers"
       linkLabel={t("dashboard.pluginManage")}
+      bodyClassName={TABLE_PANE_CLASS}
     >
       {indexers.length === 0 ? (
         <DashboardPanelEmpty message={t("dashboard.emptyIndexers")} />
@@ -805,7 +892,7 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {indexers.map((indexer) => {
+            {sortedIndexers.map((indexer) => {
               const stat = statsById.get(indexer.id);
               const failed = stat?.failedLast24H ?? 0;
               return (
@@ -949,7 +1036,10 @@ function DownloadClientsPanel({
   queueItems: DownloadQueueItem[];
 }) {
   const t = useTranslate();
-  const clients = overview?.downloadClients ?? [];
+  const clients = React.useMemo(
+    () => overview?.downloadClients ?? [],
+    [overview?.downloadClients],
+  );
   const activity = React.useMemo(
     () => aggregateClientActivity(queueItems),
     [queueItems],
@@ -958,6 +1048,25 @@ function DownloadClientsPanel({
   const down = enabled.filter((client) =>
     isProviderErroring(client.isEnabled, client.status, client.lastError),
   ).length;
+  // Attention first, then busiest by live activity; disabled clients carry no
+  // activity and no attention, so they settle to the bottom naturally.
+  const sortedClients = React.useMemo(() => {
+    const entry = (client: (typeof clients)[number]) => {
+      const counts = activity.get(client.id);
+      return {
+        needsAttention: isProviderErroring(
+          client.isEnabled,
+          client.status,
+          client.lastError,
+        ),
+        usage: (counts?.active ?? 0) + (counts?.queued ?? 0),
+        name: client.name,
+      };
+    };
+    return [...clients].sort((left, right) =>
+      compareProviderRows(entry(left), entry(right)),
+    );
+  }, [activity, clients]);
 
   return (
     <DashboardPanel
@@ -982,6 +1091,7 @@ function DownloadClientsPanel({
       }
       linkTo="/integrations/download-clients"
       linkLabel={t("dashboard.pluginManage")}
+      bodyClassName={TABLE_PANE_CLASS}
     >
       {clients.length === 0 ? (
         <DashboardPanelEmpty message={t("dashboard.emptyClients")} />
@@ -1004,7 +1114,7 @@ function DownloadClientsPanel({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {clients.map((client) => {
+            {sortedClients.map((client) => {
               const counts = activity.get(client.id) ?? { active: 0, queued: 0 };
               return (
                 <TableRow key={client.id}>
@@ -1198,7 +1308,7 @@ function ActiveQueuePanel({
 
   return (
     <DashboardPanel
-      icon={Clock}
+      icon={ActivitySquare}
       title={t("dashboard.activeQueue")}
       pills={
         <Badge className="whitespace-nowrap">
@@ -1245,7 +1355,6 @@ function QueueRow({ item }: { item: DownloadQueueItem }) {
         colorClass={getProgressBarColor(presentation.displayStateKey)}
         compact
         hideLabel
-        indeterminate={presentation.displayStateKey === "QUEUED"}
       />
       <div className="flex min-w-0 items-center gap-2 text-[10px] text-[var(--scry-muted2)]">
         <span className="tabular-nums">{formatBytes(item.sizeBytes)}</span>
