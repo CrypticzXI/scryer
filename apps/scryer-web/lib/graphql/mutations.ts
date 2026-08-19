@@ -7,7 +7,7 @@ import {
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_MUTATION_RESULT_FIELDS,
-} from "./queries";
+} from "./queries.ts";
 
 const AUTH_USER_FIELDS = `
       id

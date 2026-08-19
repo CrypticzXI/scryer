@@ -284,10 +284,10 @@ export const PROVIDER_CONFIG_VALUE_FIELDS = `
     helpText
     value {
       __typename
-      ... on StringConfigValuePayload { value }
-      ... on BoolConfigValuePayload { value }
-      ... on IntConfigValuePayload { value }
-      ... on FloatConfigValuePayload { value }
+      ... on StringConfigValuePayload { stringValue: value }
+      ... on BoolConfigValuePayload { boolValue: value }
+      ... on IntConfigValuePayload { intValue: value }
+      ... on FloatConfigValuePayload { floatValue: value }
       ... on SecretConfigValuePayload { stored }
     }`;
 
@@ -1814,7 +1814,7 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
   }
 }`;
 
-export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
+export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Long, $afterSequence: Long, $limit: Int) {
   auditLog(
     eventTypes: $eventTypes
     titleId: $titleId
