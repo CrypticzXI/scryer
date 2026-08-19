@@ -2072,9 +2072,9 @@ const en: LocaleDictionary = {
   "settings.pluginRuntimeMemoryEstimate":
     "Estimated plugin runtime memory usage",
   "settings.pluginsRefresh": "Refresh Catalog",
-  "settings.pluginAutoUpdateEnabled": "Automatically install official plugin patch updates",
+  "settings.pluginAutoUpdateEnabled": "Auto update plugin patches",
   "settings.pluginAutoUpdateEnabledHelp":
-    "Only the scheduled Plugin Catalog Refresh applies these updates, and only patch-level releases (plus optimized builds of the installed version) of official plugins. Manual catalog refreshes and manual updates are unaffected.",
+    "When enabled, automatically updates plugins to their latest published patch version, eg. 1.0.1 => 1.0.2. Minor and major versions remain operator owned.",
   "settings.pluginAutoUpdateEnabledReadonly":
     "Automatic plugin updates are controlled by users who can manage configuration.",
   "settings.pluginsUpdateAll": "Update All",
