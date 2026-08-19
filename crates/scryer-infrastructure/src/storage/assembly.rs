@@ -1127,6 +1127,21 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn download_submissions(
+        &self,
+    ) -> Arc<dyn scryer_application::DownloadSubmissionRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                download_submission_store,
+                ..
+            } => download_submission_store.clone(),
+            DatastoreStores::Postgres {
+                download_submission_store,
+                ..
+            } => download_submission_store.clone(),
+        }
+    }
+
     pub fn seeding_profiles(&self) -> Arc<dyn scryer_application::SeedingProfileRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {

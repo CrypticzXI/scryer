@@ -930,6 +930,23 @@ file = "postgres/migrations/0161_seeding_profiles.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 162
+description = "persist resolved seeding goals on download submissions"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0162_download_submission_seed_goals.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0162_download_submission_seed_goals.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

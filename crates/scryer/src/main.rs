@@ -1009,6 +1009,10 @@ async fn bootstrap_application(
         .with_indexer_config_repositories(
             indexer_configs.clone(),
             datastore.indexer_proxy_configs(),
+        )
+        .with_seed_goal_resolution(
+            datastore.seeding_profiles(),
+            datastore.download_submissions(),
         ),
     );
     let indexer_stats = datastore.indexer_stats_tracker();

@@ -831,6 +831,17 @@ impl AppUseCase {
             download_id: Some(download_id.clone()),
         };
 
+        // Season-pack detection for the seeding-goal resolver. The submission
+        // scope this function derives later needs catalog lookups that only run
+        // once the grab succeeds, so the pack signal comes straight off the
+        // release title parse (Sonarr's `ParsedEpisodeInfo.FullSeason`).
+        let is_season_pack = parse_release_metadata_for_target(
+            &pr.release_title,
+            &build_release_parse_context(&title, None, None, Some(title.facet.as_str())),
+        )
+        .episode
+        .is_some_and(|episode| episode.full_season);
+
         let grab_result = self
             .services
             .integrations
@@ -856,8 +867,15 @@ impl AppUseCase {
                 info_hash_hint: pr.info_hash.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
+                // Persisted pending releases do not carry the indexer `extra`
+                // map, so tracker minimums are unavailable on this path; the
+                // profile's own goals still apply.
+                tracker_min_seed_ratio: None,
+                tracker_min_seed_time_minutes: None,
+                season_pack_seed_ratio: None,
+                season_pack_seed_time_minutes: None,
                 is_recent,
-                season_pack: None,
+                season_pack: is_season_pack.then_some(true),
             })
             .await;
 

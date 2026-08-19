@@ -192,6 +192,43 @@ pub struct DownloadSubmissionIdentity {
     pub download_id: Option<String>,
 }
 
+/// Seeding goals as resolved at grab time and frozen onto the download
+/// submission row. Persisting the resolution (rather than re-deriving it from
+/// history at poll time, the way Sonarr does) means a torrent keeps the goals
+/// it was grabbed under even if the profile is later edited or unassigned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PersistedSeedGoals {
+    pub seeding_profile_id: Option<String>,
+    pub seed_goal_ratio: Option<f64>,
+    pub seed_goal_seconds: Option<i64>,
+    pub never_remove: bool,
+    pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
+    pub resolution_source: SeedGoalResolutionSource,
+    /// Info hash the client accepted, lowercased. Lets the Tier-B evaluator
+    /// look a goal up straight off an observed torrent.
+    pub info_hash: Option<String>,
+}
+
+impl PersistedSeedGoals {
+    pub fn has_goals(&self) -> bool {
+        self.seed_goal_ratio.is_some() || self.seed_goal_seconds.is_some()
+    }
+}
+
+/// One torrent grab's resolution, plus the submission identity and the minimal
+/// row context needed to seed the `download_submissions` row when the goals
+/// land before the acquisition layer records the submission itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeedGoalGrabRecord {
+    pub client_id: Option<String>,
+    pub client_type: String,
+    pub client_item_id: String,
+    pub title_id: String,
+    pub facet: String,
+    pub purpose: DownloadSubmissionPurpose,
+    pub goals: PersistedSeedGoals,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DownloadSourceIdentity {
     pub client_id: Option<String>,
@@ -885,6 +922,15 @@ pub struct DownloadClientAddRequest {
     pub info_hash_hint: Option<String>,
     pub seed_goal_ratio: Option<f64>,
     pub seed_goal_seconds: Option<i64>,
+    /// Tracker-declared minimums carried by the release (`minimum_seed_ratio` /
+    /// `minimum_seed_time_minutes` and the season-pack twins in the indexer
+    /// `extra` map). The grab-time resolver clamps profile goals up to these
+    /// when the profile honors tracker minimums; `None` means the release
+    /// carried none, or the construction site has no release object.
+    pub tracker_min_seed_ratio: Option<f64>,
+    pub tracker_min_seed_time_minutes: Option<i64>,
+    pub season_pack_seed_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
     pub is_recent: Option<bool>,
     pub season_pack: Option<bool>,
 }
@@ -918,6 +964,10 @@ impl DownloadClientAddRequest {
             info_hash_hint: None,
             seed_goal_ratio: None,
             seed_goal_seconds: None,
+            tracker_min_seed_ratio: None,
+            tracker_min_seed_time_minutes: None,
+            season_pack_seed_ratio: None,
+            season_pack_seed_time_minutes: None,
             is_recent: None,
             season_pack: None,
         }

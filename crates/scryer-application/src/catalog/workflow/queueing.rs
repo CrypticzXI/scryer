@@ -541,8 +541,19 @@ impl AppUseCase {
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
+                // Manual/interactive queueing carries a resolved source URL,
+                // not the indexer release object, so there is no `extra` map to
+                // read tracker minimums from on this path.
+                tracker_min_seed_ratio: None,
+                tracker_min_seed_time_minutes: None,
+                season_pack_seed_ratio: None,
+                season_pack_seed_time_minutes: None,
                 is_recent,
-                season_pack: None,
+                season_pack: matches!(
+                    scope,
+                    SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
+                )
+                .then_some(true),
             })
             .await;
 

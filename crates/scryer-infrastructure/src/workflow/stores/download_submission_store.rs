@@ -4,11 +4,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, PersistedSeedGoals,
+    SeedGoalGrabRecord, SeedGoalResolutionSource,
 };
 use scryer_domain::Id;
 
-use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRuntime, StoreDatastore};
+use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
 #[derive(Clone)]
 pub struct DownloadSubmissionStore {
@@ -729,5 +730,387 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.opt_text("tracked_state"))
             .transpose()
             .map(Option::flatten)
+    }
+
+    /// Upsert, not update: the download-client choke point resolves and records
+    /// the goals as soon as the client accepts the torrent, which happens
+    /// before the acquisition layer records the submission itself. The insert
+    /// carries the title/facet/purpose the router already knows, so the row is
+    /// never a bare orphan stub, and `record_download_submission_tx` later
+    /// conflict-updates the remaining columns without touching the seed ones.
+    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<()> {
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_download_submission_seed_goals",
+            move |tx| {
+                let record = record.clone();
+                Box::pin(async move {
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "INSERT INTO download_submissions
+                         (id, title_id, facet, download_client_id, download_client_type,
+                          download_client_item_id, purpose, seeding_profile_id, seed_goal_ratio,
+                          seed_goal_seconds, seed_never_remove, seed_goal_met_action,
+                          seed_goal_source, seed_info_hash)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+                         SET seeding_profile_id = excluded.seeding_profile_id,
+                             seed_goal_ratio = excluded.seed_goal_ratio,
+                             seed_goal_seconds = excluded.seed_goal_seconds,
+                             seed_never_remove = excluded.seed_never_remove,
+                             seed_goal_met_action = excluded.seed_goal_met_action,
+                             seed_goal_source = excluded.seed_goal_source,
+                             seed_info_hash = excluded.seed_info_hash",
+                        &[
+                            SqlArg::Text(Id::new().0),
+                            SqlArg::Text(record.title_id.clone()),
+                            SqlArg::Text(record.facet.clone()),
+                            SqlArg::Text(normalize_download_client_id(
+                                record.client_id.as_deref(),
+                            )),
+                            SqlArg::Text(record.client_type.clone()),
+                            SqlArg::Text(record.client_item_id.clone()),
+                            SqlArg::Text(record.purpose.as_str().to_string()),
+                            SqlArg::OptText(record.goals.seeding_profile_id.clone()),
+                            SqlArg::OptF64(record.goals.seed_goal_ratio),
+                            SqlArg::OptI64(record.goals.seed_goal_seconds),
+                            SqlArg::OptBool(Some(record.goals.never_remove)),
+                            SqlArg::OptText(
+                                record
+                                    .goals
+                                    .goal_met_action
+                                    .map(|action| action.as_str().to_string()),
+                            ),
+                            SqlArg::OptText(Some(
+                                record.goals.resolution_source.as_str().to_string(),
+                            )),
+                            SqlArg::OptText(normalized_info_hash(
+                                record.goals.info_hash.as_deref(),
+                            )),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
+    async fn get_seed_goals(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {SEED_GOAL_COLUMNS}
+                 FROM download_submissions
+                 WHERE download_client_type = {{}}
+                   AND download_client_item_id = {{}}
+                   AND download_client_id = {{}}
+                 LIMIT 1"
+            ),
+            &[
+                SqlArg::Text(identity.client_type.clone()),
+                SqlArg::Text(identity.item_id.clone()),
+                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+            ],
+        )
+        .await?;
+        row.map(|row| seed_goals_from_row(&row))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    async fn find_seed_goals_by_info_hash(
+        &self,
+        info_hash: &str,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        let Some(info_hash) = normalized_info_hash(Some(info_hash)) else {
+            return Ok(None);
+        };
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {SEED_GOAL_COLUMNS}
+                 FROM download_submissions
+                 WHERE seed_info_hash = {{}}
+                 ORDER BY submitted_at DESC
+                 LIMIT 1"
+            ),
+            &[SqlArg::Text(info_hash)],
+        )
+        .await?;
+        row.map(|row| seed_goals_from_row(&row))
+            .transpose()
+            .map(Option::flatten)
+    }
+}
+
+const SEED_GOAL_COLUMNS: &str = "seeding_profile_id, seed_goal_ratio, seed_goal_seconds, \
+     seed_never_remove, seed_goal_met_action, seed_goal_source, seed_info_hash";
+
+/// Info hashes are compared case-insensitively across clients; store and look
+/// them up in one canonical form.
+fn normalized_info_hash(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+}
+
+/// `None` when the row predates any seeding resolution (or the grab resolved to
+/// no profile at all), so callers can tell "not evaluated" from "evaluated to
+/// nothing".
+fn seed_goals_from_row(row: &SqlRow) -> AppResult<Option<PersistedSeedGoals>> {
+    let Some(source) = row
+        .opt_text("seed_goal_source")?
+        .as_deref()
+        .and_then(SeedGoalResolutionSource::parse)
+    else {
+        return Ok(None);
+    };
+    if source == SeedGoalResolutionSource::None {
+        return Ok(None);
+    }
+    Ok(Some(PersistedSeedGoals {
+        seeding_profile_id: row.opt_text("seeding_profile_id")?,
+        seed_goal_ratio: row.opt_f64("seed_goal_ratio")?,
+        seed_goal_seconds: row.opt_i64("seed_goal_seconds")?,
+        never_remove: row.opt_bool("seed_never_remove")?.unwrap_or(false),
+        goal_met_action: row
+            .opt_text("seed_goal_met_action")?
+            .as_deref()
+            .and_then(scryer_domain::SeedGoalMetAction::parse),
+        resolution_source: source,
+        info_hash: row.opt_text("seed_info_hash")?,
+    }))
+}
+
+#[cfg(test)]
+mod seed_goal_tests {
+    use std::sync::Arc;
+
+    use scryer_application::{DownloadSubmissionPurpose, SubmissionScope};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn store() -> DownloadSubmissionStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        sqlx::query(
+            "CREATE TABLE download_submissions (
+                 id TEXT PRIMARY KEY,
+                 title_id TEXT NOT NULL,
+                 facet TEXT NOT NULL,
+                 download_client_id TEXT NOT NULL DEFAULT '',
+                 download_client_type TEXT NOT NULL,
+                 download_client_item_id TEXT NOT NULL,
+                 source_title TEXT,
+                 submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                 collection_id TEXT,
+                 tracked_state TEXT,
+                 tracked_state_at TEXT,
+                 source_hint TEXT,
+                 source_provider_id TEXT,
+                 source_provider_name TEXT,
+                 source_kind TEXT,
+                 request_signature TEXT,
+                 episode_id TEXT,
+                 download_id TEXT,
+                 purpose TEXT NOT NULL DEFAULT 'standard',
+                 series_movie_link_id TEXT,
+                 actor_kind TEXT,
+                 actor_user_id TEXT,
+                 actor_display_name TEXT,
+                 UNIQUE(download_client_id, download_client_type, download_client_item_id)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("submission table should be created");
+        sqlx::query(
+            "CREATE TABLE download_submission_episode_links (
+                 download_client_id TEXT NOT NULL,
+                 download_client_type TEXT NOT NULL,
+                 download_client_item_id TEXT NOT NULL,
+                 episode_id TEXT NOT NULL,
+                 PRIMARY KEY (download_client_id, download_client_type, download_client_item_id, episode_id)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("episode link table should be created");
+        for statement in include_str!(
+            "../../../../scryer/src/db/migrations/0162_download_submission_seed_goals.sql"
+        )
+        .split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty())
+        {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("seed goal migration should apply");
+        }
+        DownloadSubmissionStore::new(StoreDatastore::Sqlite {
+            pool,
+            writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    fn identity() -> DownloadSourceIdentity {
+        DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-1")
+    }
+
+    fn record() -> SeedGoalGrabRecord {
+        SeedGoalGrabRecord {
+            client_id: Some("primary".to_string()),
+            client_type: "qbittorrent".to_string(),
+            client_item_id: "job-1".to_string(),
+            title_id: "title-1".to_string(),
+            facet: "series".to_string(),
+            purpose: DownloadSubmissionPurpose::Standard,
+            goals: PersistedSeedGoals {
+                seeding_profile_id: Some("profile-1".to_string()),
+                seed_goal_ratio: Some(2.5),
+                seed_goal_seconds: Some(7200),
+                never_remove: true,
+                goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+                resolution_source: SeedGoalResolutionSource::Indexer,
+                info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_goals_round_trip_by_client_identity_and_info_hash() {
+        let store = store().await;
+        store
+            .record_seed_goals(record())
+            .await
+            .expect("seed goals should persist");
+
+        let loaded = store
+            .get_seed_goals(&identity())
+            .await
+            .expect("read should succeed")
+            .expect("goals should be present");
+        assert_eq!(loaded.seeding_profile_id.as_deref(), Some("profile-1"));
+        assert_eq!(loaded.seed_goal_ratio, Some(2.5));
+        assert_eq!(loaded.seed_goal_seconds, Some(7200));
+        assert!(loaded.never_remove);
+        assert_eq!(
+            loaded.goal_met_action,
+            Some(scryer_domain::SeedGoalMetAction::StopSeeding)
+        );
+        assert_eq!(loaded.resolution_source, SeedGoalResolutionSource::Indexer);
+        // Stored lowercased so an observed hash from any client matches.
+        assert_eq!(
+            loaded.info_hash.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
+
+        let by_hash = store
+            .find_seed_goals_by_info_hash("AbCdEf0123456789ABCDEF0123456789abcdef01")
+            .await
+            .expect("read should succeed")
+            .expect("goals should be found by info hash");
+        assert_eq!(by_hash, loaded);
+    }
+
+    #[tokio::test]
+    async fn rows_without_a_resolution_read_back_as_none() {
+        let store = store().await;
+        store
+            .record_submission(DownloadSubmission {
+                scope: SubmissionScope::Title,
+                title_id: "title-1".to_string(),
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "qbittorrent".to_string(),
+                download_client_item_id: "job-1".to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: None,
+                source_title: None,
+                request_signature: None,
+                purpose: DownloadSubmissionPurpose::Standard,
+            })
+            .await
+            .expect("submission should record");
+
+        assert_eq!(
+            store
+                .get_seed_goals(&identity())
+                .await
+                .expect("read should succeed"),
+            None
+        );
+        assert_eq!(
+            store
+                .find_seed_goals_by_info_hash("abcdef0123456789abcdef0123456789abcdef01")
+                .await
+                .expect("read should succeed"),
+            None
+        );
+    }
+
+    /// The router writes the goals before the acquisition layer records the
+    /// submission, so the later insert must fill the row in without clobbering
+    /// what the choke point already froze onto it.
+    #[tokio::test]
+    async fn recording_the_submission_afterwards_preserves_the_seed_goals() {
+        let store = store().await;
+        store
+            .record_seed_goals(record())
+            .await
+            .expect("seed goals should persist");
+        store
+            .record_submission(DownloadSubmission {
+                scope: SubmissionScope::Episode {
+                    episode_id: "episode-1".to_string(),
+                },
+                title_id: "title-1".to_string(),
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "qbittorrent".to_string(),
+                download_client_item_id: "job-1".to_string(),
+                source_hint: Some("https://example.invalid/release.torrent".to_string()),
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: None,
+                source_title: Some("Test Release".to_string()),
+                request_signature: Some("sig".to_string()),
+                purpose: DownloadSubmissionPurpose::Standard,
+            })
+            .await
+            .expect("submission should record");
+
+        let loaded = store
+            .get_seed_goals(&identity())
+            .await
+            .expect("read should succeed")
+            .expect("goals should survive the submission upsert");
+        assert_eq!(loaded.seed_goal_ratio, Some(2.5));
+
+        let submission = store
+            .find_by_client_item_id(&identity())
+            .await
+            .expect("read should succeed")
+            .expect("submission should be present");
+        assert_eq!(
+            submission.scope,
+            SubmissionScope::Episode {
+                episode_id: "episode-1".to_string()
+            }
+        );
+        assert_eq!(submission.source_title.as_deref(), Some("Test Release"));
     }
 }

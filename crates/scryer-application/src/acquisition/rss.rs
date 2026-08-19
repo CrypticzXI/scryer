@@ -1606,6 +1606,7 @@ impl AppUseCase {
             .get("info_hash")
             .and_then(|value| value.as_str())
             .map(str::to_string);
+        let seed_minimums = crate::ReleaseSeedMinimums::from_release_extra(&best.extra);
         let download_id = crate::download_identity::new_download_id();
         let submission_identity = DownloadSubmissionIdentity {
             download_id: Some(download_id.clone()),
@@ -1696,6 +1697,10 @@ impl AppUseCase {
                 info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
+                tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
+                season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
                 is_recent,
                 season_pack: is_season_pack.then_some(true),
             })

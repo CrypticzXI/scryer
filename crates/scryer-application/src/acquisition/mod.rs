@@ -9,6 +9,7 @@ pub(crate) mod policy;
 pub(crate) mod release_search;
 pub(crate) mod rss;
 pub(crate) mod search_queries;
+pub(crate) mod seed_goals;
 pub(crate) mod targets;
 pub(crate) mod wanted_views;
 pub(crate) mod workflow;

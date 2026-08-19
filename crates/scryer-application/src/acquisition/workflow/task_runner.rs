@@ -740,6 +740,8 @@ async fn process_single_target(
                                 .get("info_hash")
                                 .and_then(|value| value.as_str())
                                 .map(str::to_string);
+                            let seed_minimums =
+                                crate::ReleaseSeedMinimums::from_release_extra(&best_pack.extra);
                             let download_id = crate::download_identity::new_download_id();
                             let submission_identity = DownloadSubmissionIdentity {
                                 download_id: Some(download_id.clone()),
@@ -769,6 +771,12 @@ async fn process_single_target(
                                     info_hash_hint: info_hash_hint.clone(),
                                     seed_goal_ratio: None,
                                     seed_goal_seconds: None,
+                                    tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                                    tracker_min_seed_time_minutes: seed_minimums
+                                        .min_seed_time_minutes,
+                                    season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                                    season_pack_seed_time_minutes: seed_minimums
+                                        .season_pack_seed_time_minutes,
                                     is_recent,
                                     season_pack: Some(true),
                                 })
@@ -1453,6 +1461,14 @@ async fn process_single_target(
             .get("info_hash")
             .and_then(|value| value.as_str())
             .map(str::to_string);
+        let seed_minimums = crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra);
+        // This path used to hardcode `season_pack: false`; the scored candidate
+        // already carries a parse, so the seeding resolver can see a real pack.
+        let is_season_pack = candidate
+            .parsed_release_metadata
+            .as_ref()
+            .and_then(|parsed| parsed.episode.as_ref())
+            .is_some_and(|episode| episode.full_season);
         let download_id = crate::download_identity::new_download_id();
         let submission_identity = DownloadSubmissionIdentity {
             download_id: Some(download_id.clone()),
@@ -1482,8 +1498,12 @@ async fn process_single_target(
                 info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
+                tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
+                season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
                 is_recent,
-                season_pack: Some(false),
+                season_pack: Some(is_season_pack),
             })
             .await;
 

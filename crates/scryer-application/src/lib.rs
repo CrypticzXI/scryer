@@ -208,6 +208,10 @@ pub use acquisition::delay_profile::{
     validate_delay_profile_catalog,
 };
 pub use acquisition::policy::AcquisitionThresholds;
+pub use acquisition::seed_goals::{
+    ReleaseSeedMinimums, ResolvedSeedGoals, SeedGoalRequest, SeedGoalResolutionSource,
+    SeedGoalResolver, release_extra_f64, release_extra_i64,
+};
 pub use acquisition::wanted_views::{
     AcquisitionSearchJobView, AcquisitionSearchProgress, AcquisitionSearchRequest,
     WantedConvergenceState, WantedScopeView, WantedViewConvergence,
@@ -257,12 +261,12 @@ pub use contracts::{
     IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
     ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
     NewBlocklistEntry, NewIndexerProxyConfig, NewSeedingProfile, NotificationScopeIdUpdate,
-    PendingReleasePageSort, PendingReleasesPageQuery, PendingStagedNzb, QueueDownloadOutcome,
-    QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact,
-    SearchMode, SeedingProfileUpdate, StagedNzbRef, SubmissionConflictPolicy, SubmissionScope,
-    SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
-    SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
-    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
+    PendingReleasePageSort, PendingReleasesPageQuery, PendingStagedNzb, PersistedSeedGoals,
+    QueueDownloadOutcome, QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery,
+    ResolvedDownloadArtifact, SearchMode, SeedGoalGrabRecord, SeedingProfileUpdate, StagedNzbRef,
+    SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
+    SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
+    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{

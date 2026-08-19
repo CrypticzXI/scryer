@@ -3133,6 +3133,31 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(())
     }
 
+    /// Freeze the seeding goals a torrent grab resolved to onto its submission
+    /// row. Called from the download-client choke point the moment the client
+    /// accepts the torrent, which is before the acquisition layer records the
+    /// submission itself, so implementations must upsert rather than update.
+    async fn record_seed_goals(&self, _record: SeedGoalGrabRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Read the goals a torrent was grabbed under, by download-client identity.
+    async fn get_seed_goals(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        Ok(None)
+    }
+
+    /// Read the goals a torrent was grabbed under, by observed info hash — the
+    /// only key a Tier-B evaluator has when it is walking client items.
+    async fn find_seed_goals_by_info_hash(
+        &self,
+        _info_hash: &str,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        Ok(None)
+    }
+
     async fn get_submission_actor_snapshot(
         &self,
         _identity: &DownloadSourceIdentity,

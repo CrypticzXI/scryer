@@ -1,0 +1,851 @@
+// Grab-time seeding-goal resolution.
+//
+// A single helper answers "what seeding goals does this grab get?" so the
+// download-client choke point never has to know the precedence rules and no
+// construction site has to duplicate them. Precedence mirrors the design doc
+// (§4.2): the indexer that supplied the release wins, then the download-client
+// routing entry the grab was routed through, then the global default. Nothing
+// resolved means no goals at all — seeding profiles are opt-in, so an install
+// with no profiles behaves exactly as it does today.
+
+use std::sync::Arc;
+
+use scryer_domain::{SeedGoalMetAction, SeedingProfile};
+use serde_json::Value;
+
+use crate::{
+    AppResult, DEFAULT_SEEDING_PROFILE_SETTING_KEY, IndexerConfigRepository, SETTINGS_SCOPE_SYSTEM,
+    SeedingProfileRepository, SettingsRepository,
+};
+
+/// Which assignment level supplied the profile. Persisted with the resolution
+/// so later packages (and operators reading history) can explain a goal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SeedGoalResolutionSource {
+    /// No profile applied; the client's own global limits stay in charge.
+    #[default]
+    None,
+    /// The indexer that supplied the release carries a profile.
+    Indexer,
+    /// The download-client routing entry the grab was routed through.
+    RoutingEntry,
+    /// The global default seeding profile setting.
+    GlobalDefault,
+}
+
+impl SeedGoalResolutionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Indexer => "indexer",
+            Self::RoutingEntry => "routing_entry",
+            Self::GlobalDefault => "global_default",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "none" => Some(Self::None),
+            "indexer" => Some(Self::Indexer),
+            "routing_entry" => Some(Self::RoutingEntry),
+            "global_default" => Some(Self::GlobalDefault),
+            _ => None,
+        }
+    }
+}
+
+/// Everything the resolver needs about one grab. Tracker minimums come off the
+/// release `extra` map the indexer adapter populates
+/// (`minimum_seed_ratio` / `minimum_seed_time_minutes` and the season-pack
+/// twins); construction sites that have no release object pass `None` and the
+/// resolver simply skips the clamp.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SeedGoalRequest {
+    /// Indexer that supplied the release, when known.
+    pub indexer_id: Option<String>,
+    /// `seedingProfileId` from the routing entry of the client this grab was
+    /// actually routed to.
+    pub routing_seeding_profile_id: Option<String>,
+    /// Whether the release is a season pack (drives the profile's season-pack
+    /// override and which tracker minimum applies).
+    pub season_pack: bool,
+    pub tracker_min_seed_ratio: Option<f64>,
+    pub tracker_min_seed_time_minutes: Option<i64>,
+    pub season_pack_min_seed_ratio: Option<f64>,
+    pub season_pack_min_seed_time_minutes: Option<i64>,
+}
+
+impl SeedGoalRequest {
+    /// Tracker minimum for the ratio axis, preferring the season-pack minimum
+    /// on season-pack releases and falling back to the per-release minimum.
+    fn effective_min_ratio(&self) -> Option<f64> {
+        if self.season_pack {
+            self.season_pack_min_seed_ratio
+                .or(self.tracker_min_seed_ratio)
+        } else {
+            self.tracker_min_seed_ratio
+        }
+    }
+
+    fn effective_min_seed_time_minutes(&self) -> Option<i64> {
+        if self.season_pack {
+            self.season_pack_min_seed_time_minutes
+                .or(self.tracker_min_seed_time_minutes)
+        } else {
+            self.tracker_min_seed_time_minutes
+        }
+    }
+}
+
+/// The resolved policy for one grab. `seeding_profile_id` is `None` exactly
+/// when `resolution_source` is `None`, and in that case every goal is `None`
+/// too.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResolvedSeedGoals {
+    pub seeding_profile_id: Option<String>,
+    pub seed_goal_ratio: Option<f64>,
+    pub seed_goal_seconds: Option<i64>,
+    pub never_remove: bool,
+    pub goal_met_action: Option<SeedGoalMetAction>,
+    pub resolution_source: SeedGoalResolutionSource,
+}
+
+impl ResolvedSeedGoals {
+    /// Whether anything was resolved at all. A profile with no goals on either
+    /// axis still counts — `never_remove` and `goal_met_action` are policy even
+    /// without a numeric goal.
+    pub fn is_resolved(&self) -> bool {
+        self.resolution_source != SeedGoalResolutionSource::None
+    }
+
+    /// Whether either numeric goal is present (i.e. there is something to push
+    /// to a Tier-A client or evaluate in Tier B).
+    pub fn has_goals(&self) -> bool {
+        self.seed_goal_ratio.is_some() || self.seed_goal_seconds.is_some()
+    }
+}
+
+/// Resolves seeding goals from the three assignment levels plus tracker
+/// minimums. Cheap to clone; every lookup goes straight to the repositories so
+/// a profile edit takes effect on the next grab.
+#[derive(Clone)]
+pub struct SeedGoalResolver {
+    seeding_profiles: Arc<dyn SeedingProfileRepository>,
+    indexer_configs: Option<Arc<dyn IndexerConfigRepository>>,
+    settings: Arc<dyn SettingsRepository>,
+}
+
+impl SeedGoalResolver {
+    pub fn new(
+        seeding_profiles: Arc<dyn SeedingProfileRepository>,
+        indexer_configs: Option<Arc<dyn IndexerConfigRepository>>,
+        settings: Arc<dyn SettingsRepository>,
+    ) -> Self {
+        Self {
+            seeding_profiles,
+            indexer_configs,
+            settings,
+        }
+    }
+
+    /// Resolve the applicable profile and compute its goals for one grab.
+    pub async fn resolve(&self, request: &SeedGoalRequest) -> AppResult<ResolvedSeedGoals> {
+        let Some((profile, source)) = self.resolve_profile(request).await? else {
+            return Ok(ResolvedSeedGoals::default());
+        };
+        Ok(apply_profile(&profile, request, source))
+    }
+
+    /// Walk the precedence chain. A level that names a profile which no longer
+    /// exists falls through to the next level rather than failing the grab —
+    /// a dangling assignment must never block a download.
+    async fn resolve_profile(
+        &self,
+        request: &SeedGoalRequest,
+    ) -> AppResult<Option<(SeedingProfile, SeedGoalResolutionSource)>> {
+        if let Some(indexer_id) = trimmed(request.indexer_id.as_deref())
+            && let Some(repository) = self.indexer_configs.as_ref()
+            && let Some(indexer) = repository.get_by_id(&indexer_id).await?
+            && let Some(profile_id) = trimmed(indexer.seeding_profile_id.as_deref())
+            && let Some(profile) = self.load_profile(&profile_id).await?
+        {
+            return Ok(Some((profile, SeedGoalResolutionSource::Indexer)));
+        }
+
+        if let Some(profile_id) = trimmed(request.routing_seeding_profile_id.as_deref())
+            && let Some(profile) = self.load_profile(&profile_id).await?
+        {
+            return Ok(Some((profile, SeedGoalResolutionSource::RoutingEntry)));
+        }
+
+        if let Some(profile_id) = self.default_seeding_profile_id().await?
+            && let Some(profile) = self.load_profile(&profile_id).await?
+        {
+            return Ok(Some((profile, SeedGoalResolutionSource::GlobalDefault)));
+        }
+
+        Ok(None)
+    }
+
+    async fn load_profile(&self, profile_id: &str) -> AppResult<Option<SeedingProfile>> {
+        self.seeding_profiles.get_by_id(profile_id).await
+    }
+
+    /// Global default profile id from the nullable settings key. Mirrors
+    /// `AppUseCase::default_seeding_profile_id`, reading the repository
+    /// directly so the resolver works outside the use-case facade.
+    async fn default_seeding_profile_id(&self) -> AppResult<Option<String>> {
+        let Some(raw_value) = self
+            .settings
+            .get_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                DEFAULT_SEEDING_PROFILE_SETTING_KEY,
+                None,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(parse_setting_string(&raw_value))
+    }
+}
+
+/// Compute the goals for a resolved profile: season-pack overrides first, then
+/// the tracker-minimum clamp.
+fn apply_profile(
+    profile: &SeedingProfile,
+    request: &SeedGoalRequest,
+    source: SeedGoalResolutionSource,
+) -> ResolvedSeedGoals {
+    let mut ratio = profile.effective_ratio(request.season_pack);
+    let mut seed_time_minutes = profile.effective_seed_time_minutes(request.season_pack);
+
+    if profile.honor_tracker_minimums {
+        // Clamp UP only: a tracker minimum can raise a goal but never lower it,
+        // and a minimum on an axis the profile leaves unset becomes the goal on
+        // that axis (otherwise the tracker's H&R rule would go unenforced).
+        ratio = clamp_up_f64(ratio, request.effective_min_ratio());
+        seed_time_minutes =
+            clamp_up_i64(seed_time_minutes, request.effective_min_seed_time_minutes());
+    }
+
+    ResolvedSeedGoals {
+        seeding_profile_id: Some(profile.id.clone()),
+        seed_goal_ratio: ratio.filter(|value| value.is_finite() && *value > 0.0),
+        seed_goal_seconds: seed_time_minutes
+            .filter(|minutes| *minutes > 0)
+            .and_then(|minutes| minutes.checked_mul(60)),
+        never_remove: profile.never_remove,
+        goal_met_action: Some(profile.goal_met_action),
+        resolution_source: source,
+    }
+}
+
+fn clamp_up_f64(value: Option<f64>, minimum: Option<f64>) -> Option<f64> {
+    let minimum = minimum.filter(|value| value.is_finite() && *value > 0.0);
+    match (value, minimum) {
+        (Some(value), Some(minimum)) => Some(value.max(minimum)),
+        (Some(value), None) => Some(value),
+        (None, minimum) => minimum,
+    }
+}
+
+fn clamp_up_i64(value: Option<i64>, minimum: Option<i64>) -> Option<i64> {
+    let minimum = minimum.filter(|minutes| *minutes > 0);
+    match (value, minimum) {
+        (Some(value), Some(minimum)) => Some(value.max(minimum)),
+        (Some(value), None) => Some(value),
+        (None, minimum) => minimum,
+    }
+}
+
+fn trimmed(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Settings values are stored as JSON; the key holds either `null` or a quoted
+/// id. Tolerate a bare (unquoted) id too, the way the quality-profile reader
+/// does.
+fn parse_setting_string(raw_value: &str) -> Option<String> {
+    let trimmed = raw_value.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return None;
+    }
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Null) => None,
+        Ok(Value::String(value)) => {
+            let normalized = value.trim();
+            (!normalized.is_empty()).then(|| normalized.to_string())
+        }
+        Ok(_) => Some(trimmed.to_string()),
+        Err(_) => Some(trimmed.to_string()),
+    }
+}
+
+/// Read a tracker-declared minimum out of a release `extra` map. The indexer
+/// adapter writes these as JSON numbers, but Torznab feeds proxied through
+/// plugins sometimes stringify them, so both shapes are accepted.
+pub fn release_extra_f64(
+    extra: &std::collections::HashMap<String, Value>,
+    key: &str,
+) -> Option<f64> {
+    match extra.get(key)? {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+pub fn release_extra_i64(
+    extra: &std::collections::HashMap<String, Value>,
+    key: &str,
+) -> Option<i64> {
+    match extra.get(key)? {
+        Value::Number(value) => value
+            .as_i64()
+            .or_else(|| value.as_f64().map(|value| value.round() as i64)),
+        Value::String(value) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+    .filter(|value| *value > 0)
+}
+
+/// Tracker minimums lifted off a release `extra` map, in the order the indexer
+/// adapter writes them (`indexer_adapter.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReleaseSeedMinimums {
+    pub min_seed_ratio: Option<f64>,
+    pub min_seed_time_minutes: Option<i64>,
+    pub season_pack_seed_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
+}
+
+impl ReleaseSeedMinimums {
+    pub fn from_release_extra(extra: &std::collections::HashMap<String, Value>) -> Self {
+        Self {
+            min_seed_ratio: release_extra_f64(extra, "minimum_seed_ratio"),
+            min_seed_time_minutes: release_extra_i64(extra, "minimum_seed_time_minutes"),
+            season_pack_seed_ratio: release_extra_f64(extra, "season_pack_seed_ratio"),
+            season_pack_seed_time_minutes: release_extra_i64(
+                extra,
+                "season_pack_seed_time_minutes",
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use scryer_domain::{IndexerConfig, SeasonPackSeedMode};
+
+    use super::*;
+    use crate::{AppError, IndexerConfigUpdate, IndexerSystemBackoff};
+
+    struct FakeSeedingProfiles {
+        profiles: Vec<SeedingProfile>,
+    }
+
+    #[async_trait]
+    impl SeedingProfileRepository for FakeSeedingProfiles {
+        async fn list(&self) -> AppResult<Vec<SeedingProfile>> {
+            Ok(self.profiles.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<SeedingProfile>> {
+            Ok(self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned())
+        }
+
+        async fn create(&self, profile: SeedingProfile) -> AppResult<SeedingProfile> {
+            Ok(profile)
+        }
+
+        async fn update(&self, profile: SeedingProfile) -> AppResult<SeedingProfile> {
+            Ok(profile)
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeIndexerConfigs {
+        indexers: Vec<IndexerConfig>,
+    }
+
+    #[async_trait]
+    impl IndexerConfigRepository for FakeIndexerConfigs {
+        async fn list(&self, _provider_type: Option<String>) -> AppResult<Vec<IndexerConfig>> {
+            Ok(self.indexers.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>> {
+            Ok(self
+                .indexers
+                .iter()
+                .find(|indexer| indexer.id == id)
+                .cloned())
+        }
+
+        async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig> {
+            Ok(config)
+        }
+
+        async fn touch_last_error(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn list_system_backoffs(&self) -> AppResult<HashMap<String, IndexerSystemBackoff>> {
+            Ok(HashMap::new())
+        }
+
+        async fn update(&self, _update: IndexerConfigUpdate) -> AppResult<IndexerConfig> {
+            Err(AppError::NotFound("not implemented".into()))
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeSettings {
+        values: HashMap<String, String>,
+    }
+
+    #[async_trait]
+    impl SettingsRepository for FakeSettings {
+        async fn get_setting_json(
+            &self,
+            _scope: &str,
+            key_name: &str,
+            _scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            Ok(self.values.get(key_name).cloned())
+        }
+
+        async fn get_setting_json_explicit(
+            &self,
+            scope: &str,
+            key_name: &str,
+            scope_id: Option<String>,
+        ) -> AppResult<Option<String>> {
+            self.get_setting_json(scope, key_name, scope_id).await
+        }
+
+        async fn list_setting_json_explicit_for_scope_ids(
+            &self,
+            _scope: &str,
+            _key_name: &str,
+            _scope_ids: &[String],
+        ) -> AppResult<Vec<(String, String)>> {
+            Ok(Vec::new())
+        }
+
+        async fn upsert_setting_json(
+            &self,
+            _scope: &str,
+            _key_name: &str,
+            _scope_id: Option<String>,
+            _value_json: String,
+            _source: &str,
+            _updated_by: Option<String>,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn delete_setting_value(
+            &self,
+            _scope: &str,
+            _key_name: &str,
+            _scope_id: Option<String>,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn delete_values_for_scope_id(&self, _scope_id: &str) -> AppResult<u32> {
+            Ok(0)
+        }
+    }
+
+    fn profile(id: &str, ratio: Option<f64>, seed_time_minutes: Option<i64>) -> SeedingProfile {
+        let now = Utc::now();
+        SeedingProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            ratio,
+            seed_time_minutes,
+            season_pack_mode: SeasonPackSeedMode::Inherit,
+            season_pack_ratio: None,
+            season_pack_seed_time_minutes: None,
+            honor_tracker_minimums: true,
+            goal_met_action: SeedGoalMetAction::RemoveEntry,
+            never_remove: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn indexer(id: &str, seeding_profile_id: Option<&str>) -> IndexerConfig {
+        let now = Utc::now();
+        IndexerConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider_type: "torznab".to_string(),
+            base_url: "https://example.invalid".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            download_client_id: None,
+            seeding_profile_id: seeding_profile_id.map(str::to_string),
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn resolver(
+        profiles: Vec<SeedingProfile>,
+        indexers: Vec<IndexerConfig>,
+        default_profile_id: Option<&str>,
+    ) -> SeedGoalResolver {
+        let mut values = HashMap::new();
+        if let Some(profile_id) = default_profile_id {
+            values.insert(
+                DEFAULT_SEEDING_PROFILE_SETTING_KEY.to_string(),
+                serde_json::Value::String(profile_id.to_string()).to_string(),
+            );
+        }
+        SeedGoalResolver::new(
+            Arc::new(FakeSeedingProfiles { profiles }),
+            Some(Arc::new(FakeIndexerConfigs { indexers })),
+            Arc::new(FakeSettings { values }),
+        )
+    }
+
+    fn request(indexer_id: Option<&str>, routing_profile_id: Option<&str>) -> SeedGoalRequest {
+        SeedGoalRequest {
+            indexer_id: indexer_id.map(str::to_string),
+            routing_seeding_profile_id: routing_profile_id.map(str::to_string),
+            ..SeedGoalRequest::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn indexer_assignment_beats_routing_entry_and_global_default() {
+        let resolver = resolver(
+            vec![
+                profile("indexer-profile", Some(2.0), None),
+                profile("routing-profile", Some(1.0), None),
+                profile("global-profile", Some(0.5), None),
+            ],
+            vec![indexer("idx-1", Some("indexer-profile"))],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), Some("routing-profile")))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.seeding_profile_id.as_deref(),
+            Some("indexer-profile")
+        );
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::Indexer
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(2.0));
+    }
+
+    #[tokio::test]
+    async fn routing_entry_beats_global_default_when_the_indexer_has_no_profile() {
+        let resolver = resolver(
+            vec![
+                profile("routing-profile", Some(1.0), None),
+                profile("global-profile", Some(0.5), None),
+            ],
+            vec![indexer("idx-1", None)],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), Some("routing-profile")))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.seeding_profile_id.as_deref(),
+            Some("routing-profile")
+        );
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::RoutingEntry
+        );
+    }
+
+    #[tokio::test]
+    async fn global_default_applies_when_nothing_else_is_assigned() {
+        let resolver = resolver(
+            vec![profile("global-profile", Some(0.5), Some(60))],
+            vec![indexer("idx-1", None)],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::GlobalDefault
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(0.5));
+        assert_eq!(resolved.seed_goal_seconds, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn no_assignment_anywhere_resolves_to_no_goals() {
+        let resolver = resolver(
+            vec![profile("unused", Some(3.0), Some(120))],
+            vec![indexer("idx-1", None)],
+            None,
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert!(!resolved.is_resolved());
+        assert_eq!(resolved, ResolvedSeedGoals::default());
+        assert_eq!(resolved.seeding_profile_id, None);
+        assert_eq!(resolved.seed_goal_ratio, None);
+        assert_eq!(resolved.seed_goal_seconds, None);
+        assert_eq!(resolved.goal_met_action, None);
+        assert!(!resolved.never_remove);
+    }
+
+    #[tokio::test]
+    async fn a_dangling_assignment_falls_through_to_the_next_level() {
+        let resolver = resolver(
+            vec![profile("global-profile", Some(0.5), None)],
+            vec![indexer("idx-1", Some("deleted-profile"))],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), Some("also-deleted")))
+            .await
+            .expect("a dangling assignment must not fail the grab");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::GlobalDefault
+        );
+    }
+
+    #[tokio::test]
+    async fn tracker_minimums_clamp_goals_up_but_never_down() {
+        let resolver = resolver(
+            vec![profile("p", Some(1.0), Some(60))],
+            vec![indexer("idx-1", Some("p"))],
+            None,
+        );
+
+        let mut goal_request = request(Some("idx-1"), None);
+        goal_request.tracker_min_seed_ratio = Some(2.5);
+        goal_request.tracker_min_seed_time_minutes = Some(30);
+
+        let resolved = resolver
+            .resolve(&goal_request)
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.seed_goal_ratio, Some(2.5));
+        // The profile's 60 minutes already clears the 30-minute minimum.
+        assert_eq!(resolved.seed_goal_seconds, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn a_tracker_minimum_becomes_the_goal_on_an_axis_the_profile_leaves_unset() {
+        let resolver = resolver(
+            vec![profile("p", Some(1.0), None)],
+            vec![indexer("idx-1", Some("p"))],
+            None,
+        );
+
+        let mut goal_request = request(Some("idx-1"), None);
+        goal_request.tracker_min_seed_time_minutes = Some(4320);
+
+        let resolved = resolver
+            .resolve(&goal_request)
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.seed_goal_ratio, Some(1.0));
+        assert_eq!(resolved.seed_goal_seconds, Some(4320 * 60));
+    }
+
+    #[tokio::test]
+    async fn tracker_minimums_are_ignored_when_the_profile_opts_out() {
+        let mut opted_out = profile("p", Some(1.0), None);
+        opted_out.honor_tracker_minimums = false;
+        let resolver = resolver(vec![opted_out], vec![indexer("idx-1", Some("p"))], None);
+
+        let mut goal_request = request(Some("idx-1"), None);
+        goal_request.tracker_min_seed_ratio = Some(2.5);
+        goal_request.tracker_min_seed_time_minutes = Some(4320);
+
+        let resolved = resolver
+            .resolve(&goal_request)
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.seed_goal_ratio, Some(1.0));
+        assert_eq!(resolved.seed_goal_seconds, None);
+    }
+
+    #[tokio::test]
+    async fn season_pack_override_selects_the_pack_goals_and_pack_minimums() {
+        let mut pack_profile = profile("p", Some(1.0), Some(60));
+        pack_profile.season_pack_mode = SeasonPackSeedMode::Override;
+        pack_profile.season_pack_ratio = Some(2.0);
+        pack_profile.season_pack_seed_time_minutes = Some(120);
+        let resolver = resolver(vec![pack_profile], vec![indexer("idx-1", Some("p"))], None);
+
+        let mut episode_request = request(Some("idx-1"), None);
+        episode_request.tracker_min_seed_ratio = Some(0.1);
+        episode_request.season_pack_min_seed_ratio = Some(9.0);
+        let episode = resolver
+            .resolve(&episode_request)
+            .await
+            .expect("resolution should succeed");
+        assert_eq!(episode.seed_goal_ratio, Some(1.0));
+        assert_eq!(episode.seed_goal_seconds, Some(3600));
+
+        let mut pack_request = episode_request.clone();
+        pack_request.season_pack = true;
+        let pack = resolver
+            .resolve(&pack_request)
+            .await
+            .expect("resolution should succeed");
+        // Pack goals win over the base goals, then the pack minimum clamps up.
+        assert_eq!(pack.seed_goal_ratio, Some(9.0));
+        assert_eq!(pack.seed_goal_seconds, Some(120 * 60));
+    }
+
+    #[tokio::test]
+    async fn season_pack_inherit_mode_keeps_the_base_goals() {
+        let resolver = resolver(
+            vec![profile("p", Some(1.0), Some(60))],
+            vec![indexer("idx-1", Some("p"))],
+            None,
+        );
+
+        let mut pack_request = request(Some("idx-1"), None);
+        pack_request.season_pack = true;
+        let resolved = resolver
+            .resolve(&pack_request)
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.seed_goal_ratio, Some(1.0));
+        assert_eq!(resolved.seed_goal_seconds, Some(3600));
+    }
+
+    #[tokio::test]
+    async fn profile_policy_flags_ride_along_with_the_goals() {
+        let mut kept = profile("p", None, None);
+        kept.never_remove = true;
+        kept.goal_met_action = SeedGoalMetAction::StopSeeding;
+        let resolver = resolver(vec![kept], vec![indexer("idx-1", Some("p"))], None);
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-1"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert!(resolved.is_resolved());
+        assert!(!resolved.has_goals());
+        assert!(resolved.never_remove);
+        assert_eq!(
+            resolved.goal_met_action,
+            Some(SeedGoalMetAction::StopSeeding)
+        );
+    }
+
+    #[test]
+    fn release_minimums_are_read_from_the_indexer_extra_map() {
+        let mut extra = HashMap::new();
+        extra.insert("minimum_seed_ratio".to_string(), serde_json::json!(1.25));
+        extra.insert(
+            "minimum_seed_time_minutes".to_string(),
+            serde_json::json!(4320),
+        );
+        // Some plugins stringify torznab attrs; both shapes must read.
+        extra.insert(
+            "season_pack_seed_ratio".to_string(),
+            serde_json::json!("2.5"),
+        );
+        extra.insert(
+            "season_pack_seed_time_minutes".to_string(),
+            serde_json::json!("10080"),
+        );
+        extra.insert(
+            "minimum_seed_ratio_unused".to_string(),
+            serde_json::json!(0),
+        );
+
+        let minimums = ReleaseSeedMinimums::from_release_extra(&extra);
+        assert_eq!(minimums.min_seed_ratio, Some(1.25));
+        assert_eq!(minimums.min_seed_time_minutes, Some(4320));
+        assert_eq!(minimums.season_pack_seed_ratio, Some(2.5));
+        assert_eq!(minimums.season_pack_seed_time_minutes, Some(10080));
+
+        assert_eq!(
+            ReleaseSeedMinimums::from_release_extra(&HashMap::new()),
+            ReleaseSeedMinimums::default()
+        );
+    }
+
+    #[test]
+    fn resolution_sources_round_trip_through_their_persisted_labels() {
+        for source in [
+            SeedGoalResolutionSource::None,
+            SeedGoalResolutionSource::Indexer,
+            SeedGoalResolutionSource::RoutingEntry,
+            SeedGoalResolutionSource::GlobalDefault,
+        ] {
+            assert_eq!(
+                SeedGoalResolutionSource::parse(source.as_str()),
+                Some(source)
+            );
+        }
+        assert_eq!(SeedGoalResolutionSource::parse("nope"), None);
+    }
+}
