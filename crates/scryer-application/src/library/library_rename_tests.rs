@@ -970,14 +970,14 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
     let title = test_movie_title("Movie (2024)");
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
         collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items = build_movie_rename_plan_items(
@@ -1031,14 +1031,14 @@ fn movie_rename_items_render_external_id_tokens() {
     ];
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year}) [{tmdb_id}]",
         template: "{title} ({year}) [{imdb_id} {tmdb_id} {tvdb_id} {anidb_id} {mal_id} {anilist_id}].{ext}",
         collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items =
@@ -1064,14 +1064,14 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
     title.metadata_language = Some("jpn".to_string());
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title}.{ext}",
         collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items =

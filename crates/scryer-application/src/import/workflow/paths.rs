@@ -548,6 +548,7 @@ fn completed_download_import_identity_for_resolution(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub(crate) struct ImportPathSettings {
     pub(crate) media_root: String,
     pub(crate) rename_enabled: bool,

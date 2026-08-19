@@ -1913,6 +1913,21 @@ pub trait ShowRepository: Send + Sync {
         &self,
         ordered_path: &str,
     ) -> AppResult<Option<Collection>>;
+    /// Batch-load collections by ordered path. Paths without a collection are
+    /// absent from the result. The default fans out to
+    /// `get_collection_by_ordered_path`; SQL stores override with one query.
+    async fn list_collections_by_ordered_paths(
+        &self,
+        ordered_paths: &[String],
+    ) -> AppResult<Vec<Collection>> {
+        let mut collections = Vec::with_capacity(ordered_paths.len());
+        for ordered_path in ordered_paths {
+            if let Some(collection) = self.get_collection_by_ordered_path(ordered_path).await? {
+                collections.push(collection);
+            }
+        }
+        Ok(collections)
+    }
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection>;
     async fn update_collection(
         &self,
@@ -3983,6 +3998,25 @@ pub trait MediaFileRepository: Send + Sync {
     async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>>;
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>>;
+
+    /// Batch-load media files by path, pairing each hit with the path that was
+    /// asked for. Callers key results by the requested path because a stored
+    /// path may differ from it (Windows matches case- and separator-insensitively),
+    /// so the row's own `file_path` is not a reliable lookup key. Paths without a
+    /// tracked file are absent. The default fans out to `get_media_file_by_path`;
+    /// SQL stores override with one query.
+    async fn list_media_files_by_paths(
+        &self,
+        file_paths: &[String],
+    ) -> AppResult<Vec<(String, TitleMediaFile)>> {
+        let mut media_files = Vec::with_capacity(file_paths.len());
+        for file_path in file_paths {
+            if let Some(media_file) = self.get_media_file_by_path(file_path).await? {
+                media_files.push((file_path.clone(), media_file));
+            }
+        }
+        Ok(media_files)
+    }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()>;
 }

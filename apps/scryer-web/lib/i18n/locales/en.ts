@@ -1018,6 +1018,8 @@ const en: LocaleDictionary = {
   "rename.planSummary":
     "{{total}} item(s), {{renamable}} renamable, {{noop}} noop, {{conflicts}} conflicts, {{errors}} errors",
   "rename.noRenamableFiles": "No files need renaming.",
+  "rename.blockedFiles":
+    "{{count}} file(s) cannot be renamed and will stop this title from being renamed.",
   "rename.sampleNote":
     "Showing the first {{shown}} of {{renamable}} files to rename.",
   "settings.title": "Settings",

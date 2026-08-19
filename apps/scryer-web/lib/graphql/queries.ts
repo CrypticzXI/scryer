@@ -1762,6 +1762,24 @@ export function buildReactiveRefreshQuery(
   };
 }
 
+export const mediaRenamePreviewBulkQuery = `query MediaRenamePreviewBulk($input: MediaRenamePreviewBulkInput!) {
+  mediaRenamePreviewBulk(input: $input) {
+    titleId
+    fingerprint
+    total
+    renamable
+    noop
+    conflicts
+    errors
+    items {
+      collectionId
+      currentPath
+      proposedPath
+      writeAction
+    }
+  }
+}`;
+
 export const mediaRenamePreviewQuery = `query MediaRenamePreview($input: MediaRenamePreviewInput!) {
   mediaRenamePreview(input: $input) {
     facet

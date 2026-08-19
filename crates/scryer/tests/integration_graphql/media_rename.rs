@@ -1826,3 +1826,178 @@ async fn graphql_media_rename_preview_scopes_returned_items_without_changing_cou
     assert_eq!(capped["renamable"].as_i64(), Some(1));
     assert_eq!(capped["items"].as_array().map(Vec::len), Some(0));
 }
+
+#[tokio::test]
+async fn graphql_media_rename_preview_bulk_matches_per_title_previews() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
+
+    let mut expected = Vec::new();
+    for (index, name) in ["Bulk Preview One", "Bulk Preview Two"].iter().enumerate() {
+        let title = create_catalog_title(
+            &ctx,
+            name,
+            MediaFacet::Anime,
+            vec![ExternalId {
+                source: "tvdb".to_string(),
+                value: format!("9200{index}"),
+            }],
+            vec![],
+            true,
+        )
+        .await;
+
+        let collection = ctx
+            .shows
+            .create_collection(Collection {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_type: scryer_domain::CollectionType::Season,
+                collection_index: "1".to_string(),
+                label: Some("Season 1".to_string()),
+                ordered_path: None,
+                narrative_order: None,
+                first_episode_number: Some("3".to_string()),
+                last_episode_number: Some("3".to_string()),
+                monitored: true,
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create season collection");
+
+        let episode = ctx
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(collection.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some("3".to_string()),
+                season_number: Some("1".to_string()),
+                episode_label: Some("S01E03".to_string()),
+                title: Some("Arrival".to_string()),
+                air_date: None,
+                duration_seconds: Some(1440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: Some("12".to_string()),
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create episode");
+
+        let season_dir = media_root.path().join(name).join("Season 01");
+        std::fs::create_dir_all(&season_dir).expect("create season dir");
+        set_title_folder_path(&ctx, &title.id, season_dir.parent().expect("title folder")).await;
+        let file_path = season_dir.join(format!("[SubsPlease] {name} - 03 (1080p).mkv"));
+        std::fs::write(&file_path, b"anime-preview").expect("write preview file");
+
+        let file_id = ctx
+            .media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: file_path.to_string_lossy().to_string(),
+                size_bytes: 2048,
+                quality_label: Some("1080p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("insert media file");
+        ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
+            .await
+            .expect("link file to episode");
+
+        expected.push(title.id.clone());
+    }
+
+    // Per-title previews are the oracle: batching may not change a single plan.
+    let mut per_title = Vec::new();
+    for title_id in &expected {
+        let body = gql(
+            &ctx,
+            r#"
+            query($input: MediaRenamePreviewInput!) {
+              mediaRenamePreview(input: $input) {
+                titleId
+                fingerprint
+                total
+                renamable
+                items { currentPath proposedPath }
+              }
+            }
+            "#,
+            json!({ "input": { "facet": "ANIME", "titleId": title_id, "dryRun": true } }),
+        )
+        .await;
+        assert_no_errors(&body);
+        per_title.push(body["data"]["mediaRenamePreview"].clone());
+    }
+
+    let bulk_body = gql(
+        &ctx,
+        r#"
+        query($input: MediaRenamePreviewBulkInput!) {
+          mediaRenamePreviewBulk(input: $input) {
+            titleId
+            fingerprint
+            total
+            renamable
+            items { currentPath proposedPath }
+          }
+        }
+        "#,
+        json!({ "input": { "facet": "ANIME", "titleIds": expected } }),
+    )
+    .await;
+    assert_no_errors(&bulk_body);
+    let bulk = bulk_body["data"]["mediaRenamePreviewBulk"]
+        .as_array()
+        .expect("bulk plans");
+    assert_eq!(bulk.len(), per_title.len());
+    for (index, plan) in bulk.iter().enumerate() {
+        assert_eq!(plan, &per_title[index], "plan {index} should match");
+    }
+
+    // The sampling budget spans the batch instead of applying per title.
+    let sampled_body = gql(
+        &ctx,
+        r#"
+        query($input: MediaRenamePreviewBulkInput!) {
+          mediaRenamePreviewBulk(input: $input) {
+            titleId
+            fingerprint
+            renamable
+            items { currentPath }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "facet": "ANIME",
+                "titleIds": expected,
+                "renamableOnly": true,
+                "maxItems": 1
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&sampled_body);
+    let sampled = sampled_body["data"]["mediaRenamePreviewBulk"]
+        .as_array()
+        .expect("sampled plans");
+    assert_eq!(sampled.len(), 2);
+    assert_eq!(sampled[0]["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(sampled[1]["items"].as_array().map(Vec::len), Some(0));
+    for (index, plan) in sampled.iter().enumerate() {
+        assert_eq!(plan["renamable"].as_i64(), Some(1));
+        assert_eq!(plan["fingerprint"], per_title[index]["fingerprint"]);
+    }
+}

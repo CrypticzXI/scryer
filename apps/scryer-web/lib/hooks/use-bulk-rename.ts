@@ -1,7 +1,10 @@
 import * as React from "react";
 import type { Client } from "urql";
 import { applyMediaRenameMutation } from "@/lib/graphql/mutations";
-import { mediaRenamePreviewQuery } from "@/lib/graphql/queries";
+import {
+  mediaRenamePreviewBulkQuery,
+  mediaRenamePreviewQuery,
+} from "@/lib/graphql/queries";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import type { TitleRecord } from "@/lib/types";
 import type { Translate } from "@/components/root/types";
@@ -83,56 +86,122 @@ export function useBulkRename({
       const nextPlansByTitleId: Record<string, MediaRenamePlan> = {};
       const failedTitles: string[] = [];
       let firstFailureDetail: string | null = null;
-      const queue = [...targets];
       // The dialog only ever shows a sample, so each request asks for what is
       // still missing from it. Plan counts and the fingerprint describe every
       // file regardless of how few items come back.
       let sampledItems = 0;
+      const remainingSample = () =>
+        Math.max(0, BULK_RENAME_ITEM_SAMPLE_LIMIT - sampledItems);
 
-      const worker = async () => {
-        for (;;) {
-          const title = queue.shift();
-          if (!title || cancelled) {
-            return;
-          }
-          try {
-            const result = await client
-              .query<{ mediaRenamePreview: MediaRenamePlan }>(
-                mediaRenamePreviewQuery,
-                {
-                  input: {
-                    facet: title.facet,
-                    titleId: title.id,
-                    dryRun: true,
-                    renamableOnly: true,
-                    maxItems: Math.max(
-                      0,
-                      BULK_RENAME_ITEM_SAMPLE_LIMIT - sampledItems,
-                    ),
-                  },
-                },
-                { requestPolicy: "network-only" },
-              )
-              .toPromise();
-            if (result.error || !result.data?.mediaRenamePreview) {
-              throw result.error ?? new Error("rename preview failed");
-            }
-            const plan = result.data.mediaRenamePreview;
-            sampledItems += plan.items.length;
-            nextPlansByTitleId[title.id] = plan;
-          } catch (error) {
-            failedTitles.push(title.name || title.id);
-            firstFailureDetail ??= batchFailureDetail(error);
-          }
-        }
+      const recordPlan = (titleId: string, plan: MediaRenamePlan) => {
+        sampledItems += plan.items.length;
+        nextPlansByTitleId[titleId] = plan;
       };
 
-      await Promise.all(
-        Array.from(
-          { length: Math.min(BULK_RENAME_PREVIEW_CONCURRENCY, targets.length) },
-          worker,
-        ),
-      );
+      // One request per facet instead of one per title: the batch resolves the
+      // rename settings once rather than re-reading them for every title.
+      const previewFacet = async (facet: string, facetTitles: TitleRecord[]) => {
+        const result = await client
+          .query<{ mediaRenamePreviewBulk: MediaRenamePlan[] }>(
+            mediaRenamePreviewBulkQuery,
+            {
+              input: {
+                facet,
+                titleIds: facetTitles.map((title) => title.id),
+                renamableOnly: true,
+                maxItems: remainingSample(),
+              },
+            },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (result.error || !result.data?.mediaRenamePreviewBulk) {
+          throw result.error ?? new Error("rename preview failed");
+        }
+        const plans = result.data.mediaRenamePreviewBulk;
+        plans.forEach((plan, index) => {
+          const titleId = plan.titleId ?? facetTitles[index]?.id;
+          if (titleId) {
+            recordPlan(titleId, plan);
+          }
+        });
+      };
+
+      // A batch fails as a whole, so fall back to per-title previews to keep a
+      // single unreadable title from blanking the rest of the dialog.
+      const previewTitlesIndividually = async (facetTitles: TitleRecord[]) => {
+        const queue = [...facetTitles];
+        const worker = async () => {
+          for (;;) {
+            const title = queue.shift();
+            if (!title || cancelled) {
+              return;
+            }
+            try {
+              const result = await client
+                .query<{ mediaRenamePreview: MediaRenamePlan }>(
+                  mediaRenamePreviewQuery,
+                  {
+                    input: {
+                      facet: title.facet,
+                      titleId: title.id,
+                      dryRun: true,
+                      renamableOnly: true,
+                      maxItems: remainingSample(),
+                    },
+                  },
+                  { requestPolicy: "network-only" },
+                )
+                .toPromise();
+              if (result.error || !result.data?.mediaRenamePreview) {
+                throw result.error ?? new Error("rename preview failed");
+              }
+              recordPlan(title.id, result.data.mediaRenamePreview);
+            } catch (error) {
+              failedTitles.push(title.name || title.id);
+              firstFailureDetail ??= batchFailureDetail(error);
+            }
+          }
+        };
+        await Promise.all(
+          Array.from(
+            {
+              length: Math.min(
+                BULK_RENAME_PREVIEW_CONCURRENCY,
+                facetTitles.length,
+              ),
+            },
+            worker,
+          ),
+        );
+      };
+
+      const titlesByFacet = new Map<string, TitleRecord[]>();
+      for (const title of targets) {
+        const bucket = titlesByFacet.get(title.facet);
+        if (bucket) {
+          bucket.push(title);
+        } else {
+          titlesByFacet.set(title.facet, [title]);
+        }
+      }
+
+      for (const [facet, facetTitles] of titlesByFacet) {
+        if (cancelled) {
+          return;
+        }
+        try {
+          await previewFacet(facet, facetTitles);
+        } catch (error) {
+          // Falling back silently would hide a backend that never serves the
+          // batch, leaving the dialog quietly back on one request per title.
+          console.warn(
+            "[bulk-rename] batched preview failed; falling back to per-title previews",
+            error,
+          );
+          await previewTitlesIndividually(facetTitles);
+        }
+      }
       if (cancelled) {
         return;
       }

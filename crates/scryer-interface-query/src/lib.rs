@@ -7,7 +7,7 @@ use scryer_application::{
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, ImageProxyKind, JwtSessionScope, MediaRequestCounts,
-    OAuthAuthorizationSource, PendingImportCounts, RenameWriteAction, RuntimePathStyle,
+    OAuthAuthorizationSource, PendingImportCounts, RenamePlan, RenameWriteAction, RuntimePathStyle,
     SCRYER_VERSION, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort,
     TitleCatalogSortKey, TitleHistoryFilter, is_supported_title_history_event_type,
     supported_title_history_event_types,
@@ -1037,17 +1037,53 @@ impl CatalogQueries {
                 .map_err(to_gql_error)?
         };
 
-        // Counts and the fingerprint stay derived from the whole plan so apply
-        // still validates against every file, not just the returned sample.
-        if input.renamable_only.unwrap_or(false) {
-            plan.items
-                .retain(|item| matches!(item.write_action, RenameWriteAction::Move));
-        }
-        if let Some(max_items) = input.max_items {
-            plan.items.truncate(max_items.max(0) as usize);
-        }
+        let mut budget = input.max_items;
+        scope_rename_plan_items(
+            &mut plan,
+            input.renamable_only.unwrap_or(false),
+            &mut budget,
+        );
 
         Ok(from_media_rename_plan(plan))
+    }
+
+    /// Preview rename plans for several titles of one facet without changing files.
+    async fn media_rename_preview_bulk(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Titles whose rename plans are returned, in the order supplied; no files are changed."
+        )]
+        input: MediaRenamePreviewBulkInput,
+    ) -> GqlResult<Vec<MediaRenamePlanPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let facet = input.facet.into_domain();
+        let title_ids = input
+            .title_ids
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let plans = app
+            .preview_rename_for_titles(&actor, &title_ids, facet)
+            .await
+            .map_err(to_gql_error)?;
+
+        // One sampling budget spans the whole batch, so a caller asking for 50
+        // items gets 50 across every plan rather than 50 per title.
+        let renamable_only = input.renamable_only.unwrap_or(false);
+        let mut budget = input.max_items;
+        Ok(plans
+            .into_iter()
+            .map(|mut plan| {
+                scope_rename_plan_items(&mut plan, renamable_only, &mut budget);
+                from_media_rename_plan(plan)
+            })
+            .collect())
     }
 
     /// Preview deleting all media files for one title without changing files.
@@ -2960,5 +2996,22 @@ impl UtilityQueries {
             })
             .collect::<Result<Vec<_>, AppError>>()
             .map_err(to_gql_error)
+    }
+}
+
+/// Narrows the items a rename plan returns without touching what it reports.
+///
+/// `total`, `renamable`, `noop`, `conflicts`, `errors`, and the fingerprint
+/// keep describing every file in the plan, so apply still validates the whole
+/// plan against the fingerprint the caller previewed. `budget`, when set, is
+/// consumed across successive calls so one sample can span several plans.
+fn scope_rename_plan_items(plan: &mut RenamePlan, renamable_only: bool, budget: &mut Option<i32>) {
+    if renamable_only {
+        plan.items
+            .retain(|item| matches!(item.write_action, RenameWriteAction::Move));
+    }
+    if let Some(remaining) = budget.as_mut() {
+        plan.items.truncate((*remaining).max(0) as usize);
+        *remaining = remaining.saturating_sub(i32::try_from(plan.items.len()).unwrap_or(i32::MAX));
     }
 }

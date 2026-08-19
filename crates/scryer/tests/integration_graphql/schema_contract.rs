@@ -511,8 +511,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // additive on existing types.
     // (Merged with release-0.18.17: both branches' additions above are
     // additive from the shared 119/175/291/158/99/560 base.)
+    // Batched rename preview adds the mediaRenamePreviewBulk query root and its
+    // input object, reusing the existing plan payload: query 124->125,
+    // INPUT_OBJECT 163->164, public types 578->579.
     assert_eq!(
-        query_field_count, 124,
+        query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
@@ -520,9 +523,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 578);
+    assert_eq!(public_types.len(), 579);
     assert_eq!(kind_count("OBJECT"), 299);
-    assert_eq!(kind_count("INPUT_OBJECT"), 163);
+    assert_eq!(kind_count("INPUT_OBJECT"), 164);
     assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
