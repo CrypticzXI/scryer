@@ -7,7 +7,9 @@ import {
   buildSeedingProfileTemplate,
   extractSeedingProfileErrorMessage,
   formatSeasonPackSummary,
+  formatSeedDuration,
   handsOffAfterImport,
+  parseSeedDuration,
   POST_IMPORT_TRACKING_MODES,
   formatSeedingProfileRatio,
   formatSeedingProfileSeedTime,
@@ -69,7 +71,9 @@ test("a stored profile round-trips through the draft", () => {
 
   const asDraft = seedingProfileToDraft(record);
   assert.equal(asDraft.ratio, "1.5");
-  assert.equal(asDraft.seasonPackSeedTimeMinutes, "10080");
+  // Stored minutes come back as the duration syntax the field accepts.
+  assert.equal(asDraft.seedTimeMinutes, "3d");
+  assert.equal(asDraft.seasonPackSeedTimeMinutes, "1w");
 
   assert.deepEqual(toUpdateSeedingProfileInput(asDraft), {
     id: "profile-1",
@@ -196,7 +200,7 @@ test("table cells fall back to a dash when a goal defers to the client", () => {
   assert.equal(formatSeedingProfileRatio(null), "—");
   assert.equal(formatSeedingProfileRatio(1.5), "1.5");
   assert.equal(formatSeedingProfileSeedTime(null), "—");
-  assert.equal(formatSeedingProfileSeedTime(60), "60m");
+  assert.equal(formatSeedingProfileSeedTime(60), "1h");
   assert.equal(
     formatSeasonPackSummary(
       { seasonPackMode: "INHERIT", seasonPackRatio: 2, seasonPackSeedTimeMinutes: 60 },
@@ -213,7 +217,7 @@ test("table cells fall back to a dash when a goal defers to the client", () => {
       },
       "Inherit",
     ),
-    "2 / 60m",
+    "2 / 1h",
   );
   assert.equal(
     formatSeasonPackSummary(
@@ -295,5 +299,48 @@ test("every seeding-profile string the UI renders has an English entry", () => {
 
   for (const key of requiredKeys) {
     assert.equal(typeof en[key], "string", `missing English string for ${key}`);
+  }
+});
+
+test("seed-time durations parse into the minutes the API stores", () => {
+  const minutes = (raw: string) => {
+    const parsed = parseSeedDuration(raw);
+    assert.equal(parsed.ok, true, raw);
+    return parsed.ok ? parsed.value : null;
+  };
+
+  // A bare number stays minutes: it is what the field took before, and what
+  // trackers usually quote.
+  assert.equal(minutes("90"), 90);
+  assert.equal(minutes("5m"), 5);
+  assert.equal(minutes("36h"), 2_160);
+  assert.equal(minutes("1d"), 1_440);
+  assert.equal(minutes("2w"), 20_160);
+  assert.equal(minutes("1d 12h"), 2_160);
+  assert.equal(minutes("1d12h"), 2_160);
+  assert.equal(minutes("2W"), 20_160);
+  assert.equal(minutes(""), null);
+  assert.equal(minutes("  "), null);
+
+  for (const bad of ["0", "-5", "2x", "2w rubbish", "rubbish", "1.5d", "1d 1d", "0m"]) {
+    assert.equal(parseSeedDuration(bad).ok, false, bad);
+  }
+});
+
+test("minutes render back into the duration syntax the field accepts", () => {
+  assert.equal(formatSeedDuration(5), "5m");
+  assert.equal(formatSeedDuration(60), "1h");
+  assert.equal(formatSeedDuration(90), "1h 30m");
+  assert.equal(formatSeedDuration(1_440), "1d");
+  assert.equal(formatSeedDuration(2_160), "1d 12h");
+  assert.equal(formatSeedDuration(20_160), "2w");
+  assert.equal(formatSeedDuration(null), "");
+  assert.equal(formatSeedDuration(0), "");
+});
+
+test("every duration the formatter emits parses back to the same minutes", () => {
+  for (const value of [1, 59, 60, 90, 1_439, 1_440, 2_160, 10_080, 20_161]) {
+    const parsed = parseSeedDuration(formatSeedDuration(value));
+    assert.equal(parsed.ok && parsed.value, value, String(value));
   }
 });

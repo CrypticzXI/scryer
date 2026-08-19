@@ -484,6 +484,16 @@ export const SettingsContainer = memo(function SettingsContainer({
         );
     }
   })();
+  // The Indexers page's panes are pages in their own right, so the header and
+  // the breadcrumb name the pane rather than the section that hosts it.
+  const activeIndexerTab =
+    settingsSection === "indexers" && indexerSettingsTab !== "indexers"
+      ? INDEXER_SETTINGS_TABS.find((item) => item.tab === indexerSettingsTab)
+      : undefined;
+  const pageLabel = activeIndexerTab
+    ? t(activeIndexerTab.labelKey)
+    : settingsSectionLabel;
+  const PageIcon = activeIndexerTab ? activeIndexerTab.icon : SettingsSectionIcon;
   const breadcrumbRootLabel =
     usesAutomationHeader
       ? t("nav.group.automation")
@@ -588,7 +598,18 @@ export const SettingsContainer = memo(function SettingsContainer({
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{breadcrumbRootLabel}</span>
             <ChevronRight className="h-3.5 w-3.5" />
-            <span className="font-semibold text-[var(--scry-accent-text)]">{settingsSectionLabel}</span>
+            {activeIndexerTab ? (
+              <>
+                <Link
+                  to={buildIndexerSettingsPath("indexers")}
+                  className="transition hover:text-[var(--scry-ink2)]"
+                >
+                  {settingsSectionLabel}
+                </Link>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </>
+            ) : null}
+            <span className="font-semibold text-[var(--scry-accent-text)]">{pageLabel}</span>
           </div>
           <div
             className={cn(
@@ -600,11 +621,11 @@ export const SettingsContainer = memo(function SettingsContainer({
           >
             <div className="flex min-w-0 items-center gap-4">
               <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
-                <SettingsSectionIcon className="h-[23px] w-[23px]" />
+                <PageIcon className="h-[23px] w-[23px]" />
               </div>
               <div className="min-w-0">
                 <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
-                  {settingsSectionLabel}
+                  {pageLabel}
                 </h1>
                 {!usesAutomationHeader &&
                 !usesIntegrationsHeader &&

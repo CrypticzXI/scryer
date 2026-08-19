@@ -4,7 +4,7 @@ import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { CheckboxField } from "@/components/ui/checkbox";
-import { Input, integerInputProps } from "@/components/ui/input";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ActionTooltip } from "@/components/ui/tooltip";
 import {
@@ -445,7 +445,10 @@ export function SettingsSeedingProfilesSection({
                       label={t("settings.seedingProfileSeedTimeLabel")}
                       info={
                         <>
-                          <p>{t("settings.seedingProfileSeedTimeHelp")}</p>
+                          <p>{t("settings.seedingProfileSeedTimeFormatHint")}</p>
+                          <p className="mt-1.5">
+                            {t("settings.seedingProfileSeedTimeHelp")}
+                          </p>
                           <p className="mt-1.5">
                             {t("settings.seedingProfileSeedTimeTransmissionHelp")}
                           </p>
@@ -454,7 +457,6 @@ export function SettingsSeedingProfilesSection({
                     />
                     <Input
                       id="settings-seeding-profile-seed-time"
-                      {...integerInputProps}
                       value={draft.seedTimeMinutes}
                       onChange={(event) =>
                         updateField("seedTimeMinutes", event.target.value)
@@ -668,7 +670,6 @@ export function SettingsSeedingProfilesSection({
                         </Label>
                         <Input
                           id="settings-seeding-profile-season-pack-seed-time"
-                          {...integerInputProps}
                           value={draft.seasonPackSeedTimeMinutes}
                           disabled={!isSeasonPackOverride}
                           onChange={(event) =>

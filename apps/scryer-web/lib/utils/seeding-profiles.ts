@@ -62,10 +62,10 @@ export function seedingProfileToDraft(
     id: profile.id,
     name: profile.name,
     ratio: numberToDraftValue(profile.ratio),
-    seedTimeMinutes: numberToDraftValue(profile.seedTimeMinutes),
+    seedTimeMinutes: formatSeedDuration(profile.seedTimeMinutes),
     seasonPackMode: profile.seasonPackMode,
     seasonPackRatio: numberToDraftValue(profile.seasonPackRatio),
-    seasonPackSeedTimeMinutes: numberToDraftValue(
+    seasonPackSeedTimeMinutes: formatSeedDuration(
       profile.seasonPackSeedTimeMinutes,
     ),
     honorTrackerMinimums: profile.honorTrackerMinimums,
@@ -91,19 +91,82 @@ function parseOptionalRatio(raw: string): ParsedGoal {
   return { ok: true, value: parsed };
 }
 
-function parseOptionalMinutes(raw: string): ParsedGoal {
+const MINUTES_PER_UNIT: Record<string, number> = {
+  m: 1,
+  h: 60,
+  d: 60 * 24,
+  w: 60 * 24 * 7,
+};
+
+/// Largest unit first, so a duration only ever splits into the units it needs.
+const SEED_DURATION_UNITS: [string, number][] = [
+  ["w", MINUTES_PER_UNIT.w!],
+  ["d", MINUTES_PER_UNIT.d!],
+  ["h", MINUTES_PER_UNIT.h!],
+  ["m", 1],
+];
+
+const SEED_DURATION_TOKEN = /(\d+)\s*([mhdw])/giu;
+
+/**
+ * Seed goals are set in weeks and days far more often than in minutes, so the
+ * field takes durations (`90m`, `36h`, `2w`, `1d 12h`) and stores the minutes
+ * the API wants. A bare number is still minutes, which is what the field
+ * accepted before and what a tracker's own rules are usually quoted in.
+ */
+export function parseSeedDuration(raw: string): ParsedGoal {
   const trimmed = raw.trim();
   if (!trimmed) {
     return { ok: true, value: null };
   }
-  if (!/^\d+$/.test(trimmed)) {
+  if (/^\d+$/.test(trimmed)) {
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0
+      ? { ok: true, value: parsed }
+      : { ok: false };
+  }
+
+  // Every character has to belong to a token, so "2w rubbish" is rejected
+  // rather than silently read as "2w".
+  const consumed = trimmed.replace(SEED_DURATION_TOKEN, "").trim();
+  if (consumed) {
     return { ok: false };
   }
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    return { ok: false };
+
+  let total = 0;
+  const seen = new Set<string>();
+  for (const match of trimmed.matchAll(SEED_DURATION_TOKEN)) {
+    const unit = match[2]!.toLowerCase();
+    // `1d 1d` is a typo, not two days.
+    if (seen.has(unit)) {
+      return { ok: false };
+    }
+    seen.add(unit);
+    total += Number(match[1]) * MINUTES_PER_UNIT[unit]!;
   }
-  return { ok: true, value: parsed };
+  return Number.isSafeInteger(total) && total > 0
+    ? { ok: true, value: total }
+    : { ok: false };
+}
+
+/**
+ * Minutes rendered back into the duration syntax the field accepts, so a saved
+ * profile reopens showing what was typed rather than its minute count.
+ */
+export function formatSeedDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || minutes <= 0) {
+    return "";
+  }
+  let remaining = Math.floor(minutes);
+  const parts: string[] = [];
+  for (const [unit, size] of SEED_DURATION_UNITS) {
+    const count = Math.floor(remaining / size);
+    if (count > 0) {
+      parts.push(`${count}${unit}`);
+      remaining -= count * size;
+    }
+  }
+  return parts.join(" ");
 }
 
 /**
@@ -120,15 +183,15 @@ export function validateSeedingProfileDraft(
   if (!parseOptionalRatio(draft.ratio).ok) {
     return "Ratio must be a number greater than zero, or empty.";
   }
-  if (!parseOptionalMinutes(draft.seedTimeMinutes).ok) {
-    return "Seed time must be a whole number of minutes greater than zero, or empty.";
+  if (!parseSeedDuration(draft.seedTimeMinutes).ok) {
+    return "Seed time must be a duration like 90m, 36h, 1d 12h or 2w, or empty.";
   }
   if (draft.seasonPackMode === "OVERRIDE") {
     if (!parseOptionalRatio(draft.seasonPackRatio).ok) {
       return "Season-pack ratio must be a number greater than zero, or empty.";
     }
-    if (!parseOptionalMinutes(draft.seasonPackSeedTimeMinutes).ok) {
-      return "Season-pack seed time must be a whole number of minutes greater than zero, or empty.";
+    if (!parseSeedDuration(draft.seasonPackSeedTimeMinutes).ok) {
+      return "Season-pack seed time must be a duration like 90m, 36h, 1d 12h or 2w, or empty.";
     }
   }
   return null;
@@ -156,9 +219,9 @@ export function seedingProfileDraftToInput(
   draft: SeedingProfileDraft,
 ): SeedingProfileGoalInput {
   const ratio = parseOptionalRatio(draft.ratio);
-  const seedTime = parseOptionalMinutes(draft.seedTimeMinutes);
+  const seedTime = parseSeedDuration(draft.seedTimeMinutes);
   const seasonPackRatio = parseOptionalRatio(draft.seasonPackRatio);
-  const seasonPackSeedTime = parseOptionalMinutes(
+  const seasonPackSeedTime = parseSeedDuration(
     draft.seasonPackSeedTimeMinutes,
   );
   const isOverride = draft.seasonPackMode === "OVERRIDE";
@@ -219,7 +282,7 @@ export function formatSeedingProfileRatio(ratio: number | null): string {
 }
 
 export function formatSeedingProfileSeedTime(minutes: number | null): string {
-  return minutes === null ? EM_DASH : `${minutes}m`;
+  return minutes === null ? EM_DASH : formatSeedDuration(minutes);
 }
 
 /**
@@ -240,7 +303,7 @@ export function formatSeasonPackSummary(
     profile.seasonPackRatio === null ? null : String(profile.seasonPackRatio),
     profile.seasonPackSeedTimeMinutes === null
       ? null
-      : `${profile.seasonPackSeedTimeMinutes}m`,
+      : formatSeedDuration(profile.seasonPackSeedTimeMinutes),
   ].filter((part): part is string => part !== null);
   return parts.length === 0 ? EM_DASH : parts.join(" / ");
 }

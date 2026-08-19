@@ -708,7 +708,8 @@ const en: LocaleDictionary = {
   "settings.seedingProfileRatioLabel": "Ratio",
   "settings.seedingProfileRatioHelp":
     "Stop seeding once this share ratio is reached. Empty defers to the download client's own limit.",
-  "settings.seedingProfileSeedTimeLabel": "Seed time (minutes)",
+  "settings.seedingProfileSeedTimeFormatHint": "Duration such as 90m, 36h, 1d 12h or 2w. A plain number is minutes.",
+  "settings.seedingProfileSeedTimeLabel": "Seed time",
   "settings.seedingProfileSeedTimeHelp":
     "Stop seeding once the torrent has seeded this long. Empty defers to the download client's own limit.",
   "settings.seedingProfileSeedTimeTransmissionHelp":
@@ -727,7 +728,7 @@ const en: LocaleDictionary = {
   "settings.seedingProfileSeasonPackOverride": "Override",
   "settings.seedingProfileSeasonPackRatioLabel": "Season pack ratio",
   "settings.seedingProfileSeasonPackSeedTimeLabel":
-    "Season pack seed time (minutes)",
+    "Season pack seed time",
   "settings.seedingProfileSeasonPackGoalsHelp":
     "Only used in override mode. An empty field defers that goal to the download client.",
   "settings.seedingProfileHonorTrackerMinimumsLabel": "Honor tracker minimums",

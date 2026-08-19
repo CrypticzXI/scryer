@@ -1,5 +1,8 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
+import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { SettingsSeedingProfilesSection } from "@/components/views/settings/settings-seeding-profiles-section";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useSeedingProfilesManager } from "@/lib/hooks/use-seeding-profiles-manager";
@@ -130,8 +133,29 @@ export function SettingsSeedingProfilesContainer() {
     setPendingDeleteProfileId(null);
   }, [editorMode, manager, pendingDeleteProfileId]);
 
+  // The indexer plugin rail belongs to the Indexers page, not to one of its
+  // panes, so it stays put when the seeding-profiles pane replaces the
+  // indexers container that normally portals it here.
+  const [pluginsTarget, setPluginsTarget] = React.useState<HTMLElement | null>(
+    null,
+  );
+  React.useEffect(() => {
+    setPluginsTarget(document.getElementById(SETTINGS_REFERENCE_SLOT_ID));
+  }, []);
+
   return (
     <>
+      {pluginsTarget
+        ? createPortal(
+            <FilteredPluginList
+              family="INDEXER"
+              // Nothing on this pane reads provider options, so there is
+              // nothing to refresh after a plugin change.
+              refreshProviderOptions={async () => {}}
+            />,
+            pluginsTarget,
+          )
+        : null}
       <SettingsSeedingProfilesSection
         loading={manager.loading}
         saving={manager.saving}
