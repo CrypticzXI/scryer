@@ -1,11 +1,10 @@
 import * as React from "react";
 import {
   Ban,
-  ChevronDown,
-  ChevronUp,
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronDown,
   Database,
   Download,
   FilePlus2,
@@ -165,7 +164,6 @@ function SearchResultRow({
   result,
   onQueue,
   onQueueAdditional,
-  blocked,
   disabled = false,
   requireCandidateToken = false,
   mobile = false,
@@ -174,7 +172,6 @@ function SearchResultRow({
   result: Release;
   onQueue: (r: Release) => Promise<void> | void;
   onQueueAdditional?: (r: Release) => Promise<void> | void;
-  blocked: boolean;
   disabled?: boolean;
   requireCandidateToken?: boolean;
   mobile?: boolean;
@@ -188,7 +185,7 @@ function SearchResultRow({
   const decision = result.qualityProfileDecision;
   const hasLog = decision && decision.scoringLog.length > 0;
   const blockReason =
-    blocked && decision && decision.blockCodes.length > 0
+    decision && decision.blockCodes.length > 0
       ? decision.blockCodes.join(" · ")
       : null;
   const rejectionBadge = blockReason ? (
@@ -198,7 +195,7 @@ function SearchResultRow({
     </span>
   ) : null;
   const approvedBadge =
-    !blocked && decision?.allowed ? (
+    decision?.allowed ? (
       <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--scry-success-bg-strong)] px-[7px] py-px text-[10px] font-bold text-[var(--scry-success-text-soft)]">
         <Check className="h-2.5 w-2.5" />
         Approved
@@ -247,15 +244,13 @@ function SearchResultRow({
         .map((entry) => entry as { label: string; className: string })
     : [];
   const queueUnavailableReason =
-    requireCandidateToken && !blocked && !result.candidateToken
+    requireCandidateToken && !result.candidateToken
       ? t("queue.manualUnavailableForResult")
       : null;
-  const queueDisabled =
-    disabled || blocked || queueRequested || queueUnavailableReason !== null;
-  const queueButtonMuted = blocked || queueUnavailableReason !== null;
+  const queueDisabled = disabled || queueRequested || queueUnavailableReason !== null;
+  const queueButtonMuted = queueUnavailableReason !== null;
   const additionalQueueDisabled =
     disabled ||
-    blocked ||
     additionalQueueRequested ||
     queueUnavailableReason !== null ||
     !onQueueAdditional;
@@ -781,37 +776,15 @@ export function SearchResultBuckets({
   presentation?: SearchResultPresentation;
 }) {
   const t = useTranslate();
-  const isBlockedEntry = React.useCallback(
-    (entry: Release) =>
-      Boolean(
-        entry.qualityProfileDecision && !entry.qualityProfileDecision.allowed,
-      ),
-    [],
-  );
-  const considered = React.useMemo(
-    () => results.filter((entry) => !isBlockedEntry(entry)),
-    [isBlockedEntry, results],
-  );
-  const blocked = React.useMemo(
-    () => results.filter((entry) => isBlockedEntry(entry)),
-    [isBlockedEntry, results],
-  );
-  const [showBlocked, setShowBlocked] = React.useState(false);
   const [localSortKey, setLocalSortKey] = React.useState<SortKey>("score");
   const [localSortDirection, setLocalSortDirection] =
     React.useState<SortDirection>("desc");
   const sortKey = controlledSortKey ?? localSortKey;
   const sortDirection = controlledSortDirection ?? localSortDirection;
 
-  const sortedConsidered = React.useMemo(
-    () => sortBy(considered, sortKey, sortDirection),
-    [considered, sortDirection, sortKey],
-  );
-  const sortedBlocked = React.useMemo(
-    () => sortBy(blocked, sortKey, sortDirection),
-    [blocked, sortDirection, sortKey],
-  );
-  const sortedInlineResults = React.useMemo(
+  // Interactive releases are explicit operator choices. Score blocks remain
+  // visible as diagnostics, but never prevent manual queueing.
+  const sortedResults = React.useMemo(
     () => sortBy(results, sortKey, sortDirection),
     [results, sortDirection, sortKey],
   );
@@ -851,13 +824,7 @@ export function SearchResultBuckets({
   );
 
   const renderTable = React.useCallback(
-    (
-      entries: Release[],
-      isBlocked: boolean | ((entry: Release) => boolean),
-    ) => {
-      const resolveBlocked =
-        typeof isBlocked === "function" ? isBlocked : () => isBlocked;
-
+    (entries: Release[]) => {
       return (
         <div className="space-y-3">
           {hideInlineSortControls ? null : (
@@ -898,7 +865,6 @@ export function SearchResultBuckets({
                     ? onQueueAdditional
                     : undefined
                 }
-                blocked={resolveBlocked(result)}
                 disabled={disabled}
                 requireCandidateToken={requireCandidateToken}
                 mobile
@@ -959,7 +925,6 @@ export function SearchResultBuckets({
                         ? onQueueAdditional
                         : undefined
                     }
-                    blocked={resolveBlocked(result)}
                     disabled={disabled}
                     requireCandidateToken={requireCandidateToken}
                   />
@@ -986,13 +951,7 @@ export function SearchResultBuckets({
   );
 
   const renderSelectedTitleList = React.useCallback(
-    (
-      entries: Release[],
-      isBlocked: boolean | ((entry: Release) => boolean),
-    ) => {
-      const resolveBlocked =
-        typeof isBlocked === "function" ? isBlocked : () => isBlocked;
-
+    (entries: Release[]) => {
       return (
         <div>
           {entries.map((result) => (
@@ -1006,7 +965,6 @@ export function SearchResultBuckets({
                   ? onQueueAdditional
                   : undefined
               }
-              blocked={resolveBlocked(result)}
               disabled={disabled}
               requireCandidateToken={requireCandidateToken}
               presentation="selected-title"
@@ -1032,7 +990,7 @@ export function SearchResultBuckets({
             {t("nzb.noConsideredResults")}
           </p>
         ) : (
-          renderSelectedTitleList(sortedInlineResults, isBlockedEntry)
+          renderSelectedTitleList(sortedResults)
         )}
       </div>
     );
@@ -1046,7 +1004,7 @@ export function SearchResultBuckets({
             {t("nzb.noConsideredResults")}
           </p>
         ) : (
-          renderTable(sortedInlineResults, isBlockedEntry)
+          renderTable(sortedResults)
         )}
       </div>
     );
@@ -1054,34 +1012,13 @@ export function SearchResultBuckets({
 
   return (
     <div className="space-y-3">
-      {considered.length === 0 ? (
+      {results.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {t("nzb.noConsideredResults")}
         </p>
       ) : (
-        renderTable(sortedConsidered, false)
+        renderTable(sortedResults)
       )}
-      {blocked.length > 0 ? (
-        <div>
-          <button
-            type="button"
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-card-foreground"
-            onClick={() => setShowBlocked((v) => !v)}
-          >
-            {showBlocked ? (
-              <ChevronUp className="h-3 w-3" />
-            ) : (
-              <ChevronDown className="h-3 w-3" />
-            )}
-            {t("nzb.blockedResults", { count: blocked.length })}
-          </button>
-          {showBlocked ? (
-            <div className="mt-2 space-y-2">
-              {renderTable(sortedBlocked, true)}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }
