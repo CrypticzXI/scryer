@@ -13,9 +13,40 @@
         "runtime_minutes": 142,
         "sort_title": "Test Movie Title",
         "imdb_id": "tt1234567",
-        "genres": ["Action", "Thriller"],
+        "genres": [
+          "Action",
+          "Thriller"
+        ],
         "studio": "Test Studios",
-        "tmdb_release_date": "2024-06-15"
+        "tmdb_release_date": "2024-06-15",
+        "credits": [
+          {
+            "kind": "actor",
+            "person_id": "person-1",
+            "person_name": "Test Lead",
+            "person_original_name": "Test Lead",
+            "person_image_url": "https://image.tmdb.org/t/p/original/person-1.jpg",
+            "person_source": "tmdb",
+            "person_external_id": "1001",
+            "character_name": "Lead Character",
+            "language": "eng",
+            "billing_order": 0,
+            "episode_count": 10
+          },
+          {
+            "kind": "director",
+            "person_id": "person-2",
+            "person_name": "Test Director",
+            "person_original_name": "Test Director",
+            "person_image_url": "",
+            "person_source": "tmdb",
+            "person_external_id": "1002",
+            "character_name": "",
+            "language": "",
+            "billing_order": 1,
+            "episode_count": null
+          }
+        ]
       }
     }
   }

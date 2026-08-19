@@ -17,7 +17,7 @@ use scryer_application::{
     EpisodeMetadata, MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
     MultiMetadataSearchResult, RateLimitCooldownAction, RichMetadataSearchItem, SeasonMetadata,
     SeriesArtworkUrls, SeriesMetadata, SettingsRepository, SmgScryerUpdateNotice, TitleArtworkUrls,
-    TitleExternalRating, TitleRatingSummary, TitleRecommendationsInput,
+    TitleCredit, TitleExternalRating, TitleRatingSummary, TitleRecommendationsInput,
 };
 use scryer_domain::CanonicalMediaTag;
 use scryer_outbound_http::{
@@ -2041,6 +2041,7 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
         studio: m.studio,
         tmdb_release_date: m.tmdb_release_date,
         ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
+        credits: credits_from_gateway(m.credits),
     }
 }
 
@@ -2161,6 +2162,7 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
             })
             .collect(),
         ratings: rating_summary_from_gateway(s.rating, s.rating_sources, s.external_ratings),
+        credits: credits_from_gateway(s.credits),
     }
 }
 
@@ -2201,7 +2203,7 @@ mod tests {
     use scryer_application::{
         AppError, DiscoveryContextChangeType, DiscoveryContextChangedSubjectInput,
         DiscoveryContextChangesInput, DiscoveryPublicFeedInput, DiscoverySubjectInput,
-        MetadataGateway,
+        MetadataGateway, TitleCredit,
     };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -2266,6 +2268,55 @@ mod tests {
         })
     }
 
+    fn credit_payload(kind: &str, person_id: &str, billing_order: i64) -> serde_json::Value {
+        json!({
+            "kind": kind,
+            "person_id": person_id,
+            "person_name": format!("{person_id} name"),
+            "person_original_name": format!("{person_id} original"),
+            "person_image_url": format!("https://example.test/{person_id}.jpg"),
+            "person_source": "tmdb",
+            "person_external_id": format!("tmdb-{person_id}"),
+            "character_name": format!("{person_id} character"),
+            "language": "eng",
+            "billing_order": billing_order,
+            "episode_count": if kind == "actor" { json!(12) } else { json!(null) }
+        })
+    }
+
+    fn credits_payload() -> serde_json::Value {
+        json!([
+            credit_payload("actor", "p1", 0),
+            credit_payload("director", "p2", 1),
+            credit_payload("writer", "p3", 2),
+        ])
+    }
+
+    fn assert_fixture_credits(credits: &[TitleCredit]) {
+        assert_eq!(
+            credits
+                .iter()
+                .map(|credit| credit.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["actor", "director", "writer"],
+            "credits keep the order SMG returned them in, crew included"
+        );
+        let actor = &credits[0];
+        assert_eq!(actor.person_id, "p1");
+        assert_eq!(actor.person_name, "p1 name");
+        assert_eq!(actor.person_original_name, "p1 original");
+        assert_eq!(actor.person_image_url, "https://example.test/p1.jpg");
+        assert_eq!(actor.person_source, "tmdb");
+        assert_eq!(actor.person_external_id, "tmdb-p1");
+        assert_eq!(actor.character_name, "p1 character");
+        assert_eq!(actor.language, "eng");
+        assert_eq!(actor.billing_order, 0);
+        assert_eq!(actor.episode_count, Some(12));
+        assert_eq!(credits[1].billing_order, 1);
+        assert_eq!(credits[1].episode_count, None);
+        assert_eq!(credits[2].billing_order, 2);
+    }
+
     fn movie_item_payload(tvdb_id: i64) -> serde_json::Value {
         json!({
             "tvdb_id": tvdb_id,
@@ -2285,6 +2336,7 @@ mod tests {
             "rating": null,
             "rating_sources": [],
             "external_ratings": [],
+            "credits": credits_payload(),
             "artworks": []
         })
     }
@@ -2307,6 +2359,7 @@ mod tests {
             "rating": null,
             "rating_sources": [],
             "external_ratings": [],
+            "credits": credits_payload(),
             "aliases": [],
             "tagged_aliases": [],
             "artworks": [],
@@ -2539,6 +2592,7 @@ mod tests {
         assert_eq!(movie.tvdb_id, 909);
         assert_eq!(movie.name, "Fixture Movie");
         assert_eq!(movie.target_key, None);
+        assert_fixture_credits(&movie.credits);
     }
 
     #[tokio::test]
@@ -2561,6 +2615,101 @@ mod tests {
         assert_eq!(series.tvdb_id, 424536);
         assert_eq!(series.name, "Fixture Series");
         assert_eq!(series.target_key, None);
+        assert_fixture_credits(&series.credits);
+    }
+
+    #[tokio::test]
+    async fn metadata_bulk_maps_credits_for_movies_and_series() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(format!(
+                "\"operationName\":\"{OP_METADATA_BULK}\""
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "metadataBulk": {
+                        "movies": [movie_item_payload(101)],
+                        "series": [series_item_payload(202)],
+                        "missing_movie_tvdb_ids": [],
+                        "missing_series_tvdb_ids": []
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let result = client
+            .get_metadata_bulk(&[101], &[202], "eng")
+            .await
+            .expect("metadataBulk request should succeed");
+
+        assert_fixture_credits(&result.movies.get(&101).expect("bulk movie").credits);
+        assert_fixture_credits(&result.series.get(&202).expect("bulk series").credits);
+    }
+
+    #[tokio::test]
+    async fn metadata_responses_without_credits_map_to_an_empty_list() {
+        let server = MockServer::start().await;
+        let mut payload = movie_item_payload(909);
+        payload
+            .as_object_mut()
+            .expect("movie payload object")
+            .remove("credits");
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", OP_GET_MOVIE))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "movie": { "movie": payload } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let movie = client
+            .get_movie(909, "eng")
+            .await
+            .expect("movie request should succeed without credits");
+
+        assert!(movie.credits.is_empty());
+    }
+
+    #[test]
+    fn metadata_documents_request_the_full_credit_selection() {
+        let queries = [
+            graphql_docs::METADATA_BULK_QUERY,
+            graphql_docs::GET_MOVIE_QUERY,
+            graphql_docs::GET_SERIES_QUERY,
+        ];
+
+        for query in queries {
+            assert!(query.contains("credits {"));
+            for field in [
+                "kind",
+                "person_id",
+                "person_name",
+                "person_original_name",
+                "person_image_url",
+                "person_source",
+                "person_external_id",
+                "character_name",
+                "language",
+                "billing_order",
+                "episode_count",
+            ] {
+                assert!(query.contains(field), "{field} must be requested");
+            }
+        }
+        // metadataBulk selects credits on both the movie and the series fragment.
+        assert_eq!(
+            graphql_docs::METADATA_BULK_QUERY
+                .matches("credits {")
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -3717,6 +3866,8 @@ struct MovieItem {
     #[serde(default)]
     external_ratings: Vec<ExternalRatingItem>,
     #[serde(default)]
+    credits: Vec<CreditItem>,
+    #[serde(default)]
     artworks: Vec<ArtworkItem>,
 }
 
@@ -3731,6 +3882,29 @@ struct ExternalRatingItem {
     #[serde(default)]
     votes: Option<i32>,
     url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CreditItem {
+    kind: String,
+    person_id: String,
+    person_name: String,
+    #[serde(default)]
+    person_original_name: String,
+    #[serde(default)]
+    person_image_url: String,
+    #[serde(default)]
+    person_source: String,
+    #[serde(default)]
+    person_external_id: String,
+    #[serde(default)]
+    character_name: String,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    billing_order: i32,
+    #[serde(default)]
+    episode_count: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3784,6 +3958,35 @@ fn rating_summary_from_gateway(
         rating_sources,
         external_ratings,
     }
+}
+
+/// Credits are cached verbatim: SMG owns ordering and crew/cast selection, so the
+/// only rows dropped here are the ones with no person to key on.
+fn credits_from_gateway(items: Vec<CreditItem>) -> Vec<TitleCredit> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let kind = item.kind.trim();
+            let person_id = item.person_id.trim();
+            if kind.is_empty() || person_id.is_empty() {
+                return None;
+            }
+
+            Some(TitleCredit {
+                kind: kind.to_string(),
+                person_id: person_id.to_string(),
+                person_name: item.person_name.trim().to_string(),
+                person_original_name: item.person_original_name.trim().to_string(),
+                person_image_url: item.person_image_url.trim().to_string(),
+                person_source: item.person_source.trim().to_string(),
+                person_external_id: item.person_external_id.trim().to_string(),
+                character_name: item.character_name.trim().to_string(),
+                language: item.language.trim().to_string(),
+                billing_order: item.billing_order,
+                episode_count: item.episode_count,
+            })
+        })
+        .collect()
 }
 
 fn canonical_tags_from_gateway(items: Vec<CanonicalTagItem>) -> Vec<CanonicalMediaTag> {
@@ -3981,6 +4184,8 @@ struct SeriesItem {
     rating_sources: Vec<String>,
     #[serde(default)]
     external_ratings: Vec<ExternalRatingItem>,
+    #[serde(default)]
+    credits: Vec<CreditItem>,
     aliases: Vec<String>,
     #[serde(default)]
     tagged_aliases: Vec<TaggedAliasItem>,
@@ -4354,6 +4559,7 @@ impl MetadataGateway for MetadataGatewayClient {
             studio: m.studio,
             tmdb_release_date: m.tmdb_release_date,
             ratings: rating_summary_from_gateway(m.rating, m.rating_sources, m.external_ratings),
+            credits: credits_from_gateway(m.credits),
         })
     }
 
@@ -4490,6 +4696,7 @@ impl MetadataGateway for MetadataGatewayClient {
                 })
                 .collect(),
             ratings: rating_summary_from_gateway(s.rating, s.rating_sources, s.external_ratings),
+            credits: credits_from_gateway(s.credits),
         })
     }
 

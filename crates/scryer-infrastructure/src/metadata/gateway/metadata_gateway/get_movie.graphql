@@ -38,6 +38,19 @@ query GetMovie($tvdbId: Int!, $language: String!) {
         votes
         url
       }
+      credits {
+        kind
+        person_id
+        person_name
+        person_original_name
+        person_image_url
+        person_source
+        person_external_id
+        character_name
+        language
+        billing_order
+        episode_count
+      }
       artworks {
         kind
         url

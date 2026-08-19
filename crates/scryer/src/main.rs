@@ -1323,6 +1323,12 @@ async fn bootstrap_application(
         bootstrap_settings_store.clone(),
     )
     .await;
+    startup_migrations::_0008_title_credits_rehydration_018::rehydrate_title_credits_for_018_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        VERSION,
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),

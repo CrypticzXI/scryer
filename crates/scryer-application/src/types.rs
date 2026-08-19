@@ -31,6 +31,23 @@ pub struct TitleRatingSummary {
     pub external_ratings: Vec<TitleExternalRating>,
 }
 
+/// One cast or crew credit as returned by SMG for a title. Crew records share the
+/// shape with cast records; `character_name`/`language` are simply empty for them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleCredit {
+    pub kind: String,
+    pub person_id: String,
+    pub person_name: String,
+    pub person_original_name: String,
+    pub person_image_url: String,
+    pub person_source: String,
+    pub person_external_id: String,
+    pub character_name: String,
+    pub language: String,
+    pub billing_order: i32,
+    pub episode_count: Option<i32>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum MetadataFieldUpdate<T> {
     #[default]
@@ -66,6 +83,9 @@ pub struct TitleMetadataUpdate {
     pub digital_release_date: Option<String>,
     /// Ratings returned by SMG/MDBList. `Some(default)` clears stale stored ratings.
     pub ratings: Option<TitleRatingSummary>,
+    /// Complete credit set returned by SMG. `Some(vec![])` clears the stale cache;
+    /// `None` leaves the existing rows untouched for callers that do not hydrate.
+    pub credits: Option<Vec<TitleCredit>>,
     /// Additional external IDs to merge onto the title (e.g. MAL, AniList from anime mappings).
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).

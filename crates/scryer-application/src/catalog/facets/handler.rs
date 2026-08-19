@@ -171,6 +171,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
         digital_release_date: movie.tmdb_release_date,
         ratings: Some(movie.ratings),
+        credits: Some(movie.credits),
         extra_external_ids,
         ..Default::default()
     };
@@ -213,6 +214,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
         ratings: Some(series.ratings),
+        credits: Some(series.credits),
         extra_external_ids,
         ..Default::default()
     };
@@ -269,6 +271,7 @@ pub trait FacetHandler: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TitleCredit;
 
     fn anime_mapping(mapping_type: &str, anidb_id: Option<i64>) -> AnimeMapping {
         AnimeMapping {
@@ -319,6 +322,7 @@ mod tests {
             anime_mappings,
             anime_movies: vec![],
             ratings: Default::default(),
+            credits: Vec::new(),
         }
     }
 
@@ -439,6 +443,174 @@ mod tests {
             settings.missing_metadata_policy_key,
             "rename.missing_metadata_policy.anime.global"
         );
+    }
+
+    fn test_movie(credits: Vec<TitleCredit>) -> MovieMetadata {
+        MovieMetadata {
+            target_key: None,
+            tvdb_id: 909,
+            name: "Fixture Movie".to_string(),
+            slug: "fixture-movie".to_string(),
+            year: Some(2026),
+            content_status: String::new(),
+            overview: String::new(),
+            poster_url: String::new(),
+            background_url: None,
+            language: "eng".to_string(),
+            original_language: Some("eng".to_string()),
+            runtime_minutes: 90,
+            sort_title: "fixture movie".to_string(),
+            imdb_id: String::new(),
+            tmdb_id: None,
+            popularity: None,
+            anidb_id: None,
+            canonical_tags: vec![],
+            studio: String::new(),
+            tmdb_release_date: None,
+            ratings: Default::default(),
+            credits,
+        }
+    }
+
+    fn test_credits() -> Vec<TitleCredit> {
+        vec![
+            TitleCredit {
+                kind: "actor".to_string(),
+                person_id: "p1".to_string(),
+                person_name: "Lead Actor".to_string(),
+                person_original_name: "主演".to_string(),
+                person_image_url: "https://example.test/p1.jpg".to_string(),
+                person_source: "tmdb".to_string(),
+                person_external_id: "tmdb-1".to_string(),
+                character_name: "Hero".to_string(),
+                language: "eng".to_string(),
+                billing_order: 0,
+                episode_count: Some(12),
+            },
+            TitleCredit {
+                kind: "director".to_string(),
+                person_id: "p2".to_string(),
+                person_name: "The Director".to_string(),
+                billing_order: 1,
+                ..Default::default()
+            },
+        ]
+    }
+
+    struct CreditsMetadataGateway;
+
+    #[async_trait]
+    impl MetadataGateway for CreditsMetadataGateway {
+        async fn search_tvdb(
+            &self,
+            _query: &str,
+            _type_hint: &str,
+            _year: Option<i32>,
+        ) -> AppResult<Vec<crate::MetadataSearchItem>> {
+            unimplemented!("credits fixture gateway only serves title metadata")
+        }
+
+        async fn search_tvdb_batch(
+            &self,
+            _queries: &[crate::MetadataSearchQuery],
+            _language: &str,
+        ) -> AppResult<
+            std::collections::HashMap<crate::MetadataSearchQuery, Vec<crate::MetadataSearchItem>>,
+        > {
+            unimplemented!("credits fixture gateway only serves title metadata")
+        }
+
+        async fn search_tvdb_rich(
+            &self,
+            _query: &str,
+            _type_hint: &str,
+            _limit: i32,
+            _language: &str,
+            _year: Option<i32>,
+        ) -> AppResult<Vec<crate::RichMetadataSearchItem>> {
+            unimplemented!("credits fixture gateway only serves title metadata")
+        }
+
+        async fn search_tvdb_multi(
+            &self,
+            _query: &str,
+            _limit: i32,
+            _language: &str,
+        ) -> AppResult<crate::MultiMetadataSearchResult> {
+            unimplemented!("credits fixture gateway only serves title metadata")
+        }
+
+        async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+            Ok(test_movie(test_credits()))
+        }
+
+        async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+            let mut series = test_series(vec![]);
+            series.credits = test_credits();
+            Ok(series)
+        }
+
+        async fn get_metadata_bulk(
+            &self,
+            _movie_tvdb_ids: &[i64],
+            _series_tvdb_ids: &[i64],
+            _language: &str,
+        ) -> AppResult<crate::BulkMetadataResult> {
+            unimplemented!("credits fixture gateway only serves single-title metadata")
+        }
+    }
+
+    #[test]
+    fn movie_hydration_carries_the_complete_credit_list() {
+        let result = movie_to_hydration_result(test_movie(test_credits()), "eng");
+
+        assert_eq!(result.metadata_update.credits, Some(test_credits()));
+    }
+
+    #[test]
+    fn series_hydration_carries_the_complete_credit_list() {
+        let mut series = test_series(vec![]);
+        series.credits = test_credits();
+
+        let result = series_to_hydration_result(series, "eng");
+
+        assert_eq!(result.metadata_update.credits, Some(test_credits()));
+    }
+
+    #[test]
+    fn hydration_reports_an_empty_credit_list_as_a_clearing_replacement() {
+        let movie = movie_to_hydration_result(test_movie(vec![]), "eng");
+        let series = series_to_hydration_result(test_series(vec![]), "eng");
+
+        assert_eq!(movie.metadata_update.credits, Some(vec![]));
+        assert_eq!(series.metadata_update.credits, Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn every_facet_handler_hydrates_credits() {
+        let gateway = CreditsMetadataGateway;
+        let handlers: Vec<Box<dyn FacetHandler>> = vec![
+            Box::new(crate::catalog::facets::movie::MovieFacetHandler),
+            Box::new(crate::catalog::facets::series::SeriesFacetHandler::new(
+                MediaFacet::Series,
+            )),
+            Box::new(crate::catalog::facets::series::SeriesFacetHandler::new(
+                MediaFacet::Anime,
+            )),
+        ];
+
+        for handler in handlers {
+            let result = handler
+                .hydrate_metadata(&gateway, 12345, "eng")
+                .await
+                .expect("facet hydration should succeed");
+            assert_eq!(
+                result.metadata_update.credits,
+                Some(test_credits()),
+                "{} hydration must persist credits",
+                handler.facet_id()
+            );
+        }
     }
 
     #[test]

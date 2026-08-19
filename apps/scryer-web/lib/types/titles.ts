@@ -27,6 +27,22 @@ export type TitleRatingRecord = {
   externalRatings: TitleExternalRatingRecord[];
 };
 
+/**
+ * One cast or crew credit cached from the title's last metadata hydration.
+ * `kind` mirrors the metadata provider's own vocabulary (`actor`,
+ * `voice_actor`, `director`, ...) rather than a Scryer enum.
+ */
+export type TitleCreditRecord = {
+  kind: string;
+  personName: string;
+  personOriginalName?: string | null;
+  personImageUrl?: string | null;
+  character?: string | null;
+  language?: string | null;
+  billingOrder?: number | null;
+  episodeCount?: number | null;
+};
+
 export type TitleCollectionEpisodeRecord = {
   id: string;
   titleId: string;
@@ -193,6 +209,7 @@ export type TitleRecord = {
   recapPolicy?: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   collections?: TitleCollectionRecord[] | null;
   mediaFiles?: TitleMediaFileRecord[] | null;
+  credits?: TitleCreditRecord[] | null;
   moreLikeThis?: CatalogDiscoveryItem[] | null;
 };
 

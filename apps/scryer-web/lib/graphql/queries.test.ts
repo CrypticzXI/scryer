@@ -12,6 +12,8 @@ import {
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
   seriesSidePanelOverviewQuery,
+  TITLE_CAST_CREDIT_KINDS,
+  TITLE_CAST_CREDIT_LIMIT,
   titleMoreLikeThisQuery,
   wantedNavigationCountsQuery,
 } from "./queries.ts";
@@ -178,6 +180,46 @@ test("movie side panel title query includes files without overview extras", () =
 test("side panel queries omit recommendations", () => {
   assert.equal(movieSidePanelOverviewQuery.includes("moreLikeThis("), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("moreLikeThis("), false);
+});
+
+test("side panel overviews carry the top-billed cast rail", () => {
+  const castSelection = `credits(kinds: ["actor", "voice_actor"], limit: ${TITLE_CAST_CREDIT_LIMIT})`;
+  for (const query of [
+    movieSidePanelOverviewQuery,
+    seriesSidePanelOverviewQuery,
+  ]) {
+    // Filtering, ordering, and truncation all happen server-side, so the rail
+    // renders whatever this selection returns.
+    assert.equal(query.includes(castSelection), true);
+    assert.equal(query.includes("personImageUrl"), true);
+    assert.equal(query.includes("billingOrder"), true);
+    assert.equal(query.includes("episodeCount"), true);
+    // Person provenance is deliberately not part of the payload.
+    assert.equal(query.includes("personId"), false);
+    assert.equal(query.includes("personSource"), false);
+  }
+});
+
+test("cast kinds cover both live-action and animated performers", () => {
+  assert.deepEqual([...TITLE_CAST_CREDIT_KINDS], ["actor", "voice_actor"]);
+});
+
+test("reactive side panel refresh keeps the cast rail populated", () => {
+  // The batched refresh reuses the same field constants; if it ever dropped
+  // credits, the rail would blank on every reactive refresh.
+  for (const projection of ["MOVIE", "SERIES"] as const) {
+    const result = buildReactiveRefreshQuery([
+      {
+        key: `titleSidePanelOverview:title-1:300:${projection}`,
+        kind: "titleSidePanelOverview",
+        titleId: "title-1",
+        blocklistLimit: 300,
+        projection,
+      },
+    ]);
+
+    assert.equal(result.query.includes("credits(kinds:"), true);
+  }
 });
 
 test("title more-like-this query fetches full discovery item detail", () => {

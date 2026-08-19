@@ -745,6 +745,7 @@ const de: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "Noch keine Empfehlungen",
   "title.contextForYouEmptyBody":
     "Füge Titel hinzu oder scanne sie, um diese Bibliotheksansicht aufzubauen.",
+  "title.topBilledCast": "Hauptbesetzung",
   "title.contextMoreLikeThis": "Ähnliche Titel",
   "title.contextMoreLikeThisScope": "Aus der aktuellen Ansicht",
   "title.contextOverview": "Übersicht",

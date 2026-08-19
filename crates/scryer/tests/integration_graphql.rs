@@ -36,6 +36,8 @@ mod schema_core_queue_import;
 mod security_settings;
 #[path = "integration_graphql/title_catalog.rs"]
 mod title_catalog;
+#[path = "integration_graphql/title_credits.rs"]
+mod title_credits;
 #[path = "integration_graphql/title_image_cache.rs"]
 mod title_image_cache;
 #[path = "integration_graphql/title_match.rs"]

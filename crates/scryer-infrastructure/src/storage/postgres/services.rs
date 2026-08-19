@@ -264,6 +264,7 @@ mod tests {
                         metadata_fetched_at: Some(chrono::Utc::now().to_rfc3339()),
                         digital_release_date: Some("2024-01-15".to_string()),
                         ratings: None,
+                        credits: None,
                         extra_external_ids: Vec::new(),
                         extra_tags: Vec::new(),
                     },

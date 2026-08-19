@@ -1,4 +1,5 @@
 use super::*;
+use crate::queries::sql_runtime::{SqlArg, SqlRuntime, StoreDatastore};
 
 #[tokio::test]
 async fn nzbget_client_is_sendable() {
@@ -605,6 +606,7 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             metadata_fetched_at: Some(Utc::now().to_rfc3339()),
             digital_release_date: None,
             ratings: None,
+            credits: None,
             extra_external_ids: vec![],
             extra_tags: vec![],
         },
@@ -2621,6 +2623,291 @@ async fn title_image_refresh_work_requires_fanart_w1280_variant() {
         .await
         .expect("list pending fanart refresh should succeed");
     assert!(pending_fanart.is_empty());
+
+    let _ = std::fs::remove_file(db);
+}
+
+fn sample_title_credits() -> Vec<TitleCredit> {
+    vec![
+        TitleCredit {
+            kind: "actor".to_string(),
+            person_id: "person-1".to_string(),
+            person_name: "Lead Actor".to_string(),
+            person_original_name: "主演".to_string(),
+            person_image_url: "https://images.test/person-1.jpg".to_string(),
+            person_source: "tmdb".to_string(),
+            person_external_id: "tmdb-1".to_string(),
+            character_name: "Hero".to_string(),
+            language: "eng".to_string(),
+            billing_order: 0,
+            episode_count: Some(12),
+        },
+        TitleCredit {
+            kind: "voice_actor".to_string(),
+            person_id: "person-2".to_string(),
+            person_name: "Voice Actor".to_string(),
+            person_original_name: "声優".to_string(),
+            person_image_url: String::new(),
+            person_source: "anilist".to_string(),
+            person_external_id: "anilist-2".to_string(),
+            character_name: "Hero".to_string(),
+            language: "jpn".to_string(),
+            billing_order: 1,
+            episode_count: None,
+        },
+        TitleCredit {
+            kind: "director".to_string(),
+            person_id: "person-3".to_string(),
+            person_name: "The Director".to_string(),
+            person_original_name: String::new(),
+            person_image_url: String::new(),
+            person_source: "tmdb".to_string(),
+            person_external_id: "tmdb-3".to_string(),
+            character_name: String::new(),
+            language: String::new(),
+            billing_order: 2,
+            episode_count: None,
+        },
+    ]
+}
+
+/// SQLite test databases are seeded with the default libraries; a bare PostgreSQL
+/// test schema is not, so the shared assertion inserts the row it needs itself.
+async fn ensure_default_movie_library(datastore: &StoreDatastore) -> AppResult<()> {
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let existing = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT id FROM libraries WHERE id = {}",
+        &[SqlArg::Text(library_id.clone())],
+    )
+    .await?;
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    SqlRuntime::run_in_transaction::<(), _>(
+        datastore,
+        "test_seed_default_movie_library",
+        move |tx| {
+            let library_id = library_id.clone();
+            Box::pin(async move {
+                tx.execute(
+                    "INSERT INTO libraries (id, facet, name, slug, is_default, created_at, updated_at)
+                     VALUES ({}, {}, {}, {}, {}, {}, {})",
+                    &[
+                        SqlArg::Text(library_id),
+                        SqlArg::Text(
+                            MediaFacet::Movie.as_str().to_string(),
+                        ),
+                        SqlArg::Text("Movies".to_string()),
+                        SqlArg::Text("movies".to_string()),
+                        SqlArg::Bool(true),
+                        SqlArg::Timestamp(now),
+                        SqlArg::Timestamp(now),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+        },
+    )
+    .await
+}
+
+async fn assert_title_credits_replacement(
+    catalog: &TitleStore,
+    datastore: &StoreDatastore,
+) -> AppResult<()> {
+    ensure_default_movie_library(datastore).await?;
+
+    let title = make_test_title("title-credits", None);
+    TitleRepository::create(catalog, title.clone()).await?;
+
+    let credits = sample_title_credits();
+    TitleRepository::update_title_hydrated_metadata(
+        catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            credits: Some(credits.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let stored = TitleRepository::get_title_credits(catalog, &title.id).await?;
+    assert_eq!(
+        stored, credits,
+        "every credit kind is cached verbatim in SMG order"
+    );
+
+    TitleRepository::update_title_hydrated_metadata(
+        catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            credits: None,
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(
+        TitleRepository::get_title_credits(catalog, &title.id).await?,
+        credits,
+        "a metadata update without credits preserves the cache"
+    );
+
+    let replacement = vec![TitleCredit {
+        kind: "writer".to_string(),
+        person_id: "person-9".to_string(),
+        person_name: "The Writer".to_string(),
+        billing_order: 0,
+        ..Default::default()
+    }];
+    TitleRepository::update_title_hydrated_metadata(
+        catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            credits: Some(replacement.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(
+        TitleRepository::get_title_credits(catalog, &title.id).await?,
+        replacement,
+        "a new response replaces the whole cached set"
+    );
+
+    TitleRepository::update_title_hydrated_metadata(
+        catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            credits: Some(Vec::new()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(
+        TitleRepository::get_title_credits(catalog, &title.id)
+            .await?
+            .is_empty(),
+        "a successful empty response clears the cache"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_replaces_title_credits() {
+    let (services, db) = temp_services("scryer_title_credits").await;
+    let catalog = title_store(&services);
+
+    assert_title_credits_replacement(&catalog, &services.datastore())
+        .await
+        .expect("credit replacement should behave consistently");
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn hydrated_title_metadata_replaces_title_credits_postgres() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        eprintln!("skipping PostgreSQL title credits test; SCRYER_TEST_POSTGRES_URL is not set");
+        return Ok(());
+    };
+
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_test_{}_{}",
+        std::process::id(),
+        Id::new().0.replace('-', "_")
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to create schema: {error}")))?;
+
+    let result = async {
+        let mut url = url::Url::parse(&raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema}"));
+        let services =
+            crate::PostgresServices::new_with_mode(url.to_string(), crate::MigrationMode::Apply)
+                .await?;
+        let datastore = services.datastore();
+        let catalog = TitleStore::new(services.datastore());
+        let result = assert_title_credits_replacement(&catalog, &datastore).await;
+        services.pool().close().await;
+        result
+    }
+    .await;
+
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    admin_pool.close().await;
+    cleanup.map_err(|error| AppError::Repository(format!("failed to drop schema: {error}")))?;
+    result
+}
+
+#[tokio::test]
+async fn failed_transactions_preserve_the_previous_title_credit_cache() {
+    let (services, db) = temp_services("scryer_title_credits_rollback").await;
+    let catalog = title_store(&services);
+    let datastore = services.datastore();
+
+    let title = make_test_title("title-credits-rollback", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let credits = sample_title_credits();
+    TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+            credits: Some(credits.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("hydrated metadata should persist credits");
+
+    let title_id = title.id.clone();
+    let rolled_back = SqlRuntime::run_in_transaction::<(), _>(
+        &datastore,
+        "test_rollback_title_credits",
+        move |tx| {
+            let title_id = title_id.clone();
+            Box::pin(async move {
+                crate::media::title_credits::replace_title_credits_tx(tx, &title_id, &[]).await?;
+                Err(AppError::Repository("hydration failed".to_string()))
+            })
+        },
+    )
+    .await;
+    assert!(rolled_back.is_err());
+
+    assert_eq!(
+        TitleRepository::get_title_credits(&catalog, &title.id)
+            .await
+            .expect("credits should load"),
+        credits,
+        "a rolled-back hydration leaves the prior credit cache intact"
+    );
 
     let _ = std::fs::remove_file(db);
 }

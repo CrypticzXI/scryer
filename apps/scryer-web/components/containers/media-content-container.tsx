@@ -408,6 +408,9 @@ function mergePreferLoadedImageFields(
         ? current.canonicalTags
         : incoming.canonicalTags,
     ratings: incoming.ratings === undefined ? current.ratings : incoming.ratings,
+    // Catalog list refreshes omit credits; treating that as "no cast" would
+    // blank the overview rail on every list refresh.
+    credits: incoming.credits === undefined ? current.credits : incoming.credits,
     metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
   };
 }

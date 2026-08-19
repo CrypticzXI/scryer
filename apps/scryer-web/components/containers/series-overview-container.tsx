@@ -63,7 +63,11 @@ import { DeletePreviewSummary } from "@/components/common/delete-preview-summary
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OverviewTitleTarget } from "@/components/root/types";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
-import type { CanonicalMediaTag, LibraryRootRecord } from "@/lib/types/titles";
+import type {
+  CanonicalMediaTag,
+  LibraryRootRecord,
+  TitleCreditRecord,
+} from "@/lib/types/titles";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
 import {
   assertNoReplaceConflict,
@@ -133,6 +137,7 @@ export type TitleDetail = {
   recapPolicy?: string | null;
   seriesMovieLinks?: SeriesMovieLink[];
   ratings?: TitleRatings | null;
+  credits?: TitleCreditRecord[] | null;
   moreLikeThis?: CatalogDiscoveryItem[];
   createdAt: string;
 };

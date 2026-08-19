@@ -17,7 +17,38 @@
           "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
           "country": "usa",
           "canonical_tags": [],
-          "aliases": ["Testing Show", "QA Chronicles"],
+          "credits": [
+            {
+              "kind": "actor",
+              "person_id": "person-1",
+              "person_name": "Test Lead",
+              "person_original_name": "Test Lead",
+              "person_image_url": "https://image.tmdb.org/t/p/original/person-1.jpg",
+              "person_source": "tmdb",
+              "person_external_id": "1001",
+              "character_name": "Lead Character",
+              "language": "eng",
+              "billing_order": 0,
+              "episode_count": 10
+            },
+            {
+              "kind": "director",
+              "person_id": "person-2",
+              "person_name": "Test Director",
+              "person_original_name": "Test Director",
+              "person_image_url": "",
+              "person_source": "tmdb",
+              "person_external_id": "1002",
+              "character_name": "",
+              "language": "",
+              "billing_order": 1,
+              "episode_count": null
+            }
+          ],
+          "aliases": [
+            "Testing Show",
+            "QA Chronicles"
+          ],
           "tagged_aliases": [],
           "seasons": [
             {

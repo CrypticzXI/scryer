@@ -75,6 +75,7 @@ import {
 import { HorizontalRail } from "@/components/common/horizontal-scroll-fade";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
+import { TitleCastStrip } from "@/components/views/title-cast-strip";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type {
   ContentSettingsSection,
@@ -1630,6 +1631,8 @@ function TitleContextPanel({
               />
             ) : null}
           </TitleWorkspaceSectionCard>
+
+          <TitleCastStrip credits={title.credits} variant="workspace" />
 
           <TitleContextMoreLikeThisStrip
             items={moreLikeThisItems}

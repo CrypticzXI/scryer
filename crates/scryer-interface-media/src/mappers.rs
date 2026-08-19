@@ -19,7 +19,7 @@ use scryer_application::{
     RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
     ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
     SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    TitleCredit, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1328,6 +1328,42 @@ pub fn from_title_rating_summary(ratings: TitleRatingSummary) -> TitleRatingPayl
                 url: rating.url,
             })
             .collect(),
+    }
+}
+
+/// Map one cached credit onto its GraphQL payload.
+///
+/// The provider's portrait URL is never handed to clients directly: it goes
+/// through the same opaque `/images/media/{token}/{variant}` route posters use,
+/// registered against the owning title. `w185` is the only sized portrait the
+/// proxy serves (`original` is the other), so it is the card default; clients
+/// re-variant with `selectMediaImageVariantUrl`. A credit with no upstream image
+/// resolves to null rather than a token that could only 404.
+pub fn from_title_credit(
+    app: &AppUseCase,
+    title_id: &str,
+    credit: TitleCredit,
+) -> TitleCreditPayload {
+    let person_image_url = Some(credit.person_image_url.trim())
+        .filter(|url| !url.is_empty())
+        .and_then(|url| {
+            app.media_image_url(
+                Some(url),
+                Some("title"),
+                Some(title_id),
+                ImageProxyKind::Person,
+                "w185",
+            )
+        });
+    TitleCreditPayload {
+        kind: credit.kind,
+        person_name: credit.person_name,
+        person_original_name: credit.person_original_name,
+        person_image_url,
+        character: credit.character_name,
+        language: credit.language,
+        billing_order: credit.billing_order,
+        episode_count: credit.episode_count,
     }
 }
 

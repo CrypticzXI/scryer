@@ -730,6 +730,7 @@ const ja: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "まだおすすめはありません",
   "title.contextForYouEmptyBody":
     "タイトルを追加またはスキャンして、このライブラリ表示を作成してください。",
+  "title.topBilledCast": "主なキャスト",
   "title.contextMoreLikeThis": "似ているタイトル",
   "title.contextMoreLikeThisScope": "現在の表示から",
   "title.contextOverview": "概要",

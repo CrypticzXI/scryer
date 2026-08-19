@@ -23,6 +23,7 @@ fn hydration_test_movie(tvdb_id: i64, name: &str) -> MovieMetadata {
         studio: "Scryer Studios".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
         ratings: Default::default(),
+        credits: Vec::new(),
     }
 }
 

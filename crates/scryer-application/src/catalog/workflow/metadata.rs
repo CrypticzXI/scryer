@@ -126,6 +126,34 @@ impl AppUseCase {
             .await
     }
 
+    /// Cached SMG credits for one title, optionally narrowed to a set of credit
+    /// kinds (`actor`, `voice_actor`, `director`, ...) and capped at `limit`.
+    ///
+    /// Pure local read: the cache is refilled by metadata hydration, so this
+    /// never calls SMG and never queues a refresh.
+    pub async fn title_credits(
+        &self,
+        actor: &User,
+        title_id: &str,
+        kinds: Option<&[String]>,
+        limit: i64,
+    ) -> AppResult<Vec<TitleCredit>> {
+        self.get_title(actor, title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        let limit = limit.clamp(0, TITLE_CREDITS_MAX_LIMIT) as usize;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let credits = self
+            .services
+            .catalog
+            .titles
+            .get_title_credits(title_id)
+            .await?;
+        Ok(select_title_credits(credits, kinds, limit))
+    }
+
     pub async fn list_title_ratings(
         &self,
         actor: &User,
@@ -557,6 +585,33 @@ fn extract_tag_string<'a>(tags: &'a [String], prefix: &str) -> Option<&'a str> {
     }
     None
 }
+/// Upper bound on one `title_credits` response. Keeps a hostile `limit` from
+/// turning a rail query into a full-cast dump.
+pub(crate) const TITLE_CREDITS_MAX_LIMIT: i64 = 50;
+
+/// Narrow a title's cached credits to `kinds` (all kinds when `None`/empty),
+/// order them by SMG billing order and then by the response position the cache
+/// preserved, and cap the result at `limit`.
+///
+/// `credits` arrives in cache order (position ascending), so the stable sort by
+/// billing order alone yields "billing_order asc, position asc".
+pub(crate) fn select_title_credits(
+    credits: Vec<TitleCredit>,
+    kinds: Option<&[String]>,
+    limit: usize,
+) -> Vec<TitleCredit> {
+    let allowed = kinds.filter(|kinds| !kinds.is_empty());
+    let mut selected = credits
+        .into_iter()
+        .filter(|credit| {
+            allowed.is_none_or(|kinds| kinds.iter().any(|kind| kind == &credit.kind))
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|credit| credit.billing_order);
+    selected.truncate(limit);
+    selected
+}
+
 pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
     title
         .external_ids
