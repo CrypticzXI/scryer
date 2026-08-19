@@ -1,4 +1,5 @@
 import { createElement, useCallback, useRef } from "react";
+import { Unplug } from "lucide-react";
 import { toast } from "sonner";
 
 import type { GlobalStatusOptions, SetGlobalStatus } from "@/lib/context/global-status-context";
@@ -35,10 +36,17 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
       return;
     }
 
+    const isDisconnected = /^\[network\]\s+failed to fetch$/i.test(displayStatus);
+    const toastMessage = isDisconnected ? "Disconnected" : displayStatus;
     const content = options?.toastId
-      ? createElement("span", { id: options.toastId }, displayStatus)
-      : displayStatus;
-    const toastOptions = options?.toastId ? { id: options.toastId } : undefined;
+      ? createElement("span", { id: options.toastId }, toastMessage)
+      : toastMessage;
+    const toastOptions = {
+      ...(options?.toastId ? { id: options.toastId } : {}),
+      ...(isDisconnected
+        ? { icon: createElement(Unplug, { "aria-hidden": true }) }
+        : {}),
+    };
 
     if (toastLevel === "SUCCESS") {
       toast.success(content, toastOptions);
