@@ -15,12 +15,15 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  Network,
   SlidersHorizontal,
   Timer,
+  UploadCloud,
   User,
   Users,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import type { IndexerSettingsTab, SettingsSection } from "@/components/root/types";
@@ -133,16 +136,21 @@ const SUBTITLES_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
   railClass: "sticky top-[26px] z-auto min-w-[320px] max-w-[560px] flex-[1_1_560px]",
 };
 
-const INDEXER_SETTINGS_TABS: { tab: IndexerSettingsTab; labelKey: string }[] = [
-  { tab: "indexers", labelKey: "settings.indexers" },
-  { tab: "proxies", labelKey: "settings.indexerProxies" },
-  { tab: "seedingProfiles", labelKey: "settings.seedingProfiles" },
+const INDEXER_SETTINGS_TABS: {
+  tab: IndexerSettingsTab;
+  labelKey: string;
+  icon: LucideIcon;
+}[] = [
+  { tab: "indexers", labelKey: "settings.indexers", icon: Database },
+  { tab: "proxies", labelKey: "settings.indexerProxies", icon: Network },
+  { tab: "seedingProfiles", labelKey: "settings.seedingProfiles", icon: UploadCloud },
 ];
 
 /// Pane switcher for the Indexers page. Indexers, their proxies, and the
 /// seeding profiles they apply are three views of the same subject, so they
-/// share a page instead of scattering across the settings nav.
-function IndexerSettingsTabRail({
+/// share a page instead of scattering across the settings nav. Same shape as
+/// the Wanted view's section rail.
+function IndexerSettingsSubnav({
   activeTab,
   t,
 }: {
@@ -150,29 +158,39 @@ function IndexerSettingsTabRail({
   t: ReturnType<typeof useTranslate>;
 }) {
   return (
-    <nav
-      id="settings-indexers-tabs"
-      className="flex gap-1 overflow-x-auto border-b border-[var(--scry-border3)] pb-2"
-    >
-      {INDEXER_SETTINGS_TABS.map((item) => {
-        const active = activeTab === item.tab;
-        return (
-          <Link
-            key={item.tab}
-            id={selectorId("settings-indexers-tab", item.tab)}
-            to={buildIndexerSettingsPath(item.tab)}
-            aria-current={active ? "page" : undefined}
-            className={cn(
-              "flex h-8 shrink-0 items-center rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
-              active &&
-                "bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)]",
-            )}
-          >
-            <span className="whitespace-nowrap">{t(item.labelKey)}</span>
-          </Link>
-        );
-      })}
-    </nav>
+    <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
+      <nav
+        id="settings-indexers-subnav"
+        className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0"
+        aria-label={t("settings.indexers")}
+      >
+        {INDEXER_SETTINGS_TABS.map((item) => {
+          const Icon = item.icon;
+          const active = activeTab === item.tab;
+          return (
+            <Link
+              key={item.tab}
+              id={selectorId("settings-indexers-subnav", item.tab)}
+              to={buildIndexerSettingsPath(item.tab)}
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
+                active &&
+                  "bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.26),rgba(var(--scry-accent-rgb),0.08))] text-[var(--scry-ink2)] shadow-[inset_2px_0_0_var(--scry-accent-ring)]",
+              )}
+            >
+              <Icon
+                className={cn(
+                  "h-[17px] w-[17px] text-[var(--scry-muted2)]",
+                  active && "text-[var(--scry-accent-text)]",
+                )}
+              />
+              <span className="whitespace-nowrap">{t(item.labelKey)}</span>
+            </Link>
+          );
+        })}
+      </nav>
+    </aside>
   );
 }
 
@@ -644,8 +662,9 @@ export const SettingsContainer = memo(function SettingsContainer({
           ) : settingsSection === "mediaServers" ? (
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
-            <div className="flex flex-col gap-4">
-              <IndexerSettingsTabRail activeTab={indexerSettingsTab} t={t} />
+            <div className="md:flex md:min-h-0 md:flex-row md:gap-4">
+              <IndexerSettingsSubnav activeTab={indexerSettingsTab} t={t} />
+              <div className="min-w-0 flex-1 pt-4 md:pt-0">
               {indexerSettingsTab === "seedingProfiles" ? (
                 <SettingsSeedingProfilesContainer />
               ) : (
@@ -663,6 +682,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                   }
                 />
               )}
+              </div>
             </div>
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
