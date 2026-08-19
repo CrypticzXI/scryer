@@ -2333,29 +2333,159 @@ pub(crate) async fn finalize_tracked_terminal_state(
     id: &str,
     state: TrackedDownloadState,
 ) {
+    finalize_tracked_terminal_state_with(app, tracker, id, state, None).await;
+}
+
+/// As `finalize_tracked_terminal_state`, reusing the reconcile tick's shared
+/// reads. One-off callers (commands, recovery) pass `None` and take the
+/// per-row path.
+pub(crate) async fn finalize_tracked_terminal_state_with(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    id: &str,
+    state: TrackedDownloadState,
+    cache: Option<&crate::import::import::TerminalCleanupTickCache>,
+) {
     let Some(td) = tracker.find(id) else {
         return;
     };
 
-    let cleanup =
-        crate::import::import::reconcile_terminal_download_cleanup_for_tracked(app, td, state)
-            .await;
+    let cleanup = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        app, td, state, cache,
+    )
+    .await;
 
-    if cleanup == crate::import::import::TerminalDownloadCleanupOutcome::HeldForSeeding {
+    if cleanup.outcome == crate::import::import::TerminalDownloadCleanupOutcome::HeldForSeeding {
+        // Only the transition *into* the hold is history. A held torrent is
+        // re-offered to the gate on every poll, and one event per tick would
+        // bury the feed under the same fact.
+        if state != TrackedDownloadState::ImportedSeeding
+            && let Some(report) = cleanup.seeding
+            && let Some(td) = tracker.find(id)
+        {
+            record_seeding_started_event(app, td, report).await;
+        }
         park_tracked_download_in_imported_seeding(app, tracker, id).await;
         return;
     }
 
-    if crate::import::import::terminal_download_cleanup_is_complete(cleanup) {
+    if crate::import::import::terminal_download_cleanup_is_complete(cleanup.outcome) {
         // A held torrent that has now discharged its obligation graduates to
         // the real terminal state before it stops being tracked, so restart
         // recovery reads `imported`, not `imported_seeding`.
         if state == TrackedDownloadState::ImportedSeeding {
+            // Closes the retention window this row's `seeding_started` opened.
+            // A torrent that was never held has no window to close, so it gets
+            // no seeding history at all.
+            if let Some(td) = tracker.find(id) {
+                record_seeding_completed_event(app, td, cleanup.seeding).await;
+            }
             promote_imported_seeding_to_imported(app, tracker, id).await;
         }
         tracker.stop_tracking(id);
     } else if let Some(td) = tracker.find_mut(id) {
         td.completed_source = None;
+    }
+}
+
+/// The title and provider label both seeding events carry.
+async fn seeding_event_context(
+    app: &AppUseCase,
+    tracked: &TrackedDownload,
+) -> (Option<scryer_domain::Title>, Option<String>) {
+    let title = match tracked.title_id.as_deref() {
+        Some(title_id) => app
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let source_provider =
+        crate::integration::workflow::source_provider_label(tracked.indexer.as_deref(), None);
+    (title, source_provider)
+}
+
+/// Record that a torrent was imported and its client entry is being retained
+/// while it seeds — the event that opens the retention window.
+async fn record_seeding_started_event(
+    app: &AppUseCase,
+    tracked: &TrackedDownload,
+    report: crate::import::import::SeedingGateReport,
+) {
+    let (title, source_provider) = seeding_event_context(app, tracked).await;
+    let payload =
+        scryer_domain::DomainEventPayload::SeedingStarted(scryer_domain::SeedingStartedEventData {
+            title: title
+                .as_ref()
+                .map(crate::domain_events::title_context_snapshot),
+            download_client_item_id: tracked.client_item.download_client_item_id.clone(),
+            client_id: (!tracked.client_id.trim().is_empty()).then(|| tracked.client_id.clone()),
+            client_type: Some(tracked.client_type.clone()),
+            source_provider,
+            source_title: tracked.source_title.clone(),
+            reason: report.reason.to_string(),
+            seed_ratio: report.seed_ratio,
+            seed_time_seconds: report.seed_time_seconds,
+        });
+    append_seeding_event(app, title.as_ref(), payload).await;
+}
+
+/// Record that the seeding obligation was discharged and what the gate did with
+/// the client entry — the event that closes the retention window.
+///
+/// The report is absent when the gate never ran for this settle (the operator
+/// turned `remove_completed` off while the torrent was parked); the window
+/// still closes, with nothing removed.
+async fn record_seeding_completed_event(
+    app: &AppUseCase,
+    tracked: &TrackedDownload,
+    report: Option<crate::import::import::SeedingGateReport>,
+) {
+    let (title, source_provider) = seeding_event_context(app, tracked).await;
+    let action = report
+        .and_then(|report| report.action)
+        .unwrap_or(crate::import::import::SeedingReleaseAction::Kept);
+    let payload = scryer_domain::DomainEventPayload::SeedingCompleted(
+        scryer_domain::SeedingCompletedEventData {
+            title: title
+                .as_ref()
+                .map(crate::domain_events::title_context_snapshot),
+            download_client_item_id: tracked.client_item.download_client_item_id.clone(),
+            client_id: (!tracked.client_id.trim().is_empty()).then(|| tracked.client_id.clone()),
+            client_type: Some(tracked.client_type.clone()),
+            source_provider,
+            source_title: tracked.source_title.clone(),
+            action: action.as_str().to_string(),
+            reason: report
+                .map(|report| report.reason.to_string())
+                .unwrap_or_else(|| "removal_not_configured".to_string()),
+            seed_ratio: report.and_then(|report| report.seed_ratio),
+            seed_time_seconds: report.and_then(|report| report.seed_time_seconds),
+        },
+    );
+    append_seeding_event(app, title.as_ref(), payload).await;
+}
+
+/// A failed append must never disturb the seeding lifecycle: the events are a
+/// record of what happened, not part of the decision.
+async fn append_seeding_event(
+    app: &AppUseCase,
+    title: Option<&scryer_domain::Title>,
+    payload: scryer_domain::DomainEventPayload,
+) {
+    // The poller acts on its own; there is no operator behind a seeding
+    // transition, the same way there is none behind an automatic import.
+    let actor = crate::DomainEventActor::system();
+    let event = match title {
+        Some(title) => crate::domain_events::new_title_domain_event(actor, title, payload),
+        None => crate::domain_events::new_global_domain_event(actor, payload),
+    };
+    if let Err(error) = app.append_domain_event(event).await {
+        tracing::warn!(error = %error, "failed to record a seeding history event");
     }
 }
 
@@ -2419,15 +2549,33 @@ async fn reconcile_terminal_tracked_downloads(
     // `ImportedSeeding` is not terminal, but it has to be re-offered to the
     // gate on every poll — that re-evaluation is what eventually releases the
     // torrent once its goal is met.
-    let terminal_ids: Vec<(String, TrackedDownloadState)> = tracker
+    let settled: Vec<&TrackedDownload> = tracker
         .get_all()
         .into_iter()
         .filter(|tracked| tracked.state.is_import_settled())
+        .collect();
+    if settled.is_empty() {
+        return;
+    }
+
+    let terminal_ids: Vec<(String, TrackedDownloadState)> = settled
+        .iter()
         .map(|tracked| (tracked.id.clone(), tracked.state))
         .collect();
+    // Every settled row is re-offered to the gate below, and each one used to
+    // pay for its own seed-goal query, title lookup and routing-entry read.
+    // One batched prefetch up front, then memoized reads for the rest — held
+    // torrents are the common case, so this is a per-tick cost that would
+    // otherwise scale with the seeding backlog.
+    let identities: Vec<crate::DownloadSourceIdentity> = settled
+        .iter()
+        .filter_map(|tracked| tracked_download_source_identity(tracked))
+        .collect();
+    let cache =
+        crate::import::import::TerminalCleanupTickCache::prefetch(app, &identities).await;
 
     for (id, state) in terminal_ids {
-        finalize_tracked_terminal_state(app, tracker, &id, state).await;
+        finalize_tracked_terminal_state_with(app, tracker, &id, state, Some(&cache)).await;
     }
 }
 

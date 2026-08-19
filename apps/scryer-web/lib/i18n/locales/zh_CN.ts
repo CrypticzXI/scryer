@@ -1811,6 +1811,8 @@ const zh_CN: LocaleDictionary = {
   "history.fileDeleted": "已删除",
   "history.fileRenamed": "已重命名",
   "history.rematched": "重新匹配",
+  "history.seedingStarted": "做种中",
+  "history.seedingCompleted": "做种完成",
   "history.downloadIgnored": "已忽略",
   "history.facet": "分类",
   "history.actions": "操作",

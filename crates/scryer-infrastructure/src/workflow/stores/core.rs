@@ -894,6 +894,18 @@ pub(crate) fn build_title_history_filter_sql(
                             DomainEventType::TitleRematched.as_str().into(),
                         ));
                     }
+                    TitleHistoryEventType::SeedingStarted => {
+                        parts.push("event_type = {}".to_string());
+                        args.push(SqlArg::Text(
+                            DomainEventType::SeedingStarted.as_str().into(),
+                        ));
+                    }
+                    TitleHistoryEventType::SeedingCompleted => {
+                        parts.push("event_type = {}".to_string());
+                        args.push(SqlArg::Text(
+                            DomainEventType::SeedingCompleted.as_str().into(),
+                        ));
+                    }
                     TitleHistoryEventType::DownloadCompleted
                     | TitleHistoryEventType::DownloadIgnored => parts.push("0".to_string()),
                 }
@@ -934,6 +946,8 @@ pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::MediaFileUpgraded,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
+    DomainEventType::SeedingStarted,
+    DomainEventType::SeedingCompleted,
 ];
 
 pub(crate) fn json_extract(

@@ -699,6 +699,10 @@ pub enum DomainEventTypeValue {
     DownloadQueueItemUpserted,
     /// A download queue item was removed.
     DownloadQueueItemRemoved,
+    /// A torrent was imported and its client entry retained while it seeds.
+    SeedingStarted,
+    /// A torrent's seeding obligation was discharged.
+    SeedingCompleted,
 }
 
 impl DomainEventTypeValue {
@@ -748,6 +752,8 @@ impl DomainEventTypeValue {
             DomainEventType::JobNextRunUpdated => Self::JobNextRunUpdated,
             DomainEventType::DownloadQueueItemUpserted => Self::DownloadQueueItemUpserted,
             DomainEventType::DownloadQueueItemRemoved => Self::DownloadQueueItemRemoved,
+            DomainEventType::SeedingStarted => Self::SeedingStarted,
+            DomainEventType::SeedingCompleted => Self::SeedingCompleted,
         }
     }
 
@@ -797,6 +803,8 @@ impl DomainEventTypeValue {
             Self::JobNextRunUpdated => DomainEventType::JobNextRunUpdated,
             Self::DownloadQueueItemUpserted => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved => DomainEventType::DownloadQueueItemRemoved,
+            Self::SeedingStarted => DomainEventType::SeedingStarted,
+            Self::SeedingCompleted => DomainEventType::SeedingCompleted,
         }
     }
 }
@@ -9028,6 +9036,10 @@ pub enum TitleHistoryEventTypeValue {
     DownloadIgnored,
     /// Title or file was rematched.
     Rematched,
+    /// Torrent was imported and its client entry retained while it seeds.
+    SeedingStarted,
+    /// Torrent's seeding obligation was discharged.
+    SeedingCompleted,
 }
 
 impl TitleHistoryEventTypeValue {
@@ -9047,6 +9059,8 @@ impl TitleHistoryEventTypeValue {
             Self::FileRenamed => TitleHistoryEventType::FileRenamed,
             Self::DownloadIgnored => TitleHistoryEventType::DownloadIgnored,
             Self::Rematched => TitleHistoryEventType::Rematched,
+            Self::SeedingStarted => TitleHistoryEventType::SeedingStarted,
+            Self::SeedingCompleted => TitleHistoryEventType::SeedingCompleted,
         }
     }
 }

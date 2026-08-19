@@ -1993,6 +1993,8 @@ const pt_BR: LocaleDictionary = {
   "history.fileDeleted": "Excluído",
   "history.fileRenamed": "Renomeado",
   "history.rematched": "Remapeado",
+  "history.seedingStarted": "Semeando",
+  "history.seedingCompleted": "Semeadura concluída",
   "history.downloadIgnored": "Ignorado",
   "history.facet": "Categoria",
   "history.actions": "Ações",

@@ -1990,6 +1990,8 @@ const it: LocaleDictionary = {
   "history.fileDeleted": "Eliminato",
   "history.fileRenamed": "Rinominato",
   "history.rematched": "Riassegnato",
+  "history.seedingStarted": "In seeding",
+  "history.seedingCompleted": "Seeding completato",
   "history.downloadIgnored": "Ignorato",
   "history.facet": "Categoria",
   "history.actions": "Azioni",

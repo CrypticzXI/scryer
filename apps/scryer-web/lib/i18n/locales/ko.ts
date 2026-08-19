@@ -1895,6 +1895,8 @@ const ko: LocaleDictionary = {
   "history.fileDeleted": "삭제됨",
   "history.fileRenamed": "이름 변경됨",
   "history.rematched": "재매칭",
+  "history.seedingStarted": "시딩 중",
+  "history.seedingCompleted": "시딩 완료",
   "history.downloadIgnored": "무시됨",
   "history.facet": "분류",
   "history.actions": "작업",

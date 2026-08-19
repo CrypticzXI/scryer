@@ -157,7 +157,10 @@ async fn reconcile_terminal_download_cleanup(
     // The freshest seeding observation the caller holds, or `None` to have the
     // gate look one up from the published tracked-download snapshot.
     observation: Option<crate::seeding_gate::TorrentSeedingObservation>,
-) -> TerminalDownloadCleanupOutcome {
+    // The reconcile tick's shared reads, or `None` for callers outside a tick
+    // (manual import), which take the per-row path.
+    cache: Option<&TerminalCleanupTickCache>,
+) -> TerminalDownloadCleanup {
     let client_id = client_id.trim();
     let routing_key = if client_id.is_empty() {
         client_type
@@ -168,7 +171,7 @@ async fn reconcile_terminal_download_cleanup(
     let should_remove = match state {
         TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => match facet {
             Some(facet) => {
-                app.should_remove_completed_download(library_id, facet, routing_key)
+                should_remove_completed_download_cached(app, library_id, facet, routing_key, cache)
                     .await
             }
             None => false,
@@ -185,9 +188,26 @@ async fn reconcile_terminal_download_cleanup(
     };
 
     if !should_remove {
-        return TerminalDownloadCleanupOutcome::NotConfigured;
+        return TerminalDownloadCleanup::bare(TerminalDownloadCleanupOutcome::NotConfigured);
     }
 
+    // Carried past the gate for the seeding history events: the gate consumes
+    // the observation, and the release event has to report the ratio and seed
+    // time the decision was actually taken on.
+    let observed_ratio = observation
+        .as_ref()
+        .and_then(|observation| observation.seed_ratio);
+    let observed_seed_time_seconds = observation
+        .as_ref()
+        .and_then(|observation| observation.seed_time_seconds);
+    let report = |reason: &'static str, action: Option<SeedingReleaseAction>| SeedingGateReport {
+        reason,
+        action,
+        seed_ratio: observed_ratio,
+        seed_time_seconds: observed_seed_time_seconds,
+    };
+
+    let mut seeding_report = None;
     if state.counts_as_imported() {
         let key = crate::seeding_gate::SeedGoalLookupKey {
             client_id: client_id.to_string(),
@@ -200,12 +220,16 @@ async fn reconcile_terminal_download_cleanup(
             &key,
             present_in_client,
             observation,
+            cache.map(TerminalCleanupTickCache::goal_batch),
         )
         .await;
         match decision.outcome {
             crate::seeding_gate::SeedingGateOutcome::NotApplicable => {}
             crate::seeding_gate::SeedingGateOutcome::Vanished => {
-                return TerminalDownloadCleanupOutcome::AlreadyGone;
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::AlreadyGone,
+                    report(decision.reason, Some(SeedingReleaseAction::Vanished)),
+                );
             }
             crate::seeding_gate::SeedingGateOutcome::Hold => {
                 tracing::debug!(
@@ -216,12 +240,18 @@ async fn reconcile_terminal_download_cleanup(
                     reason = decision.reason,
                     "seeding gate is holding a torrent entry after import"
                 );
-                return TerminalDownloadCleanupOutcome::HeldForSeeding;
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::HeldForSeeding,
+                    report(decision.reason, None),
+                );
             }
             crate::seeding_gate::SeedingGateOutcome::Released { action } => match action {
-                scryer_domain::SeedGoalMetAction::RemoveEntry => {}
+                scryer_domain::SeedGoalMetAction::RemoveEntry => {
+                    seeding_report =
+                        Some(report(decision.reason, Some(SeedingReleaseAction::Removed)));
+                }
                 scryer_domain::SeedGoalMetAction::StopSeeding => {
-                    return stop_seeding_for_terminal_download(
+                    let stopped = stop_seeding_for_terminal_download(
                         app,
                         client_id,
                         client_type,
@@ -229,6 +259,10 @@ async fn reconcile_terminal_download_cleanup(
                         decision.reason,
                     )
                     .await;
+                    return TerminalDownloadCleanup::gated(
+                        TerminalDownloadCleanupOutcome::SeedingEntryKept,
+                        report(decision.reason, Some(stopped)),
+                    );
                 }
                 scryer_domain::SeedGoalMetAction::Keep => {
                     tracing::info!(
@@ -238,7 +272,10 @@ async fn reconcile_terminal_download_cleanup(
                         reason = decision.reason,
                         "seeding goal met; keeping the client entry per profile policy"
                     );
-                    return TerminalDownloadCleanupOutcome::SeedingEntryKept;
+                    return TerminalDownloadCleanup::gated(
+                        TerminalDownloadCleanupOutcome::SeedingEntryKept,
+                        report(decision.reason, Some(SeedingReleaseAction::Kept)),
+                    );
                 }
             },
         }
@@ -266,7 +303,7 @@ async fn reconcile_terminal_download_cleanup(
             .await
     };
 
-    match delete_result {
+    let outcome = match delete_result {
         Ok(()) => TerminalDownloadCleanupOutcome::Removed,
         Err(error) => {
             if !terminal_download_item_is_still_visible(
@@ -299,7 +336,19 @@ async fn reconcile_terminal_download_cleanup(
                 TerminalDownloadCleanupOutcome::RetryableFailure
             }
         }
-    }
+    };
+
+    // The removal may have failed after the gate released the entry; report
+    // what actually happened rather than the intent.
+    let seeding = seeding_report.map(|report| SeedingGateReport {
+        action: match outcome {
+            TerminalDownloadCleanupOutcome::Removed => Some(SeedingReleaseAction::Removed),
+            TerminalDownloadCleanupOutcome::AlreadyGone => Some(SeedingReleaseAction::Vanished),
+            _ => Some(SeedingReleaseAction::Kept),
+        },
+        ..report
+    });
+    TerminalDownloadCleanup { outcome, seeding }
 }
 /// `SeedGoalMetAction::StopSeeding`: leave the entry in the client but stop it
 /// uploading.
@@ -315,7 +364,7 @@ async fn stop_seeding_for_terminal_download(
     client_type: &str,
     download_client_item_id: &str,
     reason: &'static str,
-) -> TerminalDownloadCleanupOutcome {
+) -> SeedingReleaseAction {
     let paused = if client_id.is_empty() {
         app.services
             .integrations
@@ -339,6 +388,7 @@ async fn stop_seeding_for_terminal_download(
                 reason,
                 "seeding goal met; paused the torrent per profile policy"
             );
+            SeedingReleaseAction::Paused
         }
         Err(error) => {
             tracing::warn!(
@@ -349,9 +399,9 @@ async fn stop_seeding_for_terminal_download(
                 error = %error,
                 "seeding goal met but this client cannot stop the torrent; keeping the entry untouched"
             );
+            SeedingReleaseAction::Kept
         }
     }
-    TerminalDownloadCleanupOutcome::SeedingEntryKept
 }
 
 fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {

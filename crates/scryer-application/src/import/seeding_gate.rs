@@ -56,6 +56,8 @@
 //! `PersistedSeedGoals` the grab-time package freezes onto the
 //! download-submission row.
 
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     CompletedDownload, DownloadQueueItem, DownloadSeedingSnapshot, ImportMode, MediaFacet,
@@ -114,6 +116,81 @@ pub(crate) struct SeedGoalLookupKey {
     pub info_hash: Option<String>,
 }
 
+/// Seed goals prefetched for one reconcile tick in a single query.
+///
+/// The reconcile tick re-offers *every* settled row to the gate on every poll,
+/// and held torrents are the common case once the gate is doing its job — so
+/// the shape this replaces is one point query per held torrent per tick.
+///
+/// The batch only speaks for the **client-identity** lookup. An identity the
+/// batch covered but did not answer is a definitive "no identity-keyed
+/// resolution": the caller skips its own identity query and goes straight to
+/// the info-hash fallback, which is the only lookup a batch keyed on client
+/// identity cannot express. An identity the batch does not cover at all (a
+/// caller outside the tick, or a failed prefetch) falls back to the full
+/// per-row path.
+#[derive(Debug, Default)]
+pub(crate) struct SeedGoalBatch {
+    covered: HashSet<DownloadSourceIdentity>,
+    resolved: HashMap<DownloadSourceIdentity, PersistedSeedGoals>,
+}
+
+/// What a batch can say about one identity.
+enum SeedGoalBatchAnswer {
+    /// Not in this batch; do the full per-row lookup.
+    Uncovered,
+    /// The batch carries this download's goals.
+    Resolved(PersistedSeedGoals),
+    /// Covered, and there is no identity-keyed resolution. Skip the identity
+    /// query; the info-hash fallback still applies.
+    NoIdentityResolution,
+}
+
+impl SeedGoalBatch {
+    /// Read the goals for every supplied identity in one batched query.
+    ///
+    /// A failed read yields an empty (uncovering) batch rather than an empty
+    /// answer: "the prefetch failed" must degrade to per-row reads, never to
+    /// "these torrents have no obligation".
+    pub(crate) async fn prefetch(app: &AppUseCase, identities: &[DownloadSourceIdentity]) -> Self {
+        if identities.is_empty() {
+            return Self::default();
+        }
+        let covered: HashSet<DownloadSourceIdentity> = identities.iter().cloned().collect();
+        let unique: Vec<DownloadSourceIdentity> = covered.iter().cloned().collect();
+        match app
+            .services
+            .workflow
+            .download_submissions
+            .list_seed_goals_for_client_items(&unique)
+            .await
+        {
+            Ok(rows) => Self {
+                covered,
+                resolved: rows.into_iter().collect(),
+            },
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    items = unique.len(),
+                    "failed to prefetch seed goals for the reconcile tick; falling back to per-row reads"
+                );
+                Self::default()
+            }
+        }
+    }
+
+    fn answer(&self, identity: &DownloadSourceIdentity) -> SeedGoalBatchAnswer {
+        if let Some(goals) = self.resolved.get(identity) {
+            return SeedGoalBatchAnswer::Resolved(goals.clone());
+        }
+        if self.covered.contains(identity) {
+            return SeedGoalBatchAnswer::NoIdentityResolution;
+        }
+        SeedGoalBatchAnswer::Uncovered
+    }
+}
+
 /// Read side of the persisted grab-time seed-goal resolution.
 ///
 /// A trait rather than a direct repository call so the gate has one named
@@ -123,12 +200,23 @@ pub(crate) struct SeedGoalLookupKey {
 pub(crate) trait SeedGoalsRead: Send + Sync {
     /// The goals this download was grabbed under, or `None` when it was not a
     /// Scryer grab, predates the feature, or no profile applied.
-    async fn resolved_seed_goals(&self, key: &SeedGoalLookupKey) -> Option<PersistedSeedGoals>;
+    ///
+    /// `batch` is the reconcile tick's prefetch when the caller has one; `None`
+    /// (manual import, one-off calls) takes the full per-row path.
+    async fn resolved_seed_goals(
+        &self,
+        key: &SeedGoalLookupKey,
+        batch: Option<&SeedGoalBatch>,
+    ) -> Option<PersistedSeedGoals>;
 }
 
 #[async_trait::async_trait]
 impl SeedGoalsRead for AppUseCase {
-    async fn resolved_seed_goals(&self, key: &SeedGoalLookupKey) -> Option<PersistedSeedGoals> {
+    async fn resolved_seed_goals(
+        &self,
+        key: &SeedGoalLookupKey,
+        batch: Option<&SeedGoalBatch>,
+    ) -> Option<PersistedSeedGoals> {
         let submissions = &self.services.workflow.download_submissions;
         let identity = DownloadSourceIdentity::new(
             Some(key.client_id.as_str()),
@@ -138,18 +226,26 @@ impl SeedGoalsRead for AppUseCase {
         // Client identity first; the info hash is the fallback because a
         // torrent that was removed and re-added keeps its hash but gets a new
         // client item id on several clients.
-        match submissions.get_seed_goals(&identity).await {
-            Ok(Some(goals)) => return Some(goals),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    client_id = key.client_id.as_str(),
-                    client_type = key.client_type.as_str(),
-                    download_client_item_id = key.client_item_id.as_str(),
-                    "failed to read persisted seed goals; treating this torrent as having none"
-                );
-            }
+        let identity_answer = batch
+            .map(|batch| batch.answer(&identity))
+            .unwrap_or(SeedGoalBatchAnswer::Uncovered);
+        match identity_answer {
+            SeedGoalBatchAnswer::Resolved(goals) => return Some(goals),
+            // The tick already asked this question for every row it holds.
+            SeedGoalBatchAnswer::NoIdentityResolution => {}
+            SeedGoalBatchAnswer::Uncovered => match submissions.get_seed_goals(&identity).await {
+                Ok(Some(goals)) => return Some(goals),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        client_id = key.client_id.as_str(),
+                        client_type = key.client_type.as_str(),
+                        download_client_item_id = key.client_item_id.as_str(),
+                        "failed to read persisted seed goals; treating this torrent as having none"
+                    );
+                }
+            },
         }
 
         let info_hash = key.info_hash.as_deref()?;
@@ -515,19 +611,23 @@ pub(crate) async fn evaluate_seeding_gate_for(
     key: &SeedGoalLookupKey,
     present_in_client: bool,
 ) -> SeedingGateDecision {
-    evaluate_seeding_gate_with(app, key, present_in_client, None).await
+    evaluate_seeding_gate_with(app, key, present_in_client, None, None).await
 }
 
 /// As `evaluate_seeding_gate_for`, with an observation the caller already has.
 ///
-/// `None` means "look one up"; it does not mean "there is none". A caller that
-/// holds the live tracked row always passes `Some(...)` — even an all-unknown
-/// observation — because its copy is the freshest one that exists.
+/// `observation: None` means "look one up"; it does not mean "there is none". A
+/// caller that holds the live tracked row always passes `Some(...)` — even an
+/// all-unknown observation — because its copy is the freshest one that exists.
+///
+/// `goal_batch` is the reconcile tick's one-query prefetch; `None` takes the
+/// per-row read path.
 pub(crate) async fn evaluate_seeding_gate_with(
     app: &AppUseCase,
     key: &SeedGoalLookupKey,
     present_in_client: bool,
     observation: Option<TorrentSeedingObservation>,
+    goal_batch: Option<&SeedGoalBatch>,
 ) -> SeedingGateDecision {
     if !client_type_is_torrent(app, &key.client_type) {
         return SeedingGateDecision::not_applicable();
@@ -542,7 +642,7 @@ pub(crate) async fn evaluate_seeding_gate_with(
         client_type: key.client_type.clone(),
         present_in_client,
         observation,
-        goals: app.resolved_seed_goals(key).await,
+        goals: app.resolved_seed_goals(key, goal_batch).await,
         now: Utc::now(),
     };
     evaluate_seeding_gate(&input)

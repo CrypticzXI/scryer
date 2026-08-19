@@ -1977,6 +1977,8 @@ const de: LocaleDictionary = {
   "history.fileDeleted": "Gelöscht",
   "history.fileRenamed": "Umbenannt",
   "history.rematched": "Neu zugeordnet",
+  "history.seedingStarted": "Seedet",
+  "history.seedingCompleted": "Seeding beendet",
   "history.downloadIgnored": "Ignoriert",
   "history.facet": "Kategorie",
   "history.actions": "Aktionen",

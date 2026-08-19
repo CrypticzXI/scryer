@@ -594,6 +594,56 @@ pub(crate) fn title_history_record_from_domain_event(
             None,
             None,
         ),
+        // The two seeding-retention events reuse the download-lifecycle shape
+        // (`DownloadIgnored`): client identity in `download_id`/`client_*`, the
+        // release title as the source title. The gate's reason and the action
+        // it took ride in `data_json` with the rest of the payload.
+        DomainEventPayload::SeedingStarted(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
+            TitleHistoryEventType::SeedingStarted,
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
+            None,
+            None,
+            data.source_provider.clone(),
+            None,
+            Some(data.download_client_item_id.clone()),
+            data.client_id.clone(),
+            data.client_type.clone(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
+        DomainEventPayload::SeedingCompleted(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
+            TitleHistoryEventType::SeedingCompleted,
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
+            None,
+            None,
+            data.source_provider.clone(),
+            None,
+            Some(data.download_client_item_id.clone()),
+            data.client_id.clone(),
+            data.client_type.clone(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
         DomainEventPayload::MediaFileAnalyzed(data) => (
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),

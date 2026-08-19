@@ -224,9 +224,25 @@ fn apply_profile(
         // Clamp UP only: a tracker minimum can raise a goal but never lower it,
         // and a minimum on an axis the profile leaves unset becomes the goal on
         // that axis (otherwise the tracker's H&R rule would go unenforced).
-        ratio = clamp_up_f64(ratio, request.effective_min_ratio());
-        seed_time_minutes =
-            clamp_up_i64(seed_time_minutes, request.effective_min_seed_time_minutes());
+        let profile_ratio = ratio;
+        let profile_seed_time_minutes = seed_time_minutes;
+        let min_ratio = request.effective_min_ratio();
+        let min_seed_time_minutes = request.effective_min_seed_time_minutes();
+        ratio = clamp_up_f64(profile_ratio, min_ratio);
+        seed_time_minutes = clamp_up_i64(profile_seed_time_minutes, min_seed_time_minutes);
+        log_tracker_minimum_clamp(
+            profile,
+            request,
+            source,
+            TrackerMinimumClamp {
+                profile_ratio,
+                min_ratio,
+                resolved_ratio: ratio,
+                profile_seed_time_minutes,
+                min_seed_time_minutes,
+                resolved_seed_time_minutes: seed_time_minutes,
+            },
+        );
     }
 
     ResolvedSeedGoals {
@@ -239,6 +255,90 @@ fn apply_profile(
         goal_met_action: Some(profile.goal_met_action),
         resolution_source: source,
     }
+}
+
+/// Which axes a tracker minimum actually raised, as the single `axes` field of
+/// the breadcrumb — `None` when nothing was raised and there is nothing to say.
+///
+/// Split out from the log call so the decision is unit-testable without a
+/// subscriber: `scryer-application` has no log-capture harness, and the value
+/// worth pinning is which axes count as clamped, not that `tracing` works.
+///
+/// Derived from the inputs rather than by comparing the goal before and after,
+/// so a non-finite or non-positive profile value can never read as "clamped".
+fn clamped_axes(clamp: &TrackerMinimumClamp) -> Option<&'static str> {
+    let ratio_clamped = clamp
+        .min_ratio
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .is_some_and(|minimum| {
+            clamp
+                .profile_ratio
+                .filter(|value| value.is_finite())
+                .is_none_or(|value| minimum > value)
+        });
+    let seed_time_clamped = clamp
+        .min_seed_time_minutes
+        .filter(|minutes| *minutes > 0)
+        .is_some_and(|minimum| {
+            clamp
+                .profile_seed_time_minutes
+                .is_none_or(|value| minimum > value)
+        });
+
+    match (ratio_clamped, seed_time_clamped) {
+        (true, true) => Some("ratio,seed_time"),
+        (true, false) => Some("ratio"),
+        (false, true) => Some("seed_time"),
+        (false, false) => None,
+    }
+}
+
+/// Both axes of one clamp, before and after, for the operator breadcrumb.
+struct TrackerMinimumClamp {
+    profile_ratio: Option<f64>,
+    min_ratio: Option<f64>,
+    resolved_ratio: Option<f64>,
+    profile_seed_time_minutes: Option<i64>,
+    min_seed_time_minutes: Option<i64>,
+    resolved_seed_time_minutes: Option<i64>,
+}
+
+/// One structured line per grab when a tracker-declared minimum raised a goal
+/// above the profile's value, or supplied a goal on an axis the profile leaves
+/// unset.
+///
+/// This is the operator-facing evidence that hit-and-run protection engaged:
+/// the goals a torrent is actually seeding to are frozen at grab time, so
+/// without this line the only way to explain a goal that does not match the
+/// profile is to read the submission row. Deliberately one event covering both
+/// axes — a clamp is a single decision about one grab, not one per axis — and
+/// silent when nothing was raised, so it stays a signal rather than per-grab
+/// noise.
+fn log_tracker_minimum_clamp(
+    profile: &SeedingProfile,
+    request: &SeedGoalRequest,
+    source: SeedGoalResolutionSource,
+    clamp: TrackerMinimumClamp,
+) {
+    let Some(axes) = clamped_axes(&clamp) else {
+        return;
+    };
+
+    tracing::info!(
+        indexer_id = request.indexer_id.as_deref().unwrap_or("unknown"),
+        seeding_profile_id = profile.id.as_str(),
+        seeding_profile = profile.name.as_str(),
+        resolution_source = source.as_str(),
+        season_pack = request.season_pack,
+        axes,
+        profile_ratio = ?clamp.profile_ratio,
+        tracker_min_ratio = ?clamp.min_ratio,
+        resolved_ratio = ?clamp.resolved_ratio,
+        profile_seed_time_minutes = ?clamp.profile_seed_time_minutes,
+        tracker_min_seed_time_minutes = ?clamp.min_seed_time_minutes,
+        resolved_seed_time_minutes = ?clamp.resolved_seed_time_minutes,
+        "seeding goal raised to the tracker-declared minimum (hit-and-run protection)"
+    );
 }
 
 fn clamp_up_f64(value: Option<f64>, minimum: Option<f64>) -> Option<f64> {
@@ -831,6 +931,82 @@ mod tests {
             ReleaseSeedMinimums::from_release_extra(&HashMap::new()),
             ReleaseSeedMinimums::default()
         );
+    }
+
+    fn clamp(
+        profile_ratio: Option<f64>,
+        min_ratio: Option<f64>,
+        profile_seed_time_minutes: Option<i64>,
+        min_seed_time_minutes: Option<i64>,
+    ) -> TrackerMinimumClamp {
+        TrackerMinimumClamp {
+            profile_ratio,
+            min_ratio,
+            resolved_ratio: clamp_up_f64(profile_ratio, min_ratio),
+            profile_seed_time_minutes,
+            min_seed_time_minutes,
+            resolved_seed_time_minutes: clamp_up_i64(
+                profile_seed_time_minutes,
+                min_seed_time_minutes,
+            ),
+        }
+    }
+
+    #[test]
+    fn a_raised_axis_is_reported_as_a_clamp() {
+        assert_eq!(
+            clamped_axes(&clamp(Some(1.0), Some(2.0), None, None)),
+            Some("ratio")
+        );
+        assert_eq!(
+            clamped_axes(&clamp(None, None, Some(60), Some(4_320))),
+            Some("seed_time")
+        );
+    }
+
+    #[test]
+    fn an_axis_the_profile_leaves_unset_is_reported_when_the_tracker_fills_it() {
+        // The tracker minimum *becomes* the goal on that axis, which is a
+        // policy change the operator has to be able to see.
+        assert_eq!(
+            clamped_axes(&clamp(None, Some(1.5), None, None)),
+            Some("ratio")
+        );
+        assert_eq!(
+            clamped_axes(&clamp(None, None, None, Some(4_320))),
+            Some("seed_time")
+        );
+    }
+
+    #[test]
+    fn both_axes_combine_into_one_event() {
+        assert_eq!(
+            clamped_axes(&clamp(Some(1.0), Some(2.0), Some(60), Some(4_320))),
+            Some("ratio,seed_time")
+        );
+    }
+
+    #[test]
+    fn nothing_is_reported_when_the_profile_already_covers_the_minimum() {
+        // Equal is not raised, and a profile above the minimum is not raised.
+        assert_eq!(clamped_axes(&clamp(Some(2.0), Some(2.0), None, None)), None);
+        assert_eq!(clamped_axes(&clamp(Some(3.0), Some(2.0), None, None)), None);
+        assert_eq!(
+            clamped_axes(&clamp(None, None, Some(4_320), Some(4_320))),
+            None
+        );
+        // No release minimums at all: the common case, and silent.
+        assert_eq!(clamped_axes(&clamp(Some(1.0), None, Some(60), None)), None);
+    }
+
+    #[test]
+    fn non_positive_minimums_are_never_reported_as_a_clamp() {
+        assert_eq!(clamped_axes(&clamp(Some(1.0), Some(0.0), None, None)), None);
+        assert_eq!(
+            clamped_axes(&clamp(Some(1.0), Some(f64::NAN), None, None)),
+            None
+        );
+        assert_eq!(clamped_axes(&clamp(None, None, Some(60), Some(0))), None);
     }
 
     #[test]

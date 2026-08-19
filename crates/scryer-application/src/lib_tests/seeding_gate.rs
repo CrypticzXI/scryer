@@ -154,12 +154,13 @@ async fn an_imported_torrent_is_held_instead_of_removed_when_seeding_cannot_be_p
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
     assert!(
-        !crate::import::import::terminal_download_cleanup_is_complete(outcome),
+        !crate::import::import::terminal_download_cleanup_is_complete(outcome.outcome),
         "a held torrent must not settle: it has to re-enter the gate next poll"
     );
     assert!(
@@ -189,6 +190,7 @@ async fn an_already_held_torrent_re_enters_the_gate_and_is_still_not_removed() {
         &app,
         &tracked,
         TrackedDownloadState::ImportedSeeding,
+        None,
     )
     .await;
 
@@ -220,11 +222,12 @@ async fn a_torrent_that_left_the_client_settles_without_a_removal_call() {
         &app,
         &tracked,
         TrackedDownloadState::ImportedSeeding,
+        None,
     )
     .await;
 
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::AlreadyGone);
-    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome));
+    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome.outcome));
     assert!(download_client.deleted_requests.lock().await.is_empty());
 }
 
@@ -251,13 +254,14 @@ async fn torrent_blackhole_entries_are_never_auto_removed() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
     // Removal here is `remove_dir_all` against a directory an external client
     // is still seeding from, so the entry settles without being touched.
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::SeedingEntryKept);
-    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome));
+    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome.outcome));
     assert!(download_client.deleted_requests.lock().await.is_empty());
 }
 
@@ -282,6 +286,7 @@ async fn usenet_downloads_are_removed_on_import_exactly_as_before() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -313,6 +318,7 @@ async fn a_failed_torrent_is_removed_immediately_so_blocklisting_never_waits_on_
         &app,
         &tracked,
         TrackedDownloadState::Failed,
+        None,
     )
     .await;
 
@@ -349,13 +355,14 @@ async fn a_torrent_with_removal_disabled_is_left_alone_without_engaging_the_gate
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
     // Nothing was ever going to be removed, so the download settles as
     // `Imported` rather than being parked in `ImportedSeeding` forever.
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::NotConfigured);
-    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome));
+    assert!(crate::import::import::terminal_download_cleanup_is_complete(outcome.outcome));
 }
 
 // ── import mode ───────────────────────────────────────────────────────────
@@ -559,6 +566,11 @@ struct SeedGoalOnlySubmissionRepo {
     by_info_hash: std::sync::Mutex<HashMap<String, PersistedSeedGoals>>,
     identity_lookups: std::sync::Mutex<Vec<DownloadSourceIdentity>>,
     info_hash_lookups: std::sync::Mutex<Vec<String>>,
+    /// One entry per batched read, holding the identities it was asked for.
+    batch_lookups: std::sync::Mutex<Vec<Vec<DownloadSourceIdentity>>>,
+    /// When set, the batched read fails — the prefetch must then degrade to
+    /// per-row reads, never to "these torrents have no obligation".
+    batch_fails: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -642,6 +654,29 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
             .get(info_hash)
             .cloned())
     }
+
+    async fn list_seed_goals_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        self.batch_lookups
+            .lock()
+            .expect("batch lookup log")
+            .push(client_items.to_vec());
+        if self.batch_fails.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(crate::AppError::Repository("batch read failed".into()));
+        }
+        let by_identity = self.by_identity.lock().expect("seed goals by identity");
+        Ok(client_items
+            .iter()
+            .filter_map(|identity| {
+                by_identity
+                    .get(&identity.item_id)
+                    .cloned()
+                    .map(|goals| (identity.clone(), goals))
+            })
+            .collect())
+    }
 }
 
 fn persisted_goals(never_remove: bool) -> PersistedSeedGoals {
@@ -678,7 +713,7 @@ async fn the_gate_reads_the_goals_a_grab_was_persisted_under() {
         info_hash: Some(item_id.to_string()),
     };
     let goals = app
-        .resolved_seed_goals(&key)
+        .resolved_seed_goals(&key, None)
         .await
         .expect("persisted goals should be found by client identity");
 
@@ -722,7 +757,7 @@ async fn the_gate_falls_back_to_the_info_hash_when_the_client_item_id_moved() {
         info_hash: Some(info_hash.to_string()),
     };
     let goals = app
-        .resolved_seed_goals(&key)
+        .resolved_seed_goals(&key, None)
         .await
         .expect("persisted goals should be found by info hash");
 
@@ -765,6 +800,7 @@ async fn a_never_remove_profile_holds_a_torrent_the_client_says_is_removable() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -833,6 +869,7 @@ async fn a_client_that_reports_its_obligation_met_now_releases_the_entry() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
     assert_eq!(held, TerminalDownloadCleanupOutcome::HeldForSeeding);
@@ -851,6 +888,7 @@ async fn a_client_that_reports_its_obligation_met_now_releases_the_entry() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -896,6 +934,7 @@ async fn an_observed_ratio_past_the_persisted_goal_beats_a_client_saying_no() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -929,6 +968,7 @@ async fn an_observed_ratio_short_of_the_persisted_goal_still_holds() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -964,6 +1004,7 @@ async fn an_observed_private_torrent_without_goals_is_held_forever() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
@@ -978,6 +1019,7 @@ async fn an_observed_private_torrent_without_goals_is_held_forever() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
     assert_eq!(released, TerminalDownloadCleanupOutcome::Removed);
@@ -999,6 +1041,7 @@ async fn an_absent_observation_holds_exactly_as_it_did_before_the_plumbing() {
         &app,
         &tracked,
         TrackedDownloadState::Imported,
+        None,
     )
     .await;
 
@@ -1032,6 +1075,7 @@ async fn every_tick_re_reads_the_observation_rather_than_the_one_that_parked_the
             &app,
             &tracked,
             TrackedDownloadState::ImportedSeeding,
+            None,
         )
         .await,
         TerminalDownloadCleanupOutcome::HeldForSeeding
@@ -1051,6 +1095,7 @@ async fn every_tick_re_reads_the_observation_rather_than_the_one_that_parked_the
             &app,
             &tracked,
             TrackedDownloadState::ImportedSeeding,
+            None,
         )
         .await,
         TerminalDownloadCleanupOutcome::Removed
@@ -1090,6 +1135,7 @@ async fn the_wall_clock_fallback_covers_clients_with_no_seed_time_counter() {
             &app,
             &tracked,
             TrackedDownloadState::ImportedSeeding,
+            None,
         )
         .await,
         TerminalDownloadCleanupOutcome::Removed
@@ -1127,6 +1173,7 @@ async fn a_stop_seeding_profile_pauses_the_torrent_instead_of_removing_it() {
         &app,
         &tracked,
         TrackedDownloadState::ImportedSeeding,
+        None,
     )
     .await;
 
@@ -1311,4 +1358,552 @@ async fn the_import_mode_check_reads_the_observation_from_the_published_snapshot
     .expect("resolve seeding-safe import mode");
 
     assert_eq!(effective, ImportMode::HardlinkOrCopy);
+}
+
+// ── per-tick batching ─────────────────────────────────────────────────────
+
+/// The reconcile tick re-offers every settled row on every poll, so the reads
+/// each row used to do for itself are the shape being removed here.
+#[tokio::test]
+async fn the_reconcile_tick_reads_every_settled_row_s_goals_in_one_batch() {
+    use crate::seeding_gate::{SeedGoalBatch, SeedGoalLookupKey, SeedGoalsRead};
+
+    let repo = Arc::new(SeedGoalOnlySubmissionRepo::default());
+    for item_id in ["torrent-a", "torrent-b", "torrent-c"] {
+        repo.by_identity
+            .lock()
+            .expect("seed goals by identity")
+            .insert(item_id.to_string(), persisted_goals(false));
+    }
+
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo.clone();
+
+    let identities: Vec<DownloadSourceIdentity> = ["torrent-a", "torrent-b", "torrent-c"]
+        .iter()
+        .map(|item_id| DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", item_id))
+        .collect();
+    let batch = SeedGoalBatch::prefetch(&app, &identities).await;
+
+    assert_eq!(
+        repo.batch_lookups.lock().expect("batch lookup log").len(),
+        1,
+        "one batched read for the whole tick"
+    );
+    assert!(
+        repo.identity_lookups
+            .lock()
+            .expect("identity lookup log")
+            .is_empty(),
+        "the prefetch must not fall back to per-row identity reads"
+    );
+
+    for item_id in ["torrent-a", "torrent-b", "torrent-c"] {
+        let key = SeedGoalLookupKey {
+            client_id: "client-1".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item_id: item_id.to_string(),
+            info_hash: None,
+        };
+        let goals = app
+            .resolved_seed_goals(&key, Some(&batch))
+            .await
+            .expect("the batch answers for every row it covered");
+        assert_eq!(goals.seed_goal_ratio, Some(2.0));
+    }
+
+    assert!(
+        repo.identity_lookups
+            .lock()
+            .expect("identity lookup log")
+            .is_empty(),
+        "a row the batch answered must not repeat the identity query"
+    );
+    assert_eq!(
+        repo.batch_lookups.lock().expect("batch lookup log").len(),
+        1,
+        "resolving rows must not trigger further batched reads"
+    );
+}
+
+#[tokio::test]
+async fn a_covered_row_without_goals_skips_the_identity_query_but_keeps_the_info_hash_fallback() {
+    use crate::seeding_gate::{SeedGoalBatch, SeedGoalLookupKey, SeedGoalsRead};
+
+    let info_hash = "abcdef0123456789abcdef0123456789abcdef01";
+    let repo = Arc::new(SeedGoalOnlySubmissionRepo::default());
+    repo.by_info_hash
+        .lock()
+        .expect("seed goals by info hash")
+        .insert(info_hash.to_string(), persisted_goals(false));
+
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo.clone();
+
+    let identity = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "moved-item-id");
+    let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&identity)).await;
+
+    let key = SeedGoalLookupKey {
+        client_id: "client-1".to_string(),
+        client_type: "qbittorrent".to_string(),
+        client_item_id: "moved-item-id".to_string(),
+        info_hash: Some(info_hash.to_string()),
+    };
+    let goals = app
+        .resolved_seed_goals(&key, Some(&batch))
+        .await
+        .expect("the info-hash fallback still runs for a covered row with no identity match");
+
+    assert_eq!(goals.seed_goal_ratio, Some(2.0));
+    assert!(
+        repo.identity_lookups
+            .lock()
+            .expect("identity lookup log")
+            .is_empty(),
+        "the batch already answered the identity question"
+    );
+    assert_eq!(
+        repo.info_hash_lookups
+            .lock()
+            .expect("info hash lookup log")
+            .clone(),
+        vec![info_hash.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_row_the_batch_never_covered_still_takes_the_per_row_path() {
+    use crate::seeding_gate::{SeedGoalBatch, SeedGoalLookupKey, SeedGoalsRead};
+
+    let repo = Arc::new(SeedGoalOnlySubmissionRepo::default());
+    repo.by_identity
+        .lock()
+        .expect("seed goals by identity")
+        .insert("uncovered".to_string(), persisted_goals(false));
+
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo.clone();
+
+    let covered = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "covered");
+    let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&covered)).await;
+
+    let key = SeedGoalLookupKey {
+        client_id: "client-1".to_string(),
+        client_type: "qbittorrent".to_string(),
+        client_item_id: "uncovered".to_string(),
+        info_hash: None,
+    };
+    let goals = app
+        .resolved_seed_goals(&key, Some(&batch))
+        .await
+        .expect("an uncovered row falls back to its own identity read");
+
+    assert_eq!(goals.seed_goal_ratio, Some(2.0));
+    assert_eq!(
+        repo.identity_lookups
+            .lock()
+            .expect("identity lookup log")
+            .len(),
+        1
+    );
+}
+
+/// A failed prefetch must degrade to per-row reads. Reading it as "no goals"
+/// would release torrents that are still under obligation.
+#[tokio::test]
+async fn a_failed_prefetch_falls_back_to_per_row_reads() {
+    use crate::seeding_gate::{SeedGoalBatch, SeedGoalLookupKey, SeedGoalsRead};
+
+    let repo = Arc::new(SeedGoalOnlySubmissionRepo::default());
+    repo.by_identity
+        .lock()
+        .expect("seed goals by identity")
+        .insert("torrent-a".to_string(), persisted_goals(true));
+    repo.batch_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo.clone();
+
+    let identity = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "torrent-a");
+    let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&identity)).await;
+
+    let key = SeedGoalLookupKey {
+        client_id: "client-1".to_string(),
+        client_type: "qbittorrent".to_string(),
+        client_item_id: "torrent-a".to_string(),
+        info_hash: None,
+    };
+    let goals = app
+        .resolved_seed_goals(&key, Some(&batch))
+        .await
+        .expect("a failed prefetch must not read as 'no obligation'");
+
+    assert!(goals.never_remove);
+    assert_eq!(
+        repo.identity_lookups
+            .lock()
+            .expect("identity lookup log")
+            .len(),
+        1
+    );
+}
+
+/// Two settled rows of the same title, on the same client, in one tick: the
+/// title lookup and the routing-entry read happen once, not once per row.
+#[tokio::test]
+async fn identical_routing_scopes_resolve_once_per_tick() {
+    use crate::import::import::TerminalCleanupTickCache;
+
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Shared Scope").await;
+
+    let rows: Vec<TrackedDownload> = ["torrent-scope-1", "torrent-scope-2"]
+        .iter()
+        .map(|item_id| {
+            tracked_for(
+                &config.id,
+                "qbittorrent",
+                item_id,
+                &title,
+                TrackedDownloadState::ImportedSeeding,
+                true,
+            )
+        })
+        .collect();
+
+    let identities: Vec<DownloadSourceIdentity> = rows
+        .iter()
+        .map(|tracked| {
+            DownloadSourceIdentity::new(
+                Some(tracked.client_id.as_str()),
+                &tracked.client_type,
+                &tracked.client_item.download_client_item_id,
+            )
+        })
+        .collect();
+    let cache = TerminalCleanupTickCache::prefetch(&app, &identities).await;
+
+    for tracked in &rows {
+        let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+            &app,
+            tracked,
+            TrackedDownloadState::ImportedSeeding,
+            Some(&cache),
+        )
+        .await;
+        assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    }
+
+    assert_eq!(
+        cache.memo_reads(),
+        (1, 1),
+        "the title lookup and the removal-policy read are hoisted out of the per-row loop"
+    );
+}
+
+// ── seeding history events ────────────────────────────────────────────────
+
+async fn seeding_history_events(app: &AppUseCase) -> Vec<scryer_domain::DomainEvent> {
+    let mut events = app
+        .services
+        .events
+        .domain_events
+        .list(&scryer_domain::DomainEventFilter {
+            event_types: Some(vec![
+                scryer_domain::DomainEventType::SeedingStarted,
+                scryer_domain::DomainEventType::SeedingCompleted,
+            ]),
+            title_id: None,
+            facet: None,
+            after_sequence: None,
+            before_sequence: None,
+            limit: 0,
+        })
+        .await
+        .expect("list seeding history events");
+    events.sort_by_key(|event| event.sequence);
+    events
+}
+
+/// A held torrent is re-offered to the gate on every poll; only the transition
+/// that actually parked it is history.
+#[tokio::test]
+async fn parking_a_torrent_records_one_history_event_however_many_ticks_it_is_held() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "History Park").await;
+
+    let tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-history-1",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    let events = seeding_history_events(&app).await;
+    assert_eq!(events.len(), 1, "one park, one event");
+    let scryer_domain::DomainEventPayload::SeedingStarted(data) = &events[0].payload else {
+        panic!(
+            "expected a seeding_started event, got {:?}",
+            events[0].payload
+        );
+    };
+    assert_eq!(data.download_client_item_id, "torrent-history-1");
+    assert_eq!(data.client_id.as_deref(), Some(config.id.as_str()));
+    assert_eq!(data.client_type.as_deref(), Some("qbittorrent"));
+    assert_eq!(data.reason, "no_resolved_goals_and_client_verdict_unknown");
+    assert_eq!(events[0].title_id.as_deref(), Some(title.id.as_str()));
+
+    // Two more polls of the same held torrent.
+    for _ in 0..2 {
+        crate::app_usecase_integration::finalize_tracked_terminal_state(
+            &app,
+            &mut tracker,
+            &id,
+            TrackedDownloadState::ImportedSeeding,
+        )
+        .await;
+    }
+
+    assert_eq!(
+        seeding_history_events(&app).await.len(),
+        1,
+        "a held torrent must not record an event per tick"
+    );
+}
+
+#[tokio::test]
+async fn releasing_a_parked_torrent_records_the_action_and_the_observed_progress() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "History Release").await;
+
+    let tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-history-2",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+
+    // Tick 1: nothing observed, so the entry is parked.
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+    assert_eq!(seeding_history_events(&app).await.len(), 1);
+
+    // Tick 2: the client now reports its obligation discharged.
+    tracker
+        .find_mut(&id)
+        .expect("parked row")
+        .client_item
+        .seeding = Some(DownloadSeedingSnapshot {
+        can_remove: Some(true),
+        can_move_files: Some(true),
+        seed_ratio: Some(2.75),
+        seed_time_seconds: Some(90_000),
+        ..DownloadSeedingSnapshot::default()
+    });
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::ImportedSeeding,
+    )
+    .await;
+
+    let events = seeding_history_events(&app).await;
+    assert_eq!(events.len(), 2, "the park is closed by exactly one release");
+    let scryer_domain::DomainEventPayload::SeedingCompleted(data) = &events[1].payload else {
+        panic!(
+            "expected a seeding_completed event, got {:?}",
+            events[1].payload
+        );
+    };
+    assert_eq!(data.action, "removed");
+    assert_eq!(data.reason, "client_reports_seeding_obligation_met");
+    assert_eq!(data.seed_ratio, Some(2.75));
+    assert_eq!(data.seed_time_seconds, Some(90_000));
+    assert_eq!(data.download_client_item_id, "torrent-history-2");
+    assert!(tracker.find(&id).is_none());
+}
+
+/// A `StopSeeding` profile reports what actually happened to the entry, not the
+/// profile's intent.
+#[tokio::test]
+async fn a_paused_release_is_recorded_as_paused() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (mut app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "History Pause").await;
+    app.services.workflow.download_submissions = goals_repo(
+        "torrent-history-3",
+        PersistedSeedGoals {
+            goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+            ..persisted_goals(false)
+        },
+    );
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-history-3",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked.clone());
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(4.0),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+    tracker
+        .find_mut(&id)
+        .expect("parked row")
+        .client_item
+        .seeding = tracked.client_item.seeding.clone();
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::ImportedSeeding,
+    )
+    .await;
+
+    let events = seeding_history_events(&app).await;
+    assert_eq!(events.len(), 2);
+    let scryer_domain::DomainEventPayload::SeedingCompleted(data) = &events[1].payload else {
+        panic!(
+            "expected a seeding_completed event, got {:?}",
+            events[1].payload
+        );
+    };
+    assert_eq!(data.action, "paused");
+    assert_eq!(data.reason, "profile_goal_met");
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+/// A torrent the gate never held has no retention window, so it records no
+/// seeding history at all.
+#[tokio::test]
+async fn a_torrent_that_was_never_held_records_no_seeding_history() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Never Held").await;
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-history-4",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert!(tracker.find(&id).is_none());
+    assert!(seeding_history_events(&app).await.is_empty());
+}
+
+/// Usenet never reaches the gate, so it never produces seeding history.
+#[tokio::test]
+async fn usenet_imports_record_no_seeding_history() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Usenet History").await;
+
+    let tracked = tracked_for(
+        &config.id,
+        "nzbget",
+        "nzb-history-1",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert!(seeding_history_events(&app).await.is_empty());
 }

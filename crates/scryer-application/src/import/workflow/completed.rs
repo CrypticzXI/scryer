@@ -248,6 +248,79 @@ pub(crate) enum TerminalDownloadCleanupOutcome {
     /// further to reconcile.
     SeedingEntryKept,
 }
+/// What the gate actually did with a client entry it released.
+///
+/// Distinct from `SeedGoalMetAction`, which is the profile's *intent*: a
+/// `StopSeeding` profile on a client that cannot pause degrades to `Kept`, and
+/// the history has to say what happened, not what was wanted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SeedingReleaseAction {
+    Removed,
+    Paused,
+    Kept,
+    /// The entry was already gone from the client when the gate looked.
+    Vanished,
+}
+
+impl SeedingReleaseAction {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Removed => "removed",
+            Self::Paused => "paused",
+            Self::Kept => "kept",
+            Self::Vanished => "vanished",
+        }
+    }
+}
+
+/// The seeding gate's verdict for one terminal cleanup, carried back for the
+/// seeding history events. Absent when the gate never ran (usenet, or removal
+/// disabled), in which case no seeding history is recorded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SeedingGateReport {
+    /// The gate's reason constant, verbatim — the same string the queue
+    /// projection derives its badge from.
+    pub reason: &'static str,
+    /// What happened to the entry; `None` while it is still held.
+    pub action: Option<SeedingReleaseAction>,
+    /// Observed at the moment of the decision, when the client reports it.
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+}
+
+/// A terminal cleanup's outcome plus, when the seeding gate ran, its verdict.
+///
+/// Compares equal to a bare `TerminalDownloadCleanupOutcome` so every existing
+/// call site and assertion reads as before while the seeding detail rides
+/// along for the history events.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerminalDownloadCleanup {
+    pub outcome: TerminalDownloadCleanupOutcome,
+    pub seeding: Option<SeedingGateReport>,
+}
+
+impl TerminalDownloadCleanup {
+    fn bare(outcome: TerminalDownloadCleanupOutcome) -> Self {
+        Self {
+            outcome,
+            seeding: None,
+        }
+    }
+
+    fn gated(outcome: TerminalDownloadCleanupOutcome, seeding: SeedingGateReport) -> Self {
+        Self {
+            outcome,
+            seeding: Some(seeding),
+        }
+    }
+}
+
+impl PartialEq<TerminalDownloadCleanupOutcome> for TerminalDownloadCleanup {
+    fn eq(&self, other: &TerminalDownloadCleanupOutcome) -> bool {
+        self.outcome == *other
+    }
+}
+
 pub(crate) fn terminal_download_cleanup_is_complete(
     outcome: TerminalDownloadCleanupOutcome,
 ) -> bool {
@@ -262,7 +335,7 @@ pub(crate) fn terminal_download_cleanup_is_complete(
 async fn cleanup_routing_scope_for_title_id(
     app: &AppUseCase,
     title_id: Option<&str>,
-) -> (Option<String>, Option<MediaFacet>) {
+) -> CleanupRoutingScope {
     let Some(title_id) = title_id.map(str::trim).filter(|value| !value.is_empty()) else {
         return (None, None);
     };
@@ -272,13 +345,144 @@ async fn cleanup_routing_scope_for_title_id(
         Ok(None) | Err(_) => (None, None),
     }
 }
+
+/// Library and facet a terminal cleanup routes by, resolved from its title.
+type CleanupRoutingScope = (Option<String>, Option<MediaFacet>);
+
+/// What `should_remove_completed_download` actually depends on: routing scope
+/// plus the client key the entry would be removed from.
+type RemovalPolicyKey = (Option<String>, MediaFacet, String);
+
+/// The reads every settled tracked row in one reconcile tick would otherwise
+/// repeat for itself.
+///
+/// `reconcile_terminal_tracked_downloads` re-offers *every* settled row to the
+/// removal gate on every poll — that re-offering is what eventually releases a
+/// held torrent — so the per-row cost is paid once per row per tick, forever,
+/// for as long as a torrent is held. Without this each row runs its own
+/// seed-goal query, its own title lookup and its own routing-entry read, and
+/// rows of the same title (a season pack) or the same client repeat those
+/// answers verbatim.
+///
+/// Deliberately scoped to one tick and never reused across ticks: routing
+/// configuration and persisted goals can change between polls, and acting on a
+/// stale `remove_completed` or a stale goal is exactly the class of mistake
+/// that removes a torrent still under obligation.
+pub(crate) struct TerminalCleanupTickCache {
+    goals: crate::seeding_gate::SeedGoalBatch,
+    routing_scopes: std::sync::Mutex<HashMap<String, CleanupRoutingScope>>,
+    remove_completed: std::sync::Mutex<HashMap<RemovalPolicyKey, bool>>,
+    /// Reads that actually reached a repository, so a test can pin the hoist
+    /// itself rather than only the shape of the key.
+    routing_scope_reads: std::sync::atomic::AtomicUsize,
+    remove_completed_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl TerminalCleanupTickCache {
+    /// Prefetch the seed goals for every settled row in this tick in one query.
+    /// The memoized caches start empty and fill as rows are reconciled.
+    pub(crate) async fn prefetch(app: &AppUseCase, identities: &[DownloadSourceIdentity]) -> Self {
+        Self {
+            goals: crate::seeding_gate::SeedGoalBatch::prefetch(app, identities).await,
+            routing_scopes: std::sync::Mutex::new(HashMap::new()),
+            remove_completed: std::sync::Mutex::new(HashMap::new()),
+            routing_scope_reads: std::sync::atomic::AtomicUsize::new(0),
+            remove_completed_reads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn goal_batch(&self) -> &crate::seeding_gate::SeedGoalBatch {
+        &self.goals
+    }
+
+    /// `(routing-scope reads, remove-completed reads)` that missed the memo.
+    #[cfg(test)]
+    pub(crate) fn memo_reads(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering;
+        (
+            self.routing_scope_reads.load(Ordering::Relaxed),
+            self.remove_completed_reads.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// `cleanup_routing_scope_for_title_id`, answering from the tick cache when the
+/// same title has already been resolved in this tick.
+async fn cleanup_routing_scope_for_title_id_cached(
+    app: &AppUseCase,
+    title_id: Option<&str>,
+    cache: Option<&TerminalCleanupTickCache>,
+) -> CleanupRoutingScope {
+    let Some(cache) = cache else {
+        return cleanup_routing_scope_for_title_id(app, title_id).await;
+    };
+    let Some(key) = title_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return (None, None);
+    };
+
+    if let Ok(scopes) = cache.routing_scopes.lock()
+        && let Some(hit) = scopes.get(&key)
+    {
+        return hit.clone();
+    }
+    cache
+        .routing_scope_reads
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let resolved = cleanup_routing_scope_for_title_id(app, Some(key.as_str())).await;
+    if let Ok(mut scopes) = cache.routing_scopes.lock() {
+        scopes.insert(key, resolved.clone());
+    }
+    resolved
+}
+
+/// `AppUseCase::should_remove_completed_download`, memoized per tick on the
+/// `(library_id, facet, routing_key)` tuple it actually depends on.
+async fn should_remove_completed_download_cached(
+    app: &AppUseCase,
+    library_id: Option<&str>,
+    facet: &MediaFacet,
+    routing_key: &str,
+    cache: Option<&TerminalCleanupTickCache>,
+) -> bool {
+    let Some(cache) = cache else {
+        return app
+            .should_remove_completed_download(library_id, facet, routing_key)
+            .await;
+    };
+    let key = (
+        library_id.map(str::to_string),
+        facet.clone(),
+        routing_key.to_string(),
+    );
+    if let Ok(policies) = cache.remove_completed.lock()
+        && let Some(hit) = policies.get(&key).copied()
+    {
+        return hit;
+    }
+    cache
+        .remove_completed_reads
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let resolved = app
+        .should_remove_completed_download(library_id, facet, routing_key)
+        .await;
+    if let Ok(mut policies) = cache.remove_completed.lock() {
+        policies.insert(key, resolved);
+    }
+    resolved
+}
+
 pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     app: &AppUseCase,
     tracked: &crate::tracked_downloads::TrackedDownload,
     state: TrackedDownloadState,
-) -> TerminalDownloadCleanupOutcome {
+    cache: Option<&TerminalCleanupTickCache>,
+) -> TerminalDownloadCleanup {
     let (library_id, resolved_facet) =
-        cleanup_routing_scope_for_title_id(app, tracked.title_id.as_deref()).await;
+        cleanup_routing_scope_for_title_id_cached(app, tracked.title_id.as_deref(), cache).await;
     let facet = resolved_facet.or_else(|| facet_from_tracked_label(tracked.facet.as_deref()));
     reconcile_terminal_download_cleanup(
         app,
@@ -298,6 +502,7 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
         // what makes each cycle re-evaluate against current ratio/seed time
         // rather than the answer that first parked the row.
         crate::seeding_gate::observation_from_queue_item(&tracked.client_item),
+        cache,
     )
     .await
 }

@@ -1941,6 +1941,8 @@ const ja: LocaleDictionary = {
   "history.fileDeleted": "削除済み",
   "history.fileRenamed": "名前変更済み",
   "history.rematched": "再マッチ",
+  "history.seedingStarted": "シード中",
+  "history.seedingCompleted": "シード完了",
   "history.downloadIgnored": "無視",
   "history.facet": "カテゴリ",
   "history.actions": "操作",

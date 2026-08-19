@@ -4057,6 +4057,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         &app,
         &tracked,
         TrackedDownloadState::Failed,
+        None,
     )
     .await;
 

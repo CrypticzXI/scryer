@@ -2162,6 +2162,12 @@ pub enum TitleHistoryEventType {
     FileRenamed,
     DownloadIgnored,
     Rematched,
+    /// A torrent was imported and its client entry is being retained while it
+    /// seeds. Opens the seeding-retention window; recorded once per torrent.
+    SeedingStarted,
+    /// The seeding obligation was discharged and the gate acted on the client
+    /// entry. Closes the window opened by `SeedingStarted`.
+    SeedingCompleted,
 }
 
 impl TitleHistoryEventType {
@@ -2182,6 +2188,8 @@ impl TitleHistoryEventType {
             Self::FileRenamed => "file_renamed",
             Self::DownloadIgnored => "download_ignored",
             Self::Rematched => "rematched",
+            Self::SeedingStarted => "seeding_started",
+            Self::SeedingCompleted => "seeding_completed",
         }
     }
 
@@ -2202,6 +2210,8 @@ impl TitleHistoryEventType {
             "file_renamed" => Some(Self::FileRenamed),
             "download_ignored" => Some(Self::DownloadIgnored),
             "rematched" => Some(Self::Rematched),
+            "seeding_started" => Some(Self::SeedingStarted),
+            "seeding_completed" => Some(Self::SeedingCompleted),
             _ => None,
         }
     }
@@ -2222,6 +2232,8 @@ impl TitleHistoryEventType {
         Self::FileRenamed,
         Self::DownloadIgnored,
         Self::Rematched,
+        Self::SeedingStarted,
+        Self::SeedingCompleted,
     ];
 }
 
@@ -2443,6 +2455,8 @@ pub enum DomainEventType {
     DownloadQueueItemUpserted,
     DownloadQueueItemRemoved,
     DownloadIgnored,
+    SeedingStarted,
+    SeedingCompleted,
 }
 
 impl DomainEventType {
@@ -2492,6 +2506,8 @@ impl DomainEventType {
             Self::DownloadQueueItemUpserted => "download_queue_item_upserted",
             Self::DownloadQueueItemRemoved => "download_queue_item_removed",
             Self::DownloadIgnored => "download_ignored",
+            Self::SeedingStarted => "seeding_started",
+            Self::SeedingCompleted => "seeding_completed",
         }
     }
 
@@ -2541,6 +2557,8 @@ impl DomainEventType {
             "download_queue_item_upserted" => Some(Self::DownloadQueueItemUpserted),
             "download_queue_item_removed" => Some(Self::DownloadQueueItemRemoved),
             "download_ignored" => Some(Self::DownloadIgnored),
+            "seeding_started" => Some(Self::SeedingStarted),
+            "seeding_completed" => Some(Self::SeedingCompleted),
             _ => None,
         }
     }
@@ -3128,6 +3146,48 @@ pub struct DownloadIgnoredEventData {
     pub source_title: Option<String>,
 }
 
+/// A torrent was imported and its client entry retained while it seeds.
+///
+/// Recorded once, on the first transition into `TrackedDownloadState::
+/// ImportedSeeding` — never once per held poll tick. `Eq` is not derivable:
+/// the resolved ratio goal is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingStartedEventData {
+    pub title: Option<TitleContextSnapshot>,
+    pub download_client_item_id: String,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub source_provider: Option<String>,
+    /// Release title the download was grabbed under.
+    pub source_title: Option<String>,
+    /// The seeding gate's reason constant for holding this entry, verbatim.
+    pub reason: String,
+    /// Observed at the moment the entry was parked, when the client reports it.
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+}
+
+/// The seeding obligation was discharged and the gate acted on the client
+/// entry. `Eq` is not derivable: the observed ratio is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingCompletedEventData {
+    pub title: Option<TitleContextSnapshot>,
+    pub download_client_item_id: String,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub source_provider: Option<String>,
+    /// Release title the download was grabbed under.
+    pub source_title: Option<String>,
+    /// What actually happened to the client entry: `removed`, `paused`,
+    /// `kept`, or `vanished` (the client had already dropped it).
+    pub action: String,
+    /// The seeding gate's reason constant for releasing the entry, verbatim.
+    pub reason: String,
+    /// Observed at release, when the client reports it.
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+}
+
 /// `Eq` is not derivable: the download-queue payload carries an observed seed
 /// ratio (`f64`). Nothing keys a map or set on an event payload, so `PartialEq`
 /// is the whole requirement.
@@ -3180,6 +3240,8 @@ pub enum DomainEventPayload {
     DownloadQueueItemUpserted(Box<DownloadQueueItemUpsertedEventData>),
     DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData),
     DownloadIgnored(DownloadIgnoredEventData),
+    SeedingStarted(SeedingStartedEventData),
+    SeedingCompleted(SeedingCompletedEventData),
 }
 
 impl DomainEventPayload {
@@ -3231,6 +3293,8 @@ impl DomainEventPayload {
             Self::DownloadQueueItemUpserted(_) => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved(_) => DomainEventType::DownloadQueueItemRemoved,
             Self::DownloadIgnored(_) => DomainEventType::DownloadIgnored,
+            Self::SeedingStarted(_) => DomainEventType::SeedingStarted,
+            Self::SeedingCompleted(_) => DomainEventType::SeedingCompleted,
         }
     }
 }

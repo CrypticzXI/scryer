@@ -707,3 +707,71 @@ fn imported_seeding_is_settled_but_not_terminal() {
     assert!(!TrackedDownloadState::Failed.counts_as_imported());
     assert!(!TrackedDownloadState::Downloading.is_import_settled());
 }
+
+// ── seeding history events ────────────────────────────────────────────────
+
+#[test]
+fn seeding_history_event_types_round_trip_through_their_wire_names() {
+    for event_type in TitleHistoryEventType::ALL {
+        assert_eq!(
+            TitleHistoryEventType::parse(event_type.as_str()),
+            Some(*event_type),
+            "{} did not round-trip",
+            event_type.as_str()
+        );
+    }
+    assert_eq!(
+        TitleHistoryEventType::SeedingStarted.as_str(),
+        "seeding_started"
+    );
+    assert_eq!(
+        TitleHistoryEventType::SeedingCompleted.as_str(),
+        "seeding_completed"
+    );
+}
+
+#[test]
+fn seeding_domain_event_types_round_trip_and_match_their_payloads() {
+    for event_type in DomainEventType::variants() {
+        assert_eq!(
+            DomainEventType::parse(event_type.as_str()),
+            Some(event_type),
+            "{} did not round-trip",
+            event_type.as_str()
+        );
+    }
+
+    let started = DomainEventPayload::SeedingStarted(SeedingStartedEventData {
+        title: None,
+        download_client_item_id: "hash-1".to_string(),
+        client_id: None,
+        client_type: Some("qbittorrent".to_string()),
+        source_provider: None,
+        source_title: None,
+        reason: "profile_goal_unmet".to_string(),
+        seed_ratio: Some(0.4),
+        seed_time_seconds: Some(120),
+    });
+    assert_eq!(started.event_type(), DomainEventType::SeedingStarted);
+
+    let completed = DomainEventPayload::SeedingCompleted(SeedingCompletedEventData {
+        title: None,
+        download_client_item_id: "hash-1".to_string(),
+        client_id: None,
+        client_type: Some("qbittorrent".to_string()),
+        source_provider: None,
+        source_title: None,
+        action: "removed".to_string(),
+        reason: "profile_goal_met".to_string(),
+        seed_ratio: Some(2.1),
+        seed_time_seconds: Some(90_000),
+    });
+    assert_eq!(completed.event_type(), DomainEventType::SeedingCompleted);
+
+    // Payloads are persisted as JSON and read back by the history projection.
+    let encoded = serde_json::to_string(&completed).expect("serialize seeding payload");
+    assert_eq!(
+        serde_json::from_str::<DomainEventPayload>(&encoded).expect("deserialize"),
+        completed
+    );
+}

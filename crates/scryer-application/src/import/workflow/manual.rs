@@ -230,6 +230,8 @@ async fn maybe_remove_completed_manual_import_download(
         true,
         // No tracked row here, so the gate reads the published snapshot.
         None,
+        // Outside the reconcile tick: no shared prefetch, per-row reads.
+        None,
     )
     .await;
 }

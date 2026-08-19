@@ -3530,6 +3530,14 @@ enum DomainEventTypeValue {
 	A download queue item was removed.
 	"""
 	DOWNLOAD_QUEUE_ITEM_REMOVED
+	"""
+	A torrent was imported and its client entry retained while it seeds.
+	"""
+	SEEDING_STARTED
+	"""
+	A torrent's seeding obligation was discharged.
+	"""
+	SEEDING_COMPLETED
 }
 
 """
@@ -16517,6 +16525,14 @@ enum TitleHistoryEventTypeValue {
 	Title or file was rematched.
 	"""
 	REMATCHED
+	"""
+	Torrent was imported and its client entry retained while it seeds.
+	"""
+	SEEDING_STARTED
+	"""
+	Torrent's seeding obligation was discharged.
+	"""
+	SEEDING_COMPLETED
 }
 
 """

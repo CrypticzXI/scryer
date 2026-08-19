@@ -2011,6 +2011,8 @@ const es: LocaleDictionary = {
   "history.fileDeleted": "Eliminado",
   "history.fileRenamed": "Renombrado",
   "history.rematched": "Reasignado",
+  "history.seedingStarted": "Compartiendo",
+  "history.seedingCompleted": "Compartición completa",
   "history.downloadIgnored": "Ignorado",
   "history.facet": "Categoría",
   "history.actions": "Acciones",
