@@ -82,8 +82,13 @@ import { buildViewPath } from "@/lib/utils/routing";
 /** Rows visible before the top panels start scrolling. */
 const PREVIEW_PANE_CLASS = "max-h-[172px] overflow-y-auto";
 const QUEUE_PREVIEW_LIMIT = 5;
-/** Provider tables show about five rows before scrolling. */
-const TABLE_PANE_CLASS = "max-h-[218px] overflow-y-auto overflow-x-auto";
+/**
+ * Provider tables show about five rows before scrolling. This goes on the
+ * table's own wrapper (`wrapperClassName`), not the panel body: `Table` already
+ * makes that wrapper a scroll container, and a sticky header only sticks to the
+ * scroller it lives inside.
+ */
+const TABLE_PANE_CLASS = "max-h-[218px] overflow-y-auto";
 /**
  * Header stays put while rows scroll, the same way the title tables do it:
  * `sticky` on the header row plus an opaque background on the cells, since a
@@ -871,12 +876,15 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
       }
       linkTo="/integrations/indexers"
       linkLabel={t("dashboard.pluginManage")}
-      bodyClassName={TABLE_PANE_CLASS}
     >
       {indexers.length === 0 ? (
         <DashboardPanelEmpty message={t("dashboard.emptyIndexers")} />
       ) : (
-        <Table density="dense" className="min-w-[440px]">
+        <Table
+          density="dense"
+          className="min-w-[440px]"
+          wrapperClassName={TABLE_PANE_CLASS}
+        >
           <TableHeader>
             <TableRow className={TABLE_HEADER_ROW_CLASS}>
               <TableHead className={TABLE_HEAD_CLASS}>
@@ -1099,12 +1107,15 @@ function DownloadClientsPanel({
       }
       linkTo="/integrations/download-clients"
       linkLabel={t("dashboard.pluginManage")}
-      bodyClassName={TABLE_PANE_CLASS}
     >
       {clients.length === 0 ? (
         <DashboardPanelEmpty message={t("dashboard.emptyClients")} />
       ) : (
-        <Table density="dense" className="min-w-[420px]">
+        <Table
+          density="dense"
+          className="min-w-[420px]"
+          wrapperClassName={TABLE_PANE_CLASS}
+        >
           <TableHeader>
             <TableRow className={TABLE_HEADER_ROW_CLASS}>
               <TableHead className={TABLE_HEAD_CLASS}>
