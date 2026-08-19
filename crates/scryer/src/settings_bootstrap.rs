@@ -237,6 +237,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_GENERAL,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: AUTO_BACKUP_ENABLED_KEY,
             data_type: "boolean",
             default_value_json: "false",
@@ -2039,6 +2047,13 @@ mod tests {
                 && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+                && !seed.is_sensitive
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_SYSTEM

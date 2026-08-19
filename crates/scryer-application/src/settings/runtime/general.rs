@@ -226,6 +226,14 @@ pub struct UpdateAutoBackupSettings {
 pub struct UpdateBackupSettings {
     pub custom_backup_path: Option<String>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginAutoUpdateSettings {
+    pub enabled: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePluginAutoUpdateSettings {
+    pub enabled: bool,
+}
 
 fn normalize_backup_path_setting(value: Option<String>) -> AppResult<Option<PathBuf>> {
     let Some(value) = normalize_optional_string(value) else {
@@ -655,6 +663,53 @@ impl AppUseCase {
         )
         .await;
         self.load_auto_backup_settings().await
+    }
+}
+impl AppUseCase {
+    pub(crate) async fn load_plugin_auto_update_settings(
+        &self,
+    ) -> AppResult<PluginAutoUpdateSettings> {
+        let enabled = self
+            .read_setting_bool_value(PLUGIN_AUTO_UPDATE_ENABLED_KEY, None)
+            .await?
+            .unwrap_or(false);
+
+        Ok(PluginAutoUpdateSettings { enabled })
+    }
+
+    pub async fn get_plugin_auto_update_settings(
+        &self,
+        actor: &User,
+    ) -> AppResult<PluginAutoUpdateSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.load_plugin_auto_update_settings().await
+    }
+
+    pub async fn update_plugin_auto_update_settings(
+        &self,
+        actor: &User,
+        input: UpdatePluginAutoUpdateSettings,
+    ) -> AppResult<PluginAutoUpdateSettings> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        self.upsert_system_setting_json(
+            PLUGIN_AUTO_UPDATE_ENABLED_KEY,
+            &input.enabled,
+            Some(actor.id.clone()),
+        )
+        .await?;
+
+        self.emit_settings_saved(
+            actor,
+            "plugin_auto_update_settings",
+            None,
+            vec![PLUGIN_AUTO_UPDATE_ENABLED_KEY.to_string()],
+        )
+        .await;
+
+        self.load_plugin_auto_update_settings().await
     }
 }
 #[cfg(test)]
