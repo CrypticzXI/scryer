@@ -215,6 +215,10 @@ async fn maybe_remove_completed_manual_import_download(
         return;
     };
 
+    // No tracked row on this path, so the client entry is assumed present and
+    // the seeding gate decides on the client's own evidence. A torrent still
+    // working off its goal is left alone; the tracked poller picks it up and
+    // parks it in `ImportedSeeding`.
     let _ = reconcile_terminal_download_cleanup(
         app,
         &completed.client_id,
@@ -223,6 +227,7 @@ async fn maybe_remove_completed_manual_import_download(
         library_id.as_deref(),
         Some(&facet),
         TrackedDownloadState::Imported,
+        true,
     )
     .await;
 }
@@ -521,7 +526,8 @@ async fn manual_import_source_was_already_imported(
         .get_tracked_state(&source.identity)
         .await?
         .as_deref()
-        == Some(TrackedDownloadState::Imported.as_str())
+        .and_then(TrackedDownloadState::from_str_opt)
+        .is_some_and(TrackedDownloadState::counts_as_imported)
     {
         return Ok(true);
     }
@@ -1569,9 +1575,13 @@ async fn execute_manual_series_movie_import(
         ));
     }
 
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        completed,
+    )
+    .await?;
     let file_result = match import_file_with_record_progress(
         app,
         import_id,
@@ -2075,6 +2085,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             actor,
             &title,
             import_id,
+            completed,
             rename_enabled,
             &rename_template,
             &season_folder_template,

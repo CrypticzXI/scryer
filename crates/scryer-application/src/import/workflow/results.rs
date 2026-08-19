@@ -133,6 +133,18 @@ pub async fn retry_failed_import(
         }
     }
 }
+/// Remove a terminal download's entry from its client, subject to the
+/// seeding-aware gate.
+///
+/// Removing a torrent's entry stops it seeding even with `remove_data: false`,
+/// so for torrent-protocol items an `Imported` state is no longer sufficient
+/// on its own — the gate has to agree that the seeding obligation is
+/// discharged. Failed and Ignored downloads are deliberately *not* gated:
+/// blocklist and retry must never wait on seeding (Sonarr's rule).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "terminal cleanup carries client identity, routing scope, state, and the seeding gate's view of the client entry"
+)]
 async fn reconcile_terminal_download_cleanup(
     app: &AppUseCase,
     client_id: &str,
@@ -141,6 +153,7 @@ async fn reconcile_terminal_download_cleanup(
     library_id: Option<&str>,
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
+    present_in_client: bool,
 ) -> TerminalDownloadCleanupOutcome {
     let client_id = client_id.trim();
     let routing_key = if client_id.is_empty() {
@@ -150,7 +163,7 @@ async fn reconcile_terminal_download_cleanup(
     };
 
     let should_remove = match state {
-        TrackedDownloadState::Imported => match facet {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => match facet {
             Some(facet) => {
                 app.should_remove_completed_download(library_id, facet, routing_key)
                     .await
@@ -172,9 +185,61 @@ async fn reconcile_terminal_download_cleanup(
         return TerminalDownloadCleanupOutcome::NotConfigured;
     }
 
+    if state.counts_as_imported() {
+        let key = crate::seeding_gate::SeedGoalLookupKey {
+            client_id: client_id.to_string(),
+            client_type: client_type.trim().to_string(),
+            client_item_id: download_client_item_id.trim().to_string(),
+            info_hash: crate::normalize_torrent_info_hash(Some(download_client_item_id)),
+        };
+        let decision =
+            crate::seeding_gate::evaluate_seeding_gate_for(app, &key, present_in_client).await;
+        match decision.outcome {
+            crate::seeding_gate::SeedingGateOutcome::NotApplicable => {}
+            crate::seeding_gate::SeedingGateOutcome::Vanished => {
+                return TerminalDownloadCleanupOutcome::AlreadyGone;
+            }
+            crate::seeding_gate::SeedingGateOutcome::Hold => {
+                tracing::debug!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    reason = decision.reason,
+                    "seeding gate is holding a torrent entry after import"
+                );
+                return TerminalDownloadCleanupOutcome::HeldForSeeding;
+            }
+            crate::seeding_gate::SeedingGateOutcome::Released { action } => match action {
+                scryer_domain::SeedGoalMetAction::RemoveEntry => {}
+                scryer_domain::SeedGoalMetAction::StopSeeding => {
+                    return stop_seeding_for_terminal_download(
+                        app,
+                        client_id,
+                        client_type,
+                        download_client_item_id,
+                        decision.reason,
+                    )
+                    .await;
+                }
+                scryer_domain::SeedGoalMetAction::Keep => {
+                    tracing::info!(
+                        client_id,
+                        client_type,
+                        download_client_item_id,
+                        reason = decision.reason,
+                        "seeding goal met; keeping the client entry per profile policy"
+                    );
+                    return TerminalDownloadCleanupOutcome::SeedingEntryKept;
+                }
+            },
+        }
+    }
+
     let is_history = matches!(
         state,
         TrackedDownloadState::Imported
+            | TrackedDownloadState::ImportedSeeding
             | TrackedDownloadState::Failed
             | TrackedDownloadState::Ignored
     );
@@ -228,6 +293,59 @@ async fn reconcile_terminal_download_cleanup(
         }
     }
 }
+/// `SeedGoalMetAction::StopSeeding`: leave the entry in the client but stop it
+/// uploading.
+///
+/// Pause is the only stop control the download-client port exposes
+/// (`DownloadControlAction::Pause` in the plugin SDK), and for a torrent that
+/// has finished downloading, paused *is* stopped seeding. A client that does
+/// not support pause degrades to `Keep`: the entry stays and nothing is
+/// removed, which is the safe direction.
+async fn stop_seeding_for_terminal_download(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    reason: &'static str,
+) -> TerminalDownloadCleanupOutcome {
+    let paused = if client_id.is_empty() {
+        app.services
+            .integrations
+            .download_client
+            .pause_queue_item(download_client_item_id)
+            .await
+    } else {
+        app.services
+            .integrations
+            .download_client
+            .pause_queue_item_for_client(client_id, download_client_item_id)
+            .await
+    };
+
+    match paused {
+        Ok(()) => {
+            tracing::info!(
+                client_id,
+                client_type,
+                download_client_item_id,
+                reason,
+                "seeding goal met; paused the torrent per profile policy"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                client_type,
+                download_client_item_id,
+                reason,
+                error = %error,
+                "seeding goal met but this client cannot stop the torrent; keeping the entry untouched"
+            );
+        }
+    }
+    TerminalDownloadCleanupOutcome::SeedingEntryKept
+}
+
 fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
     match code {
         "duplicate_file" => ImportSkipReason::AlreadyImported,

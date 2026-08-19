@@ -268,7 +268,10 @@ fn apply_tracked_download_activity_projection(
         item.client_type.clone_from(&tracked.client_type);
     }
     match tracked.state {
-        TrackedDownloadState::Imported => {
+        // `ImportedSeeding` projects exactly like `Imported`: the files are in
+        // the library. It differs only in that the client entry is still
+        // there, seeding, and has not been released yet.
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => {
             item.state = DownloadQueueState::Completed;
             item.progress_percent = 100;
             item.remaining_seconds = Some(0);
@@ -1903,7 +1906,7 @@ async fn reconcile_excluded_client_recent_history(
             continue;
         }
         if let Some(td) = runtime.tracker.find(&id)
-            && (td.state.is_terminal()
+            && (td.state.is_import_settled()
                 || td.state == TrackedDownloadState::Importing
                 || (td.state == TrackedDownloadState::ImportBlocked && td.import_attempted))
         {
@@ -1911,7 +1914,7 @@ async fn reconcile_excluded_client_recent_history(
         }
         if let Some(state) =
             crate::completed_download_handler::queue_item_identity_tracked_state(app, &item).await
-            && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+            && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
         {
             continue;
         }
@@ -2316,7 +2319,7 @@ async fn handle_tracked_download_background_work_result(
 
     publish_runtime_tracked_download_and_activity_item(app, tracker, Some(activity_item)).await;
 }
-async fn finalize_tracked_terminal_state(
+pub(crate) async fn finalize_tracked_terminal_state(
     app: &AppUseCase,
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     id: &str,
@@ -2329,11 +2332,75 @@ async fn finalize_tracked_terminal_state(
     let cleanup =
         crate::import::import::reconcile_terminal_download_cleanup_for_tracked(app, td, state)
             .await;
+
+    if cleanup == crate::import::import::TerminalDownloadCleanupOutcome::HeldForSeeding {
+        park_tracked_download_in_imported_seeding(app, tracker, id).await;
+        return;
+    }
+
     if crate::import::import::terminal_download_cleanup_is_complete(cleanup) {
+        // A held torrent that has now discharged its obligation graduates to
+        // the real terminal state before it stops being tracked, so restart
+        // recovery reads `imported`, not `imported_seeding`.
+        if state == TrackedDownloadState::ImportedSeeding {
+            promote_imported_seeding_to_imported(app, tracker, id).await;
+        }
         tracker.stop_tracking(id);
     } else if let Some(td) = tracker.find_mut(id) {
         td.completed_source = None;
     }
+}
+
+/// Park an imported-but-still-seeding torrent. The row stays in the tracker
+/// (and therefore in the queue) and re-enters the gate on the next poll.
+async fn park_tracked_download_in_imported_seeding(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    id: &str,
+) {
+    let Some(td) = tracker.find_mut(id) else {
+        return;
+    };
+    if td.state == TrackedDownloadState::ImportedSeeding {
+        // Already parked; re-persisting on every poll would be a write per
+        // tick per held torrent for no new information.
+        return;
+    }
+    td.state = TrackedDownloadState::ImportedSeeding;
+    td.status = TrackedDownloadStatus::Ok;
+    td.status_messages.clear();
+    let snapshot = td.clone();
+    tracing::info!(
+        id = %snapshot.id,
+        client_id = snapshot.client_id.as_str(),
+        client_type = snapshot.client_type.as_str(),
+        "tracked: imported, holding the client entry until the seeding goal is met"
+    );
+    crate::tracked_downloads::persist_tracked_download_state_marker(
+        app,
+        &snapshot,
+        TrackedDownloadState::ImportedSeeding,
+        Some("imported_seeding"),
+        None,
+    )
+    .await;
+}
+
+async fn promote_imported_seeding_to_imported(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    id: &str,
+) {
+    let Some(td) = tracker.find_mut(id) else {
+        return;
+    };
+    td.state = TrackedDownloadState::Imported;
+    td.status = TrackedDownloadStatus::Ok;
+    td.status_messages.clear();
+    let snapshot = td.clone();
+    tracker
+        .persist_terminal_state(app, &snapshot.id, TrackedDownloadState::Imported)
+        .await;
 }
 async fn reconcile_terminal_tracked_downloads(
     app: &AppUseCase,
@@ -2341,10 +2408,13 @@ async fn reconcile_terminal_tracked_downloads(
 ) {
     reconcile_duplicate_terminal_source_states(tracker);
 
+    // `ImportedSeeding` is not terminal, but it has to be re-offered to the
+    // gate on every poll — that re-evaluation is what eventually releases the
+    // torrent once its goal is met.
     let terminal_ids: Vec<(String, TrackedDownloadState)> = tracker
         .get_all()
         .into_iter()
-        .filter(|tracked| tracked.state.is_terminal())
+        .filter(|tracked| tracked.state.is_import_settled())
         .map(|tracked| (tracked.id.clone(), tracked.state))
         .collect();
 
@@ -2378,10 +2448,14 @@ fn reconcile_duplicate_terminal_source_states(
         return;
     }
 
+    // `is_import_settled` rather than `is_terminal`: a row already parked in
+    // `ImportedSeeding` has been through the gate, and flipping it back to a
+    // sibling's `Imported` would only send it straight back through on the
+    // next poll.
     let updates: Vec<(String, crate::DownloadSourceIdentity, TrackedDownloadState)> = tracker
         .get_all()
         .into_iter()
-        .filter(|tracked| !tracked.state.is_terminal())
+        .filter(|tracked| !tracked.state.is_import_settled())
         .filter_map(|tracked| {
             let source_identity = tracked_download_source_identity(tracked)?;
             terminal_source_states

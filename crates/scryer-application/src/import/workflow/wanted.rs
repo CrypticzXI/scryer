@@ -50,6 +50,10 @@ async fn execute_resolved_episode_import(
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
+    // The client-side download this file came from, when there is one. Only
+    // used to decide whether a configured `Move` is safe: a still-seeding
+    // torrent forces hardlink-or-copy.
+    completed: Option<&CompletedDownload>,
     rename_enabled: bool,
     rename_template: &str,
     season_folder_template: &str,
@@ -149,9 +153,13 @@ async fn execute_resolved_episode_import(
             });
         }
 
-        let import_mode = app
-            .resolve_import_mode(Some(&title.library_id), &title.facet)
-            .await?;
+        let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+            app,
+            Some(&title.library_id),
+            &title.facet,
+            completed,
+        )
+        .await?;
         persist_title_folder_path_if_missing(app, title, title_folder_path).await?;
         let file_result = import_file_with_record_progress(
             app,
@@ -428,9 +436,13 @@ async fn execute_resolved_episode_import(
         rename_episode_title,
         effective_quality_label.as_deref(),
     );
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        completed,
+    )
+    .await?;
 
     let manual_replacement = matches!(
         runtime_sample_mode,

@@ -1359,6 +1359,9 @@ pub enum TrackedDownloadState {
     Importing,
     /// All expected files imported; download can be removed from client.
     Imported,
+    /// All expected files imported; torrent still seeding toward its goal; not
+    /// removable yet.
+    ImportedSeeding,
     /// Completed but can't auto-import (title mismatch, bad path, ID-only match).
     ImportBlocked,
     /// Client reports failure or encryption detected; queued for failure processing.
@@ -1376,6 +1379,7 @@ impl TrackedDownloadState {
             Self::ImportPending => "import_pending",
             Self::Importing => "importing",
             Self::Imported => "imported",
+            Self::ImportedSeeding => "imported_seeding",
             Self::ImportBlocked => "import_blocked",
             Self::FailedPending => "failed_pending",
             Self::Failed => "failed",
@@ -1389,6 +1393,7 @@ impl TrackedDownloadState {
             "import_pending" => Some(Self::ImportPending),
             "importing" => Some(Self::Importing),
             "imported" => Some(Self::Imported),
+            "imported_seeding" => Some(Self::ImportedSeeding),
             "import_blocked" => Some(Self::ImportBlocked),
             "failed_pending" => Some(Self::FailedPending),
             "failed" => Some(Self::Failed),
@@ -1398,8 +1403,26 @@ impl TrackedDownloadState {
     }
 
     /// Terminal states survive restart; non-terminal states are re-derived.
+    ///
+    /// `ImportedSeeding` is deliberately **not** terminal: the download is
+    /// still live in the client and has to be re-evaluated against its seeding
+    /// goal on every poll until the goal is met.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Imported | Self::Failed | Self::Ignored)
+    }
+
+    /// Import work is finished for this download and must not be dispatched
+    /// again. `ImportedSeeding` is settled even though it is not terminal: the
+    /// files are already in the library and only the seeding obligation is
+    /// outstanding, so re-import or re-observation must not reopen it.
+    pub fn is_import_settled(self) -> bool {
+        self.is_terminal() || matches!(self, Self::ImportedSeeding)
+    }
+
+    /// The download's payload reached the library, whether or not the client
+    /// entry has been released yet.
+    pub fn counts_as_imported(self) -> bool {
+        matches!(self, Self::Imported | Self::ImportedSeeding)
     }
 }
 

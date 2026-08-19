@@ -17262,6 +17262,11 @@ enum TrackedDownloadStateValue {
 	"""
 	IMPORTED
 	"""
+	Import completed, but the torrent is still seeding toward its goal and
+	cannot be removed from the client yet.
+	"""
+	IMPORTED_SEEDING
+	"""
 	Import is blocked.
 	"""
 	IMPORT_BLOCKED

@@ -41,6 +41,7 @@ export type TrackedDownloadState =
   | "IMPORT_PENDING"
   | "IMPORTING"
   | "IMPORTED"
+  | "IMPORTED_SEEDING"
   | "IMPORT_BLOCKED"
   | "FAILED_PENDING"
   | "FAILED"

@@ -1,0 +1,835 @@
+//! Seeding-aware removal gate.
+//!
+//! Removing a torrent's entry from its download client stops it seeding, even
+//! with `remove_data: false`. On a private tracker that is an instant hit and
+//! run. This module owns the one question the removal and import paths ask
+//! before they act: **has this torrent discharged its seeding obligation?**
+//!
+//! Three operator decisions are baked in and are not configurable:
+//!
+//! 1. **Universal gate.** Every torrent goes through it, profile or not. An
+//!    install with no seeding profiles does not get today's remove-on-import
+//!    behaviour back; it gets "remove only when the client itself says the
+//!    obligation is discharged".
+//! 2. **Hard private rail.** A torrent observed as `is_private = Some(true)`
+//!    is never auto-removed on the client's word alone. Only a resolved
+//!    profile goal that is provably met (or an operator action) releases it.
+//!    `is_private = None` is *unknown*, never "public".
+//! 3. **Tri-state `can_remove`.** `None` means "this client cannot answer";
+//!    it is never read as `false` and never as `true`. See
+//!    `crates/scryer-plugin-sdk/src/lib.rs` for the contract and the P3
+//!    plugin audit for what each client can actually observe.
+//!
+//! ## Why the plugin's `can_remove: Some(true)` is not always enough
+//!
+//! On several clients `Some(true)` only means "the client stopped the torrent"
+//! — uTorrent cannot see its own seed limits from the list API, and
+//! Transmission's global idle mode makes "stopped" indistinguishable from
+//! "user paused". That is fine as a *baseline* (it is exactly what Sonarr
+//! trusts when it has no goal of its own), but it must not override an
+//! explicit Scryer goal. So when a resolved profile carries numeric goals,
+//! the Scryer-side check is authoritative in both directions:
+//! `Some(true)` does not release an unmet goal, and `Some(false)` does not
+//! veto a met one (the plugin is asserting an unmet *client* limit, which is
+//! not the policy Scryer was told to enforce).
+//!
+//! ## Observation plumbing (open seam)
+//!
+//! `TorrentSeedingObservation` mirrors the fields the plugin SDK already
+//! carries on `PluginDownloadItem`/`PluginTorrentItem`. Core does **not**
+//! plumb them yet: `crates/scryer-plugins/src/download_client_adapter.rs`
+//! drops `can_remove`, `can_move_files` and the whole `torrent` sub-object
+//! when it maps a plugin item onto `DownloadQueueItem`. Until that lands
+//! (wave 3 / P3), `observe_torrent_seeding` returns `None` and the gate
+//! holds every torrent whose obligation it cannot prove — which is the
+//! conservative direction, but it does mean torrent entries are not
+//! auto-removed on this build. The one open seam is marked `SEAM:` below.
+//!
+//! The other half — the goals a grab resolved to — is live: it reads the
+//! `PersistedSeedGoals` the grab-time package freezes onto the
+//! download-submission row.
+
+use chrono::{DateTime, Utc};
+use scryer_domain::{CompletedDownload, ImportMode, MediaFacet, SeedGoalMetAction};
+
+use crate::{
+    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSourceKind, PersistedSeedGoals,
+};
+
+/// Client type whose "remove" is a filesystem delete, not a session command.
+///
+/// `torrent-blackhole` has no client session at all: its items are watch-folder
+/// entries served by some *external* client, and its `Remove` control does
+/// `remove_dir_all` on the path (it refuses `remove_data: false`). Removing is
+/// therefore destructive by construction and can never be automatic.
+pub(crate) const TORRENT_BLACKHOLE_CLIENT_TYPE: &str = "torrent-blackhole";
+
+/// What to do with the client entry once the obligation is discharged.
+///
+/// The policy comes from `PersistedSeedGoals`, frozen onto the
+/// download-submission row at grab time, so a torrent keeps the goals it was
+/// grabbed under even if the profile is later edited or deleted. A grab with
+/// no profile falls back to `SeedGoalMetAction::default()` — remove the entry,
+/// which is what an install without seeding profiles has always done.
+fn goal_met_action_for(goals: &PersistedSeedGoals) -> SeedGoalMetAction {
+    goals.goal_met_action.unwrap_or_default()
+}
+
+/// Identifies the download whose goals are being looked up.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SeedGoalLookupKey {
+    pub client_id: String,
+    pub client_type: String,
+    pub client_item_id: String,
+    /// Normalized info hash when known; torrent identity survives a client
+    /// re-add, the client's own item id does not.
+    pub info_hash: Option<String>,
+}
+
+/// Read side of the persisted grab-time seed-goal resolution.
+///
+/// A trait rather than a direct repository call so the gate has one named
+/// dependency, and so a failed read is a policy decision made in one place
+/// (treated as "no goals", never as "goals met").
+#[async_trait::async_trait]
+pub(crate) trait SeedGoalsRead: Send + Sync {
+    /// The goals this download was grabbed under, or `None` when it was not a
+    /// Scryer grab, predates the feature, or no profile applied.
+    async fn resolved_seed_goals(&self, key: &SeedGoalLookupKey) -> Option<PersistedSeedGoals>;
+}
+
+#[async_trait::async_trait]
+impl SeedGoalsRead for AppUseCase {
+    async fn resolved_seed_goals(&self, key: &SeedGoalLookupKey) -> Option<PersistedSeedGoals> {
+        let submissions = &self.services.workflow.download_submissions;
+        let identity = DownloadSourceIdentity::new(
+            Some(key.client_id.as_str()),
+            key.client_type.as_str(),
+            key.client_item_id.as_str(),
+        );
+        // Client identity first; the info hash is the fallback because a
+        // torrent that was removed and re-added keeps its hash but gets a new
+        // client item id on several clients.
+        match submissions.get_seed_goals(&identity).await {
+            Ok(Some(goals)) => return Some(goals),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    client_id = key.client_id.as_str(),
+                    client_type = key.client_type.as_str(),
+                    download_client_item_id = key.client_item_id.as_str(),
+                    "failed to read persisted seed goals; treating this torrent as having none"
+                );
+            }
+        }
+
+        let info_hash = key.info_hash.as_deref()?;
+        match submissions.find_seed_goals_by_info_hash(info_hash).await {
+            Ok(goals) => goals,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    info_hash,
+                    "failed to read persisted seed goals by info hash"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// What a torrent client reports about one torrent's seeding state.
+///
+/// Every field is optional because the clients differ wildly in what they
+/// expose (see the P3 plugin audit): 5 of 13 can report `is_private` at all,
+/// several have no seed-time counter, and three keep their goal in a volatile
+/// plugin variable.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TorrentSeedingObservation {
+    /// The client's own verdict on its seeding obligation. Tri-state.
+    pub can_remove: Option<bool>,
+    /// Whether the payload is fully downloaded and stable. **Not** permission
+    /// to move it — see the SDK contract.
+    pub can_move_files: Option<bool>,
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+    /// `Some(true)` arms the hard private rail. `None` is unknown, not public.
+    pub is_private: Option<bool>,
+    /// When the payload finished downloading; the wall-clock fallback for the
+    /// time axis on clients with no seed-time counter.
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Everything the pure gate needs. Assembled by `evaluate_seeding_gate_for`.
+#[derive(Clone, Debug)]
+pub(crate) struct SeedingGateInput {
+    /// `false` for usenet and anything else that is not a torrent client.
+    pub is_torrent: bool,
+    pub client_type: String,
+    /// `false` once the download has disappeared from the client's listing.
+    pub present_in_client: bool,
+    pub observation: Option<TorrentSeedingObservation>,
+    pub goals: Option<PersistedSeedGoals>,
+    pub now: DateTime<Utc>,
+}
+
+impl Default for SeedingGateInput {
+    fn default() -> Self {
+        Self {
+            is_torrent: true,
+            client_type: String::new(),
+            present_in_client: true,
+            observation: None,
+            goals: None,
+            now: Utc::now(),
+        }
+    }
+}
+
+/// What the caller should do with the client entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SeedingGateOutcome {
+    /// Not a torrent. The gate does not apply and the legacy path runs.
+    NotApplicable,
+    /// The entry is already gone from the client. Settle the tracked download
+    /// without issuing a removal.
+    Vanished,
+    /// The obligation is discharged; act on `action`.
+    Released { action: SeedGoalMetAction },
+    /// Still seeding, or the obligation cannot be proven discharged. Hold the
+    /// entry and re-evaluate on the next poll.
+    Hold,
+}
+
+/// The gate's answer plus the reason, which is logged and reported verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SeedingGateDecision {
+    pub outcome: SeedingGateOutcome,
+    pub reason: &'static str,
+    /// Whether the payload may be moved (as opposed to hardlinked/copied).
+    move_allowed: bool,
+}
+
+impl SeedingGateDecision {
+    fn new(outcome: SeedingGateOutcome, reason: &'static str, move_allowed: bool) -> Self {
+        Self {
+            outcome,
+            reason,
+            move_allowed,
+        }
+    }
+
+    /// The gate does not apply — usenet and other non-torrent protocols.
+    pub(crate) fn not_applicable() -> Self {
+        Self::new(
+            SeedingGateOutcome::NotApplicable,
+            "non_torrent_protocol",
+            true,
+        )
+    }
+
+    /// The import mode to actually use, given the configured one.
+    ///
+    /// `ImportMode::Move` takes the payload out from under the torrent, so it
+    /// is only safe when the data is complete **and** the seeding obligation
+    /// is discharged. Under the P3 SDK contract `can_move_files` answers only
+    /// the first half; this method supplies the second.
+    pub(crate) fn import_mode(self, configured: ImportMode) -> ImportMode {
+        if configured == ImportMode::Move && !self.move_allowed {
+            ImportMode::HardlinkOrCopy
+        } else {
+            configured
+        }
+    }
+}
+
+/// The pure decision. Every rule the operator locked lives here and nowhere
+/// else; `evaluate_seeding_gate_for` only gathers the inputs.
+pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDecision {
+    if !input.is_torrent {
+        return SeedingGateDecision::not_applicable();
+    }
+
+    let observation = input.observation.clone().unwrap_or_default();
+    // Data completeness is a hard precondition for a move on its own: a
+    // client that says the payload is still being written must never have it
+    // moved, whatever the seeding state is.
+    let data_stable = observation.can_move_files != Some(false);
+
+    // Nothing left in the client to protect, and nothing to remove. This is
+    // the `removes_on_seed_limit` clients (and any torrent the operator pulled
+    // by hand); the `AlreadyGone` delete path is the existing precedent.
+    if !input.present_in_client {
+        return SeedingGateDecision::new(
+            SeedingGateOutcome::Vanished,
+            "torrent_no_longer_in_client",
+            data_stable,
+        );
+    }
+
+    // Blackhole removal is a filesystem delete against a directory some other
+    // client is still serving. Never automatic, regardless of configuration or
+    // profile. `Keep` settles the tracked download without touching anything.
+    if input
+        .client_type
+        .trim()
+        .eq_ignore_ascii_case(TORRENT_BLACKHOLE_CLIENT_TYPE)
+    {
+        return SeedingGateDecision::new(
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::Keep,
+            },
+            "torrent_blackhole_removal_is_destructive",
+            data_stable && observation.can_move_files == Some(true),
+        );
+    }
+
+    let goals = input.goals.clone().unwrap_or_default();
+
+    // Profile-level hard stop: seed forever.
+    if goals.never_remove {
+        return SeedingGateDecision::new(SeedingGateOutcome::Hold, "profile_never_remove", false);
+    }
+
+    // Hard private rail. An observed private torrent is never released on the
+    // client's word alone — only a profile goal Scryer can prove was met (or
+    // an explicit operator action outside this gate) releases it.
+    if observation.is_private == Some(true) && !goals.has_goals() {
+        return SeedingGateDecision::new(
+            SeedingGateOutcome::Hold,
+            "private_torrent_without_resolved_goals",
+            false,
+        );
+    }
+
+    if goals.has_goals() {
+        // The profile goal is authoritative in both directions: `can_remove`
+        // reports a *client* limit, which is a different question.
+        return if scryer_goal_is_met(&goals, &observation, input.now) {
+            SeedingGateDecision::new(
+                SeedingGateOutcome::Released {
+                    action: goal_met_action_for(&goals),
+                },
+                "profile_goal_met",
+                data_stable,
+            )
+        } else {
+            SeedingGateDecision::new(SeedingGateOutcome::Hold, "profile_goal_unmet", false)
+        };
+    }
+
+    // Universal-gate baseline: no Scryer goal, so the client's own limit
+    // regime is the only policy there is (Sonarr's `CanBeRemoved`).
+    match observation.can_remove {
+        Some(true) => SeedingGateDecision::new(
+            SeedingGateOutcome::Released {
+                action: goal_met_action_for(&goals),
+            },
+            "client_reports_seeding_obligation_met",
+            data_stable,
+        ),
+        Some(false) => SeedingGateDecision::new(
+            SeedingGateOutcome::Hold,
+            "client_reports_unmet_seed_limit",
+            false,
+        ),
+        None => SeedingGateDecision::new(
+            SeedingGateOutcome::Hold,
+            "no_resolved_goals_and_client_verdict_unknown",
+            false,
+        ),
+    }
+}
+
+/// Sonarr's OR-semantics: either axis reaching its goal discharges the
+/// obligation. The minimal Tier-B primitive; wave 3 extends it to continuous
+/// evaluation in the polling loop.
+fn scryer_goal_is_met(
+    goals: &PersistedSeedGoals,
+    observation: &TorrentSeedingObservation,
+    now: DateTime<Utc>,
+) -> bool {
+    if let (Some(goal), Some(observed)) = (goals.seed_goal_ratio, observation.seed_ratio)
+        && goal.is_finite()
+        && observed.is_finite()
+        && observed >= goal
+    {
+        return true;
+    }
+
+    let Some(goal_seconds) = goals.seed_goal_seconds.filter(|value| *value > 0) else {
+        return false;
+    };
+
+    match observation.seed_time_seconds {
+        Some(observed) => observed >= goal_seconds,
+        // No seed-time counter on this client. Wall clock since the payload
+        // finished is the same fallback Sonarr uses for rTorrent.
+        None => observation
+            .completed_at
+            .map(|completed_at| {
+                now.signed_duration_since(completed_at).num_seconds() >= goal_seconds
+            })
+            .unwrap_or(false),
+    }
+}
+
+/// Whether a download client speaks the torrent protocol.
+///
+/// Derived from the client's declared accepted inputs, so plugin-provided
+/// clients answer for themselves and the built-in usenet clients are excluded
+/// without a hard-coded list.
+pub(crate) fn client_type_is_torrent(app: &AppUseCase, client_type: &str) -> bool {
+    let plugin_provider = app
+        .services
+        .integrations
+        .download_client_plugin_provider
+        .available();
+    crate::accepted_inputs_for_client(client_type, plugin_provider)
+        .iter()
+        .any(|input| {
+            matches!(
+                input,
+                DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri
+            )
+        })
+}
+
+/// SEAM (P3 / wave 3): the observed torrent state for one client item.
+///
+/// The plugin SDK already carries every field on `PluginDownloadItem` and
+/// `PluginTorrentItem`, but `download_client_adapter::map_queue_item` drops
+/// them when it builds a `DownloadQueueItem`, and the router does not forward
+/// a per-item lookup. Until that plumbing lands this returns `None`, and the
+/// gate holds anything it cannot prove.
+async fn observe_torrent_seeding(
+    app: &AppUseCase,
+    key: &SeedGoalLookupKey,
+) -> Option<TorrentSeedingObservation> {
+    let _ = (app, key);
+    None
+}
+
+/// Assemble the gate input for one client item and decide.
+pub(crate) async fn evaluate_seeding_gate_for(
+    app: &AppUseCase,
+    key: &SeedGoalLookupKey,
+    present_in_client: bool,
+) -> SeedingGateDecision {
+    if !client_type_is_torrent(app, &key.client_type) {
+        return SeedingGateDecision::not_applicable();
+    }
+
+    let input = SeedingGateInput {
+        is_torrent: true,
+        client_type: key.client_type.clone(),
+        present_in_client,
+        observation: observe_torrent_seeding(app, key).await,
+        goals: app.resolved_seed_goals(key).await,
+        now: Utc::now(),
+    };
+    evaluate_seeding_gate(&input)
+}
+
+/// Gate input key for a completed download.
+pub(crate) fn seed_goal_lookup_key_for_completed(
+    completed: &CompletedDownload,
+) -> SeedGoalLookupKey {
+    SeedGoalLookupKey {
+        client_id: completed.client_id.trim().to_string(),
+        client_type: completed.client_type.trim().to_string(),
+        client_item_id: completed.download_client_item_id.trim().to_string(),
+        info_hash: crate::normalize_torrent_info_hash(Some(
+            completed.download_client_item_id.as_str(),
+        )),
+    }
+}
+
+/// The import mode to use for a completed download, downgrading a configured
+/// `Move` to hardlink-or-copy while the torrent is still seeding.
+///
+/// A torrent Scryer merely observes (`completed` is `None` — a manual import
+/// with no client provenance) keeps the configured mode: there is no torrent
+/// identity to gate on.
+pub(crate) async fn resolve_seeding_safe_import_mode(
+    app: &AppUseCase,
+    library_id: Option<&str>,
+    facet: &MediaFacet,
+    completed: Option<&CompletedDownload>,
+) -> AppResult<ImportMode> {
+    let configured = app.resolve_import_mode(library_id, facet).await?;
+    if configured != ImportMode::Move {
+        return Ok(configured);
+    }
+    let Some(completed) = completed else {
+        return Ok(configured);
+    };
+
+    let key = seed_goal_lookup_key_for_completed(completed);
+    let decision = evaluate_seeding_gate_for(app, &key, true).await;
+    let effective = decision.import_mode(configured);
+    if effective != configured {
+        tracing::info!(
+            client_id = key.client_id.as_str(),
+            client_type = key.client_type.as_str(),
+            download_client_item_id = key.client_item_id.as_str(),
+            reason = decision.reason,
+            "forcing hardlink-or-copy import: torrent has not discharged its seeding obligation"
+        );
+    }
+    Ok(effective)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn goals(ratio: Option<f64>, seconds: Option<i64>) -> PersistedSeedGoals {
+        PersistedSeedGoals {
+            seeding_profile_id: Some("profile-1".to_string()),
+            seed_goal_ratio: ratio,
+            seed_goal_seconds: seconds,
+            never_remove: false,
+            goal_met_action: Some(SeedGoalMetAction::RemoveEntry),
+            resolution_source: crate::SeedGoalResolutionSource::Indexer,
+            info_hash: None,
+        }
+    }
+
+    fn input(observation: TorrentSeedingObservation) -> SeedingGateInput {
+        SeedingGateInput {
+            client_type: "qbittorrent".to_string(),
+            observation: Some(observation),
+            ..SeedingGateInput::default()
+        }
+    }
+
+    #[test]
+    fn usenet_downloads_are_not_gated() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            is_torrent: false,
+            client_type: "sabnzbd".to_string(),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::NotApplicable);
+        assert_eq!(decision.import_mode(ImportMode::Move), ImportMode::Move);
+    }
+
+    #[test]
+    fn a_torrent_with_no_goals_and_no_client_verdict_is_held() {
+        let decision = evaluate_seeding_gate(&input(TorrentSeedingObservation::default()));
+        assert_eq!(decision.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(
+            decision.reason,
+            "no_resolved_goals_and_client_verdict_unknown"
+        );
+        assert_eq!(
+            decision.import_mode(ImportMode::Move),
+            ImportMode::HardlinkOrCopy
+        );
+    }
+
+    #[test]
+    fn a_client_reporting_limits_met_releases_a_torrent_with_no_goals() {
+        let decision = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            ..TorrentSeedingObservation::default()
+        }));
+        assert_eq!(
+            decision.outcome,
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::RemoveEntry
+            }
+        );
+        assert_eq!(decision.reason, "client_reports_seeding_obligation_met");
+        assert_eq!(decision.import_mode(ImportMode::Move), ImportMode::Move);
+    }
+
+    #[test]
+    fn a_client_reporting_an_unmet_limit_holds_a_torrent_with_no_goals() {
+        let decision = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            ..TorrentSeedingObservation::default()
+        }));
+        assert_eq!(decision.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(decision.reason, "client_reports_unmet_seed_limit");
+    }
+
+    #[test]
+    fn a_met_profile_goal_overrides_a_client_reporting_an_unmet_limit() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(1.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: Some(false),
+                can_move_files: Some(true),
+                seed_ratio: Some(1.4),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(
+            decision.outcome,
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::RemoveEntry
+            }
+        );
+        assert_eq!(decision.reason, "profile_goal_met");
+    }
+
+    #[test]
+    fn a_client_reporting_limits_met_is_not_enough_when_a_profile_goal_is_unmet() {
+        // uTorrent / Transmission global-idle: `Some(true)` only means the
+        // client stopped it, which is not the profile's goal.
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(2.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: Some(true),
+                can_move_files: Some(true),
+                seed_ratio: Some(0.4),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(decision.reason, "profile_goal_unmet");
+        assert_eq!(
+            decision.import_mode(ImportMode::Move),
+            ImportMode::HardlinkOrCopy
+        );
+    }
+
+    #[test]
+    fn either_axis_alone_meets_the_goal() {
+        let ratio_only = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(2.0), Some(86_400))),
+            observation: Some(TorrentSeedingObservation {
+                seed_ratio: Some(2.0),
+                seed_time_seconds: Some(10),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(ratio_only.reason, "profile_goal_met");
+
+        let time_only = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(2.0), Some(3_600))),
+            observation: Some(TorrentSeedingObservation {
+                seed_ratio: Some(0.1),
+                seed_time_seconds: Some(3_601),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(time_only.reason, "profile_goal_met");
+    }
+
+    #[test]
+    fn wall_clock_since_completion_covers_clients_without_a_seed_time_counter() {
+        let now = Utc::now();
+        let met = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(None, Some(3_600))),
+            observation: Some(TorrentSeedingObservation {
+                completed_at: Some(now - chrono::Duration::seconds(3_700)),
+                ..TorrentSeedingObservation::default()
+            }),
+            now,
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(met.reason, "profile_goal_met");
+
+        let unmet = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(None, Some(3_600))),
+            observation: Some(TorrentSeedingObservation {
+                completed_at: Some(now - chrono::Duration::seconds(60)),
+                ..TorrentSeedingObservation::default()
+            }),
+            now,
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(unmet.reason, "profile_goal_unmet");
+    }
+
+    #[test]
+    fn a_private_torrent_without_goals_is_never_released_by_the_client_verdict() {
+        let decision = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            is_private: Some(true),
+            ..TorrentSeedingObservation::default()
+        }));
+        assert_eq!(decision.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(decision.reason, "private_torrent_without_resolved_goals");
+    }
+
+    #[test]
+    fn a_private_torrent_with_a_met_profile_goal_is_released() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(1.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: None,
+                can_move_files: Some(true),
+                is_private: Some(true),
+                seed_ratio: Some(1.2),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.reason, "profile_goal_met");
+    }
+
+    #[test]
+    fn an_unknown_private_flag_is_not_read_as_public() {
+        // `is_private: None` must not create a removal path that
+        // `is_private: Some(false)` would not also create.
+        let unknown = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: None,
+            is_private: None,
+            ..TorrentSeedingObservation::default()
+        }));
+        let public = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: None,
+            is_private: Some(false),
+            ..TorrentSeedingObservation::default()
+        }));
+        assert_eq!(unknown.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(unknown.outcome, public.outcome);
+    }
+
+    #[test]
+    fn never_remove_holds_even_with_a_met_goal_and_a_willing_client() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(PersistedSeedGoals {
+                never_remove: true,
+                ..goals(Some(1.0), None)
+            }),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: Some(true),
+                seed_ratio: Some(9.0),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::Hold);
+        assert_eq!(decision.reason, "profile_never_remove");
+    }
+
+    #[test]
+    fn a_vanished_torrent_settles_without_a_removal() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            present_in_client: false,
+            observation: Some(TorrentSeedingObservation {
+                can_remove: None,
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::Vanished);
+        assert_eq!(decision.reason, "torrent_no_longer_in_client");
+    }
+
+    #[test]
+    fn torrent_blackhole_is_never_auto_removed() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            client_type: TORRENT_BLACKHOLE_CLIENT_TYPE.to_string(),
+            goals: Some(goals(Some(0.1), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: None,
+                can_move_files: Some(true),
+                seed_ratio: Some(99.0),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(
+            decision.outcome,
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::Keep
+            }
+        );
+        assert_eq!(decision.reason, "torrent_blackhole_removal_is_destructive");
+    }
+
+    #[test]
+    fn blackhole_entries_are_not_moved_before_they_settle() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            client_type: TORRENT_BLACKHOLE_CLIENT_TYPE.to_string(),
+            observation: Some(TorrentSeedingObservation {
+                can_move_files: None,
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(
+            decision.import_mode(ImportMode::Move),
+            ImportMode::HardlinkOrCopy
+        );
+    }
+
+    #[test]
+    fn goal_met_action_flows_through_to_the_caller() {
+        for action in [
+            SeedGoalMetAction::RemoveEntry,
+            SeedGoalMetAction::StopSeeding,
+            SeedGoalMetAction::Keep,
+        ] {
+            let decision = evaluate_seeding_gate(&SeedingGateInput {
+                goals: Some(PersistedSeedGoals {
+                    goal_met_action: Some(action),
+                    ..goals(Some(1.0), None)
+                }),
+                observation: Some(TorrentSeedingObservation {
+                    seed_ratio: Some(1.0),
+                    ..TorrentSeedingObservation::default()
+                }),
+                ..SeedingGateInput::default()
+            });
+            assert_eq!(decision.outcome, SeedingGateOutcome::Released { action });
+        }
+    }
+
+    #[test]
+    fn unstable_data_blocks_a_move_even_when_seeding_is_done() {
+        let decision = evaluate_seeding_gate(&input(TorrentSeedingObservation {
+            can_remove: Some(true),
+            can_move_files: Some(false),
+            ..TorrentSeedingObservation::default()
+        }));
+        assert!(matches!(
+            decision.outcome,
+            SeedingGateOutcome::Released { .. }
+        ));
+        assert_eq!(
+            decision.import_mode(ImportMode::Move),
+            ImportMode::HardlinkOrCopy
+        );
+        assert_eq!(
+            decision.import_mode(ImportMode::HardlinkOrCopy),
+            ImportMode::HardlinkOrCopy
+        );
+    }
+
+    #[test]
+    fn a_resolved_profile_with_no_numeric_goals_still_supplies_its_action() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(PersistedSeedGoals {
+                goal_met_action: Some(SeedGoalMetAction::StopSeeding),
+                ..goals(None, None)
+            }),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: Some(true),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.reason, "client_reports_seeding_obligation_met");
+        assert_eq!(
+            decision.outcome,
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::StopSeeding
+            }
+        );
+    }
+}

@@ -648,8 +648,13 @@ fn synthetic_tracked_snapshot_queue_item(
     tracked: &TrackedDownloadQueueMetadata,
     primary_client: Option<&DownloadClientConfig>,
 ) -> Option<DownloadQueueItem> {
+    // Visibility allowlist for tracked rows that have no live client row of
+    // their own. `ImportedSeeding` MUST be here: a state that is held back for
+    // seeding but hidden from the queue is a download that silently
+    // disappeared as far as the operator is concerned.
     match tracked.state {
         TrackedDownloadState::Imported
+        | TrackedDownloadState::ImportedSeeding
         | TrackedDownloadState::Failed
         | TrackedDownloadState::ImportPending
         | TrackedDownloadState::Importing

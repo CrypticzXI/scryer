@@ -550,6 +550,58 @@ mod tests {
     }
 
     #[test]
+    fn imported_seeding_tracked_rows_stay_visible_in_the_download_queue() {
+        // Regression rail: a tracked state that the queue projection filters
+        // out is a download that has silently vanished from the operator's
+        // view. `ImportedSeeding` rows are held back from removal precisely so
+        // they can be seen.
+        let config = client_config("qBittorrent", "qBittorrent", "qbittorrent", 1);
+        let client_item = item("torrent-1", DownloadQueueState::Completed);
+        let tracked = crate::tracked_downloads::TrackedDownload {
+            id: "qbittorrent:torrent-1".to_string(),
+            client_id: "qBittorrent".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item,
+            completed_source: None,
+            state: TrackedDownloadState::ImportedSeeding,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("movie".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: true,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            snapshot_missing_since: None,
+        };
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        let projected = synthetic_tracked_snapshot_queue_item(&metadata, Some(&config))
+            .expect("an imported-but-still-seeding row must be projected into the queue");
+
+        assert_eq!(
+            projected.tracked_state,
+            Some(TrackedDownloadState::ImportedSeeding)
+        );
+        assert_eq!(projected.state, DownloadQueueState::Completed);
+        assert_eq!(projected.import_status, Some(ImportStatus::Completed));
+        assert_eq!(projected.progress_percent, 100);
+        assert_eq!(
+            derive_download_queue_display_state(&projected),
+            DownloadDisplayState::Completed
+        );
+    }
+
+    #[test]
     fn apply_tracked_download_queue_metadata_backfills_missing_facet() {
         let mut queue_item = item("job-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {

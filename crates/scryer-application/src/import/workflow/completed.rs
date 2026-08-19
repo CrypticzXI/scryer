@@ -239,6 +239,14 @@ pub(crate) enum TerminalDownloadCleanupOutcome {
     Removed,
     AlreadyGone,
     RetryableFailure,
+    /// The torrent is imported but has not discharged its seeding obligation.
+    /// The tracked download stays visible in `ImportedSeeding` and re-enters
+    /// the gate on the next poll.
+    HeldForSeeding,
+    /// The seeding obligation is discharged but the profile (or the client's
+    /// own nature, as with `torrent-blackhole`) says the entry stays. Nothing
+    /// further to reconcile.
+    SeedingEntryKept,
 }
 pub(crate) fn terminal_download_cleanup_is_complete(
     outcome: TerminalDownloadCleanupOutcome,
@@ -248,6 +256,7 @@ pub(crate) fn terminal_download_cleanup_is_complete(
         TerminalDownloadCleanupOutcome::NotConfigured
             | TerminalDownloadCleanupOutcome::Removed
             | TerminalDownloadCleanupOutcome::AlreadyGone
+            | TerminalDownloadCleanupOutcome::SeedingEntryKept
     )
 }
 async fn cleanup_routing_scope_for_title_id(
@@ -279,6 +288,10 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
         library_id.as_deref(),
         facet.as_ref(),
         state,
+        // The tracker already answers "is this still in the client?": a row
+        // absent from the client's snapshot past the grace window is marked
+        // untrackable. Reusing that avoids a per-item listing call every tick.
+        tracked.is_trackable,
     )
     .await
 }

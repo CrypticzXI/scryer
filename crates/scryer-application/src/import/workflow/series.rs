@@ -83,9 +83,13 @@ async fn import_series_download(
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
         .await?;
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(completed),
+    )
+    .await?;
 
     let mut imported_count: usize = 0;
     let mut skipped_count: usize = 0;
@@ -820,6 +824,7 @@ async fn import_single_episode_file(
         actor,
         title,
         import_id,
+        Some(completed),
         rename_enabled,
         rename_template,
         season_folder_template,

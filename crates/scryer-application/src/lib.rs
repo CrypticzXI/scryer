@@ -102,6 +102,7 @@ pub(crate) use import::checks as import_checks;
 pub(crate) use import::import as import_workflow;
 pub(crate) use import::parameters as import_parameters;
 pub(crate) use import::post_download_gate;
+pub(crate) use import::seeding_gate;
 pub(crate) use import::title_resolution as import_title_resolution;
 pub(crate) use integration::integration as app_usecase_integration;
 pub(crate) use library::discovery as library_discovery;

@@ -13,6 +13,7 @@ pub mod failed_download;
 pub(crate) mod parameters;
 pub(crate) mod post_download_gate;
 pub mod post_processing;
+pub(crate) mod seeding_gate;
 pub(crate) mod title_resolution;
 pub mod upgrade;
 pub(crate) mod workflow;

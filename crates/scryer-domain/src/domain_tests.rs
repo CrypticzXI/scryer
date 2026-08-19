@@ -665,3 +665,45 @@ fn config_field_type_accepts_secret_alias() {
         Some(ConfigFieldType::Password)
     );
 }
+
+// ── TrackedDownloadState::ImportedSeeding ─────────────────────────────────
+
+#[test]
+fn tracked_download_states_round_trip_through_their_wire_names() {
+    for state in [
+        TrackedDownloadState::Downloading,
+        TrackedDownloadState::ImportPending,
+        TrackedDownloadState::Importing,
+        TrackedDownloadState::Imported,
+        TrackedDownloadState::ImportedSeeding,
+        TrackedDownloadState::ImportBlocked,
+        TrackedDownloadState::FailedPending,
+        TrackedDownloadState::Failed,
+        TrackedDownloadState::Ignored,
+    ] {
+        assert_eq!(
+            TrackedDownloadState::from_str_opt(state.as_str()),
+            Some(state),
+            "{} did not round-trip",
+            state.as_str()
+        );
+    }
+    assert_eq!(
+        TrackedDownloadState::ImportedSeeding.as_str(),
+        "imported_seeding"
+    );
+}
+
+#[test]
+fn imported_seeding_is_settled_but_not_terminal() {
+    // Not terminal: the torrent is still live in the client and has to be
+    // re-evaluated against its seeding goal on every poll.
+    assert!(!TrackedDownloadState::ImportedSeeding.is_terminal());
+    // Settled: the payload is already in the library, so no further import
+    // work may be dispatched for it.
+    assert!(TrackedDownloadState::ImportedSeeding.is_import_settled());
+    assert!(TrackedDownloadState::ImportedSeeding.counts_as_imported());
+    assert!(TrackedDownloadState::Imported.counts_as_imported());
+    assert!(!TrackedDownloadState::Failed.counts_as_imported());
+    assert!(!TrackedDownloadState::Downloading.is_import_settled());
+}

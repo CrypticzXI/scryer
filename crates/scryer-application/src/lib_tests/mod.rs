@@ -24,6 +24,7 @@ mod queueing;
 mod routing_settings;
 mod search_cutoff;
 mod security_auth;
+mod seeding_gate;
 mod seeding_profiles;
 mod series_metadata;
 mod title_hydration;

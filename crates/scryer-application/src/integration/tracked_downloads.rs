@@ -742,7 +742,10 @@ impl TrackedDownloadService {
                 .get_identity_tracked_state(&observed_identity, Some(&observed_source_identity))
                 .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
-            && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+            // `ImportedSeeding` is not terminal but must still survive a
+            // restart: re-deriving it would re-import the payload and then
+            // remove a torrent that is still working off its seeding goal.
+            && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
         {
             td.state = state;
             if state == TrackedDownloadState::ImportBlocked {
@@ -773,7 +776,7 @@ impl TrackedDownloadService {
                 .get_tracked_state(&submission_source_identity)
                 .await
                 && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
-                && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+                && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
             {
                 td.state = state;
                 if state == TrackedDownloadState::ImportBlocked {

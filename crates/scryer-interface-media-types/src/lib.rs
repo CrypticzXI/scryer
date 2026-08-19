@@ -797,6 +797,9 @@ pub enum TrackedDownloadStateValue {
     Importing,
     /// Import completed successfully.
     Imported,
+    /// Import completed, but the torrent is still seeding toward its goal and
+    /// cannot be removed from the client yet.
+    ImportedSeeding,
     /// Import is blocked.
     ImportBlocked,
     /// Failure awaits retry or handling.
@@ -814,6 +817,7 @@ impl TrackedDownloadStateValue {
             TrackedDownloadState::ImportPending => Self::ImportPending,
             TrackedDownloadState::Importing => Self::Importing,
             TrackedDownloadState::Imported => Self::Imported,
+            TrackedDownloadState::ImportedSeeding => Self::ImportedSeeding,
             TrackedDownloadState::ImportBlocked => Self::ImportBlocked,
             TrackedDownloadState::FailedPending => Self::FailedPending,
             TrackedDownloadState::Failed => Self::Failed,

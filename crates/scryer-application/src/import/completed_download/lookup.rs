@@ -345,7 +345,7 @@ pub(super) fn apply_download_id_state(td: &mut TrackedDownload, state: TrackedDo
     td.state = state;
     td.waiting_for_completed_history = false;
     match state {
-        TrackedDownloadState::Imported => {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => {
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
         }

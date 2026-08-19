@@ -754,9 +754,13 @@ async fn import_additional_movie_download(
         return Ok(result);
     }
 
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(completed),
+    )
+    .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
     let file_result = import_file_with_record_progress(
         app,
@@ -1172,9 +1176,13 @@ async fn import_movie_download(
         .await;
     }
 
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(completed),
+    )
+    .await?;
 
     if let Some(existing_file) = existing_files
         .iter()
@@ -1866,9 +1874,13 @@ async fn import_series_movie_download(
     }
 
     // Upgrade check: if there's an existing file for this series movie, score and compare.
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(completed),
+    )
+    .await?;
 
     if let Some(existing_file) = series_movie_files
         .iter()

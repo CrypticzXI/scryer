@@ -449,8 +449,11 @@ async fn completed_download_already_imported_for_current_attempt(
         return Ok(false);
     }
 
-    if completed_download_terminal_state_for_resolution(app, completed, resolution).await?
-        == Some(TrackedDownloadState::Imported)
+    // `ImportedSeeding` counts as imported here: the payload is in the library
+    // and only the torrent's seeding obligation is still open.
+    if completed_download_terminal_state_for_resolution(app, completed, resolution)
+        .await?
+        .is_some_and(TrackedDownloadState::counts_as_imported)
     {
         return Ok(true);
     }
