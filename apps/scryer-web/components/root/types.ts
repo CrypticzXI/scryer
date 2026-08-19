@@ -26,13 +26,17 @@ export type SettingsSection =
   | "downloadClients"
   | "qualityProfiles"
   | "delayProfiles"
-  | "seedingProfiles"
   | "acquisition"
   | "rules"
   | "plugins"
   | "notifications"
   | "post-processing"
   | "subtitles";
+
+/// Panes of the Indexers settings page. Seeding profiles live here rather than
+/// in their own settings section because a profile is only ever reached
+/// through the indexer that applies it.
+export type IndexerSettingsTab = "indexers" | "proxies" | "seedingProfiles";
 export type ContentSettingsSection =
   | "overview"
   | "import"

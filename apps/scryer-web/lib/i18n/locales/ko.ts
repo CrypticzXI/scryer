@@ -223,6 +223,7 @@ const ko: LocaleDictionary = {
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "사용자",
   "settings.indexers": "인덱서",
+  "settings.indexerProxies": "인덱서 프록시",
   "settings.qualityProfiles": "품질 프로필",
   "settings.downloadClients": "다운로드 클라이언트",
   "settings.downloadClientRouting": "다운로드 클라이언트 라우팅",

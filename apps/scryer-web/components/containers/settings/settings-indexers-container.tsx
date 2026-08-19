@@ -16,6 +16,7 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useIndexersSubscription } from "@/lib/hooks/use-indexers-subscription";
+import type { IndexerSettingsTab } from "@/components/root/types";
 import type {
   ConfigFieldDef,
   IndexerProxyDraft,
@@ -212,6 +213,7 @@ function findMissingRequiredConfigField(
 }
 
 type SettingsIndexersContainerProps = {
+  indexerSettingsTab?: IndexerSettingsTab;
   providerCatalogVersion?: number;
   indexerDownloadClientMappingCatalogResource: IndexerDownloadClientMappingCatalogResource;
   updateIndexerDownloadClientMappingCatalog: (
@@ -245,6 +247,7 @@ function cloneIndexerDraft(
 }
 
 export function SettingsIndexersContainer({
+  indexerSettingsTab = "indexers",
   providerCatalogVersion = 0,
   indexerDownloadClientMappingCatalogResource,
   updateIndexerDownloadClientMappingCatalog,
@@ -1162,6 +1165,7 @@ export function SettingsIndexersContainer({
           )
         : null}
       <SettingsIndexersSection
+        indexerSettingsTab={indexerSettingsTab}
         editingIndexerId={editingIndexerId}
         indexerDraft={indexerDraft}
         setIndexerDraft={setIndexerDraft}

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildIndexerSettingsPath,
   buildOverviewDetailPath,
+  indexerSettingsTabFromPath,
   resolveAppRoute,
   type ParsedAppRoute,
 } from "./routing.ts";
@@ -182,4 +184,46 @@ test("the dashboard route is canonical and takes no subpaths", () => {
   assert.deepEqual(resolveAppRoute("/dashboard/storage/roots"), {
     kind: "not-found",
   });
+});
+
+test("the indexers page carries its panes as a third path segment", () => {
+  for (const path of [
+    "/integrations/indexers",
+    "/integrations/indexers/proxies",
+    "/integrations/indexers/seeding-profiles",
+  ]) {
+    const route = canonical(path);
+    assert.equal(route.canonicalPath, path, path);
+    assert.equal(route.settingsSection, "indexers", path);
+  }
+  assert.deepEqual(resolveAppRoute("/integrations/indexers/nope"), {
+    kind: "not-found",
+  });
+  // Panes belong to indexers alone; other integrations stay two-segment.
+  assert.deepEqual(resolveAppRoute("/integrations/notifications/proxies"), {
+    kind: "not-found",
+  });
+});
+
+test("seeding profiles are no longer a settings section of their own", () => {
+  assert.deepEqual(resolveAppRoute("/settings/seeding-profiles"), {
+    kind: "not-found",
+  });
+});
+
+test("indexer pane paths round-trip through the tab helpers", () => {
+  for (const tab of ["indexers", "proxies", "seedingProfiles"] as const) {
+    assert.equal(
+      indexerSettingsTabFromPath(buildIndexerSettingsPath(tab)),
+      tab,
+      tab,
+    );
+  }
+  // Anything that is not a known pane segment falls back to the default pane.
+  assert.equal(indexerSettingsTabFromPath("/integrations/indexers"), "indexers");
+  assert.equal(
+    indexerSettingsTabFromPath("/integrations/indexers/unknown"),
+    "indexers",
+  );
+  assert.equal(indexerSettingsTabFromPath("/settings/profile"), "indexers");
 });

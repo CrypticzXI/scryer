@@ -56,6 +56,7 @@ import {
   isManagementOnlyIndexer,
   type IndexerDownloadClientMappingViewModel,
 } from "@/lib/utils/indexer-download-client-mapping";
+import type { IndexerSettingsTab } from "@/components/root/types";
 import type { SeedingProfileOption } from "@/lib/types/seeding-profiles";
 import {
   SEEDING_PROFILE_INHERIT_VALUE,
@@ -65,6 +66,8 @@ import {
 } from "@/lib/utils/seeding-profiles";
 
 type SettingsIndexersSectionProps = {
+  /// Which pane of the Indexers page to render; the page's rail owns the choice.
+  indexerSettingsTab?: IndexerSettingsTab;
   editingIndexerId: string | null;
   indexerDraft: IndexerDraft;
   setIndexerDraft: React.Dispatch<React.SetStateAction<IndexerDraft>>;
@@ -759,6 +762,7 @@ function IndexerSeedingProfileCell({
 }
 
 export function SettingsIndexersSection({
+  indexerSettingsTab = "indexers",
   editingIndexerId,
   indexerDraft,
   setIndexerDraft,
@@ -949,9 +953,13 @@ export function SettingsIndexersSection({
     ],
   );
 
+  const showProxies = indexerSettingsTab === "proxies";
+  const showIndexers = indexerSettingsTab === "indexers";
+
   return (
     <div id="settings-indexers-section" className="flex flex-col gap-4 text-sm">
-      <div id="settings-indexer-proxies-panel" className="order-last space-y-4">
+      {showProxies ? (
+      <div id="settings-indexer-proxies-panel" className="space-y-4">
       <div id="settings-indexer-proxies-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="flex items-center gap-2 text-base">
@@ -1188,7 +1196,10 @@ export function SettingsIndexersSection({
         </div>
       )}
       </div>
+      ) : null}
 
+      {showIndexers ? (
+      <>
       <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -1751,6 +1762,8 @@ export function SettingsIndexersSection({
           />
         </div>
       )}
+      </>
+      ) : null}
     </div>
   );
 }

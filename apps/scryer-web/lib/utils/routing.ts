@@ -2,6 +2,7 @@ import type { LocaleCode } from "../i18n/index.ts";
 import type {
   ActivitySection,
   ContentSettingsSection,
+  IndexerSettingsTab,
   LogsSection,
   SettingsSection,
   SystemSection,
@@ -23,7 +24,6 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   downloadClients: "download-clients",
   qualityProfiles: "quality-profiles",
   delayProfiles: "delay-profiles",
-  seedingProfiles: "seeding-profiles",
   acquisition: "acquisition",
   rules: "rules",
   plugins: "plugins",
@@ -51,6 +51,37 @@ const SYSTEM_SETTINGS_SECTION_PATH: Partial<Record<SettingsSection, string>> = {
   security: "security",
   backups: "backup",
 };
+
+/// Panes of the Indexers settings page. The default pane has no segment, so
+/// `/integrations/indexers` keeps meaning what it always meant.
+export const INDEXER_TAB_PATH: Record<IndexerSettingsTab, string> = {
+  indexers: "",
+  proxies: "proxies",
+  seedingProfiles: "seeding-profiles",
+};
+
+const INDEXER_TAB_BY_SEGMENT: Record<string, IndexerSettingsTab> = {
+  proxies: "proxies",
+  "indexer-proxies": "proxies",
+  "seeding-profiles": "seedingProfiles",
+  seedingprofiles: "seedingProfiles",
+};
+
+/// Path of one Indexers pane. Seeding profiles used to be a settings section of
+/// its own, so `/settings/seeding-profiles` still redirects here.
+export function buildIndexerSettingsPath(tab: IndexerSettingsTab): string {
+  const segment = INDEXER_TAB_PATH[tab];
+  return segment ? `/integrations/indexers/${segment}` : "/integrations/indexers";
+}
+
+export function indexerSettingsTabFromPath(pathname: string): IndexerSettingsTab {
+  const segments = pathname.split("/").filter(Boolean);
+  const indexerAt = segments.findIndex((segment) => segment.toLowerCase() === "indexers");
+  if (indexerAt < 0) {
+    return "indexers";
+  }
+  return INDEXER_TAB_BY_SEGMENT[segments[indexerAt + 1]?.toLowerCase() ?? ""] ?? "indexers";
+}
 
 export const CONTENT_SECTION_PATH: Record<ContentSettingsSection, string> = {
   overview: "overview",
@@ -237,8 +268,6 @@ const LOCAL_SETTINGS_BY_SEGMENT: Record<string, SettingsSection> = {
   qualityprofiles: "qualityProfiles",
   "delay-profiles": "delayProfiles",
   delayprofiles: "delayProfiles",
-  "seeding-profiles": "seedingProfiles",
-  seedingprofiles: "seedingProfiles",
   plugins: "plugins",
 };
 const SYSTEM_SETTINGS_BY_SEGMENT: Record<string, SettingsSection> = {
@@ -489,7 +518,26 @@ export function resolveAppRoute(
 
   if (root === "integrations") {
     const settingsSection = INTEGRATION_SETTINGS_BY_SEGMENT[normalizedSegments[1] ?? ""];
-    if (!settingsSection || rawSegments.length !== 2) {
+    if (!settingsSection) {
+      return { kind: "not-found" };
+    }
+    // The Indexers page carries panes (proxies, seeding profiles) as a third
+    // segment; every other integrations section is a bare two-segment path.
+    if (settingsSection === "indexers" && rawSegments.length === 3) {
+      const tab = INDEXER_TAB_BY_SEGMENT[normalizedSegments[2] ?? ""];
+      if (!tab) {
+        return { kind: "not-found" };
+      }
+      return canonicalOrRedirect(
+        currentPath,
+        parsedRoute(buildIndexerSettingsPath(tab), "settings", {
+          settingsSection,
+        }),
+        search,
+        hash,
+      );
+    }
+    if (rawSegments.length !== 2) {
       return { kind: "not-found" };
     }
     return canonicalOrRedirect(currentPath, settingsRoute(settingsSection), search, hash);

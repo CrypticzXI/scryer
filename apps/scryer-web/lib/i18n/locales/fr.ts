@@ -224,6 +224,7 @@ const fr: LocaleDictionary = {
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "Utilisateurs",
   "settings.indexers": "Indexeurs",
+  "settings.indexerProxies": "Proxys d'indexeurs",
   "settings.qualityProfiles": "Profils de qualité",
   "settings.downloadClients": "Clients de téléchargement",
   "settings.downloadClientRouting": "Routage des clients de téléchargement",

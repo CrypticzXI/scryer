@@ -221,6 +221,7 @@ const zh_CN: LocaleDictionary = {
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "用户",
   "settings.indexers": "索引器",
+  "settings.indexerProxies": "索引器代理",
   "settings.qualityProfiles": "质量配置",
   "settings.downloadClients": "下载客户端",
   "settings.downloadClientRouting": "下载客户端路由",

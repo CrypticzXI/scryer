@@ -378,6 +378,7 @@ const en: LocaleDictionary = {
   "settings.createInvite": "Create invite",
   "settings.users": "Users",
   "settings.indexers": "Indexers",
+  "settings.indexerProxies": "Indexer Proxies",
   "settings.qualityProfiles": "Quality Profiles",
   "settings.downloadClients": "Download Clients",
   "settings.mediaServers": "Media Servers",

@@ -55,7 +55,6 @@ import {
   TextSearch,
   Timer,
   Recycle,
-  UploadCloud,
   User,
   Users,
 } from "lucide-react";
@@ -237,7 +236,6 @@ const DEFAULT_SETTINGS_SECTION_ORDER: SettingsSection[] = [
   "profile",
   "qualityProfiles",
   "delayProfiles",
-  "seedingProfiles",
   "plugins",
 ];
 const MEDIA_NAV_VIEW_IDS: ViewId[] = ["movies", "series", "anime"];
@@ -324,12 +322,6 @@ const settingsEntries: Array<{
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
-    id: "seedingProfiles",
-    label: (t) => t("settings.seedingProfiles"),
-    icon: UploadCloud,
-    requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
-  },
-  {
     id: "downloadClients",
     label: (t) => t("settings.downloadClients"),
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
@@ -387,7 +379,6 @@ const SETTINGS_NAV_GROUPS: Array<{
       "general",
       "qualityProfiles",
       "delayProfiles",
-      "seedingProfiles",
       "plugins",
     ],
   },

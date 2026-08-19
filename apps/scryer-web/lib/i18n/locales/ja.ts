@@ -223,6 +223,7 @@ const ja: LocaleDictionary = {
   "settings.securitySaveFailed": "Failed to save security settings.",
   "settings.users": "ユーザー",
   "settings.indexers": "インデクサー",
+  "settings.indexerProxies": "インデクサープロキシ",
   "settings.qualityProfiles": "品質プロファイル",
   "settings.downloadClients": "ダウンロードクライアント",
   "settings.downloadClientRouting": "ダウンロードクライアントルーティング",

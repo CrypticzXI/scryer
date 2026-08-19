@@ -396,14 +396,6 @@ export function buildRouteCommands({
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "delayProfiles"),
         } satisfies RouteCommand, {
-          id: "settings-seeding-profiles",
-          label: `${settingsGroupLabel} / ${t("settings.seedingProfiles")}`,
-          description: t("settings.seedingProfiles"),
-          groupLabel: settingsGroupLabel,
-          keywords: ["settings", "seeding", "profiles", "ratio", "torrent"],
-          icon: Settings,
-          onSelect: buildNavigate(onNavigate, "settings", "seedingProfiles"),
-        } satisfies RouteCommand, {
           id: "settings-rules",
           label: `${automationGroupLabel} / ${t("settings.rules")}`,
           description: t("settings.rules"),
@@ -443,7 +435,19 @@ export function buildRouteCommands({
           label: `${integrationsGroupLabel} / ${t("settings.indexers")}`,
           description: t("settings.indexers"),
           groupLabel: integrationsGroupLabel,
-          keywords: ["settings", "indexers", "feeds", "search", "sources"],
+          // Seeding profiles and indexer proxies are panes of this page, so the
+          // palette has to find it by their names too.
+          keywords: [
+            "settings",
+            "indexers",
+            "feeds",
+            "search",
+            "sources",
+            "proxies",
+            "seeding",
+            "profiles",
+            "ratio",
+          ],
           icon: Database,
           onSelect: buildNavigate(onNavigate, "settings", "indexers"),
         } satisfies RouteCommand, {

@@ -1,6 +1,6 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { useClient } from "urql";
 import {
   Archive,
@@ -17,19 +17,22 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Timer,
-  UploadCloud,
   User,
   Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import type { SettingsSection } from "@/components/root/types";
+import type { IndexerSettingsTab, SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import { buildViewPath } from "@/lib/utils/routing";
+import {
+  buildIndexerSettingsPath,
+  buildViewPath,
+  indexerSettingsTabFromPath,
+} from "@/lib/utils/routing";
 import {
   type ProviderCatalogFamily,
   useProviderCatalogSubscription,
@@ -130,6 +133,49 @@ const SUBTITLES_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
   railClass: "sticky top-[26px] z-auto min-w-[320px] max-w-[560px] flex-[1_1_560px]",
 };
 
+const INDEXER_SETTINGS_TABS: { tab: IndexerSettingsTab; labelKey: string }[] = [
+  { tab: "indexers", labelKey: "settings.indexers" },
+  { tab: "proxies", labelKey: "settings.indexerProxies" },
+  { tab: "seedingProfiles", labelKey: "settings.seedingProfiles" },
+];
+
+/// Pane switcher for the Indexers page. Indexers, their proxies, and the
+/// seeding profiles they apply are three views of the same subject, so they
+/// share a page instead of scattering across the settings nav.
+function IndexerSettingsTabRail({
+  activeTab,
+  t,
+}: {
+  activeTab: IndexerSettingsTab;
+  t: ReturnType<typeof useTranslate>;
+}) {
+  return (
+    <nav
+      id="settings-indexers-tabs"
+      className="flex gap-1 overflow-x-auto border-b border-[var(--scry-border3)] pb-2"
+    >
+      {INDEXER_SETTINGS_TABS.map((item) => {
+        const active = activeTab === item.tab;
+        return (
+          <Link
+            key={item.tab}
+            id={selectorId("settings-indexers-tab", item.tab)}
+            to={buildIndexerSettingsPath(item.tab)}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "flex h-8 shrink-0 items-center rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
+              active &&
+                "bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)]",
+            )}
+          >
+            <span className="whitespace-nowrap">{t(item.labelKey)}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
   userId?: string;
@@ -155,6 +201,9 @@ export const SettingsContainer = memo(function SettingsContainer({
 }: SettingsContainerProps) {
   const t = useTranslate();
   const client = useClient();
+  // The Indexers page's pane lives in the path rather than in state so a pane
+  // can be linked to and reloaded into.
+  const indexerSettingsTab = indexerSettingsTabFromPath(useLocation().pathname);
   const [indexerDownloadClientMappingCatalogResource, setIndexerDownloadClientMappingCatalogResource] =
     useState<IndexerDownloadClientMappingCatalogResource>({
       catalog: null,
@@ -336,11 +385,9 @@ export const SettingsContainer = memo(function SettingsContainer({
                               ? t("settings.subtitles")
                               : settingsSection === "delayProfiles"
                                 ? t("settings.delayProfiles")
-                                : settingsSection === "seedingProfiles"
-                                  ? t("settings.seedingProfiles")
-                                  : settingsSection === "acquisition"
-                                    ? t("settings.acquisition")
-                                    : t("settings.qualityProfiles");
+                                : settingsSection === "acquisition"
+                                  ? t("settings.acquisition")
+                                  : t("settings.qualityProfiles");
   const primarySettingsNav = [
     {
       section: "profile" as const,
@@ -364,12 +411,6 @@ export const SettingsContainer = memo(function SettingsContainer({
       section: "delayProfiles" as const,
       label: t("settings.delayProfiles"),
       icon: Timer,
-      visible: canManageCatalogSettings,
-    },
-    {
-      section: "seedingProfiles" as const,
-      label: t("settings.seedingProfiles"),
-      icon: UploadCloud,
       visible: canManageCatalogSettings,
     },
     {
@@ -551,7 +592,6 @@ export const SettingsContainer = memo(function SettingsContainer({
                 settingsSection !== "general" &&
                 settingsSection !== "qualityProfiles" &&
                 settingsSection !== "delayProfiles" &&
-                settingsSection !== "seedingProfiles" &&
                 settingsSection !== "plugins" ? (
                   <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
                     {t("settings.sectionTitle", { section: settingsSectionLabel })}
@@ -604,18 +644,26 @@ export const SettingsContainer = memo(function SettingsContainer({
           ) : settingsSection === "mediaServers" ? (
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
-            <SettingsIndexersContainer
-              providerCatalogVersion={providerCatalogVersions.INDEXER}
-              indexerDownloadClientMappingCatalogResource={
-                indexerDownloadClientMappingCatalogResource
-              }
-              updateIndexerDownloadClientMappingCatalog={
-                updateIndexerDownloadClientMappingCatalog
-              }
-              refreshIndexerDownloadClientMappingCatalog={
-                refreshIndexerDownloadClientMappingCatalog
-              }
-            />
+            <div className="flex flex-col gap-4">
+              <IndexerSettingsTabRail activeTab={indexerSettingsTab} t={t} />
+              {indexerSettingsTab === "seedingProfiles" ? (
+                <SettingsSeedingProfilesContainer />
+              ) : (
+                <SettingsIndexersContainer
+                  indexerSettingsTab={indexerSettingsTab}
+                  providerCatalogVersion={providerCatalogVersions.INDEXER}
+                  indexerDownloadClientMappingCatalogResource={
+                    indexerDownloadClientMappingCatalogResource
+                  }
+                  updateIndexerDownloadClientMappingCatalog={
+                    updateIndexerDownloadClientMappingCatalog
+                  }
+                  refreshIndexerDownloadClientMappingCatalog={
+                    refreshIndexerDownloadClientMappingCatalog
+                  }
+                />
+              )}
+            </div>
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
               providerCatalogVersion={
@@ -640,8 +688,6 @@ export const SettingsContainer = memo(function SettingsContainer({
             />
           ) : settingsSection === "delayProfiles" ? (
             <SettingsDelayProfilesContainer />
-          ) : settingsSection === "seedingProfiles" ? (
-            <SettingsSeedingProfilesContainer />
           ) : settingsSection === "acquisition" ? (
             <SettingsAcquisitionContainer />
           ) : (
