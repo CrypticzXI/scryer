@@ -1035,14 +1035,14 @@ fn build_managed_child_plan(
         caps_snapshot,
         // Usenet indexers have no seeding obligation, so their fields are not
         // read even if Prowlarr happens to carry them.
-        seed_ratio: is_torrent.then(|| prowlarr_seed_ratio(&indexer.fields)).flatten(),
+        seed_ratio: is_torrent
+            .then(|| prowlarr_seed_ratio(&indexer.fields))
+            .flatten(),
         seed_time_minutes: is_torrent
             .then(|| prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.seedTime"))
             .flatten(),
         season_pack_seed_time_minutes: is_torrent
-            .then(|| {
-                prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.packSeedTime")
-            })
+            .then(|| prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.packSeedTime"))
             .flatten(),
     })
     .ok();
@@ -1078,9 +1078,11 @@ fn prowlarr_field_value<'a>(
 
 fn prowlarr_seed_ratio(fields: &[ProwlarrIndexerField]) -> Option<f64> {
     let value = prowlarr_field_value(fields, "torrentBaseSettings.seedRatio")?;
-    let ratio = value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))?;
+    let ratio = value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+    })?;
     (ratio.is_finite() && ratio > 0.0).then_some(ratio)
 }
 
@@ -1089,7 +1091,11 @@ fn prowlarr_seed_minutes(fields: &[ProwlarrIndexerField], name: &str) -> Option<
     let minutes = value
         .as_i64()
         .or_else(|| value.as_f64().map(|value| value as i64))
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))?;
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+        })?;
     (minutes > 0).then_some(minutes)
 }
 
@@ -1569,9 +1575,41 @@ mod tests {
                 enable_interactive_search: true,
             },
         )]);
-        let child = build_managed_child_plan(&config, indexer, &app_profiles, None)
-            .expect("child plan");
+        let child =
+            build_managed_child_plan(&config, indexer, &app_profiles, None).expect("child plan");
         serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap()
+    }
+
+    /// Verbatim `/api/v1/indexer` payload from a real Prowlarr container
+    /// (linuxserver/prowlarr, Torznab indexer). Pins the field names and the
+    /// JSON shapes Prowlarr actually emits — including the advanced fields,
+    /// which it does return, and the null it sends for an unset one.
+    #[test]
+    fn a_real_prowlarr_payload_imports_its_seed_criteria() {
+        let indexer: ProwlarrIndexerResource = serde_json::from_str(
+            r#"{
+              "enable": true,
+              "appProfileId": 1,
+              "protocol": "torrent",
+              "priority": 25,
+              "downloadClientId": 0,
+              "name": "probe-torznab",
+              "id": 1,
+              "fields": [
+                { "name": "torrentBaseSettings.appMinimumSeeders", "value": null },
+                { "name": "torrentBaseSettings.seedRatio", "value": 1.5 },
+                { "name": "torrentBaseSettings.seedTime", "value": 4320 },
+                { "name": "torrentBaseSettings.packSeedTime", "value": 10080 },
+                { "name": "torrentBaseSettings.preferMagnetUrl", "value": false }
+              ]
+            }"#,
+        )
+        .expect("real Prowlarr payload should deserialize");
+
+        let metadata = child_metadata(indexer);
+        assert_eq!(metadata.seed_ratio, Some(1.5));
+        assert_eq!(metadata.seed_time_minutes, Some(4320));
+        assert_eq!(metadata.season_pack_seed_time_minutes, Some(10080));
     }
 
     #[test]
@@ -1619,7 +1657,10 @@ mod tests {
     fn usenet_children_carry_no_seed_criteria() {
         let metadata = child_metadata(indexer_with_fields(
             "usenet",
-            vec![seed_field("torrentBaseSettings.seedRatio", serde_json::json!(1.5))],
+            vec![seed_field(
+                "torrentBaseSettings.seedRatio",
+                serde_json::json!(1.5),
+            )],
         ));
         assert_eq!(metadata.seed_ratio, None);
         assert_eq!(metadata.seed_time_minutes, None);
