@@ -1113,9 +1113,9 @@ const zh_CN: LocaleDictionary = {
   "settings.plugins": "插件",
   "settings.pluginsSection": "管理插件",
   "settings.pluginsRefresh": "刷新注册表",
-  "settings.pluginAutoUpdateEnabled": "自动安装官方插件的补丁更新",
+  "settings.pluginAutoUpdateEnabled": "自动更新插件补丁",
   "settings.pluginAutoUpdateEnabledHelp":
-    "仅计划中的插件目录刷新会应用这些更新，且仅限官方插件的补丁版本（以及已安装版本的优化构建）。手动刷新目录和手动更新不受影响。",
+    "启用后，将插件自动更新到已发布的最新补丁版本，例如 1.0.1 => 1.0.2。次版本和主版本仍由运维人员控制。",
   "settings.pluginAutoUpdateEnabledReadonly":
     "插件自动更新由可管理配置的用户控制。",
   "settings.host": "主机",

@@ -1159,9 +1159,9 @@ const ko: LocaleDictionary = {
   "settings.plugins": "플러그인",
   "settings.pluginsSection": "플러그인 관리",
   "settings.pluginsRefresh": "레지스트리 새로고침",
-  "settings.pluginAutoUpdateEnabled": "공식 플러그인 패치 업데이트 자동 설치",
+  "settings.pluginAutoUpdateEnabled": "플러그인 패치 자동 업데이트",
   "settings.pluginAutoUpdateEnabledHelp":
-    "예약된 플러그인 카탈로그 새로고침만 이러한 업데이트를 적용하며, 공식 플러그인의 패치 릴리스(및 설치된 버전의 최적화 빌드)만 대상입니다. 수동 카탈로그 새로고침과 수동 업데이트에는 영향을 주지 않습니다.",
+    "활성화하면 플러그인을 게시된 최신 패치 버전으로 자동 업데이트합니다(예: 1.0.1 => 1.0.2). 마이너 및 메이저 버전은 운영자가 직접 관리합니다.",
   "settings.pluginAutoUpdateEnabledReadonly":
     "플러그인 자동 업데이트는 구성을 관리할 수 있는 사용자가 제어합니다.",
   "settings.host": "호스트",

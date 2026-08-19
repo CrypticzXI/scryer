@@ -1210,9 +1210,9 @@ const de: LocaleDictionary = {
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Plugins verwalten",
   "settings.pluginsRefresh": "Registry aktualisieren",
-  "settings.pluginAutoUpdateEnabled": "Patch-Updates offizieller Plugins automatisch installieren",
+  "settings.pluginAutoUpdateEnabled": "Plugin-Patches automatisch aktualisieren",
   "settings.pluginAutoUpdateEnabledHelp":
-    "Nur die geplante Plugin-Katalogaktualisierung wendet diese Updates an, und zwar ausschließlich Patch-Releases (sowie optimierte Builds der installierten Version) offizieller Plugins. Manuelle Katalogaktualisierungen und manuelle Updates bleiben unberührt.",
+    "Wenn aktiviert, werden Plugins automatisch auf ihre neueste veröffentlichte Patch-Version aktualisiert, z. B. 1.0.1 => 1.0.2. Minor- und Major-Versionen bleiben in der Hand des Betreibers.",
   "settings.pluginAutoUpdateEnabledReadonly":
     "Automatische Plugin-Updates werden von Benutzern verwaltet, die die Konfiguration verwalten dürfen.",
   "settings.host": "Host",
