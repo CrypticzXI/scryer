@@ -688,6 +688,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
         store: Arc::new(Mutex::new(configs)),
     });
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let seeding_profiles = Arc::new(MockSeedingProfileRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
@@ -709,6 +710,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
         String::new(),
     )
     .with_plugin_provider(plugin_provider)
+    .with_seeding_profiles(seeding_profiles)
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
@@ -819,6 +821,7 @@ pub(super) fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str)
         enable_auto_search: true,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1771,6 +1774,7 @@ pub(super) async fn set_download_client_cleanup_routing(
         user,
         facet,
         vec![DownloadClientRoutingSettingsEntry {
+            seeding_profile_id: None,
             client_id: client_id.to_string(),
             enabled: true,
             category: None,

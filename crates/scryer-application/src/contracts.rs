@@ -304,6 +304,7 @@ pub struct IndexerConfigUpdate {
     pub enable_auto_search: Option<bool>,
     pub indexer_proxy_config_id: Option<Option<String>>,
     pub download_client_id: Option<Option<String>>,
+    pub seeding_profile_id: Option<Option<String>>,
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
@@ -358,11 +359,55 @@ impl IndexerConfigUpdate {
             || self.enable_auto_search.is_some()
             || self.indexer_proxy_config_id.is_some()
             || self.download_client_id.is_some()
+            || self.seeding_profile_id.is_some()
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
             || self.caps_snapshot_json.is_some()
             || self.config_json.is_some()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NewSeedingProfile {
+    pub name: String,
+    pub ratio: Option<f64>,
+    pub seed_time_minutes: Option<i64>,
+    pub season_pack_mode: scryer_domain::SeasonPackSeedMode,
+    pub season_pack_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
+    pub honor_tracker_minimums: bool,
+    pub goal_met_action: scryer_domain::SeedGoalMetAction,
+    pub never_remove: bool,
+}
+
+/// Patch for a stored seeding profile. Nullable goals use the
+/// `Option<Option<_>>` convention: `None` preserves, `Some(None)` clears.
+#[derive(Clone, Debug, Default)]
+pub struct SeedingProfileUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub ratio: Option<Option<f64>>,
+    pub seed_time_minutes: Option<Option<i64>>,
+    pub season_pack_mode: Option<scryer_domain::SeasonPackSeedMode>,
+    pub season_pack_ratio: Option<Option<f64>>,
+    pub season_pack_seed_time_minutes: Option<Option<i64>>,
+    pub honor_tracker_minimums: Option<bool>,
+    pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
+    pub never_remove: Option<bool>,
+}
+
+impl SeedingProfileUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.ratio.is_some()
+            || self.seed_time_minutes.is_some()
+            || self.season_pack_mode.is_some()
+            || self.season_pack_ratio.is_some()
+            || self.season_pack_seed_time_minutes.is_some()
+            || self.honor_tracker_minimums.is_some()
+            || self.goal_met_action.is_some()
+            || self.never_remove.is_some()
     }
 }
 

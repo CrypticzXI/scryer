@@ -19,6 +19,7 @@ use std::{
 // mechanically split into functional source files.
 include!("indexers.rs");
 include!("indexer_proxies.rs");
+include!("seeding_profiles.rs");
 include!("managed_indexers.rs");
 include!("download_clients.rs");
 include!("queue_projection.rs");

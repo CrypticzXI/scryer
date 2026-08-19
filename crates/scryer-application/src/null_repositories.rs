@@ -55,11 +55,11 @@ use crate::{
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
     SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
-    ScopeIndexerCoverageRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
-    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
-    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
-    TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
+    ScopeIndexerCoverageRepository, SeedingProfileRepository, SettingsRepository, StagedNzbRef,
+    StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
+    TitleImageKind, TitleImageProcessor, TitleImageRepository, TitleImageSourceResult,
+    TitleImageSyncTask, TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
     UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity,
     WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
@@ -67,6 +67,38 @@ use crate::{
     types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
     types::TotpRecoveryCodeRecord,
 };
+
+#[derive(Default)]
+pub struct NullSeedingProfileRepository;
+
+#[async_trait]
+impl SeedingProfileRepository for NullSeedingProfileRepository {
+    async fn list(&self) -> AppResult<Vec<scryer_domain::SeedingProfile>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _id: &str) -> AppResult<Option<scryer_domain::SeedingProfile>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        Ok(profile)
+    }
+
+    async fn update(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        Ok(profile)
+    }
+
+    async fn delete(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 pub struct NullIndexerProxyConfigRepository;

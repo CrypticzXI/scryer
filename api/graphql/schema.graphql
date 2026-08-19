@@ -1669,6 +1669,48 @@ input CreateRuleSetInput {
 }
 
 """
+Goals and removal behavior for a new seeding profile.
+"""
+input CreateSeedingProfileInput {
+	"""
+	Seeding profile name; must be unique.
+	"""
+	name: String!
+	"""
+	Share ratio goal, or null to defer to the download client's own limits.
+	"""
+	ratio: Float
+	"""
+	Seed time goal in minutes, or null to defer to the download client's own limits.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Whether season packs inherit or override the profile's goals; defaults to inherit.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue
+	"""
+	Season-pack share ratio goal; only applied in override mode.
+	"""
+	seasonPackRatio: Float
+	"""
+	Season-pack seed time goal in minutes; only applied in override mode.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Whether resolved goals are raised to tracker-declared minimums; defaults to true.
+	"""
+	honorTrackerMinimums: Boolean
+	"""
+	Action taken once the goal is met; defaults to removing the entry.
+	"""
+	goalMetAction: SeedGoalMetActionValue
+	"""
+	Whether torrents grabbed under this profile are never auto-removed; defaults to false.
+	"""
+	neverRemove: Boolean
+}
+
+"""
 Configuration for a new subtitle provider.
 """
 input CreateSubtitleProviderConfigInput {
@@ -1824,6 +1866,16 @@ type DecisionCodeCountPayload {
 	Number of wanted items with this code.
 	"""
 	count: Int!
+}
+
+"""
+Global default seeding profile after an assignment change.
+"""
+type DefaultSeedingProfilePayload {
+	"""
+	Seeding profile identity used as the default, or null when unset.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -2252,6 +2304,16 @@ Identifier returned after deleting a rule set.
 type DeleteRuleSetPayload {
 	"""
 	Deleted rule-set ID.
+	"""
+	id: ID!
+}
+
+"""
+Identity returned after deleting a seeding profile.
+"""
+type DeleteSeedingProfilePayload {
+	"""
+	Deleted seeding profile identity.
 	"""
 	id: ID!
 }
@@ -3628,6 +3690,10 @@ input DownloadClientRoutingEntryInput {
 	Whether failed items are removed from the client.
 	"""
 	removeFailed: Boolean!
+	"""
+	Optional seeding profile ID applied to torrents routed to this client.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -3662,6 +3728,10 @@ type DownloadClientRoutingEntryPayload {
 	Whether failed items are removed from the client.
 	"""
 	removeFailed: Boolean!
+	"""
+	Optional seeding profile ID applied to torrents routed to this client.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -6106,6 +6176,10 @@ type IndexerConfigPayload {
 	Optional download-client ID associated with this indexer.
 	"""
 	downloadClientId: ID
+	"""
+	Optional seeding profile ID applied to torrents grabbed from this indexer.
+	"""
+	seedingProfileId: ID
 	"""
 	Whether an API key is configured without exposing it.
 	"""
@@ -9388,6 +9462,51 @@ type MutationRoot {
 		"""
 		input: SetIndexerDownloadClientMappingInput!
 	): IndexerConfigPayload!
+	"""
+	Set or clear the seeding profile applied to torrents from an indexer.
+	"""
+	setIndexerSeedingProfile(
+		"""
+		Indexer identity and optional seeding profile identity; null clears the assignment.
+		"""
+		input: SetIndexerSeedingProfileInput!
+	): IndexerConfigPayload!
+	"""
+	Create a torrent seeding profile.
+	"""
+	createSeedingProfile(
+		"""
+		Seeding profile name, goals, and removal behavior.
+		"""
+		input: CreateSeedingProfileInput!
+	): SeedingProfilePayload!
+	"""
+	Patch a torrent seeding profile.
+	"""
+	updateSeedingProfile(
+		"""
+		Seeding profile identity and optional replacement fields; explicit nulls clear goals.
+		"""
+		input: UpdateSeedingProfileInput!
+	): SeedingProfilePayload!
+	"""
+	Delete a seeding profile that nothing references.
+	"""
+	deleteSeedingProfile(
+		"""
+		Seeding profile identity to delete.
+		"""
+		id: ID!
+	): DeleteSeedingProfilePayload!
+	"""
+	Set or clear the seeding profile applied when nothing more specific matches.
+	"""
+	setDefaultSeedingProfile(
+		"""
+		Seeding profile identity to use as the default, or null to clear it.
+		"""
+		input: SetDefaultSeedingProfileInput!
+	): DefaultSeedingProfilePayload!
 	"""
 	Create an indexer proxy configuration.
 	"""
@@ -13071,6 +13190,14 @@ type QueryRoot {
 		providerType: String
 	): [IndexerConfigPayload!]!
 	"""
+	Lists configured torrent seeding profiles.
+	"""
+	seedingProfiles: [SeedingProfilePayload!]!
+	"""
+	Returns the seeding profile applied when nothing more specific matches.
+	"""
+	defaultSeedingProfile: DefaultSeedingProfilePayload!
+	"""
 	Returns compatible download clients and indexers for routing configuration.
 	"""
 	indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalogPayload!
@@ -14689,6 +14816,20 @@ input SearchSubtitlesInput {
 }
 
 """
+How a seeding profile treats season packs relative to its own goals.
+"""
+enum SeasonPackSeedModeValue {
+	"""
+	Season packs use the profile's own ratio and seed-time goals.
+	"""
+	INHERIT
+	"""
+	Season packs use the profile's season-pack goals instead.
+	"""
+	OVERRIDE
+}
+
+"""
 Secret provider configuration value represented without plaintext.
 """
 type SecretConfigValuePayload {
@@ -14742,6 +14883,78 @@ type SecuritySettingsPayload {
 	Description of the active override, or null when none is active.
 	"""
 	envOverrideDescription: String
+}
+
+"""
+What happens to a torrent once its seeding goal is met.
+"""
+enum SeedGoalMetActionValue {
+	"""
+	Remove the entry from the download client.
+	"""
+	REMOVE_ENTRY
+	"""
+	Stop seeding but keep the entry in the download client.
+	"""
+	STOP_SEEDING
+	"""
+	Leave the torrent alone.
+	"""
+	KEEP
+}
+
+"""
+Named torrent seeding policy assignable to indexers, routing entries, or the global default.
+"""
+type SeedingProfilePayload {
+	"""
+	Seeding profile ID.
+	"""
+	id: ID!
+	"""
+	Seeding profile name.
+	"""
+	name: String!
+	"""
+	Share ratio goal, or null to defer to the download client's own limits.
+	"""
+	ratio: Float
+	"""
+	Seed time goal in minutes, or null to defer to the download client's own limits.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Whether season packs inherit or override the profile's goals.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue!
+	"""
+	Season-pack share ratio goal, or null when unset.
+	"""
+	seasonPackRatio: Float
+	"""
+	Season-pack seed time goal in minutes, or null when unset.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Whether resolved goals are raised to tracker-declared minimums.
+	"""
+	honorTrackerMinimums: Boolean!
+	"""
+	Action taken once the seeding goal is met.
+	"""
+	goalMetAction: SeedGoalMetActionValue!
+	"""
+	Whether torrents grabbed under this profile are never auto-removed.
+	"""
+	neverRemove: Boolean!
+	"""
+	UTC creation time.
+	"""
+	createdAt: DateTime!
+	"""
+	UTC last-update time.
+	"""
+	updatedAt: DateTime!
 }
 
 """
@@ -14865,6 +15078,16 @@ type SetCollectionMonitoredPayload {
 }
 
 """
+Global default seeding profile assignment.
+"""
+input SetDefaultSeedingProfileInput {
+	"""
+	Seeding profile identity to use as the default, or null to clear it.
+	"""
+	seedingProfileId: ID
+}
+
+"""
 Monitoring state change for an episode.
 """
 input SetEpisodeMonitoredInput {
@@ -14890,6 +15113,20 @@ input SetIndexerDownloadClientMappingInput {
 	Download-client identity to assign, or null to clear the mapping.
 	"""
 	downloadClientId: ID
+}
+
+"""
+Seeding profile assignment for one indexer.
+"""
+input SetIndexerSeedingProfileInput {
+	"""
+	Indexer identity to update.
+	"""
+	indexerId: ID!
+	"""
+	Seeding profile identity to assign, or null to clear the assignment.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -18054,6 +18291,52 @@ input UpdateSecuritySettingsInput {
 	Whether Emby login requires TOTP. Omission preserves the saved setting.
 	"""
 	totpRequireEmbyLogin: Boolean
+}
+
+"""
+Patch for a stored seeding profile; omitted fields are preserved and explicit nulls clear goals.
+"""
+input UpdateSeedingProfileInput {
+	"""
+	Seeding profile identity to patch.
+	"""
+	id: ID!
+	"""
+	Replacement name; omission preserves it.
+	"""
+	name: String
+	"""
+	Replacement share ratio goal; null clears it and omission preserves it.
+	"""
+	ratio: Float
+	"""
+	Replacement seed time goal in minutes; null clears it and omission preserves it.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Replacement season-pack mode; omission preserves it.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue
+	"""
+	Replacement season-pack ratio goal; null clears it and omission preserves it.
+	"""
+	seasonPackRatio: Float
+	"""
+	Replacement season-pack seed time goal in minutes; null clears it and omission preserves it.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Replacement tracker-minimum handling; omission preserves it.
+	"""
+	honorTrackerMinimums: Boolean
+	"""
+	Replacement goal-met action; omission preserves it.
+	"""
+	goalMetAction: SeedGoalMetActionValue
+	"""
+	Replacement never-remove flag; omission preserves it.
+	"""
+	neverRemove: Boolean
 }
 
 """

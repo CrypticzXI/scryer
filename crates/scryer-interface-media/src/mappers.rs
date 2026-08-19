@@ -24,8 +24,8 @@ use scryer_application::{
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
     DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, IndexerProxyConfig, Library,
-    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, RuleSet,
-    SubtitleProviderConfig, Title, TitleHistoryRecord, User,
+    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SeasonPackSeedMode,
+    SeedGoalMetAction, SeedingProfile, SubtitleProviderConfig, Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -420,6 +420,54 @@ pub fn from_download_client_routing_entry(
         older_queue_priority: entry.older_queue_priority,
         remove_completed: entry.remove_completed,
         remove_failed: entry.remove_failed,
+        seeding_profile_id: entry.seeding_profile_id.map(Into::into),
+    }
+}
+
+pub fn season_pack_seed_mode_value(mode: SeasonPackSeedMode) -> SeasonPackSeedModeValue {
+    match mode {
+        SeasonPackSeedMode::Inherit => SeasonPackSeedModeValue::Inherit,
+        SeasonPackSeedMode::Override => SeasonPackSeedModeValue::Override,
+    }
+}
+
+pub fn season_pack_seed_mode_from_value(value: SeasonPackSeedModeValue) -> SeasonPackSeedMode {
+    match value {
+        SeasonPackSeedModeValue::Inherit => SeasonPackSeedMode::Inherit,
+        SeasonPackSeedModeValue::Override => SeasonPackSeedMode::Override,
+    }
+}
+
+pub fn seed_goal_met_action_value(action: SeedGoalMetAction) -> SeedGoalMetActionValue {
+    match action {
+        SeedGoalMetAction::RemoveEntry => SeedGoalMetActionValue::RemoveEntry,
+        SeedGoalMetAction::StopSeeding => SeedGoalMetActionValue::StopSeeding,
+        SeedGoalMetAction::Keep => SeedGoalMetActionValue::Keep,
+    }
+}
+
+pub fn seed_goal_met_action_from_value(value: SeedGoalMetActionValue) -> SeedGoalMetAction {
+    match value {
+        SeedGoalMetActionValue::RemoveEntry => SeedGoalMetAction::RemoveEntry,
+        SeedGoalMetActionValue::StopSeeding => SeedGoalMetAction::StopSeeding,
+        SeedGoalMetActionValue::Keep => SeedGoalMetAction::Keep,
+    }
+}
+
+pub fn from_seeding_profile(profile: SeedingProfile) -> SeedingProfilePayload {
+    SeedingProfilePayload {
+        id: profile.id.into(),
+        name: profile.name,
+        ratio: profile.ratio,
+        seed_time_minutes: profile.seed_time_minutes,
+        season_pack_mode: season_pack_seed_mode_value(profile.season_pack_mode),
+        season_pack_ratio: profile.season_pack_ratio,
+        season_pack_seed_time_minutes: profile.season_pack_seed_time_minutes,
+        honor_tracker_minimums: profile.honor_tracker_minimums,
+        goal_met_action: seed_goal_met_action_value(profile.goal_met_action),
+        never_remove: profile.never_remove,
+        created_at: profile.created_at,
+        updated_at: profile.updated_at,
     }
 }
 
@@ -835,6 +883,7 @@ pub fn from_indexer_config_with_fields(
         base_url: config.base_url,
         indexer_proxy_config_id: config.indexer_proxy_config_id.map(Into::into),
         download_client_id: config.download_client_id.map(Into::into),
+        seeding_profile_id: config.seeding_profile_id.map(Into::into),
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),

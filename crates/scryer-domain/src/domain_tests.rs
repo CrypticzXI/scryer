@@ -562,6 +562,75 @@ fn import_mode_as_str_and_setting_parse() {
 }
 
 #[test]
+fn seeding_profile_enums_round_trip() {
+    assert_eq!(SeasonPackSeedMode::Inherit.as_str(), "inherit");
+    assert_eq!(SeasonPackSeedMode::Override.as_str(), "override");
+    assert_eq!(
+        SeasonPackSeedMode::parse("override"),
+        Some(SeasonPackSeedMode::Override)
+    );
+    assert_eq!(SeasonPackSeedMode::parse("season"), None);
+    assert_eq!(SeasonPackSeedMode::default(), SeasonPackSeedMode::Inherit);
+
+    assert_eq!(SeedGoalMetAction::RemoveEntry.as_str(), "remove_entry");
+    assert_eq!(SeedGoalMetAction::StopSeeding.as_str(), "stop_seeding");
+    assert_eq!(SeedGoalMetAction::Keep.as_str(), "keep");
+    assert_eq!(
+        SeedGoalMetAction::parse("stop_seeding"),
+        Some(SeedGoalMetAction::StopSeeding)
+    );
+    assert_eq!(SeedGoalMetAction::parse("pause"), None);
+    assert_eq!(SeedGoalMetAction::default(), SeedGoalMetAction::RemoveEntry);
+}
+
+#[test]
+fn seeding_profile_normalizes_and_validates_goals() {
+    let now = chrono::Utc::now();
+    let base = SeedingProfile {
+        id: "profile-1".into(),
+        name: "  Private tracker  ".into(),
+        ratio: Some(1.5),
+        seed_time_minutes: Some(4320),
+        season_pack_mode: SeasonPackSeedMode::Inherit,
+        season_pack_ratio: Some(3.0),
+        season_pack_seed_time_minutes: Some(120),
+        honor_tracker_minimums: true,
+        goal_met_action: SeedGoalMetAction::RemoveEntry,
+        never_remove: false,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let inherited = base.clone().normalized();
+    assert_eq!(inherited.name, "Private tracker");
+    assert_eq!(inherited.season_pack_ratio, None);
+    assert_eq!(inherited.season_pack_seed_time_minutes, None);
+    assert_eq!(inherited.effective_ratio(true), Some(1.5));
+    assert_eq!(inherited.effective_seed_time_minutes(true), Some(4320));
+
+    let mut overridden = base.clone();
+    overridden.season_pack_mode = SeasonPackSeedMode::Override;
+    let overridden = overridden.normalized();
+    assert_eq!(overridden.effective_ratio(true), Some(3.0));
+    assert_eq!(overridden.effective_ratio(false), Some(1.5));
+    assert_eq!(overridden.effective_seed_time_minutes(true), Some(120));
+
+    assert!(inherited.validate().is_ok());
+
+    let mut unnamed = base.clone();
+    unnamed.name = "   ".into();
+    assert!(unnamed.validate().is_err());
+
+    let mut zero_ratio = base.clone();
+    zero_ratio.ratio = Some(0.0);
+    assert!(zero_ratio.validate().is_err());
+
+    let mut negative_time = base;
+    negative_time.seed_time_minutes = Some(-1);
+    assert!(negative_time.validate().is_err());
+}
+
+#[test]
 fn import_strategy_as_str() {
     assert_eq!(ImportStrategy::HardLink.as_str(), "hardlink");
     assert_eq!(ImportStrategy::Copy.as_str(), "copy");

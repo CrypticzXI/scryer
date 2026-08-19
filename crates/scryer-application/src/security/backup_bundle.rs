@@ -875,6 +875,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "seeding_profiles",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "settings_values",
         classification: BackupTableClassification::Export,
     },

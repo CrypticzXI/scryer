@@ -2051,6 +2051,7 @@ pub struct AppIntegrationServices {
     pub(crate) builtin_download_client_connection_tester:
         Arc<dyn BuiltinDownloadClientConnectionTester>,
     pub(crate) download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+    pub(crate) seeding_profiles: Arc<dyn SeedingProfileRepository>,
     pub(crate) subtitle_provider_configs: RuntimeFeature<Arc<dyn SubtitleProviderConfigRepository>>,
     pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
     pub(crate) media_server_connections: Arc<dyn MediaServerConnectionRepository>,
@@ -2286,6 +2287,7 @@ impl AppServices {
                     null_repositories::NullBuiltinDownloadClientConnectionTester,
                 ),
                 download_client_configs,
+                seeding_profiles: Arc::new(null_repositories::NullSeedingProfileRepository),
                 subtitle_provider_configs: RuntimeFeature::Disabled,
                 external_identity_verifier: Arc::new(
                     null_repositories::NullExternalIdentityVerifier,
@@ -2884,6 +2886,11 @@ impl AppServicesBuilder {
         with_download_client_plugin_provider,
         integrations.download_client_plugin_provider,
         Arc<dyn DownloadClientPluginProvider>
+    );
+    app_services_builder_setter!(
+        with_seeding_profiles,
+        integrations.seeding_profiles,
+        Arc<dyn SeedingProfileRepository>
     );
     app_services_builder_runtime_feature_setter!(
         with_subtitle_provider_configs,

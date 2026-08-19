@@ -301,6 +301,7 @@ fn synthetic_indexer_config(
         enable_auto_search,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: managed_parent_config_id.map(str::to_string),
         managed_child_key: None,
         managed_metadata_json: None,

@@ -33,8 +33,8 @@ use crate::{
     IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
     MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
     NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
-    QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
-    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    QualityProfileStore, ReleaseStore, RuleSetStore, SeedingProfileStore, SettingsStore, ShowStore,
+    SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
     SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
     WebauthnStore, WorkflowOperationStore,
 };
@@ -630,6 +630,7 @@ enum DatastoreStores {
         indexer_config_store: Arc<IndexerConfigStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
+        seeding_profile_store: Arc<SeedingProfileStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
@@ -673,6 +674,7 @@ enum DatastoreStores {
         indexer_config_store: Arc<IndexerConfigStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
+        seeding_profile_store: Arc<SeedingProfileStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
         post_processing_script_store: Arc<PostProcessingScriptStore>,
@@ -741,6 +743,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let seeding_profile_store = Arc::new(SeedingProfileStore::new(datastore.clone()));
         let subtitle_provider_config_store = Arc::new(SubtitleProviderConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -807,6 +810,7 @@ impl DatastoreAssembly {
             indexer_config_store,
             indexer_proxy_config_store,
             download_client_config_store,
+            seeding_profile_store,
             subtitle_provider_config_store,
             rule_set_store,
             post_processing_script_store,
@@ -869,6 +873,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let seeding_profile_store = Arc::new(SeedingProfileStore::new(datastore.clone()));
         let subtitle_provider_config_store = Arc::new(SubtitleProviderConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -933,6 +938,7 @@ impl DatastoreAssembly {
             indexer_config_store,
             indexer_proxy_config_store,
             download_client_config_store,
+            seeding_profile_store,
             subtitle_provider_config_store,
             rule_set_store,
             post_processing_script_store,
@@ -1118,6 +1124,19 @@ impl DatastoreAssembly {
                 indexer_proxy_config_store,
                 ..
             } => indexer_proxy_config_store.clone(),
+        }
+    }
+
+    pub fn seeding_profiles(&self) -> Arc<dyn scryer_application::SeedingProfileRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                seeding_profile_store,
+                ..
+            } => seeding_profile_store.clone(),
+            DatastoreStores::Postgres {
+                seeding_profile_store,
+                ..
+            } => seeding_profile_store.clone(),
         }
     }
 
@@ -1354,6 +1373,7 @@ impl DatastoreAssembly {
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
                 .with_indexer_proxy_config_store(self.indexer_proxy_configs())
+                .with_seeding_profiles(self.seeding_profiles())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
@@ -1457,6 +1477,7 @@ impl DatastoreAssembly {
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
                 .with_indexer_proxy_config_store(self.indexer_proxy_configs())
+                .with_seeding_profiles(self.seeding_profiles())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)

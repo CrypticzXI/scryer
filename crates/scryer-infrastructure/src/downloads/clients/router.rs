@@ -612,6 +612,7 @@ struct DownloadClientRoutingEntry {
     older_queue_priority: Option<String>,
     remove_completed: bool,
     remove_failed: bool,
+    seeding_profile_id: Option<String>,
 }
 
 impl PrioritizedDownloadClientRouter {
@@ -1746,6 +1747,11 @@ impl PrioritizedDownloadClientRouter {
                     .or_else(|| config.get("remove_failed"))
                     .or_else(|| config.get("removeFailure")),
                 false,
+            ),
+            seeding_profile_id: Self::read_trimmed_string(
+                config
+                    .get("seedingProfileId")
+                    .or_else(|| config.get("seeding_profile_id")),
             ),
         }
     }
@@ -3858,6 +3864,7 @@ mod tests {
             enable_auto_search: true,
             indexer_proxy_config_id: None,
             download_client_id: None,
+            seeding_profile_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -3898,6 +3905,30 @@ mod tests {
             is_recent: None,
             season_pack: None,
         }
+    }
+
+    #[test]
+    fn routing_entry_parses_optional_seeding_profile_id() {
+        let camel = PrioritizedDownloadClientRouter::parse_routing_entry(&serde_json::json!({
+            "enabled": true,
+            "seedingProfileId": "  profile-1  ",
+        }));
+        assert_eq!(camel.seeding_profile_id.as_deref(), Some("profile-1"));
+
+        let snake = PrioritizedDownloadClientRouter::parse_routing_entry(&serde_json::json!({
+            "enabled": true,
+            "seeding_profile_id": "profile-2",
+        }));
+        assert_eq!(snake.seeding_profile_id.as_deref(), Some("profile-2"));
+
+        let absent = PrioritizedDownloadClientRouter::parse_routing_entry(&serde_json::json!({
+            "enabled": true,
+            "category": "Movies",
+            "removeComplete": true,
+        }));
+        assert_eq!(absent.seeding_profile_id, None);
+        assert_eq!(absent.category.as_deref(), Some("Movies"));
+        assert!(absent.remove_completed);
     }
 
     #[test]

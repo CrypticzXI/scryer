@@ -2705,6 +2705,18 @@ pub trait IndexerConfigRepository: Send + Sync {
         })
         .await
     }
+    async fn set_seeding_profile_mapping(
+        &self,
+        indexer_id: &str,
+        seeding_profile_id: Option<String>,
+    ) -> AppResult<IndexerConfig> {
+        self.update(IndexerConfigUpdate {
+            id: indexer_id.to_string(),
+            seeding_profile_id: Some(seeding_profile_id),
+            ..IndexerConfigUpdate::default()
+        })
+        .await
+    }
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -2809,6 +2821,21 @@ pub trait DownloadClientConfigRepository: Send + Sync {
         Ok(0)
     }
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait SeedingProfileRepository: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<scryer_domain::SeedingProfile>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::SeedingProfile>>;
+    async fn create(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile>;
+    async fn update(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
 #[async_trait]

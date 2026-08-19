@@ -244,6 +244,7 @@ pub mod sqlite {
     pub use crate::customization::post_processing_script_store::PostProcessingScriptStore;
     pub use crate::customization::rule_set_store::RuleSetStore;
     pub use crate::downloads::config_store::DownloadClientConfigStore;
+    pub use crate::downloads::seeding_profile_store::SeedingProfileStore;
     pub use crate::indexers::config_store::IndexerConfigStore;
     pub use crate::indexers::proxy_config_store::IndexerProxyConfigStore;
     pub use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
@@ -287,6 +288,7 @@ pub use downloads::clients::{
     start_weaver_subscription_bridge,
 };
 pub use downloads::config_store::DownloadClientConfigStore;
+pub use downloads::seeding_profile_store::SeedingProfileStore;
 pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
 pub use indexers::config_store::IndexerConfigStore;
 pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};

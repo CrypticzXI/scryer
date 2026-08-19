@@ -479,19 +479,23 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Restore the operator-selected replacement mutation: mutation 170->171.
     // Provider-level indexer/download-client compatibility adds one object so
     // unsaved indexer drafts can use the same server-derived routing contract.
+    // Torrent seeding profiles add two query roots, five mutation roots, three
+    // payload objects, four inputs, and two enums: query 119->121, mutation
+    // 175->180, OBJECT 291->294, INPUT_OBJECT 158->162, ENUM 99->101, public
+    // types 560->569.
     assert_eq!(
-        query_field_count, 119,
+        query_field_count, 121,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 175,
+        mutation_field_count, 180,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 560);
-    assert_eq!(kind_count("OBJECT"), 291);
-    assert_eq!(kind_count("INPUT_OBJECT"), 158);
-    assert_eq!(kind_count("ENUM"), 99);
+    assert_eq!(public_types.len(), 569);
+    assert_eq!(kind_count("OBJECT"), 294);
+    assert_eq!(kind_count("INPUT_OBJECT"), 162);
+    assert_eq!(kind_count("ENUM"), 101);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -511,6 +515,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"setIndexerDownloadClientMapping"));
+    assert!(query_field_names.contains(&"seedingProfiles"));
+    assert!(mutation_field_names.contains(&"createSeedingProfile"));
+    assert!(mutation_field_names.contains(&"setIndexerSeedingProfile"));
+    assert!(public_type_names.contains(&"SeedingProfilePayload"));
     assert!(public_type_names.contains(&"IndexerDownloadClientMappingCatalogPayload"));
     assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));

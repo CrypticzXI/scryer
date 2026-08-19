@@ -3442,6 +3442,8 @@ pub struct IndexerConfigPayload {
     pub indexer_proxy_config_id: Option<ID>,
     /// Optional download-client ID associated with this indexer.
     pub download_client_id: Option<ID>,
+    /// Optional seeding profile ID applied to torrents grabbed from this indexer.
+    pub seeding_profile_id: Option<ID>,
     /// Whether an API key is configured without exposing it.
     pub has_api_key: bool,
     /// Whether this configuration is managed by a parent configuration.
@@ -3709,6 +3711,57 @@ pub struct DownloadClientConfigPayload {
     pub last_error: Option<String>,
     /// UTC time the client was last observed, or null before the first observation.
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// UTC creation time.
+    pub created_at: DateTime<Utc>,
+    /// UTC last-update time.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// How a seeding profile treats season packs relative to its own goals.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum SeasonPackSeedModeValue {
+    /// Season packs use the profile's own ratio and seed-time goals.
+    Inherit,
+    /// Season packs use the profile's season-pack goals instead.
+    Override,
+}
+
+/// What happens to a torrent once its seeding goal is met.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum SeedGoalMetActionValue {
+    /// Remove the entry from the download client.
+    RemoveEntry,
+    /// Stop seeding but keep the entry in the download client.
+    StopSeeding,
+    /// Leave the torrent alone.
+    Keep,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Named torrent seeding policy assignable to indexers, routing entries, or the global default.
+pub struct SeedingProfilePayload {
+    /// Seeding profile ID.
+    pub id: ID,
+    /// Seeding profile name.
+    pub name: String,
+    /// Share ratio goal, or null to defer to the download client's own limits.
+    pub ratio: Option<f64>,
+    /// Seed time goal in minutes, or null to defer to the download client's own limits.
+    pub seed_time_minutes: Option<i64>,
+    /// Whether season packs inherit or override the profile's goals.
+    pub season_pack_mode: SeasonPackSeedModeValue,
+    /// Season-pack share ratio goal, or null when unset.
+    pub season_pack_ratio: Option<f64>,
+    /// Season-pack seed time goal in minutes, or null when unset.
+    pub season_pack_seed_time_minutes: Option<i64>,
+    /// Whether resolved goals are raised to tracker-declared minimums.
+    pub honor_tracker_minimums: bool,
+    /// Action taken once the seeding goal is met.
+    pub goal_met_action: SeedGoalMetActionValue,
+    /// Whether torrents grabbed under this profile are never auto-removed.
+    pub never_remove: bool,
     /// UTC creation time.
     pub created_at: DateTime<Utc>,
     /// UTC last-update time.
@@ -4726,6 +4779,8 @@ pub struct DownloadClientRoutingEntryPayload {
     pub remove_completed: bool,
     /// Whether failed items are removed from the client.
     pub remove_failed: bool,
+    /// Optional seeding profile ID applied to torrents routed to this client.
+    pub seeding_profile_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -5900,6 +5955,8 @@ pub struct DownloadClientRoutingEntryInput {
     pub remove_completed: bool,
     /// Whether failed items are removed from the client.
     pub remove_failed: bool,
+    /// Optional seeding profile ID applied to torrents routed to this client.
+    pub seeding_profile_id: Option<ID>,
 }
 
 #[derive(InputObject, Clone)]
@@ -6022,6 +6079,84 @@ pub struct UpdateIndexerProxyConfigInput {
     pub request_timeout_seconds: Option<i32>,
     /// Replacement enabled state; omission preserves it.
     pub is_enabled: Option<bool>,
+}
+
+#[derive(InputObject)]
+/// Seeding profile assignment for one indexer.
+pub struct SetIndexerSeedingProfileInput {
+    /// Indexer identity to update.
+    pub indexer_id: ID,
+    /// Seeding profile identity to assign, or null to clear the assignment.
+    pub seeding_profile_id: Option<ID>,
+}
+
+#[derive(InputObject)]
+/// Global default seeding profile assignment.
+pub struct SetDefaultSeedingProfileInput {
+    /// Seeding profile identity to use as the default, or null to clear it.
+    pub seeding_profile_id: Option<ID>,
+}
+
+#[derive(InputObject)]
+/// Goals and removal behavior for a new seeding profile.
+pub struct CreateSeedingProfileInput {
+    /// Seeding profile name; must be unique.
+    pub name: String,
+    /// Share ratio goal, or null to defer to the download client's own limits.
+    pub ratio: Option<f64>,
+    /// Seed time goal in minutes, or null to defer to the download client's own limits.
+    pub seed_time_minutes: Option<i64>,
+    /// Whether season packs inherit or override the profile's goals; defaults to inherit.
+    pub season_pack_mode: Option<SeasonPackSeedModeValue>,
+    /// Season-pack share ratio goal; only applied in override mode.
+    pub season_pack_ratio: Option<f64>,
+    /// Season-pack seed time goal in minutes; only applied in override mode.
+    pub season_pack_seed_time_minutes: Option<i64>,
+    /// Whether resolved goals are raised to tracker-declared minimums; defaults to true.
+    pub honor_tracker_minimums: Option<bool>,
+    /// Action taken once the goal is met; defaults to removing the entry.
+    pub goal_met_action: Option<SeedGoalMetActionValue>,
+    /// Whether torrents grabbed under this profile are never auto-removed; defaults to false.
+    pub never_remove: Option<bool>,
+}
+
+#[derive(InputObject)]
+/// Patch for a stored seeding profile; omitted fields are preserved and explicit nulls clear goals.
+pub struct UpdateSeedingProfileInput {
+    /// Seeding profile identity to patch.
+    pub id: ID,
+    /// Replacement name; omission preserves it.
+    pub name: Option<String>,
+    /// Replacement share ratio goal; null clears it and omission preserves it.
+    pub ratio: MaybeUndefined<f64>,
+    /// Replacement seed time goal in minutes; null clears it and omission preserves it.
+    pub seed_time_minutes: MaybeUndefined<i64>,
+    /// Replacement season-pack mode; omission preserves it.
+    pub season_pack_mode: Option<SeasonPackSeedModeValue>,
+    /// Replacement season-pack ratio goal; null clears it and omission preserves it.
+    pub season_pack_ratio: MaybeUndefined<f64>,
+    /// Replacement season-pack seed time goal in minutes; null clears it and omission preserves it.
+    pub season_pack_seed_time_minutes: MaybeUndefined<i64>,
+    /// Replacement tracker-minimum handling; omission preserves it.
+    pub honor_tracker_minimums: Option<bool>,
+    /// Replacement goal-met action; omission preserves it.
+    pub goal_met_action: Option<SeedGoalMetActionValue>,
+    /// Replacement never-remove flag; omission preserves it.
+    pub never_remove: Option<bool>,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Identity returned after deleting a seeding profile.
+pub struct DeleteSeedingProfilePayload {
+    /// Deleted seeding profile identity.
+    pub id: ID,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Global default seeding profile after an assignment change.
+pub struct DefaultSeedingProfilePayload {
+    /// Seeding profile identity used as the default, or null when unset.
+    pub seeding_profile_id: Option<ID>,
 }
 
 #[derive(SimpleObject, Clone)]

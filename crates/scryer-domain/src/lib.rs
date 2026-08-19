@@ -941,6 +941,7 @@ pub struct IndexerConfig {
     pub enable_auto_search: bool,
     pub indexer_proxy_config_id: Option<String>,
     pub download_client_id: Option<String>,
+    pub seeding_profile_id: Option<String>,
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,
@@ -1164,6 +1165,142 @@ pub struct NewDownloadClientConfig {
     pub config_json: String,
     pub client_priority: i64,
     pub is_enabled: bool,
+}
+
+/// How a seeding profile treats season packs relative to its own goals.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SeasonPackSeedMode {
+    #[default]
+    Inherit,
+    Override,
+}
+
+impl SeasonPackSeedMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Override => "override",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "inherit" => Some(Self::Inherit),
+            "override" => Some(Self::Override),
+            _ => None,
+        }
+    }
+}
+
+/// What happens to a torrent once its resolved seeding goal is met.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SeedGoalMetAction {
+    #[default]
+    RemoveEntry,
+    StopSeeding,
+    Keep,
+}
+
+impl SeedGoalMetAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RemoveEntry => "remove_entry",
+            Self::StopSeeding => "stop_seeding",
+            Self::Keep => "keep",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "remove_entry" => Some(Self::RemoveEntry),
+            "stop_seeding" => Some(Self::StopSeeding),
+            "keep" => Some(Self::Keep),
+            _ => None,
+        }
+    }
+}
+
+/// Named torrent seeding policy assignable to indexers, download-client
+/// routing entries, or the global default.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingProfile {
+    pub id: String,
+    pub name: String,
+    /// Share ratio goal, or null to defer to the client's own limits.
+    pub ratio: Option<f64>,
+    /// Seed time goal in minutes, or null to defer to the client's own limits.
+    pub seed_time_minutes: Option<i64>,
+    pub season_pack_mode: SeasonPackSeedMode,
+    pub season_pack_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
+    /// Clamp resolved goals up to tracker-declared minimums when the release
+    /// carries them.
+    pub honor_tracker_minimums: bool,
+    pub goal_met_action: SeedGoalMetAction,
+    /// Never auto-remove torrents grabbed under this profile.
+    pub never_remove: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl SeedingProfile {
+    /// Season-pack goals only apply in `Override` mode; drop stray values so
+    /// stored and in-memory profiles agree.
+    pub fn normalized(mut self) -> Self {
+        self.name = self.name.trim().to_string();
+        if self.season_pack_mode == SeasonPackSeedMode::Inherit {
+            self.season_pack_ratio = None;
+            self.season_pack_seed_time_minutes = None;
+        }
+        self
+    }
+
+    /// Ratio goal for a release, honoring the season-pack override.
+    pub fn effective_ratio(&self, season_pack: bool) -> Option<f64> {
+        match (season_pack, self.season_pack_mode) {
+            (true, SeasonPackSeedMode::Override) => self.season_pack_ratio,
+            _ => self.ratio,
+        }
+    }
+
+    /// Seed-time goal in minutes for a release, honoring the season-pack override.
+    pub fn effective_seed_time_minutes(&self, season_pack: bool) -> Option<i64> {
+        match (season_pack, self.season_pack_mode) {
+            (true, SeasonPackSeedMode::Override) => self.season_pack_seed_time_minutes,
+            _ => self.seed_time_minutes,
+        }
+    }
+
+    /// Field-level validation shared by create and update paths. Name
+    /// uniqueness is enforced by the store.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("seeding profile name is required".to_string());
+        }
+        validate_seed_ratio("ratio", self.ratio)?;
+        validate_seed_time_minutes("seed time", self.seed_time_minutes)?;
+        validate_seed_ratio("season pack ratio", self.season_pack_ratio)?;
+        validate_seed_time_minutes("season pack seed time", self.season_pack_seed_time_minutes)?;
+        Ok(())
+    }
+}
+
+fn validate_seed_ratio(label: &str, value: Option<f64>) -> Result<(), String> {
+    match value {
+        Some(value) if !value.is_finite() || value <= 0.0 => {
+            Err(format!("seeding profile {label} must be greater than 0"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_seed_time_minutes(label: &str, value: Option<i64>) -> Result<(), String> {
+    match value {
+        Some(value) if value <= 0 => Err(format!("seeding profile {label} must be greater than 0")),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

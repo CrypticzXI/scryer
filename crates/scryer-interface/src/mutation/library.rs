@@ -97,6 +97,7 @@ fn library_settings_draft(
                         older_queue_priority: entry.older_queue_priority,
                         remove_completed: entry.remove_completed,
                         remove_failed: entry.remove_failed,
+                        seeding_profile_id: entry.seeding_profile_id.map(|value| value.to_string()),
                     },
                 )
                 .collect()

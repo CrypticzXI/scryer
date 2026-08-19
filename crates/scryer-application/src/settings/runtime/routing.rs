@@ -7,6 +7,7 @@ pub struct DownloadClientRoutingSettingsEntry {
     pub older_queue_priority: Option<String>,
     pub remove_completed: bool,
     pub remove_failed: bool,
+    pub seeding_profile_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexerRoutingSettingsEntry {
@@ -126,6 +127,7 @@ fn download_client_routing_payload(
                 "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
                 "removeCompleted": entry.remove_completed,
                 "removeFailed": entry.remove_failed,
+                "seedingProfileId": normalize_optional_string(entry.seeding_profile_id),
             }),
         );
     }
@@ -143,6 +145,7 @@ fn download_client_routing_settings_entry_from_domain(
         older_queue_priority: entry.older_queue_priority,
         remove_completed: entry.remove_completed,
         remove_failed: entry.remove_failed,
+        seeding_profile_id: entry.seeding_profile_id,
     }
 }
 fn disabled_download_client_routing_settings_entry(
@@ -170,6 +173,7 @@ fn normalize_download_client_routing_settings_entry(
         older_queue_priority: normalize_optional_string(entry.older_queue_priority),
         remove_completed: entry.remove_completed,
         remove_failed: entry.remove_failed,
+        seeding_profile_id: normalize_optional_string(entry.seeding_profile_id),
     })
 }
 fn indexer_routing_payload(
@@ -319,7 +323,10 @@ fn normalize_indexer_routing_entry_in_place(
     changed
 }
 impl AppUseCase {
-    async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
+    pub(crate) async fn load_download_client_routing_json(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
         if let Some(raw_json) = self
             .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
             .await?
@@ -472,6 +479,7 @@ impl AppUseCase {
                     older_queue_priority: entry.older_queue_priority,
                     remove_completed: entry.remove_completed,
                     remove_failed: entry.remove_failed,
+                    seeding_profile_id: entry.seeding_profile_id,
                 }
             })
             .collect::<Vec<_>>();
@@ -507,6 +515,7 @@ impl AppUseCase {
                     "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
                     "removeCompleted": entry.remove_completed,
                     "removeFailed": entry.remove_failed,
+                    "seedingProfileId": normalize_optional_string(entry.seeding_profile_id),
                 }),
             );
         }

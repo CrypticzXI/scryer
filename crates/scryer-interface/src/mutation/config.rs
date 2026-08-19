@@ -2,7 +2,7 @@ use async_graphql::{Context, ID, MaybeUndefined, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, DownloadClientConfigUpdate, IndexerConfigUpdate, IndexerProxyConfigUpdate,
-    NewIndexerProxyConfig, SubtitleProviderConfigUpdate,
+    NewIndexerProxyConfig, NewSeedingProfile, SeedingProfileUpdate, SubtitleProviderConfigUpdate,
 };
 use scryer_domain::{
     AppPermission, IndexerProxyProviderType, NewDownloadClientConfig, NewIndexerConfig,
@@ -12,7 +12,9 @@ use crate::context::{actor_from_ctx, app_from_ctx, require_config_app_permission
 use crate::mappers::{
     from_download_client_config_with_fields, from_indexer_config_sync_result,
     from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_proxy_test_result,
-    from_rss_sync_report, from_subtitle_provider_config, provider_config_values_to_json,
+    from_rss_sync_report, from_seeding_profile, from_subtitle_provider_config,
+    provider_config_values_to_json, season_pack_seed_mode_from_value,
+    seed_goal_met_action_from_value,
 };
 use crate::types::*;
 
@@ -36,6 +38,14 @@ fn optional_id_input(value: MaybeUndefined<ID>) -> Option<Option<String>> {
         MaybeUndefined::Undefined => None,
         MaybeUndefined::Null => Some(None),
         MaybeUndefined::Value(value) => Some(Some(value.to_string())),
+    }
+}
+
+fn optional_scalar_input<T>(value: MaybeUndefined<T>) -> Option<Option<T>> {
+    match value {
+        MaybeUndefined::Undefined => None,
+        MaybeUndefined::Null => Some(None),
+        MaybeUndefined::Value(value) => Some(Some(value)),
     }
 }
 
@@ -201,6 +211,9 @@ impl ConfigMutations {
                     enable_auto_search: input.enable_auto_search,
                     indexer_proxy_config_id: optional_id_input(input.indexer_proxy_config_id),
                     download_client_id: optional_id_input(input.download_client_id),
+                    // Seeding profiles are assigned through setIndexerSeedingProfile
+                    // so the torrent-capability check stays single-sourced.
+                    seeding_profile_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -240,6 +253,135 @@ impl ConfigMutations {
             .indexer_config_fields_for_provider_type(&config.provider_type)
             .unwrap_or_default();
         Ok(from_indexer_config_with_fields(config, &config_fields))
+    }
+
+    /// Set or clear the seeding profile applied to torrents from an indexer.
+    async fn set_indexer_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Indexer identity and optional seeding profile identity; null clears the assignment."
+        )]
+        input: SetIndexerSeedingProfileInput,
+    ) -> GqlResult<IndexerConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let seeding_profile_id = input.seeding_profile_id.map(|id| id.to_string());
+        let config = app
+            .set_indexer_seeding_profile(
+                &actor,
+                input.indexer_id.as_ref(),
+                seeding_profile_id.as_deref(),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let config_fields = app
+            .indexer_config_fields_for_provider_type(&config.provider_type)
+            .unwrap_or_default();
+        Ok(from_indexer_config_with_fields(config, &config_fields))
+    }
+
+    /// Create a torrent seeding profile.
+    async fn create_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Seeding profile name, goals, and removal behavior.")]
+        input: CreateSeedingProfileInput,
+    ) -> GqlResult<SeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let profile = app
+            .create_seeding_profile(
+                &actor,
+                NewSeedingProfile {
+                    name: input.name,
+                    ratio: input.ratio,
+                    seed_time_minutes: input.seed_time_minutes,
+                    season_pack_mode: input
+                        .season_pack_mode
+                        .map(season_pack_seed_mode_from_value)
+                        .unwrap_or_default(),
+                    season_pack_ratio: input.season_pack_ratio,
+                    season_pack_seed_time_minutes: input.season_pack_seed_time_minutes,
+                    honor_tracker_minimums: input.honor_tracker_minimums.unwrap_or(true),
+                    goal_met_action: input
+                        .goal_met_action
+                        .map(seed_goal_met_action_from_value)
+                        .unwrap_or_default(),
+                    never_remove: input.never_remove.unwrap_or(false),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_seeding_profile(profile))
+    }
+
+    /// Patch a torrent seeding profile.
+    async fn update_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Seeding profile identity and optional replacement fields; explicit nulls clear goals."
+        )]
+        input: UpdateSeedingProfileInput,
+    ) -> GqlResult<SeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let profile = app
+            .update_seeding_profile(
+                &actor,
+                SeedingProfileUpdate {
+                    id: input.id.to_string(),
+                    name: input.name,
+                    ratio: optional_scalar_input(input.ratio),
+                    seed_time_minutes: optional_scalar_input(input.seed_time_minutes),
+                    season_pack_mode: input.season_pack_mode.map(season_pack_seed_mode_from_value),
+                    season_pack_ratio: optional_scalar_input(input.season_pack_ratio),
+                    season_pack_seed_time_minutes: optional_scalar_input(
+                        input.season_pack_seed_time_minutes,
+                    ),
+                    honor_tracker_minimums: input.honor_tracker_minimums,
+                    goal_met_action: input.goal_met_action.map(seed_goal_met_action_from_value),
+                    never_remove: input.never_remove,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_seeding_profile(profile))
+    }
+
+    /// Delete a seeding profile that nothing references.
+    async fn delete_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Seeding profile identity to delete.")] id: ID,
+    ) -> GqlResult<DeleteSeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let id = id.to_string();
+        app.delete_seeding_profile(&actor, &id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(DeleteSeedingProfilePayload { id: ID::from(id) })
+    }
+
+    /// Set or clear the seeding profile applied when nothing more specific matches.
+    async fn set_default_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Seeding profile identity to use as the default, or null to clear it.")]
+        input: SetDefaultSeedingProfileInput,
+    ) -> GqlResult<DefaultSeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let seeding_profile_id = input.seeding_profile_id.map(|id| id.to_string());
+        Ok(DefaultSeedingProfilePayload {
+            seeding_profile_id: app
+                .set_default_seeding_profile(&actor, seeding_profile_id.as_deref())
+                .await
+                .map_err(to_gql_error)?
+                .map(Into::into),
+        })
     }
 
     /// Create an indexer proxy configuration.
