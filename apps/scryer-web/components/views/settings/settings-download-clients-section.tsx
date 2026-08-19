@@ -310,6 +310,7 @@ export function SettingsDownloadClientsSection({
               {orderedClients.map((client, index) => {
                 return (
                   <TableRow
+                    data-ui="settings-table-row"
                     key={client.id}
                     id={selectorId("settings-download-client-row", client.name)}
                   >
