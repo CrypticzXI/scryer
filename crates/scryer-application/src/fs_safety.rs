@@ -280,6 +280,10 @@ mod tests {
 // that matters: `rename(2)` replaces the destination silently, so a mover that
 // does not claim the destination can destroy a file nobody asked it to touch.
 
+/// How long to wait before re-checking a copy a network filesystem may not have
+/// settled yet.
+const COPY_VERIFY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// How a move should treat the destination and the copy it may have to make.
 #[derive(Debug, Clone, Copy)]
 pub struct MoveOptions {
@@ -343,7 +347,7 @@ pub async fn move_file_exclusive(
 
     // On a case-insensitive volume the destination name resolves to the source
     // file itself, so this is a rename to perform, not a collision to reject.
-    if source != dest && paths_are_same_file(source, dest).await {
+    if source != dest && paths_are_same_file(source, dest) {
         return move_via_intermediate_name(source, dest).await;
     }
 
@@ -370,21 +374,63 @@ pub async fn move_file_exclusive(
     // Claiming fails closed: if the destination cannot be reserved, the move
     // does not happen. Falling back to a plain rename here would reintroduce
     // the silent replace on exactly the network mounts that reject the claim.
-    claim_destination(dest).await?;
-    match tokio::fs::rename(source, dest).await {
-        Ok(()) => Ok(()),
+    //
+    // The claim is taken beside the destination rather than on it, so a media
+    // scanner never sees an empty file under the real name.
+    let staged = staging_path_for(dest);
+    claim_destination(&staged).await?;
+    let outcome = match tokio::fs::rename(source, &staged).await {
+        Ok(()) => promote_staged_file(&staged, dest, options).await,
         Err(error) if is_cross_device_error(&error) => {
-            // The claim is already in place; copy into it.
-            let result = copy_into_destination(source, dest, options).await;
-            if result.is_err() {
-                let _ = tokio::fs::remove_file(dest).await;
+            match copy_into_destination(source, &staged, options).await {
+                Ok(()) => promote_staged_file(&staged, dest, options).await,
+                Err(error) => Err(error),
             }
-            result
         }
-        Err(error) => {
-            // Do not leave the empty reservation behind.
-            let _ = tokio::fs::remove_file(dest).await;
-            Err(error)
+        Err(error) => Err(error),
+    };
+    if outcome.is_err() {
+        let _ = tokio::fs::remove_file(&staged).await;
+    }
+    outcome
+}
+
+/// A sibling of `dest` that no scanner will mistake for media.
+fn staging_path_for(dest: &Path) -> PathBuf {
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "media".to_string());
+    parent.join(format!(
+        ".scryer-move-{}-{}.partial",
+        crate::Id::new().0,
+        name
+    ))
+}
+
+/// Moves the finished file from its staging name onto the destination.
+///
+/// The destination was never claimed, so this is the moment another writer
+/// could have taken it; the exclusive rename is tried first for that reason.
+async fn promote_staged_file(
+    staged: &Path,
+    dest: &Path,
+    options: MoveOptions,
+) -> std::io::Result<()> {
+    if options.overwrite {
+        return tokio::fs::rename(staged, dest).await;
+    }
+    match exclusive_rename(staged, dest).await {
+        Some(result) => result,
+        None => {
+            if tokio::fs::symlink_metadata(dest).await.is_ok() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("destination already exists: {}", dest.display()),
+                ));
+            }
+            tokio::fs::rename(staged, dest).await
         }
     }
 }
@@ -444,17 +490,53 @@ async fn copy_into_destination(
     dest_file.sync_all().await?;
     drop(dest_file);
 
-    if options.verify_cross_device
-        && let Err(error) = crate::fs_integrity::verify_same_file_async(source, dest).await
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            error.to_string(),
-        ));
+    // Carry the source's mode. Configured permissions are applied afterwards by
+    // the caller and take precedence; this only stops a move from silently
+    // changing access when nothing is configured.
+    copy_permissions_best_effort(source, dest).await;
+
+    if options.verify_cross_device {
+        verify_copy_with_retry(source, dest).await?;
     }
 
     tokio::fs::remove_file(source).await
 }
+
+/// Verifies a copy, retrying once after a pause.
+///
+/// A network filesystem can report a stale size immediately after a write, so
+/// failing on the first look turns a good copy into a failed move. Sonarr does
+/// the same thing for the same reason, calling it out as needed for remote NAS
+/// devices.
+async fn verify_copy_with_retry(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let first = crate::fs_integrity::verify_same_file_async(source, dest).await;
+    if first.is_ok() {
+        return Ok(());
+    }
+
+    tokio::time::sleep(COPY_VERIFY_RETRY_DELAY).await;
+    match crate::fs_integrity::verify_same_file_async(source, dest).await {
+        Ok(()) => Ok(()),
+        Err(error) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )),
+    }
+}
+
+#[cfg(unix)]
+async fn copy_permissions_best_effort(source: &Path, dest: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = tokio::fs::metadata(source).await else {
+        return;
+    };
+    let mode = metadata.permissions().mode();
+    let _ = tokio::fs::set_permissions(dest, std::fs::Permissions::from_mode(mode)).await;
+}
+
+#[cfg(not(unix))]
+async fn copy_permissions_best_effort(_source: &Path, _dest: &Path) {}
 
 #[cfg(unix)]
 async fn create_symlink(link_target: &Path, at: &Path) -> std::io::Result<()> {
@@ -529,29 +611,20 @@ pub async fn destination_is_free_for(source: &Path, dest: &Path) -> bool {
     if tokio::fs::symlink_metadata(dest).await.is_err() {
         return true;
     }
-    paths_are_same_file(source, dest).await
+    paths_are_same_file(source, dest)
 }
 
-/// True when both paths name the same file, which is how a case-only rename
-/// looks on a case-insensitive volume.
-async fn paths_are_same_file(source: &Path, dest: &Path) -> bool {
-    let (Ok(source_meta), Ok(dest_meta)) = (
-        tokio::fs::symlink_metadata(source).await,
-        tokio::fs::symlink_metadata(dest).await,
-    ) else {
-        return false;
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        source_meta.dev() == dest_meta.dev() && source_meta.ino() == dest_meta.ino()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (source_meta, dest_meta);
-        source.to_string_lossy().to_lowercase() == dest.to_string_lossy().to_lowercase()
-    }
+/// True when two paths differ only in case or Unicode form, which is how a
+/// case-only rename looks on a case-insensitive volume.
+///
+/// Deliberately compares paths rather than device and inode numbers: CIFS
+/// without `serverino`, mergerfs and rclone all synthesize inodes, and a
+/// collision there would be misread as a case-only rename and overwrite the
+/// destination. Sonarr compares paths for the same reason.
+fn paths_are_same_file(source: &Path, dest: &Path) -> bool {
+    let source_key = crate::stored_paths::path_to_stored_string(source);
+    let dest_key = crate::stored_paths::path_to_stored_string(dest);
+    crate::stored_paths::paths_match_ignoring_case(&source_key, &dest_key)
 }
 
 /// Renames through a uniquely named sibling so a case-only change lands even
@@ -717,6 +790,55 @@ mod move_tests {
         assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
             5
         )));
+    }
+
+    /// A name written precomposed comes back decomposed from an SMB share, so
+    /// the two spellings have to be recognized as one file.
+    #[test]
+    fn paths_differing_only_by_unicode_form_are_the_same_file() {
+        let nfc = Path::new("/media/Pok\u{e9}mon/ep.mkv");
+        let nfd = Path::new("/media/Poke\u{301}mon/ep.mkv");
+        assert_ne!(nfc, nfd, "the two spellings differ as byte strings");
+        assert!(paths_are_same_file(nfc, nfd));
+    }
+
+    #[test]
+    fn paths_differing_by_more_than_form_are_not_the_same_file() {
+        assert!(!paths_are_same_file(
+            Path::new("/media/one.mkv"),
+            Path::new("/media/two.mkv")
+        ));
+    }
+
+    /// The destination name must never exist as an empty file: a media scanner
+    /// that sees one records a broken item.
+    #[tokio::test]
+    async fn never_leaves_an_empty_file_under_the_destination_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("dest.mkv");
+        write(&source, b"payload");
+
+        move_file_exclusive(&source, &dest, MoveOptions::default())
+            .await
+            .expect("move should succeed");
+
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"payload");
+        let leftovers = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.contains("scryer-move"))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
     }
 
     #[test]

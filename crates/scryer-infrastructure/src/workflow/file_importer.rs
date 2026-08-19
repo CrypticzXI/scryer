@@ -701,7 +701,7 @@ fn apply_group(path: &Path, group: &str) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn apply_file_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {
+pub(crate) fn apply_file_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {
     if !permissions.set_permissions_linux {
         return;
     }
@@ -728,7 +728,11 @@ fn apply_file_permissions_best_effort(path: &Path, permissions: &ImportFilePermi
 }
 
 #[cfg(not(unix))]
-fn apply_file_permissions_best_effort(_path: &Path, _permissions: &ImportFilePermissions) {}
+pub(crate) fn apply_file_permissions_best_effort(
+    _path: &Path,
+    _permissions: &ImportFilePermissions,
+) {
+}
 
 #[cfg(unix)]
 fn apply_directory_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {

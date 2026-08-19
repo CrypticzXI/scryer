@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use unicode_normalization::UnicodeNormalization;
+
 #[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
@@ -38,6 +40,34 @@ pub fn folder_path_identity_key(path: &str) -> Option<String> {
     folder_path_identity_key_for_platform(path, cfg!(windows))
 }
 
+/// Identity key for any path, folder or file.
+///
+/// Decodes the stored encoding, collapses path components, and normalizes
+/// Unicode to NFC. That last step matters because filesystems disagree about
+/// which form they hand back: a name written as NFC comes back decomposed from
+/// an SMB share and precomposed from APFS, so comparing the raw strings makes
+/// one file look like two and plans a rename that changes nothing.
+pub fn path_identity_key(path: &str) -> Option<String> {
+    folder_path_identity_key(path)
+}
+
+/// Whether two paths name the same location.
+pub fn paths_match(left: &str, right: &str) -> bool {
+    folder_paths_match(left, right)
+}
+
+/// Whether two paths name the same location ignoring case, on every platform.
+///
+/// Case-insensitive volumes are not a Windows-only concern: APFS and SMB are
+/// case-insensitive too, so a rename that only changes case has to be
+/// recognized as one wherever it runs.
+pub fn paths_match_ignoring_case(left: &str, right: &str) -> bool {
+    match (path_identity_key(left), path_identity_key(right)) {
+        (Some(left), Some(right)) => left.to_lowercase() == right.to_lowercase(),
+        _ => false,
+    }
+}
+
 pub fn folder_paths_match(left: &str, right: &str) -> bool {
     match (
         folder_path_identity_key(left),
@@ -73,7 +103,9 @@ fn folder_path_identity_key_for_platform(path: &str, windows: bool) -> Option<St
 
     if !windows {
         let normalized = decoded.components().collect::<PathBuf>();
-        return Some(path_to_stored_string(normalized));
+        return Some(normalize_identity_unicode(&path_to_stored_string(
+            normalized,
+        )));
     }
 
     let display = decoded.to_string_lossy();
@@ -98,7 +130,16 @@ fn folder_path_identity_key_for_platform(path: &str, windows: bool) -> Option<St
         normalized.pop();
     }
 
-    Some(normalized.to_lowercase())
+    Some(normalize_identity_unicode(&normalized.to_lowercase()))
+}
+
+/// Normalizes to NFC, leaving the stored-path escape form untouched: those keys
+/// are already ASCII and re-composing them would change their meaning.
+fn normalize_identity_unicode(value: &str) -> String {
+    if value.starts_with(STORED_PATH_PREFIX) || value.is_ascii() {
+        return value.to_string();
+    }
+    value.nfc().collect()
 }
 
 #[cfg(unix)]
@@ -250,6 +291,28 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Written precomposed, handed back decomposed by SMB. Both spellings name
+    /// one file, so they have to match or the planner renames forever.
+    #[test]
+    fn paths_match_across_unicode_forms() {
+        let nfc = "/Volumes/Media/TV/Pok\u{e9}mon/Pok\u{e9}mon - S20E01.mkv";
+        let nfd = "/Volumes/Media/TV/Poke\u{301}mon/Poke\u{301}mon - S20E01.mkv";
+        assert_ne!(nfc, nfd);
+        assert!(super::paths_match(nfc, nfd));
+        assert!(super::paths_match_ignoring_case(nfc, nfd));
+    }
+
+    #[test]
+    fn paths_match_still_distinguishes_real_differences() {
+        assert!(!super::paths_match("/media/one.mkv", "/media/two.mkv"));
+        #[cfg(not(windows))]
+        assert!(!super::paths_match("/media/One.mkv", "/media/one.mkv"));
+        assert!(super::paths_match_ignoring_case(
+            "/media/One.mkv",
+            "/media/one.mkv"
+        ));
+    }
     use super::*;
 
     #[test]

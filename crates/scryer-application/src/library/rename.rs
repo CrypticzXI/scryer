@@ -163,7 +163,15 @@ pub struct RenameApplyResult {
 #[async_trait]
 pub trait LibraryRenamer: Send + Sync {
     async fn validate_targets(&self, plan: &RenamePlan) -> AppResult<()>;
-    async fn apply_plan(&self, plan: &RenamePlan) -> AppResult<Vec<RenameApplyItemResult>>;
+    /// Applies the plan, then puts the configured permissions on each moved
+    /// file. Permissions are resolved by the caller because only it can read
+    /// settings; a mover that guessed from the source would let a move change
+    /// access that an operator deliberately configured.
+    async fn apply_plan(
+        &self,
+        plan: &RenamePlan,
+        permissions: &crate::ImportFilePermissions,
+    ) -> AppResult<Vec<RenameApplyItemResult>>;
     async fn rollback(
         &self,
         applied_items: &[RenameApplyItemResult],
@@ -181,7 +189,11 @@ impl LibraryRenamer for NullLibraryRenamer {
         ))
     }
 
-    async fn apply_plan(&self, _plan: &RenamePlan) -> AppResult<Vec<RenameApplyItemResult>> {
+    async fn apply_plan(
+        &self,
+        _plan: &RenamePlan,
+        _permissions: &crate::ImportFilePermissions,
+    ) -> AppResult<Vec<RenameApplyItemResult>> {
         Err(AppError::Repository(
             "library renamer is not configured".into(),
         ))
@@ -525,11 +537,28 @@ impl AppUseCase {
             .validate_targets(&preview)
             .await?;
 
+        // Configured permissions win over whatever the files carried before, the
+        // way Sonarr applies ChmodFolder/ChownGroup after every transfer rather
+        // than preserving the source's mode.
+        let library_id = match preview.title_id.as_deref() {
+            Some(title_id) => self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .map(|title| title.library_id),
+            None => None,
+        };
+        let permissions = self
+            .resolve_import_file_permissions(library_id.as_deref(), &preview.facet)
+            .await?;
+
         let mut item_results = self
             .services
             .library
             .library_renamer
-            .apply_plan(&preview)
+            .apply_plan(&preview, &permissions)
             .await?;
         let mut applied = 0usize;
         let mut skipped = 0usize;
@@ -990,7 +1019,8 @@ impl AppUseCase {
             .iter()
             .filter_map(|item| {
                 let proposed_path = item.proposed_path.as_ref()?;
-                (*proposed_path != item.current_path).then(|| proposed_path.clone())
+                (!crate::stored_paths::paths_match(proposed_path, &item.current_path))
+                    .then(|| proposed_path.clone())
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -1028,7 +1058,7 @@ impl AppUseCase {
                 continue;
             };
 
-            if proposed_path == item.current_path {
+            if crate::stored_paths::paths_match(&proposed_path, &item.current_path) {
                 out.push(item);
                 continue;
             }
@@ -2157,17 +2187,23 @@ fn resolve_rendered_rename_filename(
 
 fn rename_planning_path_key(stored_path: &str) -> String {
     let normalized = lexically_normalize_rename_path(&stored_path_to_path_buf(stored_path));
-    #[cfg(windows)]
-    {
-        normalized
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        normalized.to_string_lossy().into_owned()
-    }
+    let key = {
+        #[cfg(windows)]
+        {
+            normalized
+                .to_string_lossy()
+                .replace('/', "\\")
+                .to_lowercase()
+        }
+        #[cfg(not(windows))]
+        {
+            normalized.to_string_lossy().into_owned()
+        }
+    };
+    // SMB hands back decomposed names for files written precomposed, so the two
+    // spellings have to key the same or every accented title plans a rename
+    // that changes nothing.
+    crate::stored_paths::path_identity_key(&key).unwrap_or(key)
 }
 
 fn lexically_normalize_rename_path(path: &Path) -> PathBuf {
@@ -2196,7 +2232,7 @@ fn finalize_rename_plan_item(
     let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
     let proposed_path_key = rename_planning_path_key(&proposed_path_str);
 
-    if proposed_path_str == source.current_path {
+    if crate::stored_paths::paths_match(&proposed_path_str, &source.current_path) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),

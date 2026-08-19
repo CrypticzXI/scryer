@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use scryer_application::fs_safety::MoveOptions;
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    AppError, AppResult, LibraryRenamer, RenameApplyItemResult, RenameApplyStatus, RenamePlan,
-    RenameWriteAction,
+    AppError, AppResult, ImportFilePermissions, LibraryRenamer, RenameApplyItemResult,
+    RenameApplyStatus, RenamePlan, RenameWriteAction,
 };
 use scryer_domain::Id;
 use tokio::fs;
@@ -44,7 +44,11 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
         Ok(())
     }
 
-    async fn apply_plan(&self, plan: &RenamePlan) -> AppResult<Vec<RenameApplyItemResult>> {
+    async fn apply_plan(
+        &self,
+        plan: &RenamePlan,
+        permissions: &ImportFilePermissions,
+    ) -> AppResult<Vec<RenameApplyItemResult>> {
         let mut out = Vec::with_capacity(plan.items.len());
 
         for item in &plan.items {
@@ -103,6 +107,12 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
 
                     match move_file(&item.current_path, target, false).await {
                         Ok(()) => {
+                            // Configured permissions take precedence over
+                            // whatever the file carried at its old path.
+                            crate::workflow::file_importer::apply_file_permissions_best_effort(
+                                &stored_path_to_path_buf(target),
+                                permissions,
+                            );
                             result.status = RenameApplyStatus::Applied;
                             result.final_path = Some(target.to_string());
                         }
@@ -344,7 +354,7 @@ mod tests {
         };
 
         let results = FileSystemLibraryRenamer::new()
-            .apply_plan(&plan)
+            .apply_plan(&plan, &ImportFilePermissions::default())
             .await
             .expect("apply should report per-item outcomes");
 

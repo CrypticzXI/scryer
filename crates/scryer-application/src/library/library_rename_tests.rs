@@ -1105,3 +1105,25 @@ fn missing_metadata_policy_as_str() {
         "fallback_title"
     );
 }
+
+/// An SMB share hands back decomposed names for files written precomposed, so
+/// without normalization every accented title plans a rename forever, and each
+/// pass does real work over the network.
+#[test]
+fn rename_planning_key_ignores_unicode_form() {
+    let precomposed = "/media/TV/Pok\u{e9}mon/Pok\u{e9}mon - S20E01.mkv";
+    let decomposed = "/media/TV/Poke\u{301}mon/Poke\u{301}mon - S20E01.mkv";
+    assert_ne!(precomposed, decomposed, "the spellings differ as bytes");
+    assert_eq!(
+        rename_planning_path_key(precomposed),
+        rename_planning_path_key(decomposed)
+    );
+}
+
+#[test]
+fn rename_planning_key_still_separates_different_paths() {
+    assert_ne!(
+        rename_planning_path_key("/media/TV/Show/one.mkv"),
+        rename_planning_path_key("/media/TV/Show/two.mkv")
+    );
+}
