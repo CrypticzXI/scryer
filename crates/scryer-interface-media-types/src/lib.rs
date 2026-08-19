@@ -5204,6 +5204,10 @@ pub struct MediaRenamePreviewInput {
     pub title_id: Option<ID>,
     /// Whether to calculate changes without applying them; omission uses the resolver default.
     pub dry_run: Option<bool>,
+    /// Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+    pub renamable_only: Option<bool>,
+    /// Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
+    pub max_items: Option<i32>,
 }
 
 #[derive(InputObject, Clone)]

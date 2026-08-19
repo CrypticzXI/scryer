@@ -942,6 +942,8 @@ const en: LocaleDictionary = {
   "rename.planSummary":
     "{{total}} item(s), {{renamable}} renamable, {{noop}} noop, {{conflicts}} conflicts, {{errors}} errors",
   "rename.noRenamableFiles": "No files need renaming.",
+  "rename.sampleNote":
+    "Showing the first {{shown}} of {{renamable}} files to rename.",
   "settings.title": "Settings",
   "settings.sectionTitle": "Settings • {{section}}",
   "settings.generalText": "General application settings.",

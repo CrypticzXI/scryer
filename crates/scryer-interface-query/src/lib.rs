@@ -7,7 +7,8 @@ use scryer_application::{
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, ImageProxyKind, JwtSessionScope, MediaRequestCounts,
-    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
+    OAuthAuthorizationSource, PendingImportCounts, RenameWriteAction, RuntimePathStyle,
+    SCRYER_VERSION, SortDirection,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
     TitleHistoryFilter, is_supported_title_history_event_type, supported_title_history_event_types,
 };
@@ -1025,7 +1026,7 @@ impl CatalogQueries {
         let actor = actor_from_ctx(ctx)?;
         let _ = input.dry_run;
         let facet = input.facet.into_domain();
-        let plan = if let Some(title_id) = input.title_id {
+        let mut plan = if let Some(title_id) = input.title_id {
             let title_id = title_id.to_string();
             app.preview_rename_for_title(&actor, &title_id, facet)
                 .await
@@ -1035,6 +1036,16 @@ impl CatalogQueries {
                 .await
                 .map_err(to_gql_error)?
         };
+
+        // Counts and the fingerprint stay derived from the whole plan so apply
+        // still validates against every file, not just the returned sample.
+        if input.renamable_only.unwrap_or(false) {
+            plan.items
+                .retain(|item| matches!(item.write_action, RenameWriteAction::Move));
+        }
+        if let Some(max_items) = input.max_items {
+            plan.items.truncate(max_items.max(0) as usize);
+        }
 
         Ok(from_media_rename_plan(plan))
     }

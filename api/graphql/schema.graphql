@@ -8261,6 +8261,14 @@ input MediaRenamePreviewInput {
 	Whether to calculate changes without applying them; omission uses the resolver default.
 	"""
 	dryRun: Boolean
+	"""
+	Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+	"""
+	renamableOnly: Boolean
+	"""
+	Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
+	"""
+	maxItems: Int
 }
 
 """

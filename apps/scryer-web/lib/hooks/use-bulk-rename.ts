@@ -8,6 +8,7 @@ import type { Translate } from "@/components/root/types";
 import type { SetGlobalStatus } from "@/lib/context/global-status-context";
 
 const BULK_RENAME_PREVIEW_CONCURRENCY = 4;
+export const BULK_RENAME_ITEM_SAMPLE_LIMIT = 50;
 
 type UseBulkRenameArgs = {
   selectedTitles: TitleRecord[];
@@ -83,6 +84,10 @@ export function useBulkRename({
       const failedTitles: string[] = [];
       let firstFailureDetail: string | null = null;
       const queue = [...targets];
+      // The dialog only ever shows a sample, so each request asks for what is
+      // still missing from it. Plan counts and the fingerprint describe every
+      // file regardless of how few items come back.
+      let sampledItems = 0;
 
       const worker = async () => {
         for (;;) {
@@ -99,6 +104,11 @@ export function useBulkRename({
                     facet: title.facet,
                     titleId: title.id,
                     dryRun: true,
+                    renamableOnly: true,
+                    maxItems: Math.max(
+                      0,
+                      BULK_RENAME_ITEM_SAMPLE_LIMIT - sampledItems,
+                    ),
                   },
                 },
                 { requestPolicy: "network-only" },
@@ -107,7 +117,9 @@ export function useBulkRename({
             if (result.error || !result.data?.mediaRenamePreview) {
               throw result.error ?? new Error("rename preview failed");
             }
-            nextPlansByTitleId[title.id] = result.data.mediaRenamePreview;
+            const plan = result.data.mediaRenamePreview;
+            sampledItems += plan.items.length;
+            nextPlansByTitleId[title.id] = plan;
           } catch (error) {
             failedTitles.push(title.name || title.id);
             firstFailureDetail ??= batchFailureDetail(error);

@@ -1,6 +1,9 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
-import type { BulkRenameSummary } from "@/lib/hooks/use-bulk-rename";
+import {
+  BULK_RENAME_ITEM_SAMPLE_LIMIT,
+  type BulkRenameSummary,
+} from "@/lib/hooks/use-bulk-rename";
 import type { TitleRecord } from "@/lib/types";
 
 type BulkRenamePreviewSummaryProps = {
@@ -10,10 +13,6 @@ type BulkRenamePreviewSummaryProps = {
   loading: boolean;
   error: string | null;
 };
-
-function isRenamableItem(item: MediaRenamePlan["items"][number]): boolean {
-  return item.writeAction === "move" || item.writeAction === "replace";
-}
 
 export function BulkRenamePreviewSummary({
   titles,
@@ -32,12 +31,23 @@ export function BulkRenamePreviewSummary({
     );
   }
 
-  const entries = titles
-    .map((title) => ({ title, plan: plansByTitleId[title.id] }))
-    .filter(
-      (entry): entry is { title: TitleRecord; plan: MediaRenamePlan } =>
-        entry.plan !== undefined,
-    );
+  // Previews are already scoped to the sample limit, so this only guards
+  // against a server that returned more than was asked for.
+  let remainingSampleSlots = BULK_RENAME_ITEM_SAMPLE_LIMIT;
+  const entries: { title: TitleRecord; items: MediaRenamePlan["items"] }[] = [];
+  for (const title of titles) {
+    const plan = plansByTitleId[title.id];
+    if (!plan || remainingSampleSlots === 0) {
+      continue;
+    }
+    const items = plan.items.slice(0, remainingSampleSlots);
+    if (items.length === 0) {
+      continue;
+    }
+    remainingSampleSlots -= items.length;
+    entries.push({ title, items });
+  }
+  const sampledCount = BULK_RENAME_ITEM_SAMPLE_LIMIT - remainingSampleSlots;
 
   return (
     <div className="space-y-3">
@@ -46,7 +56,7 @@ export function BulkRenamePreviewSummary({
           <p className="text-xs text-destructive/90">{error}</p>
         </div>
       ) : null}
-      {summary && entries.length > 0 ? (
+      {summary ? (
         <>
           <div
             data-ui="bulk-rename-plan-summary"
@@ -66,11 +76,7 @@ export function BulkRenamePreviewSummary({
             </p>
           ) : (
             <div className="max-h-72 space-y-3 overflow-auto rounded-lg border border-border p-2">
-              {entries.map(({ title, plan }) => {
-                const renamableItems = plan.items.filter(isRenamableItem);
-                if (renamableItems.length === 0) {
-                  return null;
-                }
+              {entries.map(({ title, items }) => {
                 return (
                   <div key={title.id} className="space-y-1">
                     <div className="text-xs font-semibold text-card-foreground">
@@ -78,7 +84,7 @@ export function BulkRenamePreviewSummary({
                     </div>
                     <table className="min-w-full text-xs">
                       <tbody>
-                        {renamableItems.map((item, index) => (
+                        {items.map((item, index) => (
                           <tr
                             key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
                             className="border-t border-border/60 first:border-t-0"
@@ -104,6 +110,17 @@ export function BulkRenamePreviewSummary({
               })}
             </div>
           )}
+          {summary.renamable > sampledCount ? (
+            <p
+              data-ui="bulk-rename-plan-sample-note"
+              className="text-xs text-muted-foreground"
+            >
+              {t("rename.sampleNote", {
+                shown: sampledCount,
+                renamable: summary.renamable,
+              })}
+            </p>
+          ) : null}
         </>
       ) : null}
     </div>
