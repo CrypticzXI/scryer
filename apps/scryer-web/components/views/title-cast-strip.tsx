@@ -23,16 +23,26 @@ export type TitleCastStripVariant = "panel" | "workspace";
 type Props = {
   credits?: TitleCreditRecord[] | null;
   variant?: TitleCastStripVariant;
+  /** i18n heading key; the dub rail passes `title.dubCast`. */
+  titleKey?: string;
+  /** Rendered beside the heading; the dub rail passes its language picker. */
+  headerAccessory?: React.ReactNode;
 };
 
 /**
- * Top-billed cast for a title, rendered from the cached credits that ride the
- * overview snapshot. The server filters to cast kinds, orders by billing rank,
- * and caps the list, so this renders the response order verbatim.
+ * One cast rail for a title, rendered from the cached credits that ride the
+ * overview snapshot. Callers pass a pre-split list (original cast vs dub cast
+ * from lib/utils/title-cast); the strip renders that order verbatim and
+ * disappears when the list is empty.
  *
  * Cards are deliberately non-interactive: there are no person pages yet.
  */
-export function TitleCastStrip({ credits, variant = "panel" }: Props) {
+export function TitleCastStrip({
+  credits,
+  variant = "panel",
+  titleKey = "title.topBilledCast",
+  headerAccessory,
+}: Props) {
   const t = useTranslate();
   const cast = titleCastCredits(credits);
 
@@ -40,7 +50,7 @@ export function TitleCastStrip({ credits, variant = "panel" }: Props) {
     return null;
   }
 
-  const heading = t("title.topBilledCast");
+  const heading = t(titleKey);
   const cards = (
     <HorizontalRail
       className={
@@ -62,7 +72,10 @@ export function TitleCastStrip({ credits, variant = "panel" }: Props) {
   if (variant === "workspace") {
     return (
       <TitleWorkspaceSectionCard className="rounded-[14px] bg-[var(--scry-surf)]">
-        <TitleWorkspaceSectionHeader icon={Users} title={heading} />
+        <div className="flex items-center justify-between gap-3">
+          <TitleWorkspaceSectionHeader icon={Users} title={heading} />
+          {headerAccessory}
+        </div>
         {cards}
       </TitleWorkspaceSectionCard>
     );
@@ -77,6 +90,9 @@ export function TitleCastStrip({ credits, variant = "panel" }: Props) {
         <h2 className="text-sm font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {heading}
         </h2>
+        {headerAccessory ? (
+          <div className="ml-auto">{headerAccessory}</div>
+        ) : null}
       </div>
       {cards}
     </section>

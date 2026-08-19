@@ -751,6 +751,8 @@ const pt_BR: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "Adicione ou escaneie títulos para criar esta visualização da biblioteca.",
   "title.topBilledCast": "Elenco principal",
+  "title.dubCast": "Elenco de dublagem",
+  "title.dubCastLanguage": "Idioma",
   "title.contextMoreLikeThis": "Títulos semelhantes",
   "title.contextMoreLikeThisScope": "Da visualização atual",
   "title.contextOverview": "Visão geral",

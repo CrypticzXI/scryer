@@ -57,6 +57,8 @@ import {
   type TitleMoreLikeThisStripActions,
 } from "../title-more-like-this-strip";
 import { TitleCastStrip } from "../title-cast-strip";
+import { TitleDubCastStrip } from "../title-dub-cast-strip";
+import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
@@ -1206,13 +1208,15 @@ export function SeriesOverviewView({
         </Card>
       </div>
 
-      <TitleCastStrip credits={title.credits} />
-
       <TitleMoreLikeThisStrip
         items={title.moreLikeThis ?? []}
         fallbackYearLabel={title.facet === "ANIME" ? t("nav.anime") : t("nav.series")}
         {...moreLikeThisActions}
       />
+
+      <TitleCastStrip credits={titleCastOriginalCredits(title.credits)} />
+
+      <TitleDubCastStrip credits={title.credits} />
 
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">

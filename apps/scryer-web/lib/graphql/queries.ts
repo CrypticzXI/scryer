@@ -244,12 +244,18 @@ const TITLE_RATING_SUMMARY_FIELDS = `
  */
 export const TITLE_CAST_CREDIT_KINDS = ["actor", "voice_actor"] as const;
 
-/** Cards in the top-billed cast rail. The server clamps anything above 50. */
-export const TITLE_CAST_CREDIT_LIMIT = 15;
+/**
+ * Credits fetched per title — the server's clamp. The overview splits these
+ * into an original-cast rail and a dub rail (anime carries a Japanese and an
+ * English voice actor per character), so fetching only one rail's worth would
+ * starve whichever cast sorted second.
+ */
+export const TITLE_CAST_CREDIT_LIMIT = 50;
 
 /**
- * Top-billed cast for the overview rail. The server does the kind filtering,
- * billing-order sort, and truncation, so the rail renders the list as returned.
+ * Cast for the overview rails. The server does the kind filtering and
+ * billing-order sort; the language split and per-rail cap happen client-side in
+ * lib/utils/title-cast.
  */
 const TITLE_CAST_CREDIT_FIELDS = `
       kind

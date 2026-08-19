@@ -731,6 +731,8 @@ const ja: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "タイトルを追加またはスキャンして、このライブラリ表示を作成してください。",
   "title.topBilledCast": "主なキャスト",
+  "title.dubCast": "吹き替えキャスト",
+  "title.dubCastLanguage": "言語",
   "title.contextMoreLikeThis": "似ているタイトル",
   "title.contextMoreLikeThisScope": "現在の表示から",
   "title.contextOverview": "概要",

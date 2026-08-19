@@ -757,6 +757,8 @@ const fr: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "Ajoutez ou analysez des titres pour créer cette vue de bibliothèque.",
   "title.topBilledCast": "Tête d'affiche",
+  "title.dubCast": "Voix de doublage",
+  "title.dubCastLanguage": "Langue",
   "title.contextMoreLikeThis": "Titres similaires",
   "title.contextMoreLikeThisScope": "Depuis la vue actuelle",
   "title.contextOverview": "Aperçu",

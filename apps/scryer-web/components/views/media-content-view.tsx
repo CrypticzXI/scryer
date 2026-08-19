@@ -76,6 +76,8 @@ import { HorizontalRail } from "@/components/common/horizontal-scroll-fade";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
 import { TitleCastStrip } from "@/components/views/title-cast-strip";
+import { TitleDubCastStrip } from "@/components/views/title-dub-cast-strip";
+import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type {
   ContentSettingsSection,
@@ -1632,8 +1634,6 @@ function TitleContextPanel({
             ) : null}
           </TitleWorkspaceSectionCard>
 
-          <TitleCastStrip credits={title.credits} variant="workspace" />
-
           <TitleContextMoreLikeThisStrip
             items={moreLikeThisItems}
             loading={title?.moreLikeThis === undefined}
@@ -1642,6 +1642,13 @@ function TitleContextPanel({
             requestableFacets={requestableDiscoveryFacets}
             onAction={onDiscoveryAction}
           />
+
+          <TitleCastStrip
+            credits={titleCastOriginalCredits(title.credits)}
+            variant="workspace"
+          />
+
+          <TitleDubCastStrip credits={title.credits} variant="workspace" />
 
           {blocklistEntries.length === 0 ? (
             <section className="flex min-h-[3.25rem] items-center gap-2.5 rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-4">

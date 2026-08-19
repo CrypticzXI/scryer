@@ -687,6 +687,8 @@ const zh_CN: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "还没有推荐",
   "title.contextForYouEmptyBody": "添加或扫描标题以构建此资料库视图。",
   "title.topBilledCast": "主要演员",
+  "title.dubCast": "配音演员",
+  "title.dubCastLanguage": "语言",
   "title.contextMoreLikeThis": "相似标题",
   "title.contextMoreLikeThisScope": "来自当前视图",
   "title.contextOverview": "概览",

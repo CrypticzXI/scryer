@@ -759,6 +759,8 @@ const es: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "Añade o escanea títulos para crear esta vista de biblioteca.",
   "title.topBilledCast": "Reparto principal",
+  "title.dubCast": "Reparto de doblaje",
+  "title.dubCastLanguage": "Idioma",
   "title.contextMoreLikeThis": "Más como esto",
   "title.contextMoreLikeThisScope": "De la vista actual",
   "title.contextOverview": "Resumen",

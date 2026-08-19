@@ -722,6 +722,8 @@ const ko: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "타이틀을 추가하거나 스캔하여 이 라이브러리 보기를 만드세요.",
   "title.topBilledCast": "주요 출연진",
+  "title.dubCast": "더빙 성우진",
+  "title.dubCastLanguage": "언어",
   "title.contextMoreLikeThis": "비슷한 타이틀",
   "title.contextMoreLikeThisScope": "현재 보기 기준",
   "title.contextOverview": "개요",

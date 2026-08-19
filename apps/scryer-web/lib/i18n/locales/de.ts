@@ -746,6 +746,8 @@ const de: LocaleDictionary = {
   "title.contextForYouEmptyBody":
     "Füge Titel hinzu oder scanne sie, um diese Bibliotheksansicht aufzubauen.",
   "title.topBilledCast": "Hauptbesetzung",
+  "title.dubCast": "Synchronbesetzung",
+  "title.dubCastLanguage": "Sprache",
   "title.contextMoreLikeThis": "Ähnliche Titel",
   "title.contextMoreLikeThisScope": "Aus der aktuellen Ansicht",
   "title.contextOverview": "Übersicht",
