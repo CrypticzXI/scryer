@@ -38,6 +38,7 @@ import {
 } from "@/components/common/external-media-links";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { useActiveDownloadTitleIds } from "@/lib/hooks/use-active-download-title-ids";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2212,6 +2213,7 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
+    canManageTitle,
     canManageCatalogDiscovery,
     canRequestCatalogDiscovery,
     manageableDiscoveryFacets,
@@ -2665,6 +2667,13 @@ export function MediaContentView({
 
   const isTitleCatalogView =
     view === "movies" || view === "series" || view === "anime";
+  // One catalog-wide subscription to the live download queue (import activity
+  // included) feeds the pulsing "Downloading" pill in every display mode. It
+  // deliberately sits outside the catalog's own paging/sorting/title queries so
+  // it can't perturb them.
+  const activeDownloadTitleIds = useActiveDownloadTitleIds({
+    enabled: isTitleCatalogView && canManageTitle,
+  });
   const selectedTitleCompactDrawerActive =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const selectedTitleTableInlineActive =
@@ -3725,6 +3734,7 @@ export function MediaContentView({
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
                       scrollContainer={!selectedTitleLayoutActive}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else if (collectionViewMode === "compact") {
@@ -3772,6 +3782,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else {
@@ -3820,6 +3831,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 }
