@@ -2992,7 +2992,6 @@ const ru: LocaleDictionary = {
 
     "status.plexServersDiscovered":
         "Серверы Plex загружены.",
-
     "status.editingMediaServer":
         "Редактирование медиасервера {{name}}",
     "status.deletingMediaServer":
