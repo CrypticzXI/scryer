@@ -3,6 +3,7 @@ import type { LocaleDictionary } from "../types";
 const ja: LocaleDictionary = {
   brand: "scryer",
   "label.ready": "準備完了",
+  "label.moreInfo": "詳細情報",
   "label.search": "検索",
   "label.autoSearch": "自動検索",
   "label.interactiveSearch": "手動検索",

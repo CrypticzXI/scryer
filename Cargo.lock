@@ -5735,6 +5735,7 @@ dependencies = [
  "criterion",
  "encoding_rs",
  "flate2",
+ "futures-util",
  "jsonwebtoken 11.0.0",
  "libc",
  "lzma-rs",

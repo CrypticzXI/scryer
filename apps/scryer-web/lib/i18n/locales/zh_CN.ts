@@ -3,6 +3,7 @@ import type { LocaleDictionary } from "../types";
 const zh_CN: LocaleDictionary = {
   brand: "scryer",
   "label.ready": "就绪",
+  "label.moreInfo": "更多信息",
   "label.search": "搜索",
   "label.autoSearch": "自动搜索",
   "label.interactiveSearch": "手动搜索",

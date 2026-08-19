@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use aws_lc_rs::digest as aws_lc_digest;
@@ -10,6 +9,8 @@ use scryer_domain::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::activity::NotificationMediaUpdate;
 use crate::domain_events::{
@@ -224,6 +225,13 @@ struct RenameRollbackOutcome {
 /// Every field here is constant across the titles in one plan, so reading them
 /// per title only repeats the same settings queries. The media root is the one
 /// path input that genuinely varies, and it stays a per-title lookup.
+/// Titles planned at once inside one batched preview.
+///
+/// The per-title fan-out this batch replaced ran four requests at a time, so
+/// the batch has to overlap at least as much to stay faster than it. The cap
+/// keeps a large selection from monopolizing the database pool.
+const RENAME_PREVIEW_TITLE_CONCURRENCY: usize = 8;
+
 #[derive(Clone)]
 struct RenamePlanSettings {
     template: String,
@@ -317,19 +325,25 @@ impl AppUseCase {
         }
         let settings = self.read_rename_plan_settings(&facet).await?;
 
-        let mut plans = Vec::with_capacity(titles.len());
-        for title in titles {
-            plans.push(
+        // Each title plans against its own state, so they are independent and
+        // run concurrently. Planning one title at a time would serialize work
+        // the per-title callers used to overlap, making the batch slower than
+        // the fan-out it replaced however little per-title work it saves.
+        futures_util::stream::iter(titles.into_iter().map(|title| {
+            let settings = settings.clone();
+            async move {
                 self.build_rename_plan_for_titles(
                     title.facet.clone(),
                     std::slice::from_ref(&title),
                     Some(title.id.clone()),
-                    settings.clone(),
+                    settings,
                 )
-                .await?,
-            );
-        }
-        Ok(plans)
+                .await
+            }
+        }))
+        .buffered(RENAME_PREVIEW_TITLE_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await
     }
 
     pub async fn preview_rename_for_facet(
@@ -927,11 +941,15 @@ impl AppUseCase {
                             media_root: &media_root,
                             folder_template: &settings.folder_template,
                             template: &settings.template,
-                            collision_policy: &settings.collision_policy,
                             missing_metadata_policy: &settings.missing_metadata_policy,
                             planning: &mut owned_planning,
                         };
-                        build_movie_rename_plan_items(&title, collections, media_files, &mut options)
+                        build_movie_rename_plan_items(
+                            &title,
+                            collections,
+                            media_files,
+                            &mut options,
+                        )
                     }
                     MediaFacet::Series | MediaFacet::Anime => {
                         build_series_rename_plan_items_from_media_files(
@@ -944,7 +962,6 @@ impl AppUseCase {
                             &settings.season_folder_template,
                             &settings.specials_folder_template,
                             &settings.template,
-                            &settings.collision_policy,
                             &settings.missing_metadata_policy,
                             &mut owned_planning,
                         )
@@ -960,14 +977,12 @@ impl AppUseCase {
             built
         };
 
-        self.normalize_existing_rename_collisions(items, planning)
-            .await
+        self.normalize_existing_rename_collisions(items).await
     }
 
     async fn normalize_existing_rename_collisions(
         &self,
         items: Vec<RenamePlanItem>,
-        planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
         // One lookup per store for the whole title instead of two point queries
         // per item; the destination probes were already memoized while building.
@@ -1018,7 +1033,6 @@ impl AppUseCase {
                 continue;
             }
 
-            let destination_exists_on_disk = planning.destination_exists(&proposed_path);
             let tracked_media_file = media_file_cache.get(&proposed_path);
             let tracked_collection = collection_cache.get(&proposed_path);
 
@@ -1030,16 +1044,13 @@ impl AppUseCase {
                     item.collection_id.as_deref() != Some(collection.id.as_str())
                 });
 
+            // A destination the catalog already owns is a conflict the plan can
+            // report on its own. One the catalog has never seen is only visible
+            // on disk, and apply refuses those in `validate_targets` rather than
+            // making every previewed file pay for a stat.
             if tracked_media_conflict || tracked_collection_conflict {
                 item.collision = true;
                 item.reason_code = "collision_existing_tracked".into();
-                item.write_action = RenameWriteAction::Error;
-            } else if !destination_exists_on_disk {
-                out.push(item);
-                continue;
-            } else if matches!(item.write_action, RenameWriteAction::Replace) {
-                item.collision = true;
-                item.reason_code = "collision_existing".into();
                 item.write_action = RenameWriteAction::Error;
             }
 
@@ -1184,7 +1195,6 @@ struct MovieRenamePlanOptions<'a> {
     media_root: &'a str,
     folder_template: &'a str,
     template: &'a str,
-    collision_policy: &'a RenameCollisionPolicy,
     missing_metadata_policy: &'a RenameMissingMetadataPolicy,
     planning: &'a mut RenamePlanningState,
 }
@@ -1738,30 +1748,20 @@ fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -
 
 /// Plan-wide state shared by every title in one preview.
 ///
-/// `planned_targets` claims destinations so two files cannot plan onto the same
-/// path, and `destination_exists` memoizes the on-disk probe for each proposed
-/// path: item building and the collision-normalizing pass both need it, and on
-/// a network mount that stat is the most expensive thing the planner does.
+/// Planning is deliberately database-only: the catalog already knows every
+/// tracked file's path and size, and libraries commonly sit on network mounts
+/// where a per-file stat costs a round trip. Physical truth is established at
+/// apply time instead, where `validate_targets` stats each source and refuses
+/// a destination that already exists before anything moves.
 #[derive(Debug, Default)]
 pub(crate) struct RenamePlanningState {
     planned_targets: HashSet<String>,
-    destination_exists: HashMap<String, bool>,
 }
 
 impl RenamePlanningState {
     /// Claims `key` as a plan target, returning false when it is already taken.
     fn claim_target(&mut self, key: String) -> bool {
         self.planned_targets.insert(key)
-    }
-
-    fn destination_exists(&mut self, stored_path: &str) -> bool {
-        if let Some(probed) = self.destination_exists.get(stored_path) {
-            return *probed;
-        }
-        let exists = stored_path_to_path_buf(stored_path).exists();
-        self.destination_exists
-            .insert(stored_path.to_string(), exists);
-        exists
     }
 }
 
@@ -1885,6 +1885,7 @@ fn rename_plan_item(
 fn prepare_rename_plan_source(
     item_ids: RenamePlanItemIds,
     current_path: Option<String>,
+    known_size_bytes: Option<u64>,
 ) -> Result<RenamePlanSource, Box<RenamePlanItem>> {
     let current_path = current_path.unwrap_or_default();
     if current_path.trim().is_empty() {
@@ -1902,13 +1903,9 @@ fn prepare_rename_plan_source(
     }
 
     let current_file = stored_path_to_path_buf(&current_path);
-    let source_metadata = std::fs::metadata(&current_file).ok();
-    let source_size_bytes = source_metadata.as_ref().map(|meta| meta.len());
-    let source_mtime_unix_ms = source_metadata
-        .as_ref()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+    // Size comes from the catalog row; planning never stats the library.
+    let source_size_bytes = known_size_bytes;
+    let source_mtime_unix_ms = None;
     let source = RenamePlanSource {
         extension: current_file
             .extension()
@@ -1921,17 +1918,6 @@ fn prepare_rename_plan_source(
         source_size_bytes,
         source_mtime_unix_ms,
     };
-
-    if source_metadata.as_ref().is_none_or(|meta| !meta.is_file()) {
-        return Err(Box::new(source.build_item(
-            item_ids,
-            None,
-            None,
-            false,
-            "source_not_file",
-            RenameWriteAction::Error,
-        )));
-    }
 
     Ok(source)
 }
@@ -2205,12 +2191,10 @@ fn finalize_rename_plan_item(
     item_ids: RenamePlanItemIds,
     target_parent: PathBuf,
     rendered: String,
-    collision_policy: &RenameCollisionPolicy,
     planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
     let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
     let proposed_path_key = rename_planning_path_key(&proposed_path_str);
-    let current_path_key = rename_planning_path_key(&source.current_path);
 
     if proposed_path_str == source.current_path {
         return source.build_item(
@@ -2234,17 +2218,6 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if proposed_path_key != current_path_key && planning.destination_exists(&proposed_path_str) {
-        return source.build_item(
-            item_ids,
-            Some(proposed_path_str),
-            Some(rendered),
-            true,
-            "collision_existing",
-            existing_collision_write_action(collision_policy),
-        );
-    }
-
     source.build_item(
         item_ids,
         Some(proposed_path_str),
@@ -2253,15 +2226,6 @@ fn finalize_rename_plan_item(
         "rename_move",
         RenameWriteAction::Move,
     )
-}
-
-fn existing_collision_write_action(collision_policy: &RenameCollisionPolicy) -> RenameWriteAction {
-    match collision_policy {
-        RenameCollisionPolicy::Skip => RenameWriteAction::Skip,
-        RenameCollisionPolicy::Error | RenameCollisionPolicy::ReplaceIfBetter => {
-            RenameWriteAction::Error
-        }
-    }
 }
 
 #[expect(
@@ -2278,7 +2242,6 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
     season_folder_template: &str,
     specials_folder_template: &str,
     template: &str,
-    collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
     planning: &mut RenamePlanningState,
 ) -> Vec<RenamePlanItem> {
@@ -2316,7 +2279,6 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
                 season_folder_template,
                 specials_folder_template,
                 template,
-                collision_policy,
                 missing_metadata_policy,
                 planning,
             )
@@ -2371,7 +2333,6 @@ fn build_series_media_file_rename_plan_item(
     season_folder_template: &str,
     specials_folder_template: &str,
     template: &str,
-    collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
     planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
@@ -2383,6 +2344,7 @@ fn build_series_media_file_rename_plan_item(
     let source_file = match prepare_rename_plan_source(
         source_item_ids.clone(),
         Some(source.file.file_path.clone()),
+        u64::try_from(source.file.size_bytes).ok(),
     ) {
         Ok(source_file) => source_file,
         Err(item) => return *item,
@@ -2456,14 +2418,7 @@ fn build_series_media_file_rename_plan_item(
         specials_folder_template,
     );
 
-    finalize_rename_plan_item(
-        &source_file,
-        item_ids,
-        target_parent,
-        rendered,
-        collision_policy,
-        planning,
-    )
+    finalize_rename_plan_item(&source_file, item_ids, target_parent, rendered, planning)
 }
 
 fn resolve_series_rename_metadata(
@@ -2750,11 +2705,14 @@ fn build_movie_rename_plan_item(
         media_file_id: media_file.map(|media_file| media_file.id.clone()),
         series_movie_link_ids: Vec::new(),
     };
-    let source_file =
-        match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {
-            Ok(source_file) => source_file,
-            Err(item) => return *item,
-        };
+    let source_file = match prepare_rename_plan_source(
+        item_ids.clone(),
+        collection.ordered_path.clone(),
+        media_file.and_then(|media_file| u64::try_from(media_file.size_bytes).ok()),
+    ) {
+        Ok(source_file) => source_file,
+        Err(item) => return *item,
+    };
     let current_stem = source_file
         .current_file
         .file_stem()
@@ -2807,7 +2765,6 @@ fn build_movie_rename_plan_item(
         item_ids,
         target_parent,
         rendered,
-        options.collision_policy,
         options.planning,
     )
 }

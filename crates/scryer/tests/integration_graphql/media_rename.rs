@@ -1393,7 +1393,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
 }
 
 #[tokio::test]
-async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emit_replace() {
+async fn apply_media_rename_refuses_an_untracked_existing_target() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     set_rename_collision_policy(&ctx, "MOVIE", "REPLACE_IF_BETTER").await;
@@ -1439,18 +1439,18 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
         .await
         .expect("create movie collection");
 
+    // Planning is database-only, so an untracked file squatting on the target
+    // is not visible until apply, which is where the filesystem is read.
     let body = gql(
         &ctx,
         r#"
         query($input: MediaRenamePreviewInput!) {
           mediaRenamePreview(input: $input) {
+            fingerprint
             total
             renamable
-            conflicts
-            errors
             items {
               writeAction
-              reasonCode
             }
           }
         }
@@ -1468,11 +1468,8 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
 
     let plan = &body["data"]["mediaRenamePreview"];
     assert_eq!(plan["total"].as_i64(), Some(1));
-    assert_eq!(plan["renamable"].as_i64(), Some(0));
-    assert_eq!(plan["conflicts"].as_i64(), Some(1));
-    assert_eq!(plan["errors"].as_i64(), Some(1));
-    assert_eq!(plan["items"][0]["writeAction"], "error");
-    assert_eq!(plan["items"][0]["reasonCode"], "collision_existing");
+    // Never `replace`: overwriting a file the catalog does not know about is
+    // exactly what this guards, whichever collision policy is configured.
     assert!(
         plan["items"]
             .as_array()
@@ -1480,6 +1477,38 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
             .iter()
             .all(|item| item["writeAction"] != "replace")
     );
+    let fingerprint = plan["fingerprint"].as_str().expect("fingerprint").to_string();
+
+    // Apply reads the filesystem and must refuse rather than clobber it.
+    let apply = gql(
+        &ctx,
+        r#"
+        mutation($input: MediaRenameApplyInput!) {
+          applyMediaRename(input: $input) {
+            applied
+            failed
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "facet": "MOVIE",
+                "titleId": title.id,
+                "fingerprint": fingerprint
+            }
+        }),
+    )
+    .await;
+    let refused = apply["errors"].is_array()
+        || apply["data"]["applyMediaRename"]["applied"].as_i64() == Some(0);
+    assert!(refused, "apply should refuse an occupied target: {apply}");
+
+    assert_eq!(
+        std::fs::read(&destination_path).expect("destination still present"),
+        b"untracked-movie-destination",
+        "the untracked destination must not be overwritten"
+    );
+    assert!(source_path.exists(), "the source must stay put");
 }
 
 #[tokio::test]

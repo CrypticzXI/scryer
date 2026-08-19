@@ -4,6 +4,7 @@ const en: LocaleDictionary = {
   brand: "scryer",
 
   "label.ready": "Ready",
+  "label.moreInfo": "More information",
   "label.search": "Search",
   "label.autoSearch": "Auto Search",
   "label.interactiveSearch": "Interactive Search",

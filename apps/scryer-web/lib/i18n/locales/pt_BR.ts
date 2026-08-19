@@ -3,6 +3,7 @@ import type { LocaleDictionary } from "../types";
 const pt_BR: LocaleDictionary = {
   brand: "scryer",
   "label.ready": "Pronto",
+  "label.moreInfo": "Mais informações",
   "label.search": "Pesquisar",
   "label.autoSearch": "Pesquisa automática",
   "label.interactiveSearch": "Pesquisa interativa",

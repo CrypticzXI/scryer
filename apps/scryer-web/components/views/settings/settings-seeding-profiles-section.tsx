@@ -1,11 +1,12 @@
 import * as React from "react";
-import { Edit, Plus, Trash2 } from "lucide-react";
+import { Edit, Info, Plus, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -74,6 +75,42 @@ const SEEDING_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const SEEDING_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 const SEEDING_TABLE_HEADER_CELL_CLASS =
   "text-center font-semibold text-[var(--scry-muted3)]";
+
+/// Field guidance lives behind this rather than under every input: the form is
+/// a dense column of goals and policies, and stacked help paragraphs bury the
+/// controls they explain.
+function FieldInfo({ content }: { content: React.ReactNode }) {
+  const t = useTranslate();
+  return (
+    <ActionTooltip content={content} wrapperTabIndex={0}>
+      <span
+        className="inline-flex text-[var(--scry-muted2)] transition hover:text-[var(--scry-ink2)]"
+        aria-label={t("label.moreInfo")}
+      >
+        <Info className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+    </ActionTooltip>
+  );
+}
+
+function FieldLabel({
+  htmlFor,
+  label,
+  info,
+}: {
+  htmlFor?: string;
+  label: string;
+  info: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label className="text-[var(--scry-ink2)]" htmlFor={htmlFor}>
+        {label}
+      </Label>
+      <FieldInfo content={info} />
+    </div>
+  );
+}
 
 const SEASON_PACK_MODE_LABEL_KEY: Record<SeasonPackSeedMode, string> = {
   INHERIT: "settings.seedingProfileSeasonPackInherit",
@@ -176,12 +213,11 @@ export function SettingsSeedingProfilesSection({
           </h2>
         </div>
         <div className={`${SEEDING_PANEL_BODY_CLASS} space-y-1.5`}>
-          <Label
-            className="text-[var(--scry-ink2)]"
+          <FieldLabel
             htmlFor="settings-seeding-profile-default"
-          >
-            {t("settings.seedingProfileDefaultLabel")}
-          </Label>
+            label={t("settings.seedingProfileDefaultLabel")}
+            info={t("settings.seedingProfileDefaultHelp")}
+          />
           <Select
             value={seedingProfileSelectValue(defaultProfileId)}
             onValueChange={(value) =>
@@ -213,9 +249,6 @@ export function SettingsSeedingProfilesSection({
               ))}
             </SelectContent>
           </Select>
-          <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-            {t("settings.seedingProfileDefaultHelp")}
-          </p>
         </div>
       </section>
 
@@ -391,12 +424,11 @@ export function SettingsSeedingProfilesSection({
                 {/* Goals */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label
-                      className="text-[var(--scry-ink2)]"
+                    <FieldLabel
                       htmlFor="settings-seeding-profile-ratio"
-                    >
-                      {t("settings.seedingProfileRatioLabel")}
-                    </Label>
+                      label={t("settings.seedingProfileRatioLabel")}
+                      info={t("settings.seedingProfileRatioHelp")}
+                    />
                     <Input
                       id="settings-seeding-profile-ratio"
                       inputMode="decimal"
@@ -406,17 +438,20 @@ export function SettingsSeedingProfilesSection({
                       }
                       placeholder={t("settings.seedingProfileGoalPlaceholder")}
                     />
-                    <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                      {t("settings.seedingProfileRatioHelp")}
-                    </p>
                   </div>
                   <div className="space-y-1.5">
-                    <Label
-                      className="text-[var(--scry-ink2)]"
+                    <FieldLabel
                       htmlFor="settings-seeding-profile-seed-time"
-                    >
-                      {t("settings.seedingProfileSeedTimeLabel")}
-                    </Label>
+                      label={t("settings.seedingProfileSeedTimeLabel")}
+                      info={
+                        <>
+                          <p>{t("settings.seedingProfileSeedTimeHelp")}</p>
+                          <p className="mt-1.5">
+                            {t("settings.seedingProfileSeedTimeTransmissionHelp")}
+                          </p>
+                        </>
+                      }
+                    />
                     <Input
                       id="settings-seeding-profile-seed-time"
                       {...integerInputProps}
@@ -426,23 +461,16 @@ export function SettingsSeedingProfilesSection({
                       }
                       placeholder={t("settings.seedingProfileGoalPlaceholder")}
                     />
-                    <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                      {t("settings.seedingProfileSeedTimeHelp")}
-                    </p>
-                    <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                      {t("settings.seedingProfileSeedTimeTransmissionHelp")}
-                    </p>
                   </div>
                 </div>
 
                 {/* Post-import tracking */}
                 <div className="space-y-1.5">
-                  <Label
-                    className="text-[var(--scry-ink2)]"
+                  <FieldLabel
                     htmlFor="settings-seeding-profile-post-import-tracking"
-                  >
-                    {t("settings.seedingProfilePostImportTrackingLabel")}
-                  </Label>
+                    label={t("settings.seedingProfilePostImportTrackingLabel")}
+                    info={t("settings.seedingProfilePostImportTrackingHelp")}
+                  />
                   <Select
                     value={draft.postImportTracking}
                     onValueChange={(value) =>
@@ -473,9 +501,6 @@ export function SettingsSeedingProfilesSection({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                    {t("settings.seedingProfilePostImportTrackingHelp")}
-                  </p>
                   {isHandOff ? (
                     <p className="text-xs text-[var(--scry-warning-text)]">
                       {t("settings.seedingProfilePostImportTrackingHandOffHelp")}
@@ -485,12 +510,11 @@ export function SettingsSeedingProfilesSection({
 
                 {/* Goal-met action */}
                 <div className="space-y-1.5">
-                  <Label
-                    className="text-[var(--scry-ink2)]"
+                  <FieldLabel
                     htmlFor="settings-seeding-profile-goal-met-action"
-                  >
-                    {t("settings.seedingProfileGoalMetActionLabel")}
-                  </Label>
+                    label={t("settings.seedingProfileGoalMetActionLabel")}
+                    info={t("settings.seedingProfileGoalMetActionHelp")}
+                  />
                   <Select
                     value={draft.goalMetAction}
                     disabled={isHandOff}
@@ -519,9 +543,6 @@ export function SettingsSeedingProfilesSection({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                    {t("settings.seedingProfileGoalMetActionHelp")}
-                  </p>
                 </div>
 
                 {/* Tracker minimums */}
@@ -532,9 +553,11 @@ export function SettingsSeedingProfilesSection({
                     updateField("honorTrackerMinimums", checked === true)
                   }
                   label={t("settings.seedingProfileHonorTrackerMinimumsLabel")}
-                  description={t(
-                    "settings.seedingProfileHonorTrackerMinimumsHelp",
-                  )}
+                  labelAccessory={
+                    <FieldInfo
+                      content={t("settings.seedingProfileHonorTrackerMinimumsHelp")}
+                    />
+                  }
                   className="text-[var(--scry-ink2)]"
                 />
 
@@ -547,9 +570,12 @@ export function SettingsSeedingProfilesSection({
                     updateField("neverRemove", checked === true)
                   }
                   label={t("settings.seedingProfileNeverRemoveLabel")}
-                  description={t("settings.seedingProfileNeverRemoveHelp")}
+                  labelAccessory={
+                    <FieldInfo
+                      content={t("settings.seedingProfileNeverRemoveHelp")}
+                    />
+                  }
                   className="text-[var(--scry-ink2)]"
-                  descriptionClassName="text-[var(--scry-warning-text)]"
                 />
 
                 {/* Season-pack overrides (advanced) */}
@@ -569,12 +595,18 @@ export function SettingsSeedingProfilesSection({
                   </summary>
                   <div className="mt-3 space-y-3">
                     <div className="space-y-1.5">
-                      <Label
-                        className="text-[var(--scry-ink2)]"
+                      <FieldLabel
                         htmlFor="settings-seeding-profile-season-pack-mode"
-                      >
-                        {t("settings.seedingProfileSeasonPackModeLabel")}
-                      </Label>
+                        label={t("settings.seedingProfileSeasonPackModeLabel")}
+                        info={
+                          <>
+                            <p>{t("settings.seedingProfileSeasonPackModeHelp")}</p>
+                            <p className="mt-1.5">
+                              {t("settings.seedingProfileSeasonPackGoalsHelp")}
+                            </p>
+                          </>
+                        }
+                      />
                       <Select
                         value={draft.seasonPackMode}
                         onValueChange={(value) =>
@@ -605,9 +637,6 @@ export function SettingsSeedingProfilesSection({
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                        {t("settings.seedingProfileSeasonPackModeHelp")}
-                      </p>
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-1.5">
@@ -654,9 +683,6 @@ export function SettingsSeedingProfilesSection({
                         />
                       </div>
                     </div>
-                    <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                      {t("settings.seedingProfileSeasonPackGoalsHelp")}
-                    </p>
                   </div>
                 </details>
 

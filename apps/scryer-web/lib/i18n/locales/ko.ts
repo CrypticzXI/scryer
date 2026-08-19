@@ -3,6 +3,7 @@ import type { LocaleDictionary } from "../types";
 const ko: LocaleDictionary = {
   brand: "scryer",
   "label.ready": "준비됨",
+  "label.moreInfo": "추가 정보",
   "label.search": "검색",
   "label.autoSearch": "자동 검색",
   "label.interactiveSearch": "수동 검색",

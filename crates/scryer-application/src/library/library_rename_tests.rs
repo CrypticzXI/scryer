@@ -975,7 +975,6 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
         planning: &mut planning,
     };
@@ -1036,7 +1035,6 @@ fn movie_rename_items_render_external_id_tokens() {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year}) [{tmdb_id}]",
         template: "{title} ({year}) [{imdb_id} {tmdb_id} {tvdb_id} {anidb_id} {mal_id} {anilist_id}].{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
         planning: &mut planning,
     };
@@ -1069,7 +1067,6 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title}.{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
         planning: &mut planning,
     };
