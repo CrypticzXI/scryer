@@ -256,7 +256,9 @@ pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfil
     indexer.managed_parent_config_id.as_deref()?;
     let criteria: ProwlarrManagedSeedCriteria =
         serde_json::from_str(indexer.managed_metadata_json.as_deref()?).ok()?;
-    let ratio = criteria.seed_ratio.filter(|value| value.is_finite() && *value > 0.0);
+    let ratio = criteria
+        .seed_ratio
+        .filter(|value| value.is_finite() && *value > 0.0);
     let seed_time_minutes = criteria.seed_time_minutes.filter(|value| *value > 0);
     let season_pack_seed_time_minutes = criteria
         .season_pack_seed_time_minutes
@@ -796,7 +798,10 @@ mod tests {
             .await
             .expect("resolution should succeed");
 
-        assert_eq!(resolved.resolution_source, SeedGoalResolutionSource::Indexer);
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::Indexer
+        );
         assert_eq!(resolved.seed_goal_ratio, Some(3.0));
     }
 
