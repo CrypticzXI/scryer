@@ -1396,6 +1396,7 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
       olderQueuePriority
       removeCompleted
       removeFailed
+      seedingProfileId
     }
   }
 }`;
@@ -1940,6 +1941,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     baseUrl
     indexerProxyConfigId
     downloadClientId
+    seedingProfileId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2127,6 +2129,7 @@ const indexerFieldSelection = `
     baseUrl
     indexerProxyConfigId
     downloadClientId
+    seedingProfileId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2201,7 +2204,8 @@ const downloadClientRoutingFieldSelection = `
     recentQueuePriority
     olderQueuePriority
     removeCompleted
-    removeFailed`;
+    removeFailed
+    seedingProfileId`;
 
 const indexerRoutingFieldSelection = `
     indexerId
@@ -2588,6 +2592,29 @@ export const delayProfilesQuery = `query DelayProfiles {
     tags
     priority
     enabled
+  }
+}`;
+
+export const SEEDING_PROFILE_FIELDS = `
+    id
+    name
+    ratio
+    seedTimeMinutes
+    seasonPackMode
+    seasonPackRatio
+    seasonPackSeedTimeMinutes
+    honorTrackerMinimums
+    goalMetAction
+    neverRemove`;
+
+export const seedingProfilesQuery = `query SeedingProfiles {
+  seedingProfiles {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const defaultSeedingProfileQuery = `query DefaultSeedingProfile {
+  defaultSeedingProfile {
+    seedingProfileId
   }
 }`;
 

@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Timer,
+  UploadCloud,
   User,
   Users,
   X,
@@ -69,6 +70,9 @@ const SettingsAcquisitionContainer = lazy(async () => ({
 }));
 const SettingsDelayProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-delay-profiles-container")).SettingsDelayProfilesContainer,
+}));
+const SettingsSeedingProfilesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-seeding-profiles-container")).SettingsSeedingProfilesContainer,
 }));
 const SettingsQualityProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-quality-profiles-container")).SettingsQualityProfilesContainer,
@@ -332,9 +336,11 @@ export const SettingsContainer = memo(function SettingsContainer({
                               ? t("settings.subtitles")
                               : settingsSection === "delayProfiles"
                                 ? t("settings.delayProfiles")
-                                : settingsSection === "acquisition"
-                                  ? t("settings.acquisition")
-                                  : t("settings.qualityProfiles");
+                                : settingsSection === "seedingProfiles"
+                                  ? t("settings.seedingProfiles")
+                                  : settingsSection === "acquisition"
+                                    ? t("settings.acquisition")
+                                    : t("settings.qualityProfiles");
   const primarySettingsNav = [
     {
       section: "profile" as const,
@@ -358,6 +364,12 @@ export const SettingsContainer = memo(function SettingsContainer({
       section: "delayProfiles" as const,
       label: t("settings.delayProfiles"),
       icon: Timer,
+      visible: canManageCatalogSettings,
+    },
+    {
+      section: "seedingProfiles" as const,
+      label: t("settings.seedingProfiles"),
+      icon: UploadCloud,
       visible: canManageCatalogSettings,
     },
     {
@@ -539,6 +551,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                 settingsSection !== "general" &&
                 settingsSection !== "qualityProfiles" &&
                 settingsSection !== "delayProfiles" &&
+                settingsSection !== "seedingProfiles" &&
                 settingsSection !== "plugins" ? (
                   <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
                     {t("settings.sectionTitle", { section: settingsSectionLabel })}
@@ -627,6 +640,8 @@ export const SettingsContainer = memo(function SettingsContainer({
             />
           ) : settingsSection === "delayProfiles" ? (
             <SettingsDelayProfilesContainer />
+          ) : settingsSection === "seedingProfiles" ? (
+            <SettingsSeedingProfilesContainer />
           ) : settingsSection === "acquisition" ? (
             <SettingsAcquisitionContainer />
           ) : (

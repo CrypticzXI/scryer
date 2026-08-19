@@ -25,6 +25,7 @@ export type SettingsSection =
   | "downloadClients"
   | "qualityProfiles"
   | "delayProfiles"
+  | "seedingProfiles"
   | "acquisition"
   | "rules"
   | "plugins"

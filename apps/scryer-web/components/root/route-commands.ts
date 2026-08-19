@@ -374,6 +374,14 @@ export function buildRouteCommands({
           icon: Settings,
           onSelect: buildNavigate(onNavigate, "settings", "delayProfiles"),
         } satisfies RouteCommand, {
+          id: "settings-seeding-profiles",
+          label: `${settingsGroupLabel} / ${t("settings.seedingProfiles")}`,
+          description: t("settings.seedingProfiles"),
+          groupLabel: settingsGroupLabel,
+          keywords: ["settings", "seeding", "profiles", "ratio", "torrent"],
+          icon: Settings,
+          onSelect: buildNavigate(onNavigate, "settings", "seedingProfiles"),
+        } satisfies RouteCommand, {
           id: "settings-rules",
           label: `${automationGroupLabel} / ${t("settings.rules")}`,
           description: t("settings.rules"),

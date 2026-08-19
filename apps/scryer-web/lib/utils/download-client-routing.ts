@@ -25,6 +25,7 @@ export function normalizeDownloadClientRoutingEntry(
       entry?.olderQueuePriority ?? fallback.olderQueuePriority,
     removeCompleted: entry?.removeCompleted ?? fallback.removeCompleted,
     removeFailed: entry?.removeFailed ?? fallback.removeFailed,
+    seedingProfileId: entry?.seedingProfileId ?? fallback.seedingProfileId,
   };
 }
 
@@ -85,6 +86,7 @@ export function serializeDownloadClientRoutingEntries(
       olderQueuePriority: entry.olderQueuePriority || null,
       removeCompleted: entry.removeCompleted,
       removeFailed: entry.removeFailed,
+      seedingProfileId: entry.seedingProfileId,
     };
   });
 }

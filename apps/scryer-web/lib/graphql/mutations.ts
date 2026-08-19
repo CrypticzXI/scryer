@@ -4,6 +4,7 @@ import {
   MEDIA_SERVER_CONNECTION_FIELDS,
   PROVIDER_CONFIG_VALUE_FIELDS,
   RELEASE_SEARCH_RESULT_FIELDS,
+  SEEDING_PROFILE_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_MUTATION_RESULT_FIELDS,
@@ -1033,7 +1034,8 @@ const downloadClientRoutingFieldSelection = `
     recentQueuePriority
     olderQueuePriority
     removeCompleted
-    removeFailed`;
+    removeFailed
+    seedingProfileId`;
 
 const indexerRoutingFieldSelection = `
     indexerId
@@ -2424,5 +2426,34 @@ export type SubtitleSearchResult = {
 export const setIndexerDownloadClientMappingMutation = `mutation SetIndexerDownloadClientMapping($input: SetIndexerDownloadClientMappingInput!) {
   setIndexerDownloadClientMapping(input: $input) {
     downloadClientId
+  }
+}`;
+
+export const setIndexerSeedingProfileMutation = `mutation SetIndexerSeedingProfile($input: SetIndexerSeedingProfileInput!) {
+  setIndexerSeedingProfile(input: $input) {
+    id
+    seedingProfileId
+  }
+}`;
+
+export const createSeedingProfileMutation = `mutation CreateSeedingProfile($input: CreateSeedingProfileInput!) {
+  createSeedingProfile(input: $input) {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const updateSeedingProfileMutation = `mutation UpdateSeedingProfile($input: UpdateSeedingProfileInput!) {
+  updateSeedingProfile(input: $input) {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const deleteSeedingProfileMutation = `mutation DeleteSeedingProfile($id: ID!) {
+  deleteSeedingProfile(id: $id) {
+    id
+  }
+}`;
+
+export const setDefaultSeedingProfileMutation = `mutation SetDefaultSeedingProfile($input: SetDefaultSeedingProfileInput!) {
+  setDefaultSeedingProfile(input: $input) {
+    seedingProfileId
   }
 }`;

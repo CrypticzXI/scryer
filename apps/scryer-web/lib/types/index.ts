@@ -8,6 +8,7 @@ export * from "./import-history";
 export * from "./indexers";
 export * from "./indexer-download-client-mappings";
 export * from "./delay-profiles";
+export * from "./seeding-profiles";
 export * from "./quality-profiles";
 export * from "./releases";
 export * from "./root";

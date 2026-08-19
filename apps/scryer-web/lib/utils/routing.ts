@@ -23,6 +23,7 @@ export const SETTINGS_SECTION_PATH: Record<SettingsSection, string> = {
   downloadClients: "download-clients",
   qualityProfiles: "quality-profiles",
   delayProfiles: "delay-profiles",
+  seedingProfiles: "seeding-profiles",
   acquisition: "acquisition",
   rules: "rules",
   plugins: "plugins",
@@ -230,6 +231,8 @@ const LOCAL_SETTINGS_BY_SEGMENT: Record<string, SettingsSection> = {
   qualityprofiles: "qualityProfiles",
   "delay-profiles": "delayProfiles",
   delayprofiles: "delayProfiles",
+  "seeding-profiles": "seedingProfiles",
+  seedingprofiles: "seedingProfiles",
   plugins: "plugins",
 };
 const SYSTEM_SETTINGS_BY_SEGMENT: Record<string, SettingsSection> = {

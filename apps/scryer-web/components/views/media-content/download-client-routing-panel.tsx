@@ -21,6 +21,12 @@ import { DOWNLOAD_CLIENT_ROUTING_EMPTY } from "@/lib/constants/nzbget";
 import {
   type BoxedActionButtonTone,
 } from "@/lib/utils/action-button-styles";
+import { useSeedingProfileOptions } from "@/lib/hooks/use-seeding-profile-options";
+import {
+  SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileSelectValue,
+  seedingProfileSelectValueToId,
+} from "@/lib/utils/seeding-profiles";
 
 type ScopeRoutingRecord = Record<string, DownloadClientRoutingSettings>;
 
@@ -111,6 +117,10 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
   moveDownloadClientInScope,
 }: DownloadClientRoutingPanelProps) {
   const t = useTranslate();
+  // Seeding profiles are reference data for this table, not scope state, so the
+  // panel reads them itself instead of threading an identical prop through the
+  // two unrelated parents that render it.
+  const { options: seedingProfileOptions } = useSeedingProfileOptions();
   const clientById = React.useMemo(
     () => Object.fromEntries(downloadClients.map((client) => [client.id, client])),
     [downloadClients],
@@ -183,6 +193,15 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
     [updateDownloadClientRoutingForScope],
   );
 
+  const handleRoutingSeedingProfileChange = React.useCallback(
+    (clientId: string, value: string) => {
+      void updateDownloadClientRoutingForScope(clientId, {
+        seedingProfileId: seedingProfileSelectValueToId(value),
+      });
+    },
+    [updateDownloadClientRoutingForScope],
+  );
+
   const moveClientUp = React.useCallback(
     (clientId: string) => {
       moveDownloadClientInScope(clientId, "up");
@@ -225,13 +244,14 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                 <TableHead>{t("settings.downloadClientOlderPriority")}</TableHead>
                 <TableHead className="text-center">{t("settings.downloadClientRemoveCompleted")}</TableHead>
                 <TableHead className="text-center">{t("settings.downloadClientRemoveFailed")}</TableHead>
+                <TableHead>{t("settings.seedingProfileColumn")}</TableHead>
                 <TableHead className="text-right">{t("label.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {orderedDownloadClientIds.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-muted-foreground">
+                  <TableCell colSpan={12} className="text-muted-foreground">
                     {t("settings.noDownloadClientsFound")}
                   </TableCell>
                 </TableRow>
@@ -365,6 +385,50 @@ export const DownloadClientRoutingPanel = React.memo(function DownloadClientRout
                           }
                           disabled={controlsDisabled}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={seedingProfileSelectValue(
+                            routing.seedingProfileId,
+                          )}
+                          onValueChange={(value) =>
+                            handleRoutingSeedingProfileChange(client.id, value)
+                          }
+                          disabled={controlsDisabled}
+                        >
+                          <SelectTrigger
+                            id={selectorId(
+                              "download-client-routing-seeding-profile",
+                              client.name,
+                            )}
+                            className="w-full min-w-[180px]"
+                            aria-label={t("settings.seedingProfileRoutingLabel", {
+                              name: client.name,
+                            })}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
+                              {t("settings.seedingProfileRoutingInherit")}
+                            </SelectItem>
+                            {routing.seedingProfileId &&
+                            !seedingProfileOptions.some(
+                              (option) => option.id === routing.seedingProfileId,
+                            ) ? (
+                              <SelectItem value={routing.seedingProfileId}>
+                                {t("settings.seedingProfileMissing", {
+                                  id: routing.seedingProfileId,
+                                })}
+                              </SelectItem>
+                            ) : null}
+                            {seedingProfileOptions.map((option) => (
+                              <SelectItem key={option.id} value={option.id}>
+                                {option.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">

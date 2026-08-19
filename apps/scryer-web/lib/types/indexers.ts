@@ -8,6 +8,8 @@ export type IndexerRecord = {
   baseUrl: string;
   indexerProxyConfigId: string | null;
   downloadClientId: string | null;
+  /** Seeding profile assigned to this indexer. null inherits the routing/global default. */
+  seedingProfileId: string | null;
   hasApiKey: boolean;
   storedSecretKeys: string[];
   rateLimitSeconds: number | null;
@@ -48,6 +50,7 @@ export type IndexerDraft = {
   providerType: string;
   indexerProxyConfigId: string | null;
   downloadClientId: string | null;
+  seedingProfileId: string | null;
   storedSecretKeys: string[];
   isEnabled: boolean;
   enableInteractiveSearch: boolean;

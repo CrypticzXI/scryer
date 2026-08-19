@@ -48,6 +48,8 @@ export type DownloadClientRoutingSettings = {
   olderQueuePriority: string;
   removeCompleted: boolean;
   removeFailed: boolean;
+  /** Default seeding profile for grabs routed here. null inherits the global default. */
+  seedingProfileId: string | null;
 };
 
 export type DownloadClientRoutingEntry = {
@@ -58,6 +60,7 @@ export type DownloadClientRoutingEntry = {
   olderQueuePriority: string | null;
   removeCompleted: boolean;
   removeFailed: boolean;
+  seedingProfileId: string | null;
 };
 
 export type DownloadClientRoutingSettingsByClient = Record<

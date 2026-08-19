@@ -43,6 +43,7 @@ import type {
   IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
+  IndexerDownloadClientMappingCatalog,
   IndexerDownloadClientMappingCatalogResource,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -52,8 +53,16 @@ import {
   AUTOMATIC_DOWNLOAD_CLIENT_ID,
   getIndexerDownloadClientDraftMappingViewModel,
   getIndexerDownloadClientMappingViewModel,
+  isManagementOnlyIndexer,
   type IndexerDownloadClientMappingViewModel,
 } from "@/lib/utils/indexer-download-client-mapping";
+import type { SeedingProfileOption } from "@/lib/types/seeding-profiles";
+import {
+  SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileSelectValue,
+  seedingProfileSelectValueToId,
+  supportsSeedingProfileAssignment,
+} from "@/lib/utils/seeding-profiles";
 
 type SettingsIndexersSectionProps = {
   editingIndexerId: string | null;
@@ -73,6 +82,12 @@ type SettingsIndexersSectionProps = {
   setIndexerDownloadClientMapping: (
     indexerId: string,
     downloadClientId: string | null,
+  ) => Promise<void> | void;
+  seedingProfileOptions: SeedingProfileOption[];
+  mutatingIndexerSeedingProfileIds: ReadonlySet<string>;
+  setIndexerSeedingProfile: (
+    indexerId: string,
+    seedingProfileId: string | null,
   ) => Promise<void> | void;
   indexerProxyConfigs: IndexerProxyRecord[];
   indexerProxyDraft: IndexerProxyDraft;
@@ -591,6 +606,151 @@ function IndexerDownloadClientCell({
   );
 }
 
+/**
+ * Seeding-profile assignment for one indexer, rendered beside the
+ * download-client mapping control. The backend rejects assignment on anything
+ * that is not torrent-capable, so non-torrent indexers get the same
+ * "not applicable" treatment the mapping control uses.
+ */
+function IndexerSeedingProfileSelect({
+  selectId,
+  label,
+  value,
+  options,
+  supported,
+  isPending,
+  disabled = false,
+  showLabel = false,
+  onChange,
+}: {
+  selectId: string;
+  label: string;
+  value: string | null;
+  options: SeedingProfileOption[];
+  supported: boolean;
+  isPending: boolean;
+  disabled?: boolean;
+  showLabel?: boolean;
+  onChange: (seedingProfileId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const statusId = `${selectId}-status`;
+
+  if (!supported) {
+    return (
+      <div className="space-y-1.5">
+        {showLabel ? <Label className="block">{label}</Label> : null}
+        <span
+          className="text-muted-foreground"
+          data-testid={`${selectId}-not-applicable`}
+        >
+          {t("settings.seedingProfileNotApplicable")}
+        </span>
+      </div>
+    );
+  }
+
+  const isMissing =
+    value !== null && !options.some((option) => option.id === value);
+
+  return (
+    <div className="min-w-[190px] space-y-1.5">
+      <Label className={showLabel ? "block" : "sr-only"} htmlFor={selectId}>
+        {label}
+      </Label>
+      <Select
+        value={seedingProfileSelectValue(value)}
+        onValueChange={(nextValue) =>
+          void onChange(seedingProfileSelectValueToId(nextValue))
+        }
+      >
+        <SelectTrigger
+          id={selectId}
+          data-testid={selectId}
+          className="w-full"
+          disabled={isPending || disabled}
+          aria-describedby={isMissing ? statusId : undefined}
+          aria-busy={isPending}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
+            {t("settings.seedingProfileInherit")}
+          </SelectItem>
+          {isMissing && value ? (
+            <SelectItem value={value}>
+              {t("settings.seedingProfileMissing", { id: value })}
+            </SelectItem>
+          ) : null}
+          {options.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {isMissing ? (
+        <p
+          id={statusId}
+          role="alert"
+          className="text-xs text-[var(--scry-danger-text-soft)]"
+        >
+          {t("settings.seedingProfileMissing", { id: value })}
+        </p>
+      ) : isPending ? (
+        <p id={statusId} role="status" className="text-xs text-muted-foreground">
+          {t("status.indexerSeedingProfileSaving")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function IndexerSeedingProfileCell({
+  indexer,
+  catalog,
+  options,
+  isPending,
+  disabled,
+  onChange,
+}: {
+  indexer: IndexerRecord;
+  catalog: IndexerDownloadClientMappingCatalog | null;
+  options: SeedingProfileOption[];
+  isPending: boolean;
+  disabled: boolean;
+  onChange: (seedingProfileId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const selectId = selectorId("settings-indexer-seeding-profile", indexer.id);
+  if (!catalog) {
+    return (
+      <span className="text-muted-foreground" data-testid={`${selectId}-loading`}>
+        {t("label.loading")}
+      </span>
+    );
+  }
+  const protocolFamilies = catalog.indexers.find(
+    (entry) => entry.id === indexer.id,
+  )?.protocolFamilies;
+  return (
+    <IndexerSeedingProfileSelect
+      selectId={selectId}
+      label={t("settings.seedingProfileIndexerLabel", { name: indexer.name })}
+      value={indexer.seedingProfileId}
+      options={options}
+      supported={
+        !isManagementOnlyIndexer(indexer) &&
+        supportsSeedingProfileAssignment(protocolFamilies)
+      }
+      isPending={isPending}
+      disabled={disabled}
+      onChange={onChange}
+    />
+  );
+}
+
 export function SettingsIndexersSection({
   editingIndexerId,
   indexerDraft,
@@ -605,6 +765,9 @@ export function SettingsIndexersSection({
   refreshIndexerDownloadClientMappingCatalog,
   mutatingIndexerMappingIds,
   setIndexerDownloadClientMapping,
+  seedingProfileOptions,
+  mutatingIndexerSeedingProfileIds,
+  setIndexerSeedingProfile,
   indexerProxyConfigs,
   indexerProxyDraft,
   setIndexerProxyDraft,
@@ -665,6 +828,16 @@ export function SettingsIndexersSection({
       (proxy) => proxy.isEnabled || proxy.id === selectedIndexerProxyId,
     );
   }, [indexerProxyConfigs, selectedIndexerProxyId]);
+  // Protocol families for the provider the editor is currently on: seeding
+  // profiles only apply to torrent-capable indexers.
+  const draftProtocolFamilies = React.useMemo(
+    () =>
+      indexerDownloadClientMappingCatalogResource.catalog?.providerCompatibility.find(
+        (entry) =>
+          entry.providerType.trim().toLowerCase() === normalizedProviderType,
+      )?.protocolFamilies ?? [],
+    [indexerDownloadClientMappingCatalogResource.catalog, normalizedProviderType],
+  );
 
   // Build provider type options from loaded plugins, falling back to hardcoded list
   const providerTypeOptions = React.useMemo(() => {
@@ -752,6 +925,11 @@ export function SettingsIndexersSection({
             nextMappingCompatibility?.supportsMapping === false
               ? null
               : prev.downloadClientId,
+          seedingProfileId: supportsSeedingProfileAssignment(
+            nextMappingCompatibility?.protocolFamilies,
+          )
+            ? prev.seedingProfileId
+            : null,
           storedSecretKeys: [],
           configValues: nextConfigValues,
         };
@@ -1018,7 +1196,7 @@ export function SettingsIndexersSection({
           />
         </div>
         <div className="overflow-x-auto">
-          <Table id="settings-indexers-table" className="min-w-[1160px]">
+          <Table id="settings-indexers-table" className="min-w-[1360px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
@@ -1027,6 +1205,9 @@ export function SettingsIndexersSection({
                 <TableHead>Proxy</TableHead>
                 <TableHead className="min-w-[220px]">
                   {t("settings.indexerDownloadClient")}
+                </TableHead>
+                <TableHead className="min-w-[200px]">
+                  {t("settings.seedingProfileColumn")}
                 </TableHead>
                 <TableHead className="text-center">
                   {t("label.enabled")}
@@ -1118,6 +1299,18 @@ export function SettingsIndexersSection({
                       onRetry={refreshIndexerDownloadClientMappingCatalog}
                       onChange={(downloadClientId) =>
                         setIndexerDownloadClientMapping(indexer.id, downloadClientId)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <IndexerSeedingProfileCell
+                      indexer={indexer}
+                      catalog={indexerDownloadClientMappingCatalogResource.catalog}
+                      options={seedingProfileOptions}
+                      isPending={mutatingIndexerSeedingProfileIds.has(indexer.id)}
+                      disabled={editingIndexerId === indexer.id && isEditorOpen}
+                      onChange={(seedingProfileId) =>
+                        setIndexerSeedingProfile(indexer.id, seedingProfileId)
                       }
                     />
                   </TableCell>
@@ -1389,6 +1582,26 @@ export function SettingsIndexersSection({
                 onRetry={refreshIndexerDownloadClientMappingCatalog}
               />
             )}
+            {indexerDownloadClientMappingCatalogResource.catalog ? (
+              <IndexerSeedingProfileSelect
+                selectId="settings-indexer-seeding-profile-form"
+                label={t("settings.seedingProfileColumn")}
+                value={indexerDraft.seedingProfileId}
+                options={seedingProfileOptions}
+                supported={
+                  !isManagedSyncProvider &&
+                  supportsSeedingProfileAssignment(draftProtocolFamilies)
+                }
+                isPending={mutatingIndexerId !== null}
+                showLabel
+                onChange={(seedingProfileId) =>
+                  setIndexerDraft((previous) => ({
+                    ...previous,
+                    seedingProfileId,
+                  }))
+                }
+              />
+            ) : null}
             </div>
 
             {selectedProviderFields.length > 0 ? (

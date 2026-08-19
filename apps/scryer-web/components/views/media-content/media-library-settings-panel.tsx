@@ -54,7 +54,10 @@ import type {
   ScoringPersonaId,
 } from "@/lib/types";
 import type { ImportMode } from "@/lib/types/settings";
-import type { DownloadClientRoutingSettingsByClient } from "@/lib/types/download-clients";
+import type {
+  DownloadClientRoutingSettings,
+  DownloadClientRoutingSettingsByClient,
+} from "@/lib/types/download-clients";
 import {
   buildDownloadClientRoutingState,
   disabledDownloadClientRoutingSettings,
@@ -886,14 +889,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const updateDownloadClientRoutingDraft = React.useCallback(
     (
       clientId: string,
-      nextValue: Partial<{
-        enabled: boolean;
-        category: string;
-        recentQueuePriority: string;
-        olderQueuePriority: string;
-        removeCompleted: boolean;
-        removeFailed: boolean;
-      }>,
+      nextValue: Partial<DownloadClientRoutingSettings>,
     ) => {
       setDraftDownloadClientRouting((current) => ({
         ...current,
