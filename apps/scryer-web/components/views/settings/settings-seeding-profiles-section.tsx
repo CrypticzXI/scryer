@@ -4,7 +4,11 @@ import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { CheckboxField } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
+import {
+  decimalInputProps,
+  Input,
+  sanitizeDecimal,
+} from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ActionTooltip } from "@/components/ui/tooltip";
 import {
@@ -43,6 +47,8 @@ import {
   SEEDING_PROFILE_INHERIT_VALUE,
   seedingProfileSelectValue,
   seedingProfileSelectValueToId,
+  validateSeedingProfileFields,
+  type SeedingProfileField,
 } from "@/lib/utils/seeding-profiles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -93,6 +99,17 @@ function FieldInfo({ content }: { content: React.ReactNode }) {
   );
 }
 
+function FieldError({ id, message }: { id: string; message?: string }) {
+  if (!message) {
+    return null;
+  }
+  return (
+    <p id={id} role="alert" className="text-xs text-[var(--scry-danger-text-soft)]">
+      {message}
+    </p>
+  );
+}
+
 function FieldLabel({
   htmlFor,
   label,
@@ -111,6 +128,14 @@ function FieldLabel({
     </div>
   );
 }
+
+const SEEDING_PROFILE_FIELDS: SeedingProfileField[] = [
+  "name",
+  "ratio",
+  "seedTimeMinutes",
+  "seasonPackRatio",
+  "seasonPackSeedTimeMinutes",
+];
 
 const SEASON_PACK_MODE_LABEL_KEY: Record<SeasonPackSeedMode, string> = {
   INHERIT: "settings.seedingProfileSeasonPackInherit",
@@ -154,6 +179,28 @@ export function SettingsSeedingProfilesSection({
   // so the goal-met action and the never-remove flag stop applying.
   const isHandOff = handsOffAfterImport(draft.postImportTracking);
 
+  // Field errors surface where the mistake is, and only once the field has
+  // been left (or the form submitted) so a half-typed value is not scolded
+  // mid-keystroke.
+  const fieldErrors = validateSeedingProfileFields(draft);
+  const [touchedFields, setTouchedFields] = React.useState<
+    ReadonlySet<SeedingProfileField>
+  >(() => new Set());
+  const markTouched = React.useCallback((field: SeedingProfileField) => {
+    setTouchedFields((prev) => {
+      if (prev.has(field)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.add(field);
+      return next;
+    });
+  }, []);
+  const errorFor = (field: SeedingProfileField) =>
+    touchedFields.has(field) ? fieldErrors[field] : undefined;
+  const errorId = (field: SeedingProfileField) =>
+    `settings-seeding-profile-${field}-error`;
+
   function updateField<K extends keyof SeedingProfileDraft>(
     field: K,
     value: SeedingProfileDraft[K],
@@ -176,6 +223,7 @@ export function SettingsSeedingProfilesSection({
     }
     previousEditorIdentity.current = editorIdentity;
     setIsSeasonPackOpen(draft.seasonPackMode === "OVERRIDE");
+    setTouchedFields(new Set());
   }, [draft.seasonPackMode, editorIdentity]);
 
   const defaultProfileMissing =
@@ -402,7 +450,14 @@ export function SettingsSeedingProfilesSection({
             <div className={SEEDING_PANEL_BODY_CLASS}>
               <form
                 id="settings-seeding-profile-form"
-                onSubmit={saveProfile}
+                onSubmit={(event) => {
+                  if (Object.keys(fieldErrors).length > 0) {
+                    event.preventDefault();
+                    setTouchedFields(new Set(SEEDING_PROFILE_FIELDS));
+                    return;
+                  }
+                  saveProfile(event);
+                }}
                 className="space-y-4"
               >
                 {/* Name */}
@@ -417,8 +472,12 @@ export function SettingsSeedingProfilesSection({
                     id="settings-seeding-profile-name"
                     value={draft.name}
                     onChange={(event) => updateField("name", event.target.value)}
+                    onBlur={() => markTouched("name")}
+                    aria-invalid={errorFor("name") ? true : undefined}
+                    aria-describedby={errorFor("name") ? errorId("name") : undefined}
                     placeholder={t("settings.seedingProfileNamePlaceholder")}
                   />
+                  <FieldError id={errorId("name")} message={errorFor("name")} />
                 </div>
 
                 {/* Goals */}
@@ -431,13 +490,19 @@ export function SettingsSeedingProfilesSection({
                     />
                     <Input
                       id="settings-seeding-profile-ratio"
-                      inputMode="decimal"
+                      {...decimalInputProps}
                       value={draft.ratio}
                       onChange={(event) =>
-                        updateField("ratio", event.target.value)
+                        updateField("ratio", sanitizeDecimal(event.target.value))
+                      }
+                      onBlur={() => markTouched("ratio")}
+                      aria-invalid={errorFor("ratio") ? true : undefined}
+                      aria-describedby={
+                        errorFor("ratio") ? errorId("ratio") : undefined
                       }
                       placeholder={t("settings.seedingProfileGoalPlaceholder")}
                     />
+                    <FieldError id={errorId("ratio")} message={errorFor("ratio")} />
                   </div>
                   <div className="space-y-1.5">
                     <FieldLabel
@@ -461,7 +526,18 @@ export function SettingsSeedingProfilesSection({
                       onChange={(event) =>
                         updateField("seedTimeMinutes", event.target.value)
                       }
+                      onBlur={() => markTouched("seedTimeMinutes")}
+                      aria-invalid={errorFor("seedTimeMinutes") ? true : undefined}
+                      aria-describedby={
+                        errorFor("seedTimeMinutes")
+                          ? errorId("seedTimeMinutes")
+                          : undefined
+                      }
                       placeholder={t("settings.seedingProfileGoalPlaceholder")}
+                    />
+                    <FieldError
+                      id={errorId("seedTimeMinutes")}
+                      message={errorFor("seedTimeMinutes")}
                     />
                   </div>
                 </div>
@@ -650,15 +726,31 @@ export function SettingsSeedingProfilesSection({
                         </Label>
                         <Input
                           id="settings-seeding-profile-season-pack-ratio"
-                          inputMode="decimal"
+                          {...decimalInputProps}
                           value={draft.seasonPackRatio}
                           disabled={!isSeasonPackOverride}
                           onChange={(event) =>
-                            updateField("seasonPackRatio", event.target.value)
+                            updateField(
+                              "seasonPackRatio",
+                              sanitizeDecimal(event.target.value),
+                            )
+                          }
+                          onBlur={() => markTouched("seasonPackRatio")}
+                          aria-invalid={
+                            errorFor("seasonPackRatio") ? true : undefined
+                          }
+                          aria-describedby={
+                            errorFor("seasonPackRatio")
+                              ? errorId("seasonPackRatio")
+                              : undefined
                           }
                           placeholder={t(
                             "settings.seedingProfileGoalPlaceholder",
                           )}
+                        />
+                        <FieldError
+                          id={errorId("seasonPackRatio")}
+                          message={errorFor("seasonPackRatio")}
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -670,6 +762,17 @@ export function SettingsSeedingProfilesSection({
                         </Label>
                         <Input
                           id="settings-seeding-profile-season-pack-seed-time"
+                          onBlur={() => markTouched("seasonPackSeedTimeMinutes")}
+                          aria-invalid={
+                            errorFor("seasonPackSeedTimeMinutes")
+                              ? true
+                              : undefined
+                          }
+                          aria-describedby={
+                            errorFor("seasonPackSeedTimeMinutes")
+                              ? errorId("seasonPackSeedTimeMinutes")
+                              : undefined
+                          }
                           value={draft.seasonPackSeedTimeMinutes}
                           disabled={!isSeasonPackOverride}
                           onChange={(event) =>
@@ -681,6 +784,10 @@ export function SettingsSeedingProfilesSection({
                           placeholder={t(
                             "settings.seedingProfileGoalPlaceholder",
                           )}
+                        />
+                        <FieldError
+                          id={errorId("seasonPackSeedTimeMinutes")}
+                          message={errorFor("seasonPackSeedTimeMinutes")}
                         />
                       </div>
                     </div>

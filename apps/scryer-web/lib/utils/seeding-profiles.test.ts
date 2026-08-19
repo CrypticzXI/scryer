@@ -21,6 +21,7 @@ import {
   toCreateSeedingProfileInput,
   toUpdateSeedingProfileInput,
   validateSeedingProfileDraft,
+  validateSeedingProfileFields,
 } from "./seeding-profiles.ts";
 
 function draft(overrides: Partial<SeedingProfileDraft> = {}): SeedingProfileDraft {
@@ -126,25 +127,47 @@ test("validation rejects what the backend rejects", () => {
   assert.equal(validateSeedingProfileDraft(draft()), null);
   assert.match(
     validateSeedingProfileDraft(draft({ name: "  " })) ?? "",
-    /name is required/,
+    /Enter a name/,
   );
-  assert.match(
-    validateSeedingProfileDraft(draft({ ratio: "0" })) ?? "",
-    /Ratio must be/,
-  );
-  assert.match(
-    validateSeedingProfileDraft(draft({ ratio: "-1" })) ?? "",
-    /Ratio must be/,
-  );
-  assert.match(
-    validateSeedingProfileDraft(draft({ ratio: "abc" })) ?? "",
-    /Ratio must be/,
-  );
+  for (const ratio of ["0", "-1", "abc"]) {
+    assert.match(
+      validateSeedingProfileDraft(draft({ ratio })) ?? "",
+      /number greater than zero/,
+      ratio,
+    );
+  }
   assert.match(
     validateSeedingProfileDraft(draft({ seedTimeMinutes: "1.5" })) ?? "",
-    /Seed time must be/,
+    /duration like/,
   );
   assert.equal(validateSeedingProfileDraft(draft({ ratio: "1.25" })), null);
+});
+
+test("each bad field reports under itself, not as one banner message", () => {
+  const errors = validateSeedingProfileFields(
+    draft({
+      name: "  ",
+      ratio: "abc",
+      seedTimeMinutes: "1.5",
+      seasonPackMode: "OVERRIDE",
+      seasonPackRatio: "nope",
+      seasonPackSeedTimeMinutes: "later",
+    }),
+  );
+  assert.deepEqual(Object.keys(errors).sort(), [
+    "name",
+    "ratio",
+    "seasonPackRatio",
+    "seasonPackSeedTimeMinutes",
+    "seedTimeMinutes",
+  ]);
+
+  // A valid draft leaves every field clean.
+  assert.deepEqual(validateSeedingProfileFields(draft()), {});
+  // One bad field does not implicate its neighbours.
+  assert.deepEqual(Object.keys(validateSeedingProfileFields(draft({ ratio: "x" }))), [
+    "ratio",
+  ]);
 });
 
 test("season-pack goals are only validated in override mode", () => {
@@ -158,7 +181,7 @@ test("season-pack goals are only validated in override mode", () => {
     validateSeedingProfileDraft(
       draft({ seasonPackMode: "OVERRIDE", seasonPackRatio: "nonsense" }),
     ) ?? "",
-    /Season-pack ratio must be/,
+    /number greater than zero/,
   );
 });
 

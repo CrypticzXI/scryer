@@ -24,6 +24,24 @@ export function sanitizeDigits(raw: string): string {
   return raw.replace(/\D+/g, "")
 }
 
+export const decimalInputProps = {
+  type: "text",
+  inputMode: "decimal",
+} satisfies Pick<React.ComponentProps<"input">, "type" | "inputMode">
+
+/** Digits and at most one decimal point; everything else is dropped. */
+export function sanitizeDecimal(raw: string): string {
+  const digitsAndDots = raw.replace(/[^\d.]+/g, "")
+  const firstDot = digitsAndDots.indexOf(".")
+  if (firstDot === -1) {
+    return digitsAndDots
+  }
+  return (
+    digitsAndDots.slice(0, firstDot + 1) +
+    digitsAndDots.slice(firstDot + 1).replace(/\./g, "")
+  )
+}
+
 type InputProps = React.ComponentProps<"input"> & {
   "data-1p-ignore"?: string
   "data-lpignore"?: string

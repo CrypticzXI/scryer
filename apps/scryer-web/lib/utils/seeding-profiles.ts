@@ -169,29 +169,70 @@ export function formatSeedDuration(minutes: number | null | undefined): string {
   return parts.join(" ");
 }
 
+/** Draft fields that can carry a validation message of their own. */
+export type SeedingProfileField =
+  | "name"
+  | "ratio"
+  | "seedTimeMinutes"
+  | "seasonPackRatio"
+  | "seasonPackSeedTimeMinutes";
+
+export type SeedingProfileFieldErrors = Partial<
+  Record<SeedingProfileField, string>
+>;
+
+/// Field order for the first-error summary; matches the form's reading order.
+const SEEDING_PROFILE_FIELD_ORDER: SeedingProfileField[] = [
+  "name",
+  "ratio",
+  "seedTimeMinutes",
+  "seasonPackRatio",
+  "seasonPackSeedTimeMinutes",
+];
+
 /**
  * Mirrors the backend's `SeedingProfile::validate` so bad input is rejected
- * before the mutation round-trip. Returns a message key-free English string,
- * matching `validateDelayProfileDraft`.
+ * before the mutation round-trip, keyed by field so the editor can show each
+ * message under the input that caused it.
  */
+export function validateSeedingProfileFields(
+  draft: SeedingProfileDraft,
+): SeedingProfileFieldErrors {
+  const errors: SeedingProfileFieldErrors = {};
+  if (!draft.name.trim()) {
+    errors.name = "Enter a name for this profile.";
+  }
+  if (!parseOptionalRatio(draft.ratio).ok) {
+    errors.ratio = "Enter a number greater than zero, or leave empty.";
+  }
+  if (!parseSeedDuration(draft.seedTimeMinutes).ok) {
+    errors.seedTimeMinutes =
+      "Enter a duration like 90m, 36h, 1d 12h or 2w, or leave empty.";
+  }
+  // Season-pack goals only exist in override mode, so inherit mode cannot be
+  // held back by whatever is sitting in those inputs.
+  if (draft.seasonPackMode === "OVERRIDE") {
+    if (!parseOptionalRatio(draft.seasonPackRatio).ok) {
+      errors.seasonPackRatio =
+        "Enter a number greater than zero, or leave empty.";
+    }
+    if (!parseSeedDuration(draft.seasonPackSeedTimeMinutes).ok) {
+      errors.seasonPackSeedTimeMinutes =
+        "Enter a duration like 90m, 36h, 1d 12h or 2w, or leave empty.";
+    }
+  }
+  return errors;
+}
+
+/** First field error in form order, for callers that want a single message. */
 export function validateSeedingProfileDraft(
   draft: SeedingProfileDraft,
 ): string | null {
-  if (!draft.name.trim()) {
-    return "Seeding profile name is required.";
-  }
-  if (!parseOptionalRatio(draft.ratio).ok) {
-    return "Ratio must be a number greater than zero, or empty.";
-  }
-  if (!parseSeedDuration(draft.seedTimeMinutes).ok) {
-    return "Seed time must be a duration like 90m, 36h, 1d 12h or 2w, or empty.";
-  }
-  if (draft.seasonPackMode === "OVERRIDE") {
-    if (!parseOptionalRatio(draft.seasonPackRatio).ok) {
-      return "Season-pack ratio must be a number greater than zero, or empty.";
-    }
-    if (!parseSeedDuration(draft.seasonPackSeedTimeMinutes).ok) {
-      return "Season-pack seed time must be a duration like 90m, 36h, 1d 12h or 2w, or empty.";
+  const errors = validateSeedingProfileFields(draft);
+  for (const field of SEEDING_PROFILE_FIELD_ORDER) {
+    const message = errors[field];
+    if (message) {
+      return message;
     }
   }
   return null;
