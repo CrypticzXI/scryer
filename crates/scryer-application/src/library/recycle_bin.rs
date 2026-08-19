@@ -513,7 +513,7 @@ async fn recycle_source_to_destination(
 ) -> AppResult<()> {
     match tokio::fs::rename(&source_path, &recycled_path).await {
         Ok(()) => return Ok(()),
-        Err(error) if is_cross_device_error(&error) => {
+        Err(error) if crate::fs_safety::is_cross_device_error(&error) => {
             info!(
                 source = %source_path.display(),
                 recycled = %recycled_path.display(),
@@ -597,10 +597,6 @@ async fn recycle_source_to_destination(
             )))
         }
     }
-}
-
-fn is_cross_device_error(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(18) | Some(17))
 }
 
 fn lexically_normalize_for_policy(path: &Path) -> PathBuf {
@@ -1023,7 +1019,7 @@ async fn restore_from_recycle_inner(
 
     match tokio::fs::rename(recycled_path, original_path).await {
         Ok(()) => {}
-        Err(error) if is_cross_device_error(&error) => {
+        Err(error) if crate::fs_safety::is_cross_device_error(&error) => {
             // Cross-device restore cannot rename. Prove the restored copy is
             // identical before removing the recycled source; on mismatch,
             // remove the bad restore and keep the recycled copy so the file

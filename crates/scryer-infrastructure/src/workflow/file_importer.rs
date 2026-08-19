@@ -45,12 +45,6 @@ impl FsFileImporter {
     }
 }
 
-fn is_cross_device_error(err: &std::io::Error) -> bool {
-    // EXDEV = errno 18 on both Linux and macOS
-    // Windows: ERROR_NOT_SAME_DEVICE = 17
-    matches!(err.raw_os_error(), Some(18) | Some(17))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileFingerprint {
     len: u64,
@@ -1133,7 +1127,7 @@ fn copy_regular_source_to_destination_once(
         .map_err(io_other)
         .map_err(|error| ImportCopyAttemptError::new("source verification", error))?;
 
-    std::fs::rename(temp_dest, dest)
+    scryer_application::fs_safety::rename_into_claimed_destination_blocking(temp_dest, dest)
         .map_err(|error| ImportCopyAttemptError::new("final rename", error))?;
 
     Ok(())
@@ -1401,7 +1395,7 @@ fn import_hardlink_or_copy_blocking(
                     }
                 }
             }
-            Err(e) if is_cross_device_error(&e) => {
+            Err(e) if scryer_application::fs_safety::is_cross_device_error(&e) => {
                 tracing::info!(
                     "hard link failed (cross-device), falling back to copy: {} -> {}",
                     source.display(),

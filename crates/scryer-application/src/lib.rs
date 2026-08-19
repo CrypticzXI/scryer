@@ -31,7 +31,7 @@ pub mod external_import;
 pub mod file_source_signature;
 mod folder_ownership;
 pub mod fs_integrity;
-mod fs_safety;
+pub mod fs_safety;
 mod health;
 mod helpers;
 mod image_proxy;

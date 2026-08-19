@@ -122,7 +122,7 @@ async fn relocate_titleless_archive_workspace_for_title(
         Ok(()) => Ok(TitlelessArchiveRelocation::Ready(target)),
         Err(error) => {
             crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
-            if is_cross_device_rename_error(&error) {
+            if crate::fs_safety::is_cross_device_error(&error) {
                 return Ok(TitlelessArchiveRelocation::ReextractUnderMatchedTitle);
             }
             Err(AppError::Validation(format!(
@@ -133,11 +133,6 @@ async fn relocate_titleless_archive_workspace_for_title(
             )))
         }
     }
-}
-
-fn is_cross_device_rename_error(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::CrossesDevices
-        || cfg!(unix) && error.raw_os_error() == Some(18)
 }
 
 async fn archive_extraction_destination_for_completed_facet(
@@ -2464,18 +2459,16 @@ async fn mark_wanted_completed_for_series_movie_link(
 
 #[cfg(test)]
 mod archive_relocation_tests {
-    use super::*;
-
     #[cfg(unix)]
     #[test]
     fn cross_device_rename_error_is_detected() {
         let error = std::io::Error::from_raw_os_error(18);
-        assert!(is_cross_device_rename_error(&error));
+        assert!(crate::fs_safety::is_cross_device_error(&error));
     }
 
     #[test]
     fn unrelated_rename_error_is_not_cross_device() {
         let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
-        assert!(!is_cross_device_rename_error(&error));
+        assert!(!crate::fs_safety::is_cross_device_error(&error));
     }
 }

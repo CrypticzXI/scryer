@@ -272,3 +272,465 @@ mod tests {
         );
     }
 }
+
+// ── Moving files ─────────────────────────────────────────────────────────────
+//
+// Every path that relocates media goes through `move_file_exclusive`. Before it
+// existed each caller grew its own move, and they disagreed about the one thing
+// that matters: `rename(2)` replaces the destination silently, so a mover that
+// does not claim the destination can destroy a file nobody asked it to touch.
+
+/// How a move should treat the destination and the copy it may have to make.
+#[derive(Debug, Clone, Copy)]
+pub struct MoveOptions {
+    /// Replace an existing destination. Off by default: replacing is a
+    /// deliberate act, never a fallback.
+    pub overwrite: bool,
+    /// Prove a cross-device copy matches the source before the source is
+    /// unlinked. Only turn this off when the caller verifies for itself.
+    pub verify_cross_device: bool,
+}
+
+impl Default for MoveOptions {
+    fn default() -> Self {
+        Self {
+            overwrite: false,
+            verify_cross_device: true,
+        }
+    }
+}
+
+/// Cross-device rename.
+///
+/// The bare numbers differ per platform: 18 is `EXDEV` on Unix, while 17 is
+/// `ERROR_NOT_SAME_DEVICE` on Windows and `EEXIST` on Unix. Matching both
+/// everywhere sent existing-destination failures down copy-and-delete paths.
+pub fn is_cross_device_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        matches!(error.raw_os_error(), Some(libc::EXDEV))
+    }
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(17))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Moves `source` onto `dest` without ever replacing a file the caller did not
+/// ask to replace.
+///
+/// Same-device moves use an exclusive rename where the kernel offers one and a
+/// claim-then-rename otherwise. Cross-device moves claim the destination, copy
+/// into the claimed handle, verify, and only then unlink the source. A symlink
+/// is re-created rather than having the file it points at copied.
+pub async fn move_file_exclusive(
+    source: &Path,
+    dest: &Path,
+    options: MoveOptions,
+) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    // On a case-insensitive volume the destination name resolves to the source
+    // file itself, so this is a rename to perform, not a collision to reject.
+    if source != dest && paths_are_same_file(source, dest).await {
+        return move_via_intermediate_name(source, dest).await;
+    }
+
+    if options.overwrite {
+        return match tokio::fs::rename(source, dest).await {
+            Ok(()) => Ok(()),
+            Err(error) if is_cross_device_error(&error) => {
+                transfer_across_devices(source, dest, options).await
+            }
+            Err(error) => Err(error),
+        };
+    }
+
+    match exclusive_rename(source, dest).await {
+        Some(Ok(())) => return Ok(()),
+        Some(Err(error)) if is_cross_device_error(&error) => {
+            return transfer_across_devices(source, dest, options).await;
+        }
+        Some(Err(error)) => return Err(error),
+        // The platform or filesystem has no exclusive rename; claim instead.
+        None => {}
+    }
+
+    // Claiming fails closed: if the destination cannot be reserved, the move
+    // does not happen. Falling back to a plain rename here would reintroduce
+    // the silent replace on exactly the network mounts that reject the claim.
+    claim_destination(dest).await?;
+    match tokio::fs::rename(source, dest).await {
+        Ok(()) => Ok(()),
+        Err(error) if is_cross_device_error(&error) => {
+            // The claim is already in place; copy into it.
+            let result = copy_into_destination(source, dest, options).await;
+            if result.is_err() {
+                let _ = tokio::fs::remove_file(dest).await;
+            }
+            result
+        }
+        Err(error) => {
+            // Do not leave the empty reservation behind.
+            let _ = tokio::fs::remove_file(dest).await;
+            Err(error)
+        }
+    }
+}
+
+/// Claims `dest` so no other writer can take it, failing if it is already held.
+async fn claim_destination(dest: &Path) -> std::io::Result<()> {
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .await
+        .map(|_| ())
+}
+
+async fn transfer_across_devices(
+    source: &Path,
+    dest: &Path,
+    options: MoveOptions,
+) -> std::io::Result<()> {
+    // A symlinked media file is a pointer, not the payload: copying it would
+    // silently duplicate the whole file and drop the link.
+    if tokio::fs::symlink_metadata(source).await?.is_symlink() {
+        let link_target = tokio::fs::read_link(source).await?;
+        if options.overwrite {
+            let _ = tokio::fs::remove_file(dest).await;
+        }
+        create_symlink(&link_target, dest).await?;
+        tokio::fs::remove_file(source).await?;
+        return Ok(());
+    }
+
+    if !options.overwrite {
+        claim_destination(dest).await?;
+    }
+    let result = copy_into_destination(source, dest, options).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(dest).await;
+    }
+    result
+}
+
+/// Copies into a destination the caller already holds, proves it, then unlinks
+/// the source. Never widens the destination: the handle is opened for writing
+/// without creating, so the claim is what decided the file may be written.
+async fn copy_into_destination(
+    source: &Path,
+    dest: &Path,
+    options: MoveOptions,
+) -> std::io::Result<()> {
+    let mut source_file = tokio::fs::File::open(source).await?;
+    let mut dest_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(dest)
+        .await?;
+    tokio::io::copy(&mut source_file, &mut dest_file).await?;
+    dest_file.sync_all().await?;
+    drop(dest_file);
+
+    if options.verify_cross_device
+        && let Err(error) = crate::fs_integrity::verify_same_file_async(source, dest).await
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        ));
+    }
+
+    tokio::fs::remove_file(source).await
+}
+
+#[cfg(unix)]
+async fn create_symlink(link_target: &Path, at: &Path) -> std::io::Result<()> {
+    tokio::fs::symlink(link_target, at).await
+}
+
+#[cfg(windows)]
+async fn create_symlink(link_target: &Path, at: &Path) -> std::io::Result<()> {
+    tokio::fs::symlink_file(link_target, at).await
+}
+
+/// `Some` when the platform answered with an exclusive rename, `None` when the
+/// caller should claim the destination instead.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn exclusive_rename(source: &Path, dest: &Path) -> Option<std::io::Result<()>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source_c = CString::new(source.as_os_str().as_bytes()).ok()?;
+    let dest_c = CString::new(dest.as_os_str().as_bytes()).ok()?;
+    let result = tokio::task::spawn_blocking(move || {
+        // SAFETY: both paths are NUL-terminated and outlive the call.
+        let code = unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    source_c.as_ptr(),
+                    libc::AT_FDCWD,
+                    dest_c.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                libc::renamex_np(source_c.as_ptr(), dest_c.as_ptr(), libc::RENAME_EXCL)
+            }
+        };
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    })
+    .await
+    .ok()?;
+
+    match result {
+        Err(ref error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOSYS) | Some(libc::ENOTSUP) | Some(libc::EINVAL)
+            ) =>
+        {
+            // Old kernel, or a filesystem without exclusive rename.
+            None
+        }
+        other => Some(other),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+async fn exclusive_rename(_source: &Path, _dest: &Path) -> Option<std::io::Result<()>> {
+    None
+}
+
+/// Whether `dest` is available to receive `source`.
+///
+/// A destination that *is* the source is a case-only rename on a
+/// case-insensitive volume, not a collision, so it counts as free.
+pub async fn destination_is_free_for(source: &Path, dest: &Path) -> bool {
+    if tokio::fs::symlink_metadata(dest).await.is_err() {
+        return true;
+    }
+    paths_are_same_file(source, dest).await
+}
+
+/// True when both paths name the same file, which is how a case-only rename
+/// looks on a case-insensitive volume.
+async fn paths_are_same_file(source: &Path, dest: &Path) -> bool {
+    let (Ok(source_meta), Ok(dest_meta)) = (
+        tokio::fs::symlink_metadata(source).await,
+        tokio::fs::symlink_metadata(dest).await,
+    ) else {
+        return false;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        source_meta.dev() == dest_meta.dev() && source_meta.ino() == dest_meta.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source_meta, dest_meta);
+        source.to_string_lossy().to_lowercase() == dest.to_string_lossy().to_lowercase()
+    }
+}
+
+/// Renames through a uniquely named sibling so a case-only change lands even
+/// where the volume treats both names as the same file.
+async fn move_via_intermediate_name(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let parent = source.parent().unwrap_or_else(|| Path::new("."));
+    let mut last_error = None;
+    for _ in 0..10 {
+        let id = crate::Id::new().0;
+        let intermediate = parent.join(format!(".scryer-move-{}", &id[..8]));
+        if claim_destination(&intermediate).await.is_err() {
+            continue;
+        }
+        // The claim only reserved the name; the rename replaces it.
+        match tokio::fs::rename(source, &intermediate).await {
+            Ok(()) => {
+                return match tokio::fs::rename(&intermediate, dest).await {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        // Put the file back rather than stranding it.
+                        let _ = tokio::fs::rename(&intermediate, source).await;
+                        Err(error)
+                    }
+                };
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&intermediate).await;
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other("could not claim an intermediate name for a case-only rename")
+    }))
+}
+
+/// Blocking twin of the claim `move_file_exclusive` makes, for importers that
+/// already run on a blocking thread.
+///
+/// Renames `staged` onto `dest` only after reserving the destination name, so a
+/// file that appeared since the caller last looked is never replaced.
+pub fn rename_into_claimed_destination_blocking(staged: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    match std::fs::rename(staged, dest) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Do not leave the empty reservation behind.
+            let _ = std::fs::remove_file(dest);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    fn write(path: &Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).expect("write fixture");
+    }
+
+    /// `rename(2)` replaces the destination silently. This is the guarantee that
+    /// stops any mover from destroying a file it was not asked to touch.
+    #[tokio::test]
+    async fn refuses_to_replace_an_existing_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("dest.mkv");
+        write(&source, b"source-payload");
+        write(&dest, b"dest-payload");
+
+        let error = move_file_exclusive(&source, &dest, MoveOptions::default())
+            .await
+            .expect_err("an occupied destination must not be replaced");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"dest-payload");
+        assert_eq!(std::fs::read(&source).expect("source"), b"source-payload");
+    }
+
+    #[tokio::test]
+    async fn replaces_only_when_the_caller_asks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("dest.mkv");
+        write(&source, b"source-payload");
+        write(&dest, b"dest-payload");
+
+        move_file_exclusive(
+            &source,
+            &dest,
+            MoveOptions {
+                overwrite: true,
+                ..MoveOptions::default()
+            },
+        )
+        .await
+        .expect("an explicit overwrite should succeed");
+
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"source-payload");
+        assert!(!source.exists());
+    }
+
+    /// On a case-insensitive volume the destination resolves to the source, so
+    /// this is a rename to perform rather than a collision to reject.
+    #[tokio::test]
+    async fn performs_a_case_only_rename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("one piece.mkv");
+        let dest = dir.path().join("ONE PIECE.mkv");
+        write(&source, b"payload");
+
+        move_file_exclusive(&source, &dest, MoveOptions::default())
+            .await
+            .expect("case-only rename should succeed");
+
+        assert_eq!(std::fs::read(&dest).expect("renamed"), b"payload");
+        let names = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["ONE PIECE.mkv".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn moves_a_file_that_has_no_destination_yet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("nested").join("dest.mkv");
+        write(&source, b"payload");
+
+        move_file_exclusive(&source, &dest, MoveOptions::default())
+            .await
+            .expect("a free destination should accept the move");
+
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"payload");
+        assert!(!source.exists());
+    }
+
+    /// 17 is `EEXIST` on Unix and `ERROR_NOT_SAME_DEVICE` on Windows. Reading it
+    /// as cross-device on Unix sent existing-destination failures into
+    /// copy-and-delete, which is how an import could overwrite a file.
+    #[test]
+    fn cross_device_detection_does_not_confuse_eexist() {
+        #[cfg(unix)]
+        {
+            assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+                libc::EXDEV
+            )));
+            assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
+                libc::EEXIST
+            )));
+        }
+        assert!(!is_cross_device_error(&std::io::Error::from_raw_os_error(
+            5
+        )));
+    }
+
+    #[test]
+    fn blocking_claim_refuses_an_occupied_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let staged = dir.path().join("staged.tmp");
+        let dest = dir.path().join("dest.mkv");
+        write(&staged, b"staged-payload");
+        write(&dest, b"dest-payload");
+
+        let error = rename_into_claimed_destination_blocking(&staged, &dest)
+            .expect_err("the importer must not replace an existing destination");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"dest-payload");
+        assert_eq!(std::fs::read(&staged).expect("staged"), b"staged-payload");
+    }
+}
