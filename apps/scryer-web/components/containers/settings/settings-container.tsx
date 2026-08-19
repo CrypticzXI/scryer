@@ -546,6 +546,9 @@ export const SettingsContainer = memo(function SettingsContainer({
           </nav>
         </aside>
       ) : null}
+      {settingsSection === "indexers" ? (
+        <IndexerSettingsSubnav activeTab={indexerSettingsTab} t={t} />
+      ) : null}
       <main
         ref={settingsContentRef}
         data-slot="settings-main-scroll"
@@ -662,9 +665,7 @@ export const SettingsContainer = memo(function SettingsContainer({
           ) : settingsSection === "mediaServers" ? (
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
-            <div className="md:flex md:min-h-0 md:flex-row md:gap-4">
-              <IndexerSettingsSubnav activeTab={indexerSettingsTab} t={t} />
-              <div className="min-w-0 flex-1 pt-4 md:pt-0">
+            <>
               {indexerSettingsTab === "seedingProfiles" ? (
                 <SettingsSeedingProfilesContainer />
               ) : (
@@ -682,8 +683,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                   }
                 />
               )}
-              </div>
-            </div>
+            </>
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
               providerCatalogVersion={
