@@ -449,6 +449,12 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     trackedStatus
     trackedStatusMessages
     trackedMatchType
+    seedingState
+    seedRatio
+    seedRatioGoal
+    seedTimeSeconds
+    seedTimeGoalSeconds
+    isPrivate
     queueScope {
       __typename
       ... on EpisodeScopePayload {

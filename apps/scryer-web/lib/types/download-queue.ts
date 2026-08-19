@@ -140,14 +140,16 @@ export type DownloadQueueItem = {
   trackedStatus: TrackedDownloadStatus | null;
   trackedStatusMessages: string[];
   trackedMatchType: TitleMatchType | null;
-  // Seeding progress. Optional because the queue documents select them only
-  // from the package that renders them; the payload always offers them.
-  seedingState?: DownloadSeedingState | null;
-  seedRatio?: number | null;
-  seedRatioGoal?: number | null;
-  seedTimeSeconds?: number | null;
-  seedTimeGoalSeconds?: number | null;
-  isPrivate?: boolean | null;
+  // Seeding progress. Every queue document selects these, so they are always
+  // present on the wire; each is nullable because the observation, the goal and
+  // the private flag are independently unknowable. `null` means "not observed"
+  // and must never be rendered as zero, and `isPrivate: null` never means public.
+  seedingState: DownloadSeedingState | null;
+  seedRatio: number | null;
+  seedRatioGoal: number | null;
+  seedTimeSeconds: number | null;
+  seedTimeGoalSeconds: number | null;
+  isPrivate: boolean | null;
   queueScope: ReleaseQueueScope | null;
 };
 

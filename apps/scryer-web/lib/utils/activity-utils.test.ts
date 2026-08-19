@@ -9,6 +9,9 @@ const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 type QueueRowResult = {
   failureReason: string;
   hasStatusDetails: boolean;
+  displayStateKey: string;
+  statusBadgeKey: string;
+  statusLabel: string;
 };
 
 type DeriveQueueRowPresentation = (
@@ -36,6 +39,8 @@ after(async () => {
 });
 
 const translations: Record<string, string> = {
+  "queue.state.completed": "Completed",
+  "queue.state.importedSeeding": "Imported · Seeding",
   "queue.blockReasonFallbackUnassigned":
     "Automatic import could not identify a library title. Assign a title to continue.",
   "queue.blockReasonFallbackEpisodic":
@@ -85,6 +90,12 @@ function blockedItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueueI
     trackedStatus: "WARNING",
     trackedStatusMessages: [],
     trackedMatchType: "UNMATCHED",
+    seedingState: null,
+    seedRatio: null,
+    seedRatioGoal: null,
+    seedTimeSeconds: null,
+    seedTimeGoalSeconds: null,
+    isPrivate: null,
     queueScope: null,
     ...overrides,
   };
@@ -123,6 +134,46 @@ test("blocked movie rows direct the operator to review the file mapping", () => 
     row.failureReason,
     translations["queue.blockReasonFallbackReview"],
   );
+});
+
+test("an imported torrent that is still seeding gets its own badge", () => {
+  // The backend deliberately added no display state for it: the row still
+  // displays as COMPLETED, so the badge has to read the tracked state.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      displayState: "COMPLETED",
+      trackedState: "IMPORTED_SEEDING",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: false,
+      seedingState: "SEEDING",
+      seedRatio: 0.8,
+      seedRatioGoal: 1.5,
+    }),
+    translate,
+  );
+
+  assert.equal(row.displayStateKey, "COMPLETED");
+  assert.equal(row.statusBadgeKey, "IMPORTED_SEEDING");
+  assert.equal(row.statusLabel, translations["queue.state.importedSeeding"]);
+});
+
+test("a finished download without a seeding hold keeps the completed badge", () => {
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      displayState: "COMPLETED",
+      trackedState: "IMPORTED",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: false,
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "COMPLETED");
+  assert.equal(row.statusLabel, translations["queue.state.completed"]);
 });
 
 test("backend import-block detail takes precedence over frontend fallback copy", () => {

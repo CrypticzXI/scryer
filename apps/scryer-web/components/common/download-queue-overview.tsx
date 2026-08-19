@@ -2,6 +2,7 @@ import { AlertCircle } from "lucide-react";
 
 import { DownloadClientTypeLogo } from "@/components/common/download-client-type-logo";
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
+import { ActivityQueueSeedingProgress } from "@/components/views/activity/queue-row-presentation";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import { cn } from "@/lib/utils";
@@ -9,6 +10,7 @@ import {
   buildQueueStatusDetail,
   downloadQueueItemIdentityKey,
 } from "@/lib/utils/download-queue";
+import { isImportedSeedingRow } from "@/lib/utils/seeding-progress";
 
 const queueStateClasses: Record<string, string> = {
   QUEUED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
@@ -16,6 +18,8 @@ const queueStateClasses: Record<string, string> = {
   POST_PROCESSING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   PAUSED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   COMPLETED: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  IMPORTED_SEEDING:
+    "border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   IMPORTING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   REMOVING: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   IMPORT_PENDING: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
@@ -31,6 +35,7 @@ const queueStateLabels: Record<string, string> = {
   POST_PROCESSING: "queue.state.postProcessing",
   PAUSED: "queue.state.paused",
   COMPLETED: "queue.state.completed",
+  IMPORTED_SEEDING: "queue.state.importedSeeding",
   IMPORTING: "queue.state.importing",
   REMOVING: "queue.deleting",
   IMPORT_PENDING: "queue.state.importPending",
@@ -145,11 +150,21 @@ function getProgressBarColor(stateKey: string): string {
   }
 }
 
+/**
+ * Badge key for a queue row. `IMPORTED_SEEDING` is a tracked state whose
+ * display state stays `COMPLETED`, so it has to be read off the tracked record
+ * or an imported-and-still-seeding torrent is indistinguishable from a
+ * finished download.
+ */
+function queueBadgeStateKey(queueItem: DownloadQueueItem): string {
+  return isImportedSeedingRow(queueItem) ? "IMPORTED_SEEDING" : queueItem.displayState;
+}
+
 function queueStatusLabel(
   queueItem: DownloadQueueItem,
   t: ReturnType<typeof useTranslate>,
 ): string {
-  const stateKey = queueItem.displayState;
+  const stateKey = queueBadgeStateKey(queueItem);
   const stageLabel =
     queueItem.attentionReason?.trim() ??
     queueItem.trackedStatusMessages[0]?.trim() ??
@@ -202,7 +217,7 @@ export function MovieOverviewDownloadList({
                       <span
                         className={cn(
                           "inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-medium",
-                          queueStateClasses[stateKey] ??
+                          queueStateClasses[queueBadgeStateKey(item)] ??
                             "border-border/70 bg-background/80 text-foreground",
                         )}
                       >
@@ -215,6 +230,7 @@ export function MovieOverviewDownloadList({
                     <p className="truncate text-sm font-medium text-card-foreground">
                       {item.titleName}
                     </p>
+                    <ActivityQueueSeedingProgress queueItem={item} t={t} />
                     {detail ? (
                       <p className="flex items-start gap-1 text-xs text-muted-foreground">
                         <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />

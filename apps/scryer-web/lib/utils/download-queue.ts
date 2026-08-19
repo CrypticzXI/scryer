@@ -234,6 +234,17 @@ function fillMissingQueueItemFields(
         ? primary.trackedStatusMessages
         : secondary.trackedStatusMessages,
     trackedMatchType: primary.trackedMatchType ?? secondary.trackedMatchType,
+    // A present observation always wins and an absent one inherits the last
+    // known value, matching how the tracker retains seeding observations
+    // server-side: a row that blinks to "unknown" between two sources would
+    // make the badge and the numbers flicker on every poll.
+    seedingState: primary.seedingState ?? secondary.seedingState,
+    seedRatio: primary.seedRatio ?? secondary.seedRatio,
+    seedRatioGoal: primary.seedRatioGoal ?? secondary.seedRatioGoal,
+    seedTimeSeconds: primary.seedTimeSeconds ?? secondary.seedTimeSeconds,
+    seedTimeGoalSeconds:
+      primary.seedTimeGoalSeconds ?? secondary.seedTimeGoalSeconds,
+    isPrivate: primary.isPrivate ?? secondary.isPrivate,
     queueScope: primary.queueScope ?? secondary.queueScope,
   };
 }

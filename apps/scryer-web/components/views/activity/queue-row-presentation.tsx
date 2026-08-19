@@ -1,6 +1,13 @@
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, Lock } from "lucide-react";
 
+import { ActionTooltip } from "@/components/ui/tooltip";
+import type { DownloadQueueItem } from "@/lib/types";
 import { queueStateClasses, type TranslateFn } from "@/lib/utils/activity-utils";
+import { cn } from "@/lib/utils";
+import {
+  deriveSeedingProgress,
+  isPrivateTorrentRow,
+} from "@/lib/utils/seeding-progress";
 
 export function ActivityQueueStatusBadge({
   stateKey,
@@ -61,6 +68,85 @@ export function ActivityQueueTitleContent({
         >
           {releaseTitle}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+export type ActivityQueueSeedingProgressItem = Pick<
+  DownloadQueueItem,
+  | "seedingState"
+  | "seedRatio"
+  | "seedRatioGoal"
+  | "seedTimeSeconds"
+  | "seedTimeGoalSeconds"
+  | "isPrivate"
+>;
+
+/**
+ * Read-only seeding summary for a queue row: how far the torrent has got
+ * against whatever goal was resolved at grab time, and whether the tracker is
+ * private. Renders nothing at all when the row is not a torrent, when the
+ * client reports no seeding state, or when the state is `NONE`; renders no
+ * number for an axis that was never observed. There are no controls here —
+ * the existing remove action is the manual escape hatch.
+ */
+export function ActivityQueueSeedingProgress({
+  queueItem,
+  className,
+  t,
+}: {
+  queueItem: ActivityQueueSeedingProgressItem;
+  className?: string;
+  t: TranslateFn;
+}) {
+  const seeding = deriveSeedingProgress(queueItem);
+  const isPrivate = isPrivateTorrentRow(queueItem);
+
+  if (!seeding && !isPrivate) {
+    return null;
+  }
+
+  return (
+    <div
+      data-ui="queue-seeding"
+      // Omitted rather than emptied: an unknown private flag must not be
+      // selectable as if it had been answered.
+      data-seeding-state={seeding?.stateKey}
+      data-seeding-private={isPrivate ? "true" : undefined}
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground",
+        className,
+      )}
+    >
+      {isPrivate ? (
+        <ActionTooltip
+          content={t("queue.seeding.privateTooltip")}
+          wrapperTabIndex={0}
+        >
+          <span
+            data-ui="queue-seeding-private"
+            className="inline-flex items-center text-[var(--scry-accent-text)]"
+            aria-label={t("queue.seeding.private")}
+          >
+            <Lock className="h-3 w-3" aria-hidden="true" />
+          </span>
+        </ActionTooltip>
+      ) : null}
+      {seeding ? (
+        <span data-ui="queue-seeding-state" className={seeding.toneClass}>
+          {t(seeding.labelKey)}
+        </span>
+      ) : null}
+      {seeding?.ratioLabel ? (
+        <span data-ui="queue-seeding-ratio">
+          {t("queue.seeding.ratio", { value: seeding.ratioLabel })}
+        </span>
+      ) : null}
+      {seeding?.seedTimeLabel ? (
+        <span data-ui="queue-seeding-time">
+          {t("queue.seeding.seedTime", { value: seeding.seedTimeLabel })}
+        </span>
       ) : null}
     </div>
   );

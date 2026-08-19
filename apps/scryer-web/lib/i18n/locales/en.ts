@@ -1486,6 +1486,7 @@ const en: LocaleDictionary = {
   "queue.state.postProcessing": "Post-Processing",
   "queue.state.paused": "Paused",
   "queue.state.completed": "Completed",
+  "queue.state.importedSeeding": "Imported · Seeding",
   "queue.state.importing": "Importing",
   "queue.state.importPending": "Import Pending",
   "queue.state.importBlocked": "Import Blocked",
@@ -1515,6 +1516,15 @@ const en: LocaleDictionary = {
     "Automatic import could not determine a unique season and episode mapping. Open Manual Import and assign the correct season and episode.",
   "queue.blockReasonFallbackReview":
     "Automatic import needs operator review. Open Manual Import and confirm the file mapping to continue.",
+  "queue.seeding.stateSeeding": "Seeding",
+  "queue.seeding.stateGoalMet": "Seed goal met",
+  "queue.seeding.stateHeldPrivate": "Seeding · private",
+  "queue.seeding.stateNeverRemove": "Seeding forever",
+  "queue.seeding.ratio": "Ratio {{value}}",
+  "queue.seeding.seedTime": "Seeded {{value}}",
+  "queue.seeding.private": "Private tracker",
+  "queue.seeding.privateTooltip":
+    "Private tracker. Scryer never removes this torrent from the client on its own unless a seeding profile goal is met.",
   "queue.errorCode": "Error Code",
   "queue.showDetails": "Show details",
   "queue.hideDetails": "Hide details",

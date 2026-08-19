@@ -6,6 +6,7 @@ import {
   normalizeQueueState,
 } from "@/lib/utils/download-queue";
 import { manualImportActions } from "@/lib/utils/manual-import-actions";
+import { isImportedSeedingRow } from "@/lib/utils/seeding-progress";
 
 export type TranslateFn = ReturnType<typeof useTranslate>;
 
@@ -17,6 +18,11 @@ export const queueStateClasses: Record<string, string> = {
   post_processing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   paused: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   completed: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  // Imported and still seeding is a healthy post-import state, so it stays in
+  // the success family that `completed` uses; the stronger border is what makes
+  // it legible as its own thing rather than a warning.
+  imported_seeding:
+    "border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   importing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   removing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
@@ -33,6 +39,7 @@ export const queueStateLabels: Record<string, string> = {
   post_processing: "queue.state.postProcessing",
   paused: "queue.state.paused",
   completed: "queue.state.completed",
+  imported_seeding: "queue.state.importedSeeding",
   importing: "queue.state.importing",
   removing: "queue.deleting",
   import_pending: "queue.state.importPending",
@@ -106,6 +113,14 @@ export type QueueRowPresentation = {
   trackedStateKey: string;
   trackedMatchTypeKey: string;
   displayStateKey: string;
+  /**
+   * Key the status badge renders under. It is the display state for every row
+   * except one: a tracked download parked in `IMPORTED_SEEDING` displays as
+   * `COMPLETED` (the backend deliberately added no display state for it), so
+   * the badge reads the tracked state to keep "imported, still seeding" from
+   * being indistinguishable from a finished usenet download.
+   */
+  statusBadgeKey: string;
   percent: number;
   remainingLabel: string | null;
   hasTransferProgress: boolean;
@@ -133,6 +148,9 @@ export function deriveQueueRowPresentation(
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
   const displayStateKey = queueItem.displayState;
+  const statusBadgeKey = isImportedSeedingRow(queueItem)
+    ? "IMPORTED_SEEDING"
+    : displayStateKey;
   const reportedFailureReason = buildQueueStatusDetail(queueItem);
   const facetKey = normalizeQueueState(queueItem.facet);
   const failureReason =
@@ -178,7 +196,7 @@ export function deriveQueueRowPresentation(
           ? t("queue.transfer.finalizing")
           : displayStateKey === "POST_PROCESSING"
             ? t(postProcessingStatusKey)
-            : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
+            : t(queueStateLabels[statusBadgeKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
       displayStateKey === "REMOVE_FAILED" ||
@@ -218,6 +236,7 @@ export function deriveQueueRowPresentation(
     trackedStateKey,
     trackedMatchTypeKey,
     displayStateKey,
+    statusBadgeKey,
     percent,
     remainingLabel,
     hasTransferProgress,
