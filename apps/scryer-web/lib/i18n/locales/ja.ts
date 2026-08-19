@@ -761,6 +761,11 @@ const ja: LocaleDictionary = {
   "search.facetSeries": "Series",
   "search.facetAnime": "アニメ",
   "search.metadataSearch": "メタデータ検索",
+
+  "toast.catalogAdded": "カタログに追加しました",
+  "toast.catalogAddedAutoSearch": "自動検索をキューに追加しました。",
+  "toast.viewInCatalog": "カタログで表示",
+
   "label.back": "戻る",
   "label.dismiss": "閉じる",
   "pwa.offline": "オフラインです。一部の機能が利用できない場合があります。",

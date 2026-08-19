@@ -6,6 +6,7 @@ import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { LocaleCode } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { showCatalogAddToast } from "@/components/root/catalog-add-toast";
 import {
   catalogSearchTitlesQuery,
   globalSearchInitQuery,
@@ -71,6 +72,15 @@ export type MetadataCatalogAddOptions = {
   monitorSpecials?: boolean;
   interSeasonMovies?: boolean;
   rootFolderId?: string;
+};
+
+export type CatalogAddFeedback = {
+  /**
+   * Supplied by surfaces that can navigate to the new title. When present the
+   * success toast grows a "View in catalog" button, so the add flow no longer
+   * has to yank the page out from under someone adding several titles.
+   */
+  onViewInCatalog?: (titleId: string) => void;
 };
 
 export type MetadataCatalogRequestOptions = {
@@ -287,6 +297,7 @@ export interface UseGlobalSearchResult {
     result: MetadataTvdbSearchItem,
     facet: Facet,
     options: MetadataCatalogAddOptions,
+    feedback?: CatalogAddFeedback,
   ) => Promise<string | null>;
   requestMetadataSearchResult: (
     result: MetadataTvdbSearchItem,
@@ -1373,6 +1384,7 @@ export function useGlobalSearch({
       result: MetadataTvdbSearchItem,
       facet: Facet,
       options: MetadataCatalogAddOptions,
+      feedback?: CatalogAddFeedback,
     ) => {
       const name = result.name.trim();
       if (!name) {
@@ -1422,15 +1434,33 @@ export function useGlobalSearch({
           },
         }).toPromise();
         if (addError) throw addError;
+        const addedName = addData.addTitle.title.name;
+        // The status line keeps the full sentence; the toast carries the same
+        // news with artwork, so it renders the card instead of the plain text.
         setGlobalStatus(
           t(
             monitored
               ? "status.catalogAddSuccessAutoSearch"
               : "status.catalogAddSuccess",
-            { name: addData.addTitle.title.name },
+            { name: addedName },
           ),
+          { suppressToast: true },
         );
         const titleId = addData.addTitle?.title?.id?.trim() || null;
+        showCatalogAddToast({
+          titleName: addedName,
+          year: result.year,
+          posterUrl: result.posterUrl,
+          headline: t("toast.catalogAdded"),
+          note: monitored ? t("toast.catalogAddedAutoSearch") : null,
+          posterEmptyLabel: t("label.noArt"),
+          viewLabel: t("toast.viewInCatalog"),
+          dismissLabel: t("label.dismiss"),
+          onView:
+            titleId && feedback?.onViewInCatalog
+              ? () => feedback.onViewInCatalog?.(titleId)
+              : undefined,
+        });
         void runMetadataAutocomplete(globalSearch.trim(), { surfaceErrors: false });
         return titleId;
       } catch (error) {

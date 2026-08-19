@@ -423,7 +423,6 @@ export const RootHeader = React.memo(function RootHeader({
     result: MetadataTvdbSearchItem;
     facet: Facet;
   } | null>(null);
-  const closingAddDialogAfterSuccessfulActionRef = React.useRef(false);
   const closingRequestDialogAfterSuccessfulActionRef = React.useRef(false);
   const isAddDialogConfigReady = addDialogTarget
     ? isCatalogConfigReady(addDialogTarget.facet)
@@ -461,10 +460,8 @@ export const RootHeader = React.memo(function RootHeader({
         return;
       }
       setAddDialogTarget(null);
-      if (closingAddDialogAfterSuccessfulActionRef.current) {
-        closingAddDialogAfterSuccessfulActionRef.current = false;
-        return;
-      }
+      // Adding no longer navigates away, so the caret always goes back to the
+      // search box ready for the next title.
       restoreGlobalSearchInputFocus();
     },
     [restoreGlobalSearchInputFocus],
@@ -491,26 +488,23 @@ export const RootHeader = React.memo(function RootHeader({
       facet: Facet,
       options: MetadataCatalogAddOptions,
     ) => {
-      const titleId = await addMetadataSearchResultToCatalog(
-        result,
-        facet,
-        options,
-      );
-      if (titleId) {
-        const selectedLibrary = librariesByFacet[facet].find(
-          (library) => library.id === options.libraryId,
-        );
-        resetGlobalSearch();
-        globalSearchInputRef.current?.blur();
-        closingAddDialogAfterSuccessfulActionRef.current = true;
-        onOpenOverview?.(viewFromFacet(facet), {
-          id: titleId,
-          slug: result.slug ?? null,
-          libraryId: selectedLibrary?.id ?? options.libraryId ?? null,
-          librarySlug: selectedLibrary?.slug ?? null,
-        });
-      }
-      return titleId;
+      // The panel stays open so a second title can go straight in; the success
+      // toast owns the jump to the one that was just added.
+      return addMetadataSearchResultToCatalog(result, facet, options, {
+        onViewInCatalog: (titleId) => {
+          const selectedLibrary = librariesByFacet[facet].find(
+            (library) => library.id === options.libraryId,
+          );
+          resetGlobalSearch();
+          globalSearchInputRef.current?.blur();
+          onOpenOverview?.(viewFromFacet(facet), {
+            id: titleId,
+            slug: result.slug ?? null,
+            libraryId: selectedLibrary?.id ?? options.libraryId ?? null,
+            librarySlug: selectedLibrary?.slug ?? null,
+          });
+        },
+      });
     },
     [
       addMetadataSearchResultToCatalog,

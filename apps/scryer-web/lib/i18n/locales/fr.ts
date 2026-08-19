@@ -785,6 +785,11 @@ const fr: LocaleDictionary = {
   "search.facetSeries": "Series",
   "search.facetAnime": "Animé",
   "search.metadataSearch": "Recherche de métadonnées",
+
+  "toast.catalogAdded": "Ajouté au catalogue",
+  "toast.catalogAddedAutoSearch": "Recherche automatique mise en file d’attente.",
+  "toast.viewInCatalog": "Voir dans le catalogue",
+
   "label.back": "Retour",
   "label.dismiss": "Fermer",
   "pwa.offline":

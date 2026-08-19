@@ -719,6 +719,11 @@ const zh_CN: LocaleDictionary = {
   "search.facetSeries": "Series",
   "search.facetAnime": "动漫",
   "search.metadataSearch": "元数据搜索",
+
+  "toast.catalogAdded": "已添加到目录",
+  "toast.catalogAddedAutoSearch": "已加入自动搜索队列。",
+  "toast.viewInCatalog": "在目录中查看",
+
   "label.back": "返回",
   "label.dismiss": "关闭",
   "pwa.offline": "您处于离线状态。部分功能可能不可用。",
