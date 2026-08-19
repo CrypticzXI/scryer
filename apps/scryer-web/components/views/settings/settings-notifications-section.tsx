@@ -579,6 +579,7 @@ export function SettingsNotificationsSection({
                     : t("settings.notificationChannel");
                 return (
                   <TableRow
+                    data-ui="settings-table-row"
                     key={notificationTargetValue(target)}
                     id={selectorId("settings-notification-channel-row", target.name)}
                   >
@@ -879,6 +880,7 @@ export function SettingsNotificationsSection({
             <TableBody>
               {subscriptions.map((sub) => (
                 <TableRow
+                  data-ui="settings-table-row"
                   key={sub.id}
                   id={selectorId(
                     "settings-notification-subscription-row",

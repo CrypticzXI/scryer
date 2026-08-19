@@ -142,6 +142,7 @@ export function SettingsDelayProfilesSection({
                 <TableBody>
                   {profiles.map((profile) => (
                     <TableRow
+                      data-ui="settings-table-row"
                       key={profile.id}
                       id={selectorId("settings-delay-profile-row", profile.id)}
                       className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"

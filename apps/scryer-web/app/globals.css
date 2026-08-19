@@ -715,8 +715,10 @@ body {
 }
 
 /* Standard tables keep the original per-cell dark hover gradient. Catalog and
- * plugin rows (excluded here) span the same gradient across the whole row. */
-.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):not([data-ui="settings-user-table-row"]):not([data-ui="settings-plugin-table-row"]):hover > [data-slot="table-cell"] {
+ * settings rows (excluded here) span the same gradient across the whole row.
+ * A row opts in by carrying one of the data-ui values listed below, so both
+ * lists have to stay in sync or a row gets the gradient twice. */
+.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):not([data-ui="settings-user-table-row"]):not([data-ui="settings-plugin-table-row"]):not([data-ui="settings-table-row"]):not([data-ui="activity-row"]):not([data-ui="wanted-item-row"]):not([data-ui="pending-release-row"]):hover > [data-slot="table-cell"] {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
@@ -724,7 +726,11 @@ body {
 .dark [data-slot="table-body"] [data-ui="title-table-row"]:hover,
 .dark [data-slot="table-body"] [data-ui="compact-title-table-row"]:hover,
 .dark [data-slot="table-body"] [data-ui="settings-user-table-row"]:hover,
-.dark [data-slot="table-body"] [data-ui="settings-plugin-table-row"]:hover {
+.dark [data-slot="table-body"] [data-ui="settings-plugin-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="settings-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="activity-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="wanted-item-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="pending-release-row"]:hover {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
