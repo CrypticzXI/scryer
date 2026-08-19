@@ -1,3 +1,4 @@
+import { canAccessDashboard } from "@/lib/utils/routes";
 import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
@@ -205,7 +206,7 @@ export function buildRouteCommands({
     : [];
 
   return [
-    ...(canManageSystemSettings
+    ...(canAccessDashboard(canManageSystemSettings)
       ? [{
           id: "dashboard",
           label: t("nav.dashboard"),

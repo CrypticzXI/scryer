@@ -98,6 +98,7 @@ import {
   resolveAppRoute,
 } from "@/lib/utils/routing";
 import {
+  canAccessDashboard,
   canAccessMediaSettingsSection,
   canAccessSettingsSection,
   canAccessSystemSection,
@@ -479,7 +480,7 @@ function MainContent({
   canManageLibrarySettings: boolean;
 }) {
   if (view === "dashboard") {
-    if (!canManageSystemSettings) {
+    if (!canAccessDashboard(canManageSystemSettings)) {
       return <ViewLoadingFallback />;
     }
     return <DashboardContainer key="dashboard" />;
@@ -1504,7 +1505,11 @@ function AuthenticatedHomePage({
   ]);
 
   useEffect(() => {
-    if (!routeIsCanonical || view !== "dashboard" || canManageSystemSettings) {
+    if (
+      !routeIsCanonical ||
+      view !== "dashboard" ||
+      canAccessDashboard(canManageSystemSettings)
+    ) {
       return;
     }
 

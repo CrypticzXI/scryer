@@ -79,7 +79,10 @@ import {
   hasAnyLibraryPermission,
 } from "@/lib/utils/permissions";
 import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
-import { canAccessSystemSection } from "@/lib/utils/routes";
+import {
+  canAccessDashboard,
+  canAccessSystemSection,
+} from "@/lib/utils/routes";
 import { selectorId } from "@/lib/utils/dom-ids";
 import ScryerLogo from "@/components/scryer-logo";
 
@@ -730,7 +733,7 @@ function RootSidebarContent({
           (!MEDIA_NAV_VIEW_IDS.includes(item.id) || canAccessMediaTopNav) &&
           (item.id !== "calendar" || canViewCatalog) &&
           (item.id !== "wanted" || canViewCatalog) &&
-          (item.id !== "dashboard" || canManageSystemSettings) &&
+          (item.id !== "dashboard" || canAccessDashboard(canManageSystemSettings)) &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),

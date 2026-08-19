@@ -90,13 +90,16 @@ const QUEUE_PREVIEW_LIMIT = 5;
  */
 const TABLE_PANE_CLASS = "max-h-[218px] overflow-y-auto";
 /**
- * Header stays put while rows scroll, the same way the title tables do it:
- * `sticky` on the header row plus an opaque background on the cells, since a
- * bare `<tr>` background does not paint under sticky in every engine.
+ * Header stays put while rows scroll. `sticky` goes on the header *cells*, not
+ * the header row: a sticky `<tr>` is constrained to its `<thead>`, which is one
+ * row tall, so it has no travel and scrolls away with the body. A `<th>` is
+ * contained by the table itself and pins for the table's full height. The
+ * opaque background is what the rows scroll under.
  */
-const TABLE_HEADER_ROW_CLASS = "sticky top-0 z-10 bg-card";
-const TABLE_HEAD_CLASS = "h-8 bg-card px-3 text-[10px] uppercase";
-const TABLE_HEAD_RIGHT_CLASS = "h-8 bg-card px-3 text-right text-[10px] uppercase";
+const TABLE_HEAD_CLASS =
+  "sticky top-0 z-10 h-8 bg-card px-3 text-[10px] uppercase";
+const TABLE_HEAD_RIGHT_CLASS =
+  "sticky top-0 z-10 h-8 bg-card px-3 text-right text-[10px] uppercase";
 
 export type DashboardViewProps = {
   loading: boolean;
@@ -886,7 +889,7 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
           wrapperClassName={TABLE_PANE_CLASS}
         >
           <TableHeader>
-            <TableRow className={TABLE_HEADER_ROW_CLASS}>
+            <TableRow>
               <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnIndexer")}
               </TableHead>
@@ -1117,7 +1120,7 @@ function DownloadClientsPanel({
           wrapperClassName={TABLE_PANE_CLASS}
         >
           <TableHeader>
-            <TableRow className={TABLE_HEADER_ROW_CLASS}>
+            <TableRow>
               <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnClient")}
               </TableHead>
