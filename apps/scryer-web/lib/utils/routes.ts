@@ -104,6 +104,18 @@ export function canAccessSystemSection(
     : canManageSystemSettings;
 }
 
+/**
+ * The dashboard is the operator's landing page, so it needs the same
+ * entitlement as the system section rather than mere catalog access.
+ *
+ * Three surfaces gate on this — the sidebar's Overview group, the command
+ * palette entry, and the route guard in the shell — and they must agree: a
+ * hidden nav entry beside a reachable route is a leak, not a tidy menu.
+ */
+export function canAccessDashboard(canManageSystemSettings: boolean): boolean {
+  return canManageSystemSettings;
+}
+
 export function defaultSettingsSection(
   canManageSystemSettings: boolean,
   canManageCatalogSettings: boolean,

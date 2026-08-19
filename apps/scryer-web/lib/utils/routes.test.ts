@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  canAccessDashboard,
   canAccessRecycleBinPage,
   canAccessSystemSection,
   defaultAccessibleRoute,
@@ -80,4 +81,17 @@ test("other system sections still require system settings permission", () => {
   assert.equal(canAccessSystemSection("jobs", false, true), false);
   assert.equal(canAccessSystemSection("overview", true, false), true);
   assert.equal(canAccessSystemSection("jobs", true, false), true);
+});
+
+test("the dashboard needs system-settings management, not catalog access", () => {
+  assert.equal(canAccessDashboard(true), true);
+  assert.equal(canAccessDashboard(false), false);
+});
+
+test("a non-admin's landing route never resolves to the dashboard", () => {
+  // The nav entry and the route guard read the same predicate, so a user who
+  // cannot open /dashboard is never sent there either.
+  const landing = landingFor({ canViewCatalog: true, canRequestMedia: true });
+  assert.notEqual(landing.view, "dashboard");
+  assert.equal(canAccessDashboard(false), false);
 });
