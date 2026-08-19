@@ -66,7 +66,9 @@ test("a zero observation is a real reading, not an unknown one", () => {
   );
 
   assert.equal(progress?.ratioLabel, "0 / 1");
-  assert.equal(progress?.seedTimeLabel, "0m");
+  // Sub-minute readings render as "<1m" so a real observation is never
+  // mistakable for the zero-for-unknown this module refuses to show.
+  assert.equal(progress?.seedTimeLabel, "<1m");
 });
 
 test("seed time is humanized against its goal", () => {
@@ -122,8 +124,8 @@ test("an unusable ratio reading is dropped rather than shown as zero", () => {
 });
 
 test("seed durations read coarsely, largest unit first", () => {
-  assert.equal(formatSeedDuration(0), "0m");
-  assert.equal(formatSeedDuration(59), "0m");
+  assert.equal(formatSeedDuration(0), "<1m");
+  assert.equal(formatSeedDuration(59), "<1m");
   assert.equal(formatSeedDuration(90), "1m");
   assert.equal(formatSeedDuration(3600), "1h");
   assert.equal(formatSeedDuration(5_460), "1h 31m");

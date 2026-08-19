@@ -98,7 +98,9 @@ export function formatSeedDuration(
   if (hours > 0) {
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
-  return `${minutes}m`;
+  // A sub-minute observation is real, but "0m" would read like the
+  // zero-for-unknown this module promises never to show.
+  return minutes > 0 ? `${minutes}m` : "<1m";
 }
 
 function axisLabel(observed: string | null, goal: string | null): string | null {
