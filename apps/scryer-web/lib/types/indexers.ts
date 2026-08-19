@@ -10,6 +10,12 @@ export type IndexerRecord = {
   downloadClientId: string | null;
   /** Seeding profile assigned to this indexer. null inherits the routing/global default. */
   seedingProfileId: string | null;
+  /**
+   * Whether Prowlarr supplied seed criteria for this managed child. When it did
+   * and no profile is assigned, those criteria apply; picking a profile
+   * overrides them.
+   */
+  hasProwlarrSeedCriteria: boolean;
   hasApiKey: boolean;
   storedSecretKeys: string[];
   rateLimitSeconds: number | null;

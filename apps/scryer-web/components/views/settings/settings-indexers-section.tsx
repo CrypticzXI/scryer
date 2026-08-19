@@ -620,6 +620,7 @@ function IndexerSeedingProfileSelect({
   value,
   options,
   supported,
+  prowlarrManaged = false,
   isPending,
   disabled = false,
   showLabel = false,
@@ -630,6 +631,9 @@ function IndexerSeedingProfileSelect({
   value: string | null;
   options: SeedingProfileOption[];
   supported: boolean;
+  /// Prowlarr supplied seed criteria for this child, so the null option means
+  /// "use them" rather than "inherit the default".
+  prowlarrManaged?: boolean;
   isPending: boolean;
   disabled?: boolean;
   showLabel?: boolean;
@@ -678,7 +682,11 @@ function IndexerSeedingProfileSelect({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
-            {t("settings.seedingProfileInherit")}
+            {t(
+              prowlarrManaged
+                ? "settings.seedingProfileProwlarrManaged"
+                : "settings.seedingProfileInherit",
+            )}
           </SelectItem>
           {isMissing && value ? (
             <SelectItem value={value}>
@@ -749,6 +757,7 @@ function IndexerSeedingProfileCell({
       label={t("settings.seedingProfileIndexerLabel", { name: indexer.name })}
       value={indexer.seedingProfileId}
       options={options}
+      prowlarrManaged={indexer.hasProwlarrSeedCriteria}
       supported={
         !isManagementOnlyIndexer(indexer) &&
         supportsSeedingProfileAssignment(protocolFamilies)

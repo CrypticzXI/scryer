@@ -10,7 +10,10 @@
 
 use std::sync::Arc;
 
-use scryer_domain::{PostImportTracking, SeedGoalMetAction, SeedingProfile};
+use chrono::Utc;
+use scryer_domain::{
+    IndexerConfig, PostImportTracking, SeasonPackSeedMode, SeedGoalMetAction, SeedingProfile,
+};
 use serde_json::Value;
 
 use crate::{
@@ -27,6 +30,10 @@ pub enum SeedGoalResolutionSource {
     None,
     /// The indexer that supplied the release carries a profile.
     Indexer,
+    /// Seed criteria imported from Prowlarr for a managed child indexer. Used
+    /// only when that child has no seeding profile of its own, so assigning
+    /// one is how an operator overrides what Prowlarr holds.
+    ProwlarrManaged,
     /// The download-client routing entry the grab was routed through.
     RoutingEntry,
     /// The global default seeding profile setting.
@@ -38,6 +45,7 @@ impl SeedGoalResolutionSource {
         match self {
             Self::None => "none",
             Self::Indexer => "indexer",
+            Self::ProwlarrManaged => "prowlarr_managed",
             Self::RoutingEntry => "routing_entry",
             Self::GlobalDefault => "global_default",
         }
@@ -47,6 +55,7 @@ impl SeedGoalResolutionSource {
         match value.trim() {
             "none" => Some(Self::None),
             "indexer" => Some(Self::Indexer),
+            "prowlarr_managed" => Some(Self::ProwlarrManaged),
             "routing_entry" => Some(Self::RoutingEntry),
             "global_default" => Some(Self::GlobalDefault),
             _ => None,
@@ -169,10 +178,17 @@ impl SeedGoalResolver {
         if let Some(indexer_id) = trimmed(request.indexer_id.as_deref())
             && let Some(repository) = self.indexer_configs.as_ref()
             && let Some(indexer) = repository.get_by_id(&indexer_id).await?
-            && let Some(profile_id) = trimmed(indexer.seeding_profile_id.as_deref())
-            && let Some(profile) = self.load_profile(&profile_id).await?
         {
-            return Ok(Some((profile, SeedGoalResolutionSource::Indexer)));
+            // An assigned profile always wins: choosing one is exactly how an
+            // operator overrides the criteria Prowlarr holds for this tracker.
+            if let Some(profile_id) = trimmed(indexer.seeding_profile_id.as_deref())
+                && let Some(profile) = self.load_profile(&profile_id).await?
+            {
+                return Ok(Some((profile, SeedGoalResolutionSource::Indexer)));
+            }
+            if let Some(profile) = prowlarr_managed_profile(&indexer) {
+                return Ok(Some((profile, SeedGoalResolutionSource::ProwlarrManaged)));
+            }
         }
 
         if let Some(profile_id) = trimmed(request.routing_seeding_profile_id.as_deref())
@@ -215,6 +231,66 @@ impl SeedGoalResolver {
 
 /// Compute the goals for a resolved profile: season-pack overrides first, then
 /// the tracker-minimum clamp.
+/// Seed criteria Scryer imported from Prowlarr for a managed child indexer.
+///
+/// Stored inside the child's managed-metadata blob rather than as a seeding
+/// profile row, so these never appear in the profile manager and cannot be
+/// edited, deleted, or assigned to another indexer — they belong to Prowlarr
+/// and are refreshed by the next sync.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct ProwlarrManagedSeedCriteria {
+    #[serde(default)]
+    seed_ratio: Option<f64>,
+    #[serde(default)]
+    seed_time_minutes: Option<i64>,
+    #[serde(default)]
+    season_pack_seed_time_minutes: Option<i64>,
+}
+
+/// Builds the throwaway profile that carries Prowlarr's criteria through the
+/// normal resolution path. The id is empty because no such profile exists;
+/// callers key the resolution off `SeedGoalResolutionSource::ProwlarrManaged`.
+pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfile> {
+    // Only a Prowlarr-managed child can carry these; a standalone indexer with
+    // a stray blob is not Prowlarr's to speak for.
+    indexer.managed_parent_config_id.as_deref()?;
+    let criteria: ProwlarrManagedSeedCriteria =
+        serde_json::from_str(indexer.managed_metadata_json.as_deref()?).ok()?;
+    let ratio = criteria.seed_ratio.filter(|value| value.is_finite() && *value > 0.0);
+    let seed_time_minutes = criteria.seed_time_minutes.filter(|value| *value > 0);
+    let season_pack_seed_time_minutes = criteria
+        .season_pack_seed_time_minutes
+        .filter(|value| *value > 0);
+    if ratio.is_none() && seed_time_minutes.is_none() && season_pack_seed_time_minutes.is_none() {
+        return None;
+    }
+
+    let now = Utc::now();
+    Some(SeedingProfile {
+        id: String::new(),
+        name: "Managed by Prowlarr".to_string(),
+        ratio,
+        seed_time_minutes,
+        // Prowlarr carries a season-pack seed time but no season-pack ratio, so
+        // an override only kicks in when it actually set one.
+        season_pack_mode: if season_pack_seed_time_minutes.is_some() {
+            SeasonPackSeedMode::Override
+        } else {
+            SeasonPackSeedMode::Inherit
+        },
+        season_pack_ratio: None,
+        season_pack_seed_time_minutes,
+        // The operator's Prowlarr goals are still a floor, not a ceiling: a
+        // tracker that declares a higher minimum wins, same as for a profile.
+        honor_tracker_minimums: true,
+        goal_met_action: SeedGoalMetAction::default(),
+        never_remove: false,
+        post_import_tracking: PostImportTracking::default(),
+        created_at: now,
+        updated_at: now,
+    })
+}
+
 fn apply_profile(
     profile: &SeedingProfile,
     request: &SeedGoalRequest,
@@ -249,7 +325,9 @@ fn apply_profile(
     }
 
     ResolvedSeedGoals {
-        seeding_profile_id: Some(profile.id.clone()),
+        // Prowlarr-managed criteria are synthesized, so there is no profile row
+        // to point at; the resolution source records where they came from.
+        seeding_profile_id: (!profile.id.is_empty()).then(|| profile.id.clone()),
         seed_goal_ratio: ratio.filter(|value| value.is_finite() && *value > 0.0),
         seed_goal_seconds: seed_time_minutes
             .filter(|minutes| *minutes > 0)
@@ -656,6 +734,135 @@ mod tests {
             routing_seeding_profile_id: routing_profile_id.map(str::to_string),
             ..SeedGoalRequest::default()
         }
+    }
+
+    /// A Prowlarr-managed child carrying imported seed criteria.
+    fn prowlarr_child(
+        id: &str,
+        seeding_profile_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> IndexerConfig {
+        let mut config = indexer(id, seeding_profile_id);
+        config.managed_parent_config_id = Some("prowlarr-parent".to_string());
+        config.managed_metadata_json = Some(metadata.to_string());
+        config
+    }
+
+    #[tokio::test]
+    async fn prowlarr_seed_criteria_apply_when_the_child_has_no_profile() {
+        let resolver = resolver(
+            vec![profile("global-profile", Some(0.5), None)],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({
+                    "indexer_id": 7,
+                    "seed_ratio": 1.5,
+                    "seed_time_minutes": 4320,
+                }),
+            )],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::ProwlarrManaged
+        );
+        // Synthesized, so there is no profile row to point at.
+        assert_eq!(resolved.seeding_profile_id, None);
+        assert_eq!(resolved.seed_goal_ratio, Some(1.5));
+        assert_eq!(resolved.seed_goal_seconds, Some(4320 * 60));
+    }
+
+    #[tokio::test]
+    async fn a_scryer_profile_overrides_the_prowlarr_criteria() {
+        let resolver = resolver(
+            vec![profile("indexer-profile", Some(3.0), None)],
+            vec![prowlarr_child(
+                "idx-managed",
+                Some("indexer-profile"),
+                serde_json::json!({ "indexer_id": 7, "seed_ratio": 1.5 }),
+            )],
+            None,
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.resolution_source, SeedGoalResolutionSource::Indexer);
+        assert_eq!(resolved.seed_goal_ratio, Some(3.0));
+    }
+
+    #[tokio::test]
+    async fn a_managed_child_without_prowlarr_goals_falls_through_to_the_default() {
+        let resolver = resolver(
+            vec![profile("global-profile", Some(0.5), None)],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                // Prowlarr left the seed criteria blank for this tracker.
+                serde_json::json!({ "indexer_id": 7 }),
+            )],
+            Some("global-profile"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::GlobalDefault
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn seed_criteria_on_a_standalone_indexer_are_ignored() {
+        // Only Prowlarr speaks for a managed child; a stray blob on an
+        // unmanaged indexer is not Prowlarr's to interpret.
+        let mut standalone = indexer("idx-standalone", None);
+        standalone.managed_metadata_json =
+            Some(serde_json::json!({ "seed_ratio": 9.0 }).to_string());
+        let resolver = resolver(Vec::new(), vec![standalone], None);
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-standalone"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.resolution_source, SeedGoalResolutionSource::None);
+        assert_eq!(resolved.seed_goal_ratio, None);
+    }
+
+    #[tokio::test]
+    async fn tracker_minimums_still_raise_prowlarr_criteria() {
+        let resolver = resolver(
+            Vec::new(),
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({ "indexer_id": 7, "seed_ratio": 1.0 }),
+            )],
+            None,
+        );
+        let mut req = request(Some("idx-managed"), None);
+        req.tracker_min_seed_ratio = Some(2.0);
+
+        let resolved = resolver
+            .resolve(&req)
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(resolved.seed_goal_ratio, Some(2.0));
     }
 
     #[tokio::test]

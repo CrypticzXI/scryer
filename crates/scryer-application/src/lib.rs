@@ -211,7 +211,7 @@ pub use acquisition::delay_profile::{
 pub use acquisition::policy::AcquisitionThresholds;
 pub use acquisition::seed_goals::{
     ReleaseSeedMinimums, ResolvedSeedGoals, SeedGoalRequest, SeedGoalResolutionSource,
-    SeedGoalResolver, release_extra_f64, release_extra_i64,
+    SeedGoalResolver, prowlarr_managed_profile, release_extra_f64, release_extra_i64,
 };
 pub use acquisition::wanted_views::{
     AcquisitionSearchJobView, AcquisitionSearchProgress, AcquisitionSearchRequest,

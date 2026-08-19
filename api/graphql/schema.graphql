@@ -6288,6 +6288,12 @@ type IndexerConfigPayload {
 	"""
 	seedingProfileId: ID
 	"""
+	Whether Prowlarr supplied seed criteria for this managed child. When it
+	did and no seeding profile is assigned, those criteria apply; assigning
+	a profile overrides them.
+	"""
+	hasProwlarrSeedCriteria: Boolean!
+	"""
 	Whether an API key is configured without exposing it.
 	"""
 	hasApiKey: Boolean!

@@ -231,6 +231,18 @@ struct ProwlarrIndexerResource {
     priority: i64,
     #[serde(default, rename = "downloadClientId")]
     download_client_id: i64,
+    /// Prowlarr keeps per-indexer settings in a flat name/value list; the seed
+    /// criteria the operator configured there arrive as `seedCriteria.*`.
+    #[serde(default)]
+    fields: Vec<ProwlarrIndexerField>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ProwlarrIndexerField {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    value: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -290,7 +302,8 @@ pub(crate) struct ProwlarrCapsSnapshot {
     pub book_search: ProwlarrCapsSearchNode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// `Eq` is out because the imported seed ratio is an `f64`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ManagedChildMetadata {
     indexer_id: i64,
     protocol: String,
@@ -301,6 +314,15 @@ struct ManagedChildMetadata {
     enable_automatic_search: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     caps_snapshot: Option<ProwlarrCapsSnapshot>,
+    /// Seed criteria the operator already configured in Prowlarr for this
+    /// tracker. Scryer honours them unless a seeding profile is assigned to the
+    /// child, so a Prowlarr-managed setup works without restating the goals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seed_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seed_time_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    season_pack_seed_time_minutes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -957,6 +979,7 @@ fn build_managed_child_plan(
     caps_snapshot: Option<ProwlarrCapsSnapshot>,
 ) -> Option<ManagedIndexerChildPlan> {
     let provider_type = provider_type_for_protocol(&indexer.protocol)?;
+    let is_torrent = provider_type == "torznab";
     let app_profile = app_profiles_by_id.get(&indexer.app_profile_id);
     let enable_rss = app_profile
         .map(|profile| profile.enable_rss)
@@ -1006,6 +1029,17 @@ fn build_managed_child_plan(
         enable_rss,
         enable_automatic_search,
         caps_snapshot,
+        // Usenet indexers have no seeding obligation, so their fields are not
+        // read even if Prowlarr happens to carry them.
+        seed_ratio: is_torrent.then(|| prowlarr_seed_ratio(&indexer.fields)).flatten(),
+        seed_time_minutes: is_torrent
+            .then(|| prowlarr_seed_minutes(&indexer.fields, "seedCriteria.seedTime"))
+            .flatten(),
+        season_pack_seed_time_minutes: is_torrent
+            .then(|| {
+                prowlarr_seed_minutes(&indexer.fields, "seedCriteria.seasonPackSeedTime")
+            })
+            .flatten(),
     })
     .ok();
 
@@ -1021,6 +1055,38 @@ fn build_managed_child_plan(
         caps_snapshot_json,
         routing_scopes,
     })
+}
+
+/// Reads one of Prowlarr's flat `fields` entries.
+///
+/// Prowlarr omits a field entirely, or sends it with a null value, when the
+/// operator left it blank; both mean "no goal on this axis" rather than zero.
+fn prowlarr_field_value<'a>(
+    fields: &'a [ProwlarrIndexerField],
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    fields
+        .iter()
+        .find(|field| field.name.eq_ignore_ascii_case(name))
+        .and_then(|field| field.value.as_ref())
+        .filter(|value| !value.is_null())
+}
+
+fn prowlarr_seed_ratio(fields: &[ProwlarrIndexerField]) -> Option<f64> {
+    let value = prowlarr_field_value(fields, "seedCriteria.seedRatio")?;
+    let ratio = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))?;
+    (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+}
+
+fn prowlarr_seed_minutes(fields: &[ProwlarrIndexerField], name: &str) -> Option<i64> {
+    let value = prowlarr_field_value(fields, name)?;
+    let minutes = value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|value| value as i64))
+        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))?;
+    (minutes > 0).then_some(minutes)
 }
 
 fn provider_type_for_protocol(protocol: &str) -> Option<&'static str> {
@@ -1461,6 +1527,100 @@ mod tests {
         assert_eq!(routing.get("anime"), Some(&vec!["5070".to_string()]));
     }
 
+    fn seed_field(name: &str, value: serde_json::Value) -> ProwlarrIndexerField {
+        ProwlarrIndexerField {
+            name: name.to_string(),
+            value: Some(value),
+        }
+    }
+
+    fn indexer_with_fields(
+        protocol: &str,
+        fields: Vec<ProwlarrIndexerField>,
+    ) -> ProwlarrIndexerResource {
+        ProwlarrIndexerResource {
+            fields,
+            id: 7,
+            name: "Indexer Seven".to_string(),
+            enable: true,
+            app_profile_id: 12,
+            protocol: protocol.to_string(),
+            capabilities: ProwlarrIndexerCapabilities::default(),
+            priority: 25,
+            download_client_id: 3,
+        }
+    }
+
+    fn child_metadata(indexer: ProwlarrIndexerResource) -> ManagedChildMetadata {
+        let config = ProwlarrConfig {
+            base_url: "https://prowlarr.example".to_string(),
+            api_key: "secret".to_string(),
+        };
+        let app_profiles = HashMap::from([(
+            12,
+            ProwlarrAppProfile {
+                id: 12,
+                enable_rss: true,
+                enable_automatic_search: true,
+                enable_interactive_search: true,
+            },
+        )]);
+        let child = build_managed_child_plan(&config, indexer, &app_profiles, None)
+            .expect("child plan");
+        serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn torrent_children_import_the_seed_criteria_configured_in_prowlarr() {
+        let metadata = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![
+                seed_field("seedCriteria.seedRatio", serde_json::json!(1.5)),
+                seed_field("seedCriteria.seedTime", serde_json::json!(4320)),
+                seed_field("seedCriteria.seasonPackSeedTime", serde_json::json!(10080)),
+            ],
+        ));
+        assert_eq!(metadata.seed_ratio, Some(1.5));
+        assert_eq!(metadata.seed_time_minutes, Some(4320));
+        assert_eq!(metadata.season_pack_seed_time_minutes, Some(10080));
+    }
+
+    #[test]
+    fn blank_zero_and_stringified_prowlarr_seed_criteria_are_handled() {
+        // Prowlarr sends numbers as strings on some field types.
+        let stringified = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![
+                seed_field("seedCriteria.seedRatio", serde_json::json!("2.0")),
+                seed_field("seedCriteria.seedTime", serde_json::json!("60")),
+            ],
+        ));
+        assert_eq!(stringified.seed_ratio, Some(2.0));
+        assert_eq!(stringified.seed_time_minutes, Some(60));
+
+        // Null, absent, and zero all mean "no goal on this axis", never zero.
+        let blank = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![
+                seed_field("seedCriteria.seedRatio", serde_json::Value::Null),
+                seed_field("seedCriteria.seedTime", serde_json::json!(0)),
+            ],
+        ));
+        assert_eq!(blank.seed_ratio, None);
+        assert_eq!(blank.seed_time_minutes, None);
+        assert_eq!(blank.season_pack_seed_time_minutes, None);
+    }
+
+    #[test]
+    fn usenet_children_carry_no_seed_criteria() {
+        let metadata = child_metadata(indexer_with_fields(
+            "usenet",
+            vec![seed_field("seedCriteria.seedRatio", serde_json::json!(1.5))],
+        ));
+        assert_eq!(metadata.seed_ratio, None);
+        assert_eq!(metadata.seed_time_minutes, None);
+    }
+
     #[test]
     fn managed_child_uses_proxy_path_and_app_profile_flags() {
         let config = ProwlarrConfig {
@@ -1479,6 +1639,7 @@ mod tests {
             ..ProwlarrCapsSnapshot::default()
         };
         let indexer = ProwlarrIndexerResource {
+            fields: Vec::new(),
             id: 7,
             name: "Indexer Seven".to_string(),
             enable: true,
@@ -1536,6 +1697,7 @@ mod tests {
             api_key: "secret".to_string(),
         };
         let indexer = ProwlarrIndexerResource {
+            fields: Vec::new(),
             id: 9,
             name: "Interactive Only".to_string(),
             enable: true,

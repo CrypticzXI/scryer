@@ -3474,6 +3474,10 @@ pub struct IndexerConfigPayload {
     pub download_client_id: Option<ID>,
     /// Optional seeding profile ID applied to torrents grabbed from this indexer.
     pub seeding_profile_id: Option<ID>,
+    /// Whether Prowlarr supplied seed criteria for this managed child. When it
+    /// did and no seeding profile is assigned, those criteria apply; assigning
+    /// a profile overrides them.
+    pub has_prowlarr_seed_criteria: bool,
     /// Whether an API key is configured without exposing it.
     pub has_api_key: bool,
     /// Whether this configuration is managed by a parent configuration.

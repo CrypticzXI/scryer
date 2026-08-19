@@ -886,6 +886,9 @@ pub fn from_indexer_config_with_fields(
     let is_managed = config.managed_parent_config_id.is_some();
     let managed_parent_config_id = config.managed_parent_config_id.clone();
     let supports_managed_children_sync = config.provider_type.eq_ignore_ascii_case("prowlarr");
+    // Computed before `config` is picked apart below.
+    let has_prowlarr_seed_criteria =
+        scryer_application::prowlarr_managed_profile(&config).is_some();
     let (config_json, stored_secret_keys) =
         redact_indexer_config_json(config.config_json, config_fields);
     let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")
@@ -901,6 +904,7 @@ pub fn from_indexer_config_with_fields(
         indexer_proxy_config_id: config.indexer_proxy_config_id.map(Into::into),
         download_client_id: config.download_client_id.map(Into::into),
         seeding_profile_id: config.seeding_profile_id.map(Into::into),
+        has_prowlarr_seed_criteria,
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),

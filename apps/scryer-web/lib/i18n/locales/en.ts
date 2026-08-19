@@ -764,6 +764,7 @@ const en: LocaleDictionary = {
   "settings.seedingProfileDeleted": "Seeding profile deleted.",
   "settings.seedingProfileDeleteError": "Failed to delete the seeding profile.",
   "settings.seedingProfileDefaultSaved": "Default seeding profile saved.",
+  "settings.seedingProfileProwlarrManaged": "Managed by Prowlarr",
   "settings.seedingProfileInherit": "Inherit default",
   "settings.seedingProfileRoutingInherit": "Inherit global default",
   "settings.seedingProfileColumn": "Seeding profile",
