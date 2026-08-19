@@ -3,7 +3,6 @@ import { Edit, Plus, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -256,20 +255,8 @@ export function SettingsSeedingProfilesSection({
                     <TableHead className={`w-28 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
                       {t("settings.seedingProfileSeedTimeLabel")}
                     </TableHead>
-                    <TableHead className={`w-32 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
-                      {t("settings.seedingProfileSeasonPacksColumn")}
-                    </TableHead>
-                    <TableHead className={`w-36 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
-                      {t("settings.seedingProfileGoalMetActionLabel")}
-                    </TableHead>
-                    <TableHead className={`w-36 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
-                      {t("settings.seedingProfilePostImportTrackingLabel")}
-                    </TableHead>
-                    <TableHead className={`w-32 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
-                      {t("settings.seedingProfileHonorTrackerMinimumsLabel")}
-                    </TableHead>
-                    <TableHead className={`w-32 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
-                      {t("settings.seedingProfileNeverRemoveLabel")}
+                    <TableHead className={`w-[40%] ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
+                      {t("settings.seedingProfileBehaviorColumn")}
                     </TableHead>
                     <TableActionsHead className="w-24">
                       {t("label.actions")}
@@ -297,49 +284,40 @@ export function SettingsSeedingProfilesSection({
                       <TableCell className={`text-center ${SEEDING_MUTED_TEXT_CLASS}`}>
                         {formatSeedingProfileSeedTime(profile.seedTimeMinutes)}
                       </TableCell>
-                      <TableCell className={`truncate text-center ${SEEDING_MUTED_TEXT_CLASS}`}>
-                        {formatSeasonPackSummary(
-                          profile,
-                          t("settings.seedingProfileSeasonPackInherit"),
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center text-[var(--scry-ink2)]">
-                        {handsOffAfterImport(profile.postImportTracking)
-                          ? "—"
-                          : t(GOAL_MET_ACTION_LABEL_KEY[profile.goalMetAction])}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {handsOffAfterImport(profile.postImportTracking) ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-info-text)]">
-                            {t("settings.seedingProfilePostImportTrackingHandOffBadge")}
-                          </span>
-                        ) : (
-                          <span className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
-                            {t(
-                              POST_IMPORT_TRACKING_LABEL_KEY[
-                                profile.postImportTracking
-                              ],
-                            )}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <RenderBooleanIcon
-                          value={profile.honorTrackerMinimums}
-                          label={`${t("settings.seedingProfileHonorTrackerMinimumsLabel")}: ${profile.name}`}
-                        />
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {profile.neverRemove ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
-                            {t("settings.seedingProfileNeverRemoveBadge")}
-                          </span>
-                        ) : (
-                          <RenderBooleanIcon
-                            value={false}
-                            label={`${t("settings.seedingProfileNeverRemoveLabel")}: ${profile.name}`}
-                          />
-                        )}
+                      <TableCell className={`text-center ${SEEDING_MUTED_TEXT_CLASS}`}>
+                        {/* One glanceable summary instead of four policy
+                            columns: the headline disposition, then only the
+                            deviations from the defaults that deserve ink. */}
+                        <span className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5">
+                          {handsOffAfterImport(profile.postImportTracking) ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-info-text)]">
+                              {t("settings.seedingProfilePostImportTrackingHandOffBadge")}
+                            </span>
+                          ) : profile.neverRemove ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
+                              {t("settings.seedingProfileNeverRemoveBadge")}
+                            </span>
+                          ) : (
+                            <span className="text-[var(--scry-ink2)]">
+                              {t(GOAL_MET_ACTION_LABEL_KEY[profile.goalMetAction])}
+                            </span>
+                          )}
+                          {profile.seasonPackMode === "OVERRIDE" ? (
+                            <span className="text-xs">
+                              {t("settings.seedingProfileSeasonPackSummary", {
+                                value: formatSeasonPackSummary(
+                                  profile,
+                                  t("settings.seedingProfileSeasonPackInherit"),
+                                ),
+                              })}
+                            </span>
+                          ) : null}
+                          {profile.honorTrackerMinimums ? null : (
+                            <span className="text-xs text-[var(--scry-warning-text)]">
+                              {t("settings.seedingProfileIgnoresMinimums")}
+                            </span>
+                          )}
+                        </span>
                       </TableCell>
                       <TableActionsCell className="w-24">
                         <div className="flex items-center justify-center gap-1">

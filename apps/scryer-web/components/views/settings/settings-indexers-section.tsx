@@ -688,6 +688,13 @@ function IndexerSeedingProfileSelect({
               {option.name}
             </SelectItem>
           ))}
+          {options.length === 0 ? (
+            // A Sonarr user lands here first; without this the dropdown is a
+            // dead end that never says where profiles come from.
+            <SelectItem value="__none-available" disabled>
+              {t("settings.seedingProfileNoneAvailable")}
+            </SelectItem>
+          ) : null}
         </SelectContent>
       </Select>
       {isMissing ? (

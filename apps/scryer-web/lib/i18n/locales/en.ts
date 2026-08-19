@@ -641,6 +641,11 @@ const en: LocaleDictionary = {
   "settings.seedingProfileSeedTimeTransmissionHelp":
     "Transmission has no total seed-time limit, so this maps to its idle limit there.",
   "settings.seedingProfileSeasonPacksColumn": "Season packs",
+  "settings.seedingProfileBehaviorColumn": "Behavior",
+  "settings.seedingProfileSeasonPackSummary": "Season packs: {{value}}",
+  "settings.seedingProfileIgnoresMinimums": "Ignores tracker minimums",
+  "settings.seedingProfileNoneAvailable":
+    "No profiles yet — create one under Settings → Seeding Profiles",
   "settings.seedingProfileSeasonPackAdvanced": "Season pack overrides (Advanced)",
   "settings.seedingProfileSeasonPackModeLabel": "Season pack goals",
   "settings.seedingProfileSeasonPackModeHelp":
@@ -658,7 +663,7 @@ const en: LocaleDictionary = {
   "settings.seedingProfilePostImportTrackingLabel": "After import",
   "settings.seedingProfilePostImportTrackingHelp":
     "Whether Scryer keeps managing the torrent once the files have been imported.",
-  "settings.seedingProfilePostImportTrackingPark": "Keep managing (park while seeding)",
+  "settings.seedingProfilePostImportTrackingPark": "Keep managing until goals are met",
   "settings.seedingProfilePostImportTrackingHandOff": "Hand off to the download client",
   "settings.seedingProfilePostImportTrackingHandOffBadge": "Handed off",
   "settings.seedingProfilePostImportTrackingHandOffHelp":
