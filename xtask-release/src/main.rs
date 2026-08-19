@@ -927,6 +927,7 @@ Commit range: {range}
 - Keep wording suitable for a GitHub Release.
 - Do not mention local filesystem paths.
 - Do not include placeholder text.
+- Do not use the word `placeholder`; describe missing data directly.
 
 ## Commit log
 
