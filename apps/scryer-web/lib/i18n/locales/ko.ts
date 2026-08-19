@@ -752,6 +752,11 @@ const ko: LocaleDictionary = {
   "search.facetSeries": "Series",
   "search.facetAnime": "애니메이션",
   "search.metadataSearch": "메타데이터 검색",
+
+  "toast.catalogAdded": "카탈로그에 추가됨",
+  "toast.catalogAddedAutoSearch": "자동 검색이 대기열에 추가되었습니다.",
+  "toast.viewInCatalog": "카탈로그에서 보기",
+
   "label.back": "뒤로",
   "label.dismiss": "닫기",
   "pwa.offline": "오프라인 상태입니다. 일부 기능을 사용할 수 없습니다.",

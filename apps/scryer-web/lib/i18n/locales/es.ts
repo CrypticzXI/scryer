@@ -787,6 +787,11 @@ const es: LocaleDictionary = {
   "search.facetSeries": "Series",
   "search.facetAnime": "Anime",
   "search.metadataSearch": "Búsqueda de metadatos",
+
+  "toast.catalogAdded": "Añadido al catálogo",
+  "toast.catalogAddedAutoSearch": "Búsqueda automática en cola.",
+  "toast.viewInCatalog": "Ver en el catálogo",
+
   "label.back": "Atrás",
   "label.dismiss": "Descartar",
   "pwa.offline":

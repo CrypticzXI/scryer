@@ -23,6 +23,10 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
   return useCallback((rawStatus: string, options?: GlobalStatusOptions) => {
     setGlobalStatus(rawStatus);
 
+    if (options?.suppressToast) {
+      return;
+    }
+
     const toastLevel = classifyStatusToastLevel(rawStatus);
     if (!toastLevel) {
       return;
