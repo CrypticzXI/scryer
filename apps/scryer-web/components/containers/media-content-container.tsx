@@ -99,6 +99,7 @@ import {
 } from "@/lib/utils/catalog-bootstrap-policy";
 import { isMediaSettingsSection } from "@/lib/utils/routes";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
+import { useBulkRename } from "@/lib/hooks/use-bulk-rename";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
@@ -132,6 +133,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
+import { BulkRenamePreviewSummary } from "@/components/common/bulk-rename-preview-summary";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -2660,6 +2662,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     aggregateDeletePreviews,
   });
 
+  const {
+    bulkRenameDialogOpen,
+    bulkRenamePreviewLoading,
+    bulkRenamePreviewError,
+    bulkRenamePlansByTitleId,
+    bulkRenameSummary,
+    bulkRenameConfirmDisabled,
+    closeBulkRenameDialog,
+    confirmBulkRenameTitles,
+    openBulkTitleRename,
+  } = useBulkRename({
+    selectedTitles,
+    bulkActionBusy,
+    setBulkActionBusy,
+    client,
+    t,
+    setGlobalStatus,
+    recordCriticalCatalogMutation,
+    reloadTitles,
+    setSelectedTitleIds,
+    batchFailureDetail,
+    withFailureDetail,
+  });
+
   React.useEffect(() => {
     if (selectedTitles.length > 0 || titleEditTarget !== null) {
       return;
@@ -2671,9 +2697,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewLoading(false);
     setBulkDeletePreviewError(null);
     setBulkDeletePreviewsByTitleId({});
+    closeBulkRenameDialog();
   }, [
     selectedTitles.length,
     titleEditTarget,
+    closeBulkRenameDialog,
     setBulkDeleteDialogOpen,
     setBulkDeleteFilesOnDisk,
     setBulkDeletePreviewError,
@@ -5327,6 +5355,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           bulkMonitorTitles,
           openBulkTitleEdit,
           openBulkTitleDelete,
+          openBulkTitleRename,
         }}
       />
       {canManageTitle ? (
@@ -5436,6 +5465,29 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             />
           ) : null}
         </div>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={bulkRenameDialogOpen}
+        title={t("title.bulkRenameTitle")}
+        description={t("title.bulkRenameDescription", {
+          count: selectedTitles.length,
+        })}
+        confirmLabel={t("rename.applyButton")}
+        cancelLabel={t("label.cancel")}
+        confirmButtonVariant="primary"
+        confirmButtonId="bulk-rename-apply"
+        isBusy={bulkActionBusy}
+        confirmDisabled={bulkRenameConfirmDisabled}
+        onConfirm={confirmBulkRenameTitles}
+        onCancel={closeBulkRenameDialog}
+      >
+        <BulkRenamePreviewSummary
+          titles={selectedTitles}
+          plansByTitleId={bulkRenamePlansByTitleId}
+          summary={bulkRenameSummary}
+          loading={bulkRenamePreviewLoading}
+          error={bulkRenamePreviewError}
+        />
       </ConfirmDialog>
       <ConfirmDialog
         open={titleToDelete !== null}
