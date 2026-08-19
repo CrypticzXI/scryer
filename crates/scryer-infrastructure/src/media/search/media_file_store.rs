@@ -10,8 +10,8 @@ use scryer_application::{
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};

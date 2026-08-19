@@ -2109,13 +2109,11 @@ mod collection_ordered_path_tests {
             .expect("insert collection");
         }
 
-        let single = get_collection_by_ordered_path_query(
-            SqlTarget::Sqlite(&pool),
-            "/media/Show/Season 1",
-        )
-        .await
-        .expect("single lookup")
-        .expect("collection present");
+        let single =
+            get_collection_by_ordered_path_query(SqlTarget::Sqlite(&pool), "/media/Show/Season 1")
+                .await
+                .expect("single lookup")
+                .expect("collection present");
         assert_eq!(single.id, "collection-a");
 
         let batched = list_collections_by_ordered_paths_query(
