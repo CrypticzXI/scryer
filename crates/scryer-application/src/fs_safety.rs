@@ -390,9 +390,37 @@ pub async fn move_file_exclusive(
         Err(error) => Err(error),
     };
     if outcome.is_err() {
-        let _ = tokio::fs::remove_file(&staged).await;
+        roll_back_staged_file(source, &staged).await;
     }
     outcome
+}
+
+/// Undoes a failed move without destroying the file.
+///
+/// Once the source has been renamed or copied into the staging name, that file
+/// is the only copy, so deleting it on failure loses it. Sonarr draws the same
+/// line: `RollbackPartialMove` deletes the target only after confirming the
+/// source still exists, and `RollbackMove` moves the file back when it does
+/// not. Leaving a stray file behind is always preferable to losing one.
+async fn roll_back_staged_file(source: &Path, staged: &Path) {
+    if tokio::fs::symlink_metadata(staged).await.is_err() {
+        return;
+    }
+
+    if tokio::fs::symlink_metadata(source).await.is_ok() {
+        // The source survived, so the staged file is a partial copy.
+        let _ = tokio::fs::remove_file(staged).await;
+        return;
+    }
+
+    // The staged file is the only copy: put it back where it came from.
+    if tokio::fs::rename(staged, source).await.is_err() {
+        tracing::error!(
+            staged = %staged.display(),
+            source = %source.display(),
+            "failed to restore a staged file after a failed move; the file is left at the staging path rather than removed"
+        );
+    }
 }
 
 /// A sibling of `dest` that no scanner will mistake for media.
@@ -430,7 +458,18 @@ async fn promote_staged_file(
     // `link(2)` fails when the destination exists, which is the same refusal
     // without a window between checking and writing.
     match tokio::fs::hard_link(staged, dest).await {
-        Ok(()) => return tokio::fs::remove_file(staged).await,
+        Ok(()) => {
+            // The destination now holds the file. Failing to unlink the staging
+            // name leaves a stray link, not a lost file, so the move is done.
+            if tokio::fs::remove_file(staged).await.is_err() {
+                tracing::warn!(
+                    staged = %staged.display(),
+                    dest = %dest.display(),
+                    "moved the file but could not remove its staging link"
+                );
+            }
+            return Ok(());
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error),
         Err(_) => {}
     }
@@ -851,6 +890,52 @@ mod move_tests {
             leftovers.is_empty(),
             "staging files left behind: {leftovers:?}"
         );
+    }
+
+    /// A failed move must never consume the file. Sonarr's RollbackPartialMove
+    /// only deletes the target after confirming the source survived, and
+    /// RollbackMove puts the file back when it did not.
+    #[tokio::test]
+    async fn a_failed_move_leaves_the_file_where_it_started() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("dest.mkv");
+        write(&source, b"irreplaceable");
+        write(&dest, b"occupied");
+
+        // Force the staging path the way a filesystem without an exclusive
+        // rename would, then fail promotion because the destination is taken.
+        let staged = staging_path_for(&dest);
+        claim_destination(&staged).await.expect("claim staging");
+        tokio::fs::rename(&source, &staged)
+            .await
+            .expect("stage the source");
+        assert!(!source.exists(), "the source has moved to the staging name");
+
+        roll_back_staged_file(&source, &staged).await;
+
+        assert_eq!(
+            std::fs::read(&source).expect("the source must come back"),
+            b"irreplaceable"
+        );
+        assert_eq!(std::fs::read(&dest).expect("dest"), b"occupied");
+        assert!(!staged.exists(), "the staging name is released");
+    }
+
+    /// When the source is still present the staged file is a partial, and
+    /// removing it is the correct rollback.
+    #[tokio::test]
+    async fn a_failed_copy_removes_only_the_partial() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let staged = dir.path().join(".scryer-partial.partial");
+        write(&source, b"payload");
+        write(&staged, b"half");
+
+        roll_back_staged_file(&source, &staged).await;
+
+        assert_eq!(std::fs::read(&source).expect("source"), b"payload");
+        assert!(!staged.exists(), "the partial copy is cleaned up");
     }
 
     #[test]
