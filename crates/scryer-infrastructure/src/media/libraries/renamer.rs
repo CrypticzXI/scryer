@@ -96,7 +96,7 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
                     // allows, and so a file that cannot move does not cancel
                     // the rest of the plan.
                     if let Err((reason_code, message)) =
-                        prepare_move_target(&item.current_path, target).await
+                        prepare_move_target(&item.current_path, target, permissions).await
                     {
                         result.status = RenameApplyStatus::Failed;
                         result.reason_code = reason_code;
@@ -162,6 +162,7 @@ impl LibraryRenamer for FileSystemLibraryRenamer {
 async fn prepare_move_target(
     current_path: &str,
     target_path: &str,
+    permissions: &ImportFilePermissions,
 ) -> Result<(), (String, String)> {
     let source = stored_path_to_path_buf(current_path);
     let source_meta = fs::symlink_metadata(&source).await.map_err(|err| {
@@ -179,12 +180,22 @@ async fn prepare_move_target(
 
     let target = stored_path_to_path_buf(target_path);
     if let Some(parent) = target.parent() {
+        // Season and title folders created by a rename get the configured
+        // permissions, the way the importer already treats folders it creates
+        // and Sonarr treats every folder it makes during a move.
+        let created = crate::workflow::file_importer::missing_destination_dirs(parent);
         fs::create_dir_all(parent).await.map_err(|err| {
             (
                 "target_parent_unwritable".to_string(),
                 format!("could not create {}: {err}", parent.display()),
             )
         })?;
+        for directory in &created {
+            crate::workflow::file_importer::apply_directory_permissions_best_effort(
+                directory,
+                permissions,
+            );
+        }
     }
 
     if !rename_paths_equivalent(current_path, target_path)

@@ -223,6 +223,7 @@ type MediaContentContainerProps = {
   canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
   canManageTitle: boolean;
+  canManageTitlesInLibrary: (libraryId: string | null | undefined) => boolean;
   canRequestMedia: boolean;
   authorizationSignature: string;
   onOpenOverview: (
@@ -736,6 +737,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageCatalogSettings,
   canManageLibrarySettings,
   canManageTitle,
+  canManageTitlesInLibrary,
   canRequestMedia,
   authorizationSignature,
   onOpenOverview,
@@ -1610,6 +1612,16 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const selectedTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
     [selectedTitles],
+  );
+  // Renaming rewrites files on disk, so it needs manage rights on every library
+  // the selection touches, not just on one of them.
+  const canRenameSelectedTitles = React.useMemo(
+    () =>
+      selectedTitleLibraryIds.length > 0 &&
+      selectedTitleLibraryIds.every((libraryId) =>
+        canManageTitlesInLibrary(libraryId),
+      ),
+    [canManageTitlesInLibrary, selectedTitleLibraryIds],
   );
   const editDialogTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(editDialogTitles.map((title) => title.libraryId))),
@@ -2674,6 +2686,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     openBulkTitleRename,
   } = useBulkRename({
     selectedTitles,
+    canRenameSelectedTitles,
     bulkActionBusy,
     setBulkActionBusy,
     client,
@@ -5356,6 +5369,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           openBulkTitleEdit,
           openBulkTitleDelete,
           openBulkTitleRename,
+          canRenameSelectedTitles,
         }}
       />
       {canManageTitle ? (

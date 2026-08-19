@@ -2100,6 +2100,7 @@ export function MediaContentView({
     openBulkTitleEdit: () => void;
     openBulkTitleDelete: () => void;
     openBulkTitleRename: () => void;
+    canRenameSelectedTitles: boolean;
   };
 }) {
   const t = useTranslate();
@@ -2300,6 +2301,7 @@ export function MediaContentView({
     openBulkTitleEdit,
     openBulkTitleDelete,
     openBulkTitleRename,
+    canRenameSelectedTitles,
   } = state;
   const [titleFilterInputValue, setTitleFilterInputValue] =
     React.useState(titleFilter);
@@ -3324,15 +3326,17 @@ export function MediaContentView({
                   >
                     <Pencil className="h-4 w-4" />
                   </TitleTableActionButton>
-                  <TitleTableActionButton
-                    tone="accent"
-                    label={t("title.renameAction")}
-                    onClick={openBulkTitleRename}
-                    disabled={bulkActionBusy}
-                    className="rounded-md"
-                  >
-                    <FolderPen className="h-4 w-4" />
-                  </TitleTableActionButton>
+                  {canRenameSelectedTitles ? (
+                    <TitleTableActionButton
+                      tone="accent"
+                      label={t("title.renameAction")}
+                      onClick={openBulkTitleRename}
+                      disabled={bulkActionBusy}
+                      className="rounded-md"
+                    >
+                      <FolderPen className="h-4 w-4" />
+                    </TitleTableActionButton>
+                  ) : null}
                   <TitleTableActionButton
                     tone="delete"
                     label={t("label.delete")}
@@ -3942,15 +3946,17 @@ export function MediaContentView({
                           <Pencil className="h-4 w-4" />
                           {t("label.edit")}
                         </Button>
-                        <Button
-                          variant="outline"
-                          onClick={openBulkTitleRename}
-                          disabled={bulkActionBusy}
-                          className="justify-center gap-2"
-                        >
-                          <FolderPen className="h-4 w-4" />
-                          {t("title.renameAction")}
-                        </Button>
+                        {canRenameSelectedTitles ? (
+                          <Button
+                            variant="outline"
+                            onClick={openBulkTitleRename}
+                            disabled={bulkActionBusy}
+                            className="justify-center gap-2"
+                          >
+                            <FolderPen className="h-4 w-4" />
+                            {t("title.renameAction")}
+                          </Button>
+                        ) : null}
                         <Button
                           variant="destructive"
                           onClick={openBulkTitleDelete}

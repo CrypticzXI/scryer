@@ -15,6 +15,8 @@ export const BULK_RENAME_ITEM_SAMPLE_LIMIT = 50;
 
 type UseBulkRenameArgs = {
   selectedTitles: TitleRecord[];
+  /// Whether the actor may manage titles in every selected title's library.
+  canRenameSelectedTitles: boolean;
   bulkActionBusy: boolean;
   setBulkActionBusy: React.Dispatch<React.SetStateAction<boolean>>;
   client: Client;
@@ -37,6 +39,7 @@ export type BulkRenameSummary = {
 
 export function useBulkRename({
   selectedTitles,
+  canRenameSelectedTitles,
   bulkActionBusy,
   setBulkActionBusy,
   client,
@@ -370,11 +373,23 @@ export function useBulkRename({
     if (selectedTitles.length === 0 || bulkActionBusy) {
       return;
     }
+    // The backend refuses too; this keeps the dialog from opening on a
+    // selection the actor cannot rename.
+    if (!canRenameSelectedTitles) {
+      setGlobalStatus(t("status.bulkRenameForbidden"));
+      return;
+    }
     setBulkRenamePreviewLoading(false);
     setBulkRenamePreviewError(null);
     setBulkRenamePlansByTitleId({});
     setBulkRenameDialogOpen(true);
-  }, [bulkActionBusy, selectedTitles.length]);
+  }, [
+    bulkActionBusy,
+    canRenameSelectedTitles,
+    selectedTitles.length,
+    setGlobalStatus,
+    t,
+  ]);
 
   return {
     bulkRenameDialogOpen,

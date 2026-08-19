@@ -370,12 +370,30 @@ impl AppUseCase {
         }
 
         let settings = self.read_rename_plan_settings(&facet).await?;
-        let mut titles = self
+        let titles = self
             .services
             .catalog
             .titles
             .list(Some(facet.clone()), None)
             .await?;
+        // A facet plan must never reach into a library the actor cannot manage:
+        // holding a catalog-settings permission is not the same as being allowed
+        // to rewrite someone else's library.
+        let mut manageable = Vec::with_capacity(titles.len());
+        for title in titles {
+            if self
+                .require_library_permission(
+                    actor,
+                    &title.library_id,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                )
+                .await
+                .is_ok()
+            {
+                manageable.push(title);
+            }
+        }
+        let mut titles = manageable;
         titles.sort_by(|left, right| left.id.cmp(&right.id));
         self.build_rename_plan_for_titles(facet, &titles, None, settings)
             .await
@@ -540,6 +558,8 @@ impl AppUseCase {
         // Configured permissions win over whatever the files carried before, the
         // way Sonarr applies ChmodFolder/ChownGroup after every transfer rather
         // than preserving the source's mode.
+        // Plans are per title, so the library override that applies is the one
+        // on the title being renamed rather than the facet default.
         let library_id = match preview.title_id.as_deref() {
             Some(title_id) => self
                 .services
@@ -548,7 +568,7 @@ impl AppUseCase {
                 .get_by_id(title_id)
                 .await?
                 .map(|title| title.library_id),
-            None => None,
+            None => first_library_id_in_plan(self, &preview).await,
         };
         let permissions = self
             .resolve_import_file_permissions(library_id.as_deref(), &preview.facet)
@@ -649,6 +669,14 @@ impl AppUseCase {
             .await?;
         }
         Ok(())
+    }
+
+    async fn library_id_for_rename_item(&self, item: &RenameApplyItemResult) -> Option<String> {
+        self.resolve_title_for_rename_item(item)
+            .await
+            .ok()
+            .flatten()
+            .map(|title| title.library_id)
     }
 
     async fn emit_rename_notifications(&self, actor: &User, items: &[RenameApplyItemResult]) {
@@ -3081,3 +3109,28 @@ fn collapse_separators(raw: &str) -> String {
 #[cfg(test)]
 #[path = "library_rename_tests.rs"]
 mod library_rename_tests;
+
+/// The library a plan's files belong to, for plans that do not name a title.
+///
+/// Every plan the API can produce today is scoped to one title, so this only
+/// keeps the permission lookup honest if that ever changes.
+async fn first_library_id_in_plan(app: &AppUseCase, preview: &RenamePlan) -> Option<String> {
+    for item in &preview.items {
+        let probe = RenameApplyItemResult {
+            collection_id: item.collection_id.clone(),
+            media_file_id: item.media_file_id.clone(),
+            series_movie_link_ids: item.series_movie_link_ids.clone(),
+            current_path: item.current_path.clone(),
+            proposed_path: item.proposed_path.clone(),
+            final_path: None,
+            write_action: item.write_action.clone(),
+            status: RenameApplyStatus::Skipped,
+            reason_code: String::new(),
+            error_message: None,
+        };
+        if let Some(library_id) = app.library_id_for_rename_item(&probe).await {
+            return Some(library_id);
+        }
+    }
+    None
+}

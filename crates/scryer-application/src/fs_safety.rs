@@ -398,15 +398,15 @@ pub async fn move_file_exclusive(
 /// A sibling of `dest` that no scanner will mistake for media.
 fn staging_path_for(dest: &Path) -> PathBuf {
     let parent = dest.parent().unwrap_or_else(|| Path::new("."));
-    let name = dest
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "media".to_string());
-    parent.join(format!(
-        ".scryer-move-{}-{}.partial",
-        crate::Id::new().0,
-        name
-    ))
+    // A short digest rather than the destination's own name: media filenames
+    // already run long, and a staging name that grew with them could push the
+    // component past what the filesystem accepts. This stays 25 bytes whatever
+    // the file is called.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(dest.as_os_str().as_encoded_bytes());
+    hasher.update(crate::Id::new().0.as_bytes());
+    let digest = hasher.finalize().to_hex();
+    parent.join(format!(".scryer-{}.partial", &digest[..9]))
 }
 
 /// Moves the finished file from its staging name onto the destination.
@@ -421,16 +421,28 @@ async fn promote_staged_file(
     if options.overwrite {
         return tokio::fs::rename(staged, dest).await;
     }
-    match exclusive_rename(staged, dest).await {
-        Some(result) => result,
-        None => {
-            if tokio::fs::symlink_metadata(dest).await.is_ok() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("destination already exists: {}", dest.display()),
-                ));
-            }
-            tokio::fs::rename(staged, dest).await
+
+    if let Some(result) = exclusive_rename(staged, dest).await {
+        return result;
+    }
+
+    // No exclusive rename here, so link the staged file into place instead:
+    // `link(2)` fails when the destination exists, which is the same refusal
+    // without a window between checking and writing.
+    match tokio::fs::hard_link(staged, dest).await {
+        Ok(()) => return tokio::fs::remove_file(staged).await,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error),
+        Err(_) => {}
+    }
+
+    // The volume has neither, so claim the name and rename over the claim. The
+    // empty file exists only for the length of a rename, not a copy.
+    claim_destination(dest).await?;
+    match tokio::fs::rename(staged, dest).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = tokio::fs::remove_file(dest).await;
+            Err(error)
         }
     }
 }

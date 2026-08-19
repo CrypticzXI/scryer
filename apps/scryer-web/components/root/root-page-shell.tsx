@@ -33,6 +33,7 @@ import {
   authorizationCacheSignature,
   hasAnyLibraryPermission,
   hasAppPermission,
+  hasLibraryPermission,
 } from "@/lib/utils/permissions";
 import { useSmgNotices } from "@/lib/hooks/use-smg-notices";
 import { useNavigationBadges } from "@/lib/hooks/use-navigation-badges";
@@ -419,6 +420,7 @@ function MainContent({
   settingsSection,
   userId,
   username,
+  canManageTitlesInLibrary,
   selectedLanguage,
   uiLanguage,
   discoveryAuthorizationSignature,
@@ -450,6 +452,7 @@ function MainContent({
   handleBackToList: () => void;
   settingsSection: SettingsSection;
   userId: string | undefined;
+  canManageTitlesInLibrary: (libraryId: string | null | undefined) => boolean;
   username: string | undefined;
   selectedLanguage: LanguageOption;
   uiLanguage: LocaleCode;
@@ -630,6 +633,7 @@ function MainContent({
       canManageCatalogSettings={canManageCatalogSettings}
       canManageLibrarySettings={canManageLibrarySettings}
       canManageTitle={canManageTitle}
+      canManageTitlesInLibrary={canManageTitlesInLibrary}
       canRequestMedia={canRequestMedia}
       authorizationSignature={discoveryAuthorizationSignature}
       onOpenOverview={handleOpenOverview}
@@ -1329,6 +1333,17 @@ function AuthenticatedHomePage({
     () => authorizationCacheSignature(authenticatedUser),
     [authenticatedUser],
   );
+  // Bulk actions run across a selection that can span libraries, so they need a
+  // per-library answer rather than the "manages some library" aggregate.
+  const canManageTitlesInLibrary = useCallback(
+    (libraryId: string | null | undefined) =>
+      hasLibraryPermission(
+        authenticatedUser,
+        libraryId,
+        LIBRARY_PERMISSIONS.manageTitles,
+      ),
+    [authenticatedUser],
+  );
   const {
     pendingImportCounts,
     pendingMediaRequestCounts,
@@ -1944,6 +1959,7 @@ function AuthenticatedHomePage({
                                   settingsSection={settingsSection}
                                   userId={authenticatedUser.id}
                                   username={authenticatedUser.username}
+                                  canManageTitlesInLibrary={canManageTitlesInLibrary}
                                   selectedLanguage={selectedLanguage}
                                   uiLanguage={uiLanguage}
                                   discoveryAuthorizationSignature={

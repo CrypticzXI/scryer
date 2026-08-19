@@ -735,7 +735,10 @@ pub(crate) fn apply_file_permissions_best_effort(
 }
 
 #[cfg(unix)]
-fn apply_directory_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {
+pub(crate) fn apply_directory_permissions_best_effort(
+    path: &Path,
+    permissions: &ImportFilePermissions,
+) {
     if !permissions.set_permissions_linux {
         return;
     }
@@ -762,9 +765,13 @@ fn apply_directory_permissions_best_effort(path: &Path, permissions: &ImportFile
 }
 
 #[cfg(not(unix))]
-fn apply_directory_permissions_best_effort(_path: &Path, _permissions: &ImportFilePermissions) {}
+pub(crate) fn apply_directory_permissions_best_effort(
+    _path: &Path,
+    _permissions: &ImportFilePermissions,
+) {
+}
 
-fn missing_destination_dirs(parent: &Path) -> Vec<PathBuf> {
+pub(crate) fn missing_destination_dirs(parent: &Path) -> Vec<PathBuf> {
     let mut missing = Vec::new();
     let mut current = Some(parent);
     while let Some(path) = current {
