@@ -136,6 +136,7 @@ type SettingsContainerProps = {
   selectedLanguage: LanguageOption | null;
   uiLanguage: LocaleCode;
   onSelectLanguage: (code: string) => void;
+  pluginUpdateCount: number;
 };
 
 export const SettingsContainer = memo(function SettingsContainer({
@@ -148,6 +149,7 @@ export const SettingsContainer = memo(function SettingsContainer({
   selectedLanguage,
   uiLanguage,
   onSelectLanguage,
+  pluginUpdateCount,
 }: SettingsContainerProps) {
   const t = useTranslate();
   const client = useClient();
@@ -469,6 +471,11 @@ export const SettingsContainer = memo(function SettingsContainer({
                     )}
                   />
                   <span className="whitespace-nowrap">{item.label}</span>
+                  {item.section === "plugins" && pluginUpdateCount > 0 ? (
+                    <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-[var(--scry-warning-solid)] px-1 text-xs font-medium tabular-nums text-[var(--scry-warning-on-solid)]">
+                      {pluginUpdateCount}
+                    </span>
+                  ) : null}
                 </Link>
               );
             })}

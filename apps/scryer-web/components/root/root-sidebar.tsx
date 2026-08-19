@@ -1249,13 +1249,6 @@ function RootSidebarContent({
                               {activityImportBadgeCount}
                             </SidebarMenuBadge>
                           ) : null}
-                          {item.id === "settings" && pluginUpdateCount > 0 ? (
-                            <SidebarMenuBadge
-                              className={navBadgeToneClass("warning")}
-                            >
-                              {pluginUpdateCount}
-                            </SidebarMenuBadge>
-                          ) : null}
                         </SidebarMenuItem>
                       </React.Fragment>
                     );
@@ -1332,6 +1325,13 @@ function RootSidebarContent({
                         {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
                             {activityImportBadgeCount}
+                          </SidebarMenuBadge>
+                        ) : null}
+                        {isSettingsTop && pluginUpdateCount > 0 ? (
+                          <SidebarMenuBadge
+                            className={navBadgeToneClass("warning")}
+                          >
+                            {pluginUpdateCount}
                           </SidebarMenuBadge>
                         ) : null}
                         {isMediaSection ? (

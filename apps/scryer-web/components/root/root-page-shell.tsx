@@ -426,6 +426,7 @@ function MainContent({
   systemSection,
   logsSection,
   scryerVersion,
+  pluginUpdateCount,
   activitySection,
   wantedSection,
   handleOpenOverview,
@@ -458,6 +459,7 @@ function MainContent({
   systemSection: SystemSection;
   logsSection: LogsSection;
   scryerVersion: string | null;
+  pluginUpdateCount: number;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   handleOpenOverview: (
@@ -603,6 +605,7 @@ function MainContent({
         selectedLanguage={selectedLanguage}
         uiLanguage={uiLanguage}
         onSelectLanguage={setLanguagePreferenceFromShell}
+        pluginUpdateCount={pluginUpdateCount}
       />
     );
   }
@@ -1953,6 +1956,7 @@ function AuthenticatedHomePage({
                                   systemSection={systemSection}
                                   logsSection={logsSection}
                                   scryerVersion={scryerVersion}
+                                  pluginUpdateCount={pluginUpdateCount}
                                   activitySection={activitySection}
                                   wantedSection={wantedSection}
                                   handleOpenOverview={handleOpenOverview}
