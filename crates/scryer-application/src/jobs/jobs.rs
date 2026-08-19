@@ -374,6 +374,53 @@ struct CountSummary {
     count: u32,
 }
 
+const PLUGIN_CATALOG_REFRESHED_MESSAGE: &str = "Plugin catalog refreshed";
+
+/// Outcome for the plugin catalog refresh job. The message and summary stay
+/// exactly as they were whenever automatic plugin updates did nothing, so the
+/// default (opt-out) configuration is indistinguishable from before.
+fn plugin_registry_refresh_outcome(
+    report: crate::plugins::runtime::PluginAutoUpdateReport,
+) -> JobExecutionOutcome {
+    if !report.did_work() {
+        return JobExecutionOutcome::new(Some(PLUGIN_CATALOG_REFRESHED_MESSAGE.to_string()), None);
+    }
+
+    let failed_count = report.failed.len() + report.errors.len();
+    let mut message = format!(
+        "{PLUGIN_CATALOG_REFRESHED_MESSAGE}; auto-updated {} plugin(s)",
+        report.updated.len()
+    );
+    if !report.skipped_in_progress.is_empty() {
+        message.push_str(&format!(
+            "; {} skipped while an install was in progress",
+            report.skipped_in_progress.len()
+        ));
+    }
+    if failed_count > 0 {
+        message.push_str(&format!("; {failed_count} failed"));
+    }
+
+    let summary_json = serde_json::to_string(&json!({
+        "consideredCount": report.considered,
+        "updatedCount": report.updated.len(),
+        "skippedInProgressCount": report.skipped_in_progress.len(),
+        "failedCount": failed_count,
+        "updated": report.updated,
+        "skippedInProgress": report.skipped_in_progress,
+        "failures": report.failed,
+        "rollbackFailures": report.rollback_failures,
+        "errors": report.errors,
+    }))
+    .ok();
+
+    if report.has_failures() {
+        JobExecutionOutcome::warning(Some(message), summary_json)
+    } else {
+        JobExecutionOutcome::new(Some(message), summary_json)
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 struct LibraryScanRunSummary {
     scanned: usize,
@@ -1433,9 +1480,8 @@ impl AppUseCase {
             )),
             JobKey::PluginRegistryRefresh => {
                 self.refresh_plugin_catalog_internal().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some("Plugin catalog refreshed".to_string()),
-                    None,
+                Ok(plugin_registry_refresh_outcome(
+                    self.run_scheduled_plugin_auto_update().await,
                 ))
             }
             JobKey::Housekeeping => {

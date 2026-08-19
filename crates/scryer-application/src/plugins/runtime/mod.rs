@@ -48,4 +48,5 @@ include!("verification.rs");
 include!("install.rs");
 include!("manual_install.rs");
 include!("restore.rs");
+include!("auto_update.rs");
 include!("tests.rs");
