@@ -356,9 +356,8 @@ const SERIES_SIDE_PANEL_COLLECTION_FIELDS = `
       episodesOwned
       episodesMonitored
       episodesTotal
-      createdAt
-      episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
-      }`;
+      episodeRecordsTotal
+      createdAt`;
 
 const TITLE_MEDIA_FILE_FIELDS = `
       id
@@ -941,6 +940,21 @@ export const seriesSidePanelOverviewQuery = `query SeriesSidePanelOverview($id: 
   }
   setupStatus {
     hasDownloadClients
+  }
+}`;
+
+export const seriesCollectionEpisodesQuery = `query SeriesCollectionEpisodes($id: ID!) {
+  collectionById(id: $id) {
+    id
+    episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
+    }
+  }
+}`;
+
+export const episodeCollectionRefQuery = `query EpisodeCollectionRef($titleId: ID!, $episodeId: ID!) {
+  episode(titleId: $titleId, episodeId: $episodeId) {
+    id
+    collectionId
   }
 }`;
 

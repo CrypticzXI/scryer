@@ -482,18 +482,23 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Cached title credits add one payload object behind the new `Title.credits`
     // resolver; the field hangs off an existing type, so root counts are
     // unchanged: OBJECT 291->292, public types 560->561.
+    // Plugin auto-update settings add one query root, one mutation root, one
+    // payload object, and one input object: query 119->120, mutation 175->176,
+    // OBJECT 292->293, INPUT_OBJECT 158->159, public types 561->563.
+    // The season-scoped panel's `Collection.episodeRecordsTotal` hangs off an
+    // existing type, so no census counts change.
     assert_eq!(
-        query_field_count, 119,
+        query_field_count, 120,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 175,
+        mutation_field_count, 176,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 561);
-    assert_eq!(kind_count("OBJECT"), 292);
-    assert_eq!(kind_count("INPUT_OBJECT"), 158);
+    assert_eq!(public_types.len(), 563);
+    assert_eq!(kind_count("OBJECT"), 293);
+    assert_eq!(kind_count("INPUT_OBJECT"), 159);
     assert_eq!(kind_count("ENUM"), 99);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

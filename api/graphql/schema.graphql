@@ -1181,6 +1181,10 @@ type CollectionPayload {
 	"""
 	episodesTotal: Int
 	"""
+	Total episode records in this collection including uncountable placeholders (TBA/undated), populated when requested.
+	"""
+	episodeRecordsTotal: Int
+	"""
 	Parent title for this collection, or null if the title is no longer available to the caller.
 	"""
 	title: TitlePayload

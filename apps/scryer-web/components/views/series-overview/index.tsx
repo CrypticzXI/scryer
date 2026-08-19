@@ -146,6 +146,8 @@ type Props = {
   seriesMovieLinks: SeriesMovieLink[];
   events: TitleHistoryEvent[];
   episodesByCollection: Record<string, CollectionEpisode[]>;
+  collectionEpisodesLoading?: Record<string, boolean>;
+  onLoadCollectionEpisodes?: (collectionId: string) => Promise<void> | void;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
   onLoadEpisodeDetail?: (episodeId: string) => Promise<void> | void;
@@ -201,6 +203,8 @@ export function SeriesOverviewView({
   seriesMovieLinks,
   events: _events,
   episodesByCollection,
+  collectionEpisodesLoading,
+  onLoadCollectionEpisodes,
   mediaFilesByEpisode,
   mediaFilesBySeriesMovieLink,
   onLoadEpisodeDetail,
@@ -427,6 +431,34 @@ export function SeriesOverviewView({
     nextExpanded.add(latestKey);
     setExpandedKeys(nextExpanded);
   }, [initialEpisodeId, latestKey]);
+
+  // Seasons hydrate lazily: fetch a collection's episodes once its section is
+  // expanded (default latest-season expansion included) and nothing is cached
+  // for it yet.
+  React.useEffect(() => {
+    if (!onLoadCollectionEpisodes) {
+      return;
+    }
+    for (const item of timelineItems) {
+      if (item.kind !== "collection" || !expandedKeys.has(item.key)) {
+        continue;
+      }
+      const collectionId = item.collection.id;
+      if (collectionId in episodesByCollection) {
+        continue;
+      }
+      if (collectionEpisodesLoading?.[collectionId]) {
+        continue;
+      }
+      void onLoadCollectionEpisodes(collectionId);
+    }
+  }, [
+    collectionEpisodesLoading,
+    episodesByCollection,
+    expandedKeys,
+    onLoadCollectionEpisodes,
+    timelineItems,
+  ]);
 
   const toggleKey = React.useCallback((key: string) => {
     setExpandedKeys((prev) => {
@@ -1091,7 +1123,11 @@ export function SeriesOverviewView({
                 const { collection } = item;
                 const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
 
-                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0) {
+                if (
+                  isSpecialsCollection(collection) &&
+                  (collection.episodeRecordsTotal ?? 0) === 0 &&
+                  sortedEpisodes.length === 0
+                ) {
                   return null;
                 }
 
@@ -1100,6 +1136,7 @@ export function SeriesOverviewView({
                     key={item.key}
                     collection={collection}
                     episodes={sortedEpisodes}
+                    episodesReady={collection.id in episodesByCollection}
                     facet={title.facet}
                     expanded={expandedKeys.has(item.key)}
                     onToggle={() => toggleKey(item.key)}
