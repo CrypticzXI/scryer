@@ -222,6 +222,69 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Return one usage row per (library, root) pair the caller may view.
+    ///
+    /// Visibility is resolved with the same
+    /// [`AppUseCase::list_libraries_for_permission`] call the `libraries` query
+    /// uses, so roots of libraries the caller cannot view are never returned.
+    /// Rows are deduplicated by normalized path within each library, and each
+    /// unique filesystem path is stat'ed at most once per call even when several
+    /// libraries share it. `used_bytes` and `total_bytes` are `None` when the
+    /// filesystem cannot be inspected (a failed stat, or a non-unix build).
+    pub async fn storage_root_usage(&self, actor: &User) -> AppResult<Vec<StorageRootUsage>> {
+        let libraries = self
+            .list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        let roots = library_root_folders_from_libraries(&libraries, None);
+
+        let mut usage_by_path: HashMap<String, Option<(i64, i64)>> = HashMap::new();
+        let mut seen = HashSet::new();
+        let mut rows = Vec::new();
+        for root in roots {
+            if !seen.insert((root.library_id.clone(), root.normalized_path.clone())) {
+                continue;
+            }
+            let usage = match usage_by_path.get(&root.normalized_path) {
+                Some(usage) => *usage,
+                None => {
+                    let usage = library_root_filesystem_usage(&root.path);
+                    usage_by_path.insert(root.normalized_path.clone(), usage);
+                    usage
+                }
+            };
+            rows.push(StorageRootUsage {
+                path: root.path,
+                library_id: root.library_id,
+                library_name: root.library_name,
+                facet: root.facet,
+                used_bytes: usage.map(|(used, _)| used),
+                total_bytes: usage.map(|(_, total)| total),
+            });
+        }
+        Ok(rows)
+    }
+}
+
+/// Used and total bytes for the filesystem backing `path`, or `None` when it
+/// cannot be inspected. Mirrors the disk-space health check's arithmetic:
+/// total is `f_blocks * f_frsize` and available is `f_bavail * f_frsize`. It is
+/// the *available* figure that excludes the blocks reserved for root, so the
+/// used figure reported here (total minus available) includes them.
+#[cfg(unix)]
+fn library_root_filesystem_usage(path: &str) -> Option<(i64, i64)> {
+    let stat = crate::statvfs_path(path)?;
+    let frsize = crate::statvfs_field_to_u64(stat.f_frsize);
+    let total = crate::statvfs_field_to_u64(stat.f_blocks).saturating_mul(frsize);
+    let available = crate::statvfs_field_to_u64(stat.f_bavail).saturating_mul(frsize);
+    let used = total.saturating_sub(available);
+    Some((i64::try_from(used).ok()?, i64::try_from(total).ok()?))
+}
+
+#[cfg(not(unix))]
+fn library_root_filesystem_usage(_path: &str) -> Option<(i64, i64)> {
+    None
+}
+impl AppUseCase {
     /// Return the configured root folders for a concrete library.
     ///
     /// If a stale title points at a missing or empty library, fall back to the

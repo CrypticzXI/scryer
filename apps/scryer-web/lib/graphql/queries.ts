@@ -3603,6 +3603,176 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
   }
 }`;
 
+// ── Dashboard ──────────────────────────────────────────────────────────────
+// Split by refresh cadence rather than by panel: the overview is the slow
+// half-page of counters and provider health, while requests, imports and the
+// import history each refetch on their own when the operator acts on them.
+
+export const dashboardOverviewQuery = `query DashboardOverview($activityWindowHours: Int!) {
+  me {
+    id
+    username
+  }
+  navigationBadgeCounts {
+    pendingImportCounts {
+      movie
+      series
+      anime
+    }
+    pendingMediaRequestCounts {
+      movie
+      series
+      anime
+    }
+  }
+  systemHealth {
+    titlesMovie
+    titlesSeries
+    titlesAnime
+    indexerStats {
+      indexerId
+      indexerName
+      queriesLast24H
+      failedLast24H
+      grabsLast24H
+      apiCurrent
+      apiMax
+    }
+  }
+  dashboardActivityStats(windowHours: $activityWindowHours) {
+    current {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+    previous {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+  }
+  indexers {
+    id
+    name
+    providerType
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+  }
+  downloadClientConfigs {
+    id
+    name
+    clientType
+    isEnabled
+    status
+    lastError
+    lastSeenAt
+  }
+  storageRoots {
+    path
+    libraryId
+    libraryName
+    facet
+    usedBytes
+    totalBytes
+  }
+}`;
+
+export const dashboardPendingRequestsQuery = `query DashboardPendingRequests {
+  mediaRequests(status: PENDING) {
+    id
+    libraryId
+    facet
+    title
+    year
+    posterUrl
+    requestedQualityProfileId
+    requestedMonitorType
+    createdAt
+    requesters {
+      userId
+      username
+      avatarUrl
+    }
+  }
+  libraries(permission: MANAGE_TITLES) {
+    id
+    name
+    facet
+    qualityProfileId
+    requestQualityProfileDefaultId
+  }
+}`;
+
+export const dashboardRecentImportsQuery = `query DashboardRecentImports($limit: Int!) {
+  titleHistory(
+    filter: { eventTypes: [IMPORTED, FILE_UPGRADED], limit: $limit }
+  ) {
+    totalCount
+    items {
+      id
+      titleId
+      titleName
+      facet
+      libraryId
+      eventType
+      quality
+      sizeBytes
+      occurredAt
+    }
+  }
+}`;
+
+// `pendingImports` is facet-scoped, so the cross-facet panel asks for all three
+// facets in one round trip and merges them client-side.
+export const dashboardPendingImportsQuery = `query DashboardPendingImports($limit: Int!) {
+  movie: pendingImports(facet: MOVIE, status: PENDING, limit: $limit) {
+    totalCount
+    items {
+      id
+      libraryId
+      facet
+      displayName
+      path
+      reason
+      reasonClass
+      sizeBytes
+      createdAt
+    }
+  }
+  series: pendingImports(facet: SERIES, status: PENDING, limit: $limit) {
+    totalCount
+    items {
+      id
+      libraryId
+      facet
+      displayName
+      path
+      reason
+      reasonClass
+      sizeBytes
+      createdAt
+    }
+  }
+  anime: pendingImports(facet: ANIME, status: PENDING, limit: $limit) {
+    totalCount
+    items {
+      id
+      libraryId
+      facet
+      displayName
+      path
+      reason
+      reasonClass
+      sizeBytes
+      createdAt
+    }
+  }
+}`;
+
 export const indexerDownloadClientMappingCatalogQuery = `query IndexerDownloadClientMappingCatalog {
   indexerDownloadClientMappingCatalog {
     clients {

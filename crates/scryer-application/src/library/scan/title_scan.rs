@@ -2284,6 +2284,7 @@ impl AppUseCase {
                                     year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
                                     reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
                                     error_message: Some(error.to_string()),
+                                    size_bytes: file.size_bytes,
                                 },
                             )
                             .await
@@ -2368,6 +2369,7 @@ impl AppUseCase {
                         &title.name,
                         title.year.map(|value| value as u32),
                         reason,
+                        file.size_bytes,
                     );
                     if let Err(error) =
                         persist_library_scan_unmatched_item(self, &unmatched_item).await

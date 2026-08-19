@@ -485,6 +485,7 @@ async fn persist_ignored_movie_scan_file_metadata_error(
             year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
             reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
             error_message: Some(error_message),
+            size_bytes: file.size_bytes,
         },
     )
     .await

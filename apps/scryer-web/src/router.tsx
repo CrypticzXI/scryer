@@ -64,6 +64,9 @@ function ShellRoute() {
     location.hash,
   );
 
+  // "landing" (`/`) deliberately falls through to the shell: the destination
+  // depends on the signed-in user's permissions, which are not known until the
+  // shell's auth bootstrap resolves.
   if (resolution.kind === "redirect") {
     return <Navigate to={resolution.to} replace />;
   }

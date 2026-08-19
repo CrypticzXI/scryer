@@ -487,8 +487,18 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // OBJECT 292->293, INPUT_OBJECT 158->159, public types 561->563.
     // The season-scoped panel's `Collection.episodeRecordsTotal` hangs off an
     // existing type, so no census counts change.
+    // Dashboard landing page adds the dashboardActivityStats and storageRoots
+    // query roots plus their three payload objects
+    // (DashboardActivityStatsPayload, ActivityWindowCountsPayload,
+    // StorageRootUsagePayload): query 120->122, OBJECT 293->296,
+    // public types 563->566.
+    // Manual-imports dashboard panel adds PendingImportReasonClassValue beside
+    // the free-text reason (plus createdAt/sizeBytes on the existing item
+    // payload, which add no types), and recently-imported enrichment adds
+    // libraryId/sizeBytes to TitleHistoryEventPayload: ENUM 99->100,
+    // public types 566->567. Root-field counts unchanged.
     assert_eq!(
-        query_field_count, 120,
+        query_field_count, 122,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
@@ -496,10 +506,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 563);
-    assert_eq!(kind_count("OBJECT"), 293);
+    assert_eq!(public_types.len(), 567);
+    assert_eq!(kind_count("OBJECT"), 296);
     assert_eq!(kind_count("INPUT_OBJECT"), 159);
-    assert_eq!(kind_count("ENUM"), 99);
+    assert_eq!(kind_count("ENUM"), 100);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -516,6 +526,12 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!query_field_names.contains(&"episodeMediaFiles"));
     assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
+    assert!(query_field_names.contains(&"dashboardActivityStats"));
+    assert!(query_field_names.contains(&"storageRoots"));
+    assert!(public_type_names.contains(&"DashboardActivityStatsPayload"));
+    assert!(public_type_names.contains(&"ActivityWindowCountsPayload"));
+    assert!(public_type_names.contains(&"StorageRootUsagePayload"));
+    assert!(public_type_names.contains(&"PendingImportReasonClassValue"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"setIndexerDownloadClientMapping"));

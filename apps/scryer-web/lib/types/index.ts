@@ -1,5 +1,6 @@
 export * from "./activity";
 export * from "./audit";
+export * from "./dashboard";
 export * from "./download-clients";
 export * from "./external-import";
 export * from "./download-queue";

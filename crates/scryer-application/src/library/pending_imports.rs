@@ -89,8 +89,31 @@ fn pending_import_item_from_unmatched(item: LibraryScanUnmatchedItem) -> Pending
         folder_path,
         query: item.query,
         year_hint: item.year_hint,
+        reason_class: PendingImportReasonClass::from_reason_code(&item.reason_code),
         reason: item.reason_code,
         search_attempts,
+        size_bytes: item.size_bytes,
+        created_at: item.created_at,
+    }
+}
+
+/// Fill in `size_bytes` for page rows the scanner never recorded a size for.
+///
+/// Only rows that read back as `None` are stat'ed, and only the current page
+/// (capped at [`MAX_PENDING_IMPORTS_PAGE_SIZE`]), so this stays bounded. The
+/// resolved value is deliberately not written back: the store column records
+/// what the scanner observed, and a read-path backfill would silently rewrite
+/// scan history.
+async fn hydrate_pending_import_sizes(items: &mut [PendingImportItem]) {
+    for item in items.iter_mut().filter(|item| item.size_bytes.is_none()) {
+        let path = stored_path_to_path_buf(item.path.trim());
+        let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        item.size_bytes = i64::try_from(metadata.len()).ok();
     }
 }
 
@@ -408,6 +431,7 @@ impl AppUseCase {
             .map(pending_import_item_from_unmatched)
             .collect::<Vec<_>>();
         self.hydrate_pending_import_known_titles(&mut items).await?;
+        hydrate_pending_import_sizes(&mut items).await;
 
         Ok(PendingImportConnection { total, items })
     }

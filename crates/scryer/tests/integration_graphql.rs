@@ -10,6 +10,8 @@ mod activity_history;
 mod auth_runtime_passkeys;
 #[path = "integration_graphql/backups.rs"]
 mod backups;
+#[path = "integration_graphql/dashboard.rs"]
+mod dashboard;
 #[path = "integration_graphql/dataloader_enrichment.rs"]
 mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]

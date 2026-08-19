@@ -8,6 +8,7 @@ use scryer_application::{
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
     JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
+    PendingImportReasonClass as AppPendingImportReasonClass,
     PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
     ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
     SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
@@ -35,6 +36,17 @@ impl FromApplication<AppPendingImportStatus> for PendingImportStatusValue {
         match value {
             AppPendingImportStatus::Pending => Self::Pending,
             AppPendingImportStatus::Ignored => Self::Ignored,
+        }
+    }
+}
+
+impl FromApplication<AppPendingImportReasonClass> for PendingImportReasonClassValue {
+    fn from_application(value: AppPendingImportReasonClass) -> Self {
+        match value {
+            AppPendingImportReasonClass::Unmatched => Self::Unmatched,
+            AppPendingImportReasonClass::Ambiguous => Self::Ambiguous,
+            AppPendingImportReasonClass::QualityUnknown => Self::QualityUnknown,
+            AppPendingImportReasonClass::Other => Self::Other,
         }
     }
 }

@@ -273,6 +273,32 @@ enum ActivitySeverityValue {
 }
 
 """
+Title-history event counts for one dashboard activity window.
+"""
+type ActivityWindowCountsPayload {
+	"""
+	Releases grabbed during the window.
+	"""
+	grabbed: Int!
+	"""
+	Existing files replaced by a better release during the window.
+	"""
+	upgraded: Int!
+	"""
+	Imports that completed during the window.
+	"""
+	imported: Int!
+	"""
+	Imports rejected as failed during the window; skipped imports are excluded.
+	"""
+	importFailed: Int!
+	"""
+	Downloads that failed during the window.
+	"""
+	downloadFailed: Int!
+}
+
+"""
 Actor origin attached to an event.
 """
 enum ActorKindValue {
@@ -1802,6 +1828,21 @@ type CutoffUnmetTitlesPagePayload {
 	Whether more matching targets exist after this page.
 	"""
 	hasMore: Boolean!
+}
+
+"""
+A trailing activity window together with the window immediately before it,
+so callers can render each count with its period-over-period delta.
+"""
+type DashboardActivityStatsPayload {
+	"""
+	Counts for the trailing window ending at the time of the request.
+	"""
+	current: ActivityWindowCountsPayload!
+	"""
+	Counts for the equally long window immediately before the current one.
+	"""
+	previous: ActivityWindowCountsPayload!
 }
 
 """
@@ -6402,6 +6443,10 @@ type IndexerQueryStatsPayload {
 	Failed queries during the trailing 24 hours.
 	"""
 	failedLast24H: Int!
+	"""
+	Releases grabbed through this indexer during the trailing 24 hours, counted by Scryer rather than reported by the provider.
+	"""
+	grabsLast24H: Int!
 	"""
 	UTC time of the most recent query, or null when never queried.
 	"""
@@ -11192,9 +11237,47 @@ type PendingImportItemPayload {
 	"""
 	reason: String!
 	"""
+	Coarse bucket for `reason`, stable across scanner reason-code changes.
+	"""
+	reasonClass: PendingImportReasonClassValue!
+	"""
 	Metadata search attempts made for this item.
 	"""
 	searchAttempts: [PendingImportSearchAttemptPayload!]!
+	"""
+	Size of the pending file; null for folder items and unreadable files.
+	"""
+	sizeBytes: Long
+	"""
+	When the scanner first recorded this item.
+	"""
+	createdAt: DateTime!
+}
+
+"""
+Coarse bucket for why a pending import is awaiting resolution.
+
+The free-text `reason` field remains the authoritative scanner code; this
+enum is the stable grouping the dashboard filters on, so a new scanner code
+surfaces as `OTHER` instead of breaking clients.
+"""
+enum PendingImportReasonClassValue {
+	"""
+	Metadata lookup returned no candidates to choose from.
+	"""
+	UNMATCHED
+	"""
+	Metadata lookup returned candidates but none could be accepted automatically.
+	"""
+	AMBIGUOUS
+	"""
+	The file's media metadata could not be read, so its quality is unknown.
+	"""
+	QUALITY_UNKNOWN
+	"""
+	Any other scanner reason, including parse and folder-ownership problems.
+	"""
+	OTHER
 }
 
 """
@@ -12416,6 +12499,10 @@ type QueryRoot {
 		permission: LibraryPermissionValue
 	): [LibraryPayload!]!
 	"""
+	List root folders of libraries the caller can view, with the disk usage of each backing filesystem.
+	"""
+	storageRoots: [StorageRootUsagePayload!]!
+	"""
 	List media requests visible to the caller, optionally filtered by facet, libraries, and status.
 	"""
 	mediaRequests(
@@ -12622,6 +12709,15 @@ type QueryRoot {
 		"""
 		limit: Int
 	): [TitleReleaseBlocklistEntryPayload!]!
+	"""
+	Return grab, upgrade, import, and failure counts for a trailing window and the window before it.
+	"""
+	dashboardActivityStats(
+		"""
+		Length of each window in hours; defaults to 24 and is clamped to 1 through 168.
+		"""
+		windowHours: Int! = 24
+	): DashboardActivityStatsPayload!
 	"""
 	List recent activity events with zero-based offset pagination.
 	"""
@@ -15229,6 +15325,36 @@ input StartExternalImportProwlarrWarmupInput {
 }
 
 """
+Filesystem usage of the volume backing one library root folder.
+"""
+type StorageRootUsagePayload {
+	"""
+	Configured root-folder path as stored on the library.
+	"""
+	path: String!
+	"""
+	ID of the library that owns this root folder.
+	"""
+	libraryId: ID!
+	"""
+	Name of the library that owns this root folder.
+	"""
+	libraryName: String!
+	"""
+	Media facet of the library that owns this root folder.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Bytes in use on the backing filesystem; null when it cannot be inspected.
+	"""
+	usedBytes: Long
+	"""
+	Total bytes on the backing filesystem; null when it cannot be inspected.
+	"""
+	totalBytes: Long
+}
+
+"""
 Stream identifier scope for event subscriptions.
 """
 enum StreamKindValue {
@@ -16124,9 +16250,17 @@ type TitleHistoryEventPayload {
 	"""
 	titleName: String
 	"""
+	Library owning the title, or null when the event cannot be attributed.
+	"""
+	libraryId: ID
+	"""
 	Media facet, or null when the event is not facet-specific.
 	"""
 	facet: MediaFacetValue
+	"""
+	Bytes imported or upgraded; null for other event types and for events recorded before sizes were captured.
+	"""
+	sizeBytes: Long
 	"""
 	Episode ID, or null when not episode-specific.
 	"""

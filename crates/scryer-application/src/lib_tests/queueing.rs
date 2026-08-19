@@ -24,6 +24,73 @@ async fn add_title_and_queue_sends_download_job() {
     assert_eq!(job_id, format!("job-for-{}", title.id));
 }
 
+/// Proves the manual/interactive queue path reports the grab to the indexer
+/// stats tracker. Deleting the `record_indexer_grab` call from
+/// `catalog/workflow/queueing.rs` fails this test.
+#[tokio::test]
+async fn queueing_an_accepted_release_records_a_grab_for_its_indexer() {
+    let (app, user, grabs) = bootstrap_with_grab_recorder();
+
+    let (_title, _job_id) = app
+        .add_title_and_queue_download(
+            &user,
+            NewTitle {
+                name: "Grab Counted Show".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+            QueuedReleaseSelection {
+                indexer_id: Some("idx-grab-counted".to_string()),
+                source_hint: Some("https://indexer.test/release.nzb".to_string()),
+                source_title: Some("Grab.Counted.Show.S01E01.1080p".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("title + queue should succeed");
+
+    let recorded = grabs.lock().expect("grab log mutex").clone();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "an accepted submission should record exactly one grab: {recorded:?}"
+    );
+    assert_eq!(recorded[0].0, "idx-grab-counted");
+}
+
+/// A submission with no indexer identity must not be bucketed under a
+/// placeholder id, or the dashboard's per-indexer column stops being
+/// attributable.
+#[tokio::test]
+async fn queueing_without_an_indexer_identity_records_no_grab() {
+    let (app, user, grabs) = bootstrap_with_grab_recorder();
+
+    app.add_title_and_queue_download(
+        &user,
+        NewTitle {
+            name: "Unattributed Show".into(),
+            facet: MediaFacet::Series,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            min_availability: None,
+            ..Default::default()
+        },
+        QueuedReleaseSelection::default(),
+    )
+    .await
+    .expect("title + queue should succeed");
+
+    assert!(
+        grabs.lock().expect("grab log mutex").is_empty(),
+        "a submission with no indexer id must not be counted"
+    );
+}
+
 #[tokio::test]
 async fn add_title_with_outcome_returns_pending_and_reuses_existing_tvdb_title() {
     let (app, user) = bootstrap();

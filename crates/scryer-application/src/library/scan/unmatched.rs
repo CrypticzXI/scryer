@@ -29,6 +29,7 @@ struct MovieUnmatchedScanRecord {
     year_hint: Option<u32>,
     reason: &'static str,
     search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    size_bytes: Option<i64>,
 }
 
 struct LibraryScanUnmatchedScope<'a> {
@@ -48,6 +49,9 @@ struct LibraryScanUnmatchedItemArgs {
     reason_code: String,
     error_message: Option<String>,
     search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    /// File size when the scanner has a concrete file in hand. Folder-shaped
+    /// candidates leave this `None`.
+    size_bytes: Option<i64>,
 }
 
 fn normalize_library_scan_root(library_path: &str) -> String {
@@ -89,6 +93,7 @@ fn build_library_scan_unmatched_item(
         reason_code: args.reason_code,
         error_message: args.error_message,
         search_attempts: args.search_attempts,
+        size_bytes: args.size_bytes,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     }
@@ -133,6 +138,7 @@ fn build_movie_unmatched_scan_record(
         year_hint: candidate.year_hint,
         reason,
         search_attempts,
+        size_bytes: candidate.file.size_bytes,
     }
 }
 
@@ -168,6 +174,7 @@ pub(crate) fn build_movie_unmatched_scan_item(
             reason_code: reason_override.unwrap_or(record.reason).to_string(),
             error_message,
             search_attempts: record.search_attempts,
+            size_bytes: record.size_bytes,
         },
     )
 }
@@ -213,6 +220,9 @@ pub(crate) fn build_series_unmatched_scan_item(
             reason_code: reason_code.to_string(),
             error_message,
             search_attempts,
+            // Series candidates are folder-shaped, so there is no single file
+            // size to record here.
+            size_bytes: None,
         },
     )
 }
@@ -232,6 +242,7 @@ pub(crate) fn build_title_bound_unmatched_scan_item(
     query: &str,
     year_hint: Option<u32>,
     reason_code: &str,
+    size_bytes: Option<i64>,
 ) -> LibraryScanUnmatchedItem {
     build_library_scan_unmatched_item(
         LibraryScanUnmatchedScope {
@@ -250,6 +261,7 @@ pub(crate) fn build_title_bound_unmatched_scan_item(
             reason_code: reason_code.to_string(),
             error_message: None,
             search_attempts: Vec::new(),
+            size_bytes,
         },
     )
 }
@@ -264,6 +276,7 @@ pub(crate) struct IgnoredLibraryScanItemArgs<'a> {
     pub year_hint: Option<u32>,
     pub reason_code: &'a str,
     pub error_message: Option<String>,
+    pub size_bytes: Option<i64>,
 }
 
 pub(crate) fn build_ignored_library_scan_item(
@@ -288,6 +301,7 @@ pub(crate) fn build_ignored_library_scan_item(
             reason_code: args.reason_code.to_string(),
             error_message: args.error_message,
             search_attempts: Vec::new(),
+            size_bytes: args.size_bytes,
         },
     )
 }

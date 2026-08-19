@@ -980,6 +980,7 @@ mod tests {
                     result_count: 1,
                     top_results: vec!["Test Movie (2024)".to_string()],
                 }],
+                size_bytes: Some(4_294_967_296),
                 created_at: now.clone(),
                 updated_at: now,
             };
@@ -997,6 +998,8 @@ mod tests {
             .expect("stored unmatched item");
             assert_eq!(stored.title_id, item.title_id);
             assert_eq!(stored.search_attempts, item.search_attempts);
+            // Exercises the 0159 bigint column on the PostgreSQL dialect.
+            assert_eq!(stored.size_bytes, item.size_bytes);
 
             let listed = LibraryScanUnmatchedItemRepository::list_library_scan_unmatched_items(
                 &store,

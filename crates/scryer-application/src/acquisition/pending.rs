@@ -875,6 +875,7 @@ impl AppUseCase {
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => indexer_label, "facet" => facet_label).increment(1);
                 }
+                self.record_indexer_grab(pr.indexer_id.as_deref(), pr.indexer_source.as_deref());
 
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(

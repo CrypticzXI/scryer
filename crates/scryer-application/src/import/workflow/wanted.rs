@@ -235,6 +235,7 @@ async fn execute_resolved_episode_import(
             imported_media_file_id: Some(media_file_id),
             reason_code: Some("additional_file".to_string()),
             link_type: Some(link_type),
+            size_bytes: Some(file_result.size_bytes as i64),
         });
     }
     let existing_incumbents = existing_incumbents
@@ -550,6 +551,7 @@ async fn execute_resolved_episode_import(
                     reason_code: Some("upgrade".to_string()),
                     link_type: (import_mode == scryer_domain::ImportMode::Move)
                         .then_some(scryer_domain::ImportStrategy::Move),
+                    size_bytes: Some(outcome.new_size_bytes),
                 });
             }
             Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
@@ -704,6 +706,7 @@ async fn execute_resolved_episode_import(
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
         link_type: Some(link_type),
+        size_bytes: Some(file_result.size_bytes as i64),
     })
 }
 /// Mark an existing acquisition-state row completed for a title scope.

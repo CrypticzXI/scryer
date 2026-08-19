@@ -782,6 +782,10 @@ async fn process_single_target(
                                         .trim_matches('"')
                                         .to_string();
                                     metrics::counter!("scryer_grabs_total", "indexer" => best_pack.source.clone(), "facet" => facet_label).increment(1);
+                                    app.record_indexer_grab(
+                                        best_pack.indexer_id.as_deref(),
+                                        Some(best_pack.source.as_str()),
+                                    );
                                     let accepted_identity =
                                         crate::download_identity::accepted_download_submission_identity(
                                             crate::download_identity::AcceptedDownloadIdentityInput {
@@ -1500,6 +1504,10 @@ async fn process_single_target(
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => candidate.source.clone(), "facet" => facet_label).increment(1);
                 }
+                app.record_indexer_grab(
+                    candidate.indexer_id.as_deref(),
+                    Some(candidate.source.as_str()),
+                );
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {

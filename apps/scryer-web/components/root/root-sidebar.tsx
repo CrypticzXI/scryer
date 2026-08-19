@@ -146,6 +146,11 @@ type HeaderWithMobileNavigationProps = {
 
 const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
   {
+    id: "overview",
+    labelKey: "nav.group.overview",
+    items: [{ kind: "view", id: "dashboard" }],
+  },
+  {
     id: "catalogs",
     labelKey: "nav.group.catalogs",
     items: [
@@ -716,6 +721,7 @@ function RootSidebarContent({
           (!MEDIA_NAV_VIEW_IDS.includes(item.id) || canAccessMediaTopNav) &&
           (item.id !== "calendar" || canViewCatalog) &&
           (item.id !== "wanted" || canViewCatalog) &&
+          (item.id !== "dashboard" || canManageSystemSettings) &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),

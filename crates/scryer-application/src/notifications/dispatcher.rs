@@ -1712,6 +1712,7 @@ mod tests {
                     dest_path: Some("/library/Imported Show/S01E01.mkv".to_string()),
                     quality: Some("1080p".to_string()),
                     episode_ids: vec!["episode-1".to_string()],
+                    size_bytes: Some(3_221_225_472),
                 }),
             },
             DomainEvent {
@@ -1766,6 +1767,7 @@ mod tests {
                     current_file_id: Some("file-new".to_string()),
                     old_score: Some(10),
                     new_score: Some(15),
+                    size_bytes: Some(8_589_934_592),
                 }),
             },
             DomainEvent {

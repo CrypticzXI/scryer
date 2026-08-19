@@ -33,6 +33,7 @@ test("facet settings sections that consume media settings trigger loading", () =
 
 test("canonical route families resolve to typed application state", () => {
   for (const path of [
+    "/dashboard",
     "/movies",
     "/series",
     "/anime",
@@ -98,7 +99,6 @@ test("reserved title slugs use library-qualified paths", () => {
 
 test("0.16 route aliases redirect to canonical 0.17 paths", () => {
   for (const [from, to] of [
-    ["/", "/movies"],
     ["/movies/overview", "/movies"],
     ["/series/settings", "/series/settings/library"],
     ["/series/media", "/series/settings/library"],
@@ -163,4 +163,23 @@ test("unknown roots and invalid sections do not fall back to another page", () =
   assert.deepEqual(resolveAppRoute("/unknown"), { kind: "not-found" });
   assert.deepEqual(resolveAppRoute("/system/unknown"), { kind: "not-found" });
   assert.deepEqual(resolveAppRoute("/automation/unknown"), { kind: "not-found" });
+});
+
+test("the root path defers to the shell instead of resolving by path", () => {
+  // `/` depends on the signed-in user's permissions, which parsing cannot see;
+  // `lib/utils/routes.test.ts` covers where each user class actually lands.
+  assert.deepEqual(resolveAppRoute("/"), { kind: "landing" });
+  assert.deepEqual(resolveAppRoute(""), { kind: "landing" });
+  assert.deepEqual(resolveAppRoute(null), { kind: "landing" });
+  // The query string survives because the shell, not the parser, navigates.
+  assert.deepEqual(resolveAppRoute("/", "?lang=fra"), { kind: "landing" });
+});
+
+test("the dashboard route is canonical and takes no subpaths", () => {
+  assert.equal(canonical("/dashboard").view, "dashboard");
+  assert.equal(canonical("/dashboard").canonicalPath, "/dashboard");
+  assert.deepEqual(resolveAppRoute("/dashboard/x"), { kind: "not-found" });
+  assert.deepEqual(resolveAppRoute("/dashboard/storage/roots"), {
+    kind: "not-found",
+  });
 });

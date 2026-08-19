@@ -68,7 +68,62 @@ pub(super) async fn title_updated_events(app: &AppUseCase, title_id: &str) -> Ve
         .expect("title updated events should load")
 }
 
+/// Records every `record_grab` call so tests can prove a submission path
+/// actually reports the grab, and against which indexer id.
+///
+/// Uses `std::sync::Mutex` because `record_grab` is a synchronous trait method;
+/// the ambient `Mutex` in these fixtures is tokio's async one.
+#[derive(Default)]
+pub(super) struct RecordingIndexerStatsTracker {
+    pub(super) grabs: RecordedGrabs,
+}
+
+impl crate::IndexerStatsTracker for RecordingIndexerStatsTracker {
+    fn record_query(&self, _indexer_id: &str, _indexer_name: &str, _success: bool) {}
+
+    fn record_grab(&self, indexer_id: &str, indexer_name: &str) {
+        self.grabs
+            .lock()
+            .expect("grab log mutex")
+            .push((indexer_id.to_string(), indexer_name.to_string()));
+    }
+
+    fn record_api_limits(
+        &self,
+        _indexer_id: &str,
+        _api_current: Option<u32>,
+        _api_max: Option<u32>,
+        _grab_current: Option<u32>,
+        _grab_max: Option<u32>,
+    ) {
+    }
+
+    fn all_stats(&self) -> Vec<crate::IndexerQueryStats> {
+        Vec::new()
+    }
+}
+
+/// Shared handle to a [`RecordingIndexerStatsTracker`]'s log of
+/// `(indexer_id, indexer_name)` pairs.
+pub(super) type RecordedGrabs = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// Same app as [`bootstrap`], with the indexer stats tracker swapped for one
+/// that records grabs, and the recorder handed back to the caller.
+pub(super) fn bootstrap_with_grab_recorder() -> (AppUseCase, User, RecordedGrabs) {
+    let tracker = Arc::new(RecordingIndexerStatsTracker::default());
+    let grabs = Arc::clone(&tracker.grabs);
+    let (app, user) = bootstrap_with_services(Arc::new(MockUserRepo::default()), Some(tracker));
+    (app, user, grabs)
+}
+
 pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
+    bootstrap_with_services(users, None)
+}
+
+fn bootstrap_with_services(
+    users: Arc<MockUserRepo>,
+    indexer_stats: Option<Arc<RecordingIndexerStatsTracker>>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
@@ -83,7 +138,7 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
-    let services = AppServices::builder(
+    let mut services_builder = AppServices::builder(
         titles.clone(),
         shows,
         users,
@@ -97,8 +152,11 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
         String::new(),
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
-    .with_libraries(Arc::new(MockLibraryRepo::default()))
-    .build_partial_for_tests();
+    .with_libraries(Arc::new(MockLibraryRepo::default()));
+    if let Some(indexer_stats) = indexer_stats {
+        services_builder = services_builder.with_indexer_stats(indexer_stats);
+    }
+    let services = services_builder.build_partial_for_tests();
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
     registry.register(Arc::new(SeriesFacetHandler::new(
@@ -1434,6 +1492,7 @@ pub(super) fn build_test_unmatched_item(
         reason_code: "no_metadata_match".to_string(),
         error_message: None,
         search_attempts: vec![],
+        size_bytes: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     }

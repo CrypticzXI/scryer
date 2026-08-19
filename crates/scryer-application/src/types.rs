@@ -968,7 +968,63 @@ pub struct PendingImportItem {
     pub query: String,
     pub year_hint: Option<i32>,
     pub reason: String,
+    /// Coarse bucket derived from `reason`, for UI grouping and filtering.
+    pub reason_class: PendingImportReasonClass,
     pub search_attempts: Vec<PendingImportSearchAttempt>,
+    /// Size of the pending file: the size the scanner persisted, else a
+    /// filesystem stat taken while assembling the page. `None` when the item is
+    /// a folder or the file is no longer readable.
+    pub size_bytes: Option<i64>,
+    pub created_at: String,
+}
+
+/// Coarse classification of why an item is awaiting import resolution.
+///
+/// The free-text `reason` stays the authoritative scanner code; this is the
+/// stable bucket the dashboard groups by, so new scanner codes land in
+/// [`PendingImportReasonClass::Other`] instead of breaking the API.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingImportReasonClass {
+    /// Metadata lookup returned no candidates at all.
+    Unmatched,
+    /// Candidates were returned but none could be accepted automatically.
+    Ambiguous,
+    /// The file's media metadata could not be read, so quality is unknown.
+    QualityUnknown,
+    /// Any other scanner reason code.
+    #[default]
+    Other,
+}
+
+impl PendingImportReasonClass {
+    /// Bucket a scanner `reason_code`. Unknown codes classify as
+    /// [`PendingImportReasonClass::Other`] rather than erroring, so the scanner
+    /// can add codes without a coordinated API change.
+    pub fn from_reason_code(reason_code: &str) -> Self {
+        match reason_code.trim() {
+            // A lookup ran and produced nothing to choose from.
+            "no_metadata_search_results" | "no_metadata_match" | "episode_lookup_failed" => {
+                Self::Unmatched
+            }
+            // A lookup produced candidates but none could be accepted.
+            "no_acceptable_metadata_match" => Self::Ambiguous,
+            // Media analysis failed, so the file's quality is unknown.
+            "skipped_file_metadata_unreadable" => Self::QualityUnknown,
+            // `episode_identity_missing`, `skipped_unusable_title_evidence`, and
+            // `title_already_owns_another_folder` are parse/ownership problems
+            // rather than match outcomes, so they fall through to `Other`.
+            _ => Self::Other,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmatched => "unmatched",
+            Self::Ambiguous => "ambiguous",
+            Self::QualityUnknown => "quality_unknown",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1093,6 +1149,10 @@ pub struct LibraryScanUnmatchedItem {
     pub reason_code: String,
     pub error_message: Option<String>,
     pub search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    /// Size of the unmatched file when the scanner knew it. `None` for
+    /// folder-shaped items and for rows recorded before the column existed;
+    /// readers fall back to a filesystem stat rather than backfilling.
+    pub size_bytes: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2457,6 +2517,13 @@ pub struct IndexerQueryStats {
     pub queries_last_24h: u32,
     pub successful_last_24h: u32,
     pub failed_last_24h: u32,
+    /// Releases grabbed through this indexer in the trailing 24 hours.
+    ///
+    /// Scryer's own count of accepted download-client submissions, not a
+    /// provider-reported quota counter like `grab_current`. It shares the
+    /// in-memory rolling window that backs `queries_last_24h`, so it resets
+    /// when the process restarts.
+    pub grabs_last_24h: u32,
     pub last_query_at: Option<String>,
     pub api_current: Option<u32>,
     pub api_max: Option<u32>,
@@ -2905,5 +2972,68 @@ mod tests {
             )
             .expect("full path resolves conflict");
         assert_eq!(hint.ids[0].value, "366972");
+    }
+}
+
+#[cfg(test)]
+mod pending_import_reason_class_tests {
+    use super::PendingImportReasonClass;
+
+    /// Pins the scanner reason codes this repo actually emits to their buckets.
+    /// If a scanner code is renamed, this fails rather than silently
+    /// reclassifying those rows as `Other`.
+    #[test]
+    fn scanner_reason_codes_map_to_expected_classes() {
+        for (code, expected) in [
+            (
+                "no_metadata_search_results",
+                PendingImportReasonClass::Unmatched,
+            ),
+            ("episode_lookup_failed", PendingImportReasonClass::Unmatched),
+            ("no_metadata_match", PendingImportReasonClass::Unmatched),
+            (
+                "no_acceptable_metadata_match",
+                PendingImportReasonClass::Ambiguous,
+            ),
+            (
+                "skipped_file_metadata_unreadable",
+                PendingImportReasonClass::QualityUnknown,
+            ),
+            ("episode_identity_missing", PendingImportReasonClass::Other),
+            (
+                "skipped_unusable_title_evidence",
+                PendingImportReasonClass::Other,
+            ),
+            (
+                "title_already_owns_another_folder",
+                PendingImportReasonClass::Other,
+            ),
+        ] {
+            assert_eq!(
+                PendingImportReasonClass::from_reason_code(code),
+                expected,
+                "reason code {code} should classify as {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_and_blank_reason_codes_fall_back_to_other() {
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code("some_future_scanner_code"),
+            PendingImportReasonClass::Other
+        );
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code(""),
+            PendingImportReasonClass::Other
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_defeat_classification() {
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code("  no_metadata_search_results  "),
+            PendingImportReasonClass::Unmatched
+        );
     }
 }

@@ -1710,6 +1710,7 @@ impl AppUseCase {
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => best.source.clone(), "facet" => facet_label).increment(1);
                 }
+                self.record_indexer_grab(best.indexer_id.as_deref(), Some(best.source.as_str()));
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());

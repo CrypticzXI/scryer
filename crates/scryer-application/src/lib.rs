@@ -246,23 +246,24 @@ pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{
-    AcquisitionScopeStatesQuery, AudioStreamDetail, CollectionUpdate, DeleteExecutionConfirmation,
-    DownloadClientAddRequest, DownloadClientConfigUpdate, DownloadClientMarkImportedRequest,
-    DownloadClientStatus, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionPurpose,
-    EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult, IndexerConfigUpdate,
-    IndexerDownloadClientMappingCatalog, IndexerDownloadClientMappingClient,
-    IndexerDownloadClientMappingIndexer, IndexerDownloadClientProviderCompatibility,
-    IndexerProxyConfigUpdate, IndexerProxyTestResult, IndexerRoutingEntry, IndexerRoutingPlan,
-    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
-    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
-    NewBlocklistEntry, NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
+    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, CollectionUpdate,
+    DashboardActivityStats, DeleteExecutionConfirmation, DownloadClientAddRequest,
+    DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
+    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerDownloadClientMappingCatalog,
+    IndexerDownloadClientMappingClient, IndexerDownloadClientMappingIndexer,
+    IndexerDownloadClientProviderCompatibility, IndexerProxyConfigUpdate, IndexerProxyTestResult,
+    IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult,
+    InsertMediaFileInput, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
+    MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole, NewBlocklistEntry,
+    NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
     PendingReleasesPageQuery, PendingStagedNzb, QueueDownloadOutcome, QueuedDownloadResult,
     QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
-    StagedNzbRef, SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict,
-    SubtitleGenerationInput, SubtitleProviderConfigUpdate, SubtitleProviderValidationResult,
-    SubtitleStreamDetail, SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage,
-    WantedSearchOutcome,
+    StagedNzbRef, StorageRootUsage, SubmissionConflictPolicy, SubmissionScope,
+    SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
+    SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
+    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{
@@ -359,8 +360,6 @@ pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 
 pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
-#[cfg(unix)]
-pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
     await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
@@ -369,6 +368,8 @@ pub(crate) use helpers::{
     to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
+#[cfg(unix)]
+pub(crate) use helpers::{statvfs_field_to_u64, statvfs_path};
 pub use image_proxy::image_proxy_source_token;
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
@@ -551,25 +552,26 @@ pub use types::{
     OAuthConnectedAppRecord, OAuthRefreshGrantRecord, OAuthRefreshRotation,
     OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
     PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
-    PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
-    PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,
-    PrimaryCollectionSummary, RecycleBinBatchJobAccepted, RecycleBinSettings,
-    RecycleRestoreConflictPolicy, RecycleRestorePreview, RecycleRestorePreviewItem, RecycledItem,
-    ReleaseDecision, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-    ResolvePendingImportResult, RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth,
-    TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter,
-    TitleCatalogFilterCounts, TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort,
-    TitleCatalogSortKey, TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary,
-    TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageSourceResult,
-    TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile,
-    TitleMediaSizeSummary, TitleMetadataUpdate, TitleMovieMediaSummary, TitleQualitySummary,
-    TitleRatingSummary, TitleReleaseBlocklistEntry, TotpCredentialRecord,
-    TotpEnrollmentChallengeRecord, TotpEnrollmentComplete, TotpEnrollmentStart,
-    TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus, UiDateTimeFormat,
-    UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet, UiSettingsUpdate, UiSidebarMode,
-    UiTableColumnSetting, UiTableViewMode, UiTheme, UpdateRecycleBinSettings, UserAuthFactorStatus,
-    WantedKind, WantedStatusCount, WebauthnChallengeRecord, WebauthnChallengeStart,
-    WebauthnChallengeType, WebauthnCredentialRecord,
+    PendingImportCounts, PendingImportItem, PendingImportReasonClass, PendingImportSearchAttempt,
+    PendingImportStatus, PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount,
+    PendingTitleHydration, PrimaryCollectionSummary, RecycleBinBatchJobAccepted,
+    RecycleBinSettings, RecycleRestoreConflictPolicy, RecycleRestorePreview,
+    RecycleRestorePreviewItem, RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome,
+    ReleaseDownloadFailureSignature, ResolvePendingImportResult, RuntimePathStyle,
+    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
+    TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
+    TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary, TitleExternalRating, TitleImageBlob,
+    TitleImageKind, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord,
+    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
+    TitleMovieMediaSummary, TitleQualitySummary, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
+    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
+    UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
+    UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
+    UpdateRecycleBinSettings, UserAuthFactorStatus, WantedKind, WantedStatusCount,
+    WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,
+    WebauthnCredentialRecord,
 };
 pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,

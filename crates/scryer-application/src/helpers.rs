@@ -240,6 +240,16 @@ pub(crate) fn to_hex(value: &[u8]) -> String {
     output
 }
 
+/// Widen a `statvfs` counter to `u64`.
+///
+/// The block-count fields are `u32` on some unix targets and `u64` on others,
+/// so callers cannot write `u64::from(..)` without tripping
+/// `clippy::useless_conversion` on whichever platform already matches.
+#[cfg(unix)]
+pub(crate) fn statvfs_field_to_u64<T: Into<u64>>(value: T) -> u64 {
+    value.into()
+}
+
 #[cfg(unix)]
 pub(crate) fn statvfs_path(path: &str) -> Option<libc::statvfs> {
     use std::ffi::CString;

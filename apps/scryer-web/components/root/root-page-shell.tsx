@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   CalendarDays,
   Download,
+  LayoutDashboard,
   ListChecks,
   Loader2,
   Monitor,
@@ -100,6 +101,8 @@ import {
   canAccessMediaSettingsSection,
   canAccessSettingsSection,
   canAccessSystemSection,
+  defaultAccessibleRoute,
+  defaultSettingsSection,
   isMediaSettingsSection,
   isProtectedSettingsRoute,
 } from "@/lib/utils/routes";
@@ -114,6 +117,12 @@ import {
   resolveTitleOverviewTargetById,
   resolveTitleOverviewTargetBySlug,
 } from "@/lib/title-overview-loader";
+
+const DashboardContainer = lazy(() =>
+  import("@/components/containers/dashboard-container").then((m) => ({
+    default: m.DashboardContainer,
+  })),
+);
 
 const MediaContentContainer = lazy(() =>
   import("@/components/containers/media-content-container").then((m) => ({
@@ -205,84 +214,6 @@ function fallbackMediaContentSettingsSection(
   return "overview";
 }
 
-function defaultSettingsSection(
-  canManageSystemSettings: boolean,
-  canManageCatalogSettings: boolean,
-  canManageUserAccounts: boolean,
-  canManageUserAccess: boolean,
-): SettingsSection {
-  if (canManageSystemSettings) {
-    return "general";
-  }
-
-  if (canManageCatalogSettings) {
-    return "qualityProfiles";
-  }
-
-  if (canManageUserAccounts) {
-    return "security";
-  }
-
-  if (canManageUserAccess) {
-    return "users";
-  }
-
-  return "profile";
-}
-
-function defaultAccessibleRoute(
-  canViewCatalog: boolean,
-  canRequestMedia: boolean,
-  canResolveImports: boolean,
-  canManageUserAccounts: boolean,
-  canManageUserAccess: boolean,
-  canManageSystemSettings: boolean,
-  canManageCatalogSettings: boolean,
-  canManageLibrarySettings: boolean,
-): {
-  view: ViewId;
-  settingsSection?: SettingsSection;
-  contentSettingsSection?: ContentSettingsSection;
-} {
-  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
-
-  if (canViewCatalog) {
-    return {
-      view: "movies",
-      contentSettingsSection: "overview",
-    };
-  }
-
-  if (canRequestMedia) {
-    return {
-      view: "requests",
-    };
-  }
-
-  if (canResolveImports) {
-    return {
-      view: "movies",
-      contentSettingsSection: "import",
-    };
-  }
-
-  if (canManageLibrarySettings && !canManageConfig) {
-    return {
-      view: "movies",
-      contentSettingsSection: "library",
-    };
-  }
-
-  return {
-    view: "settings",
-    settingsSection: defaultSettingsSection(
-      canManageSystemSettings,
-      canManageCatalogSettings,
-      canManageUserAccounts,
-      canManageUserAccess,
-    ),
-  };
-}
 
 function formatSmgUpgradeDeadline(
   value: string | null,
@@ -547,6 +478,12 @@ function MainContent({
   canManageConfig: boolean;
   canManageLibrarySettings: boolean;
 }) {
+  if (view === "dashboard") {
+    if (!canManageSystemSettings) {
+      return <ViewLoadingFallback />;
+    }
+    return <DashboardContainer key="dashboard" />;
+  }
   if (view === "activity") {
     if (!canAccessActivity) {
       return <ViewLoadingFallback />;
@@ -851,6 +788,7 @@ function AuthenticatedHomePage({
     overviewTitleSlug: parsedOverviewSlug,
   } = resolvedRoute;
   const routeIsCanonical = routeResolution.kind === "canonical";
+  const routeIsLanding = routeResolution.kind === "landing";
 
   const legacyOverviewTitleId = useMemo(() => {
     if (
@@ -1342,6 +1280,11 @@ function AuthenticatedHomePage({
 
   const topNav = useMemo(
     () => [
+      {
+        id: "dashboard" as ViewId,
+        label: t("nav.dashboard"),
+        icon: LayoutDashboard,
+      },
       ...FACET_REGISTRY.map((f) => ({
         id: f.viewId as ViewId,
         label: t(f.navLabelKey),
@@ -1453,35 +1396,39 @@ function AuthenticatedHomePage({
     view,
   ]);
 
-  const navigateToAccessibleDefault = useCallback(() => {
-    const fallback = defaultAccessibleRoute(
-      canViewCatalog,
-      canRequestMedia,
-      canResolveImports,
-      canManageUserAccounts,
-      canManageUsers,
-      canManageSystemSettings,
+  const accessibleDefaultRoute = useMemo(
+    () =>
+      defaultAccessibleRoute(
+        canViewCatalog,
+        canRequestMedia,
+        canResolveImports,
+        canManageUserAccounts,
+        canManageUsers,
+        canManageSystemSettings,
+        canManageCatalogSettings,
+        canManageLibrarySettings,
+      ),
+    [
       canManageCatalogSettings,
       canManageLibrarySettings,
-    );
+      canManageSystemSettings,
+      canManageUserAccounts,
+      canManageUsers,
+      canResolveImports,
+      canRequestMedia,
+      canViewCatalog,
+    ],
+  );
+
+  const navigateToAccessibleDefault = useCallback(() => {
     navigateTo(
-      fallback.view,
-      fallback.settingsSection,
-      fallback.contentSettingsSection,
+      accessibleDefaultRoute.view,
+      accessibleDefaultRoute.settingsSection,
+      accessibleDefaultRoute.contentSettingsSection,
       undefined,
       undefined,
     );
-  }, [
-    canManageCatalogSettings,
-    canManageLibrarySettings,
-    canManageSystemSettings,
-    canManageUserAccounts,
-    canManageUsers,
-    canResolveImports,
-    canRequestMedia,
-    canViewCatalog,
-    navigateTo,
-  ]);
+  }, [accessibleDefaultRoute, navigateTo]);
 
   const routeCanAccessSettingsContent =
     view === "settings"
@@ -1528,6 +1475,46 @@ function AuthenticatedHomePage({
     navigateTo,
     t,
   });
+
+  // `/` has no path-derived destination: send the user to the best route their
+  // permissions allow, which is the dashboard for operators and the catalog for
+  // everyone else. Replaces rather than pushes so Back does not land on `/`
+  // again and bounce forward.
+  useEffect(() => {
+    if (!routeIsLanding) {
+      return;
+    }
+
+    // Carries the query and hash across, the way the old `/` redirect did, so
+    // an entry link like `/?lang=fra` still reaches the landing page.
+    navigate(
+      `${buildViewPath(
+        accessibleDefaultRoute.view,
+        accessibleDefaultRoute.settingsSection,
+        accessibleDefaultRoute.contentSettingsSection,
+      )}${location.search}${location.hash}`,
+      { replace: true },
+    );
+  }, [
+    accessibleDefaultRoute,
+    location.hash,
+    location.search,
+    navigate,
+    routeIsLanding,
+  ]);
+
+  useEffect(() => {
+    if (!routeIsCanonical || view !== "dashboard" || canManageSystemSettings) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [
+    canManageSystemSettings,
+    navigateToAccessibleDefault,
+    routeIsCanonical,
+    view,
+  ]);
 
   useEffect(() => {
     if (!routeIsCanonical || view !== "activity" || canAccessActivity) {
@@ -1908,7 +1895,9 @@ function AuthenticatedHomePage({
                             className="flex min-h-[70vh] flex-1 flex-col min-[981px]:min-h-0 min-[981px]:overflow-y-auto"
                           >
                             <Suspense fallback={<ViewLoadingFallback />}>
-                              {!routeIsCanonical ? (
+                              {routeIsLanding ? (
+                                <ViewLoadingFallback />
+                              ) : !routeIsCanonical ? (
                                 <NotFoundPage />
                               ) : settingsStepUpPolicyLoadFailed ? (
                                 <div className="mx-auto flex min-h-[360px] w-full max-w-md flex-col items-center justify-center gap-3 px-6 py-12 text-center">
