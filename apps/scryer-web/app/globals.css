@@ -701,7 +701,12 @@ body {
   color: var(--foreground);
 }
 
-.dark [data-slot="table-head"] {
+/* The checkbox and actions header cells replace the table-head slot with their
+ * own, so every header rule has to name all three or those columns fall back to
+ * the row background. */
+.dark [data-slot="table-head"],
+.dark [data-slot="table-checkbox-head"],
+.dark [data-slot="table-actions-head"] {
   background:
     linear-gradient(180deg, rgba(21, 29, 49, 0.985), rgba(13, 19, 34, 0.985)),
     linear-gradient(90deg, rgba(91, 100, 255, 0.03), rgba(56, 189, 248, 0.016) 100%);
@@ -1128,7 +1133,9 @@ body {
   border-color: transparent;
 }
 
-.pride [data-slot="table-head"] {
+.pride [data-slot="table-head"],
+.pride [data-slot="table-checkbox-head"],
+.pride [data-slot="table-actions-head"] {
   background:
     linear-gradient(180deg, rgba(37, 22, 66, 0.96), rgba(17, 11, 34, 0.98)),
     linear-gradient(90deg, rgba(255, 76, 168, 0.12), rgba(74, 125, 255, 0.12) 100%);
@@ -1137,12 +1144,16 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.pride [data-slot="table-head"]:first-child {
+.pride [data-slot="table-head"]:first-child,
+.pride [data-slot="table-checkbox-head"]:first-child,
+.pride [data-slot="table-actions-head"]:first-child {
   border-top-left-radius: 0.9rem;
   border-bottom-left-radius: 0.9rem;
 }
 
-.pride [data-slot="table-head"]:last-child {
+.pride [data-slot="table-head"]:last-child,
+.pride [data-slot="table-checkbox-head"]:last-child,
+.pride [data-slot="table-actions-head"]:last-child {
   border-top-right-radius: 0.9rem;
   border-bottom-right-radius: 0.9rem;
 }
