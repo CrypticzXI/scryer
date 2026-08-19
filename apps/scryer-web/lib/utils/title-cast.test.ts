@@ -12,6 +12,7 @@ import {
   titleCastDubLanguages,
   titleCastOriginalCredits,
   titleCastPreferredDubLanguage,
+  sortTitleCastByCharacter,
 } from "./title-cast.ts";
 
 function credit(overrides: Record<string, unknown> = {}) {
@@ -28,9 +29,9 @@ function credit(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("cast credits keep the server's order", () => {
-  // The server already filtered by kind, sorted by billing rank, and truncated;
-  // re-sorting here would fight it.
+test("the raw credit filter keeps the server's order", () => {
+  // titleCastCredits only drops unrenderable rows; the rails apply the
+  // character sort on top of it.
   const ordered = titleCastCredits([
     credit({ personName: "Second", billingOrder: 3 }),
     credit({ personName: "First", billingOrder: 9 }),
@@ -190,4 +191,59 @@ test("dub language labels are human readable with a raw-code fallback", () => {
   assert.equal(titleCastDubLanguageLabel("de", "en"), "German");
   assert.equal(titleCastDubLanguageLabel("en", "en"), "English");
   assert.equal(titleCastDubLanguageLabel("zzzz", "en"), "zzzz");
+});
+
+test("both rails order by character so portraits line up column-for-column", () => {
+  // Providers return the dub cast in a different order than the original; the
+  // rails must converge on one order or the two rows of portraits desync.
+  const credits = [
+    credit({ kind: "voice_actor", personName: "JP Bravo", character: "Bravo", language: "ja", billingOrder: 0 }),
+    credit({ kind: "voice_actor", personName: "JP Alpha", character: "Alpha", language: "ja", billingOrder: 1 }),
+    credit({ kind: "voice_actor", personName: "JP Charlie", character: "Charlie", language: "ja", billingOrder: 2 }),
+    credit({ kind: "voice_actor", personName: "EN Charlie", character: "Charlie", language: "en", billingOrder: 2 }),
+    credit({ kind: "voice_actor", personName: "EN Alpha", character: "Alpha", language: "en", billingOrder: 1 }),
+    credit({ kind: "voice_actor", personName: "EN Bravo", character: "Bravo", language: "en", billingOrder: 0 }),
+  ];
+
+  const original = titleCastOriginalCredits(credits);
+  const dub = titleCastDubCredits(credits, "en");
+
+  assert.deepEqual(
+    original.map((entry) => entry.character),
+    ["Alpha", "Bravo", "Charlie"],
+  );
+  // The column-by-column character sequence is what alignment actually means.
+  assert.deepEqual(
+    dub.map((entry) => entry.character),
+    original.map((entry) => entry.character),
+  );
+});
+
+test("characterless credits sort last on both rails", () => {
+  const sorted = sortTitleCastByCharacter([
+    credit({ personName: "No Character", character: "" }),
+    credit({ personName: "Zulu", character: "Zulu" }),
+    credit({ personName: "Alpha", character: "Alpha" }),
+  ]);
+
+  assert.deepEqual(
+    sorted.map((entry) => entry.personName),
+    ["Alpha", "Zulu", "No Character"],
+  );
+});
+
+test("duplicate character names break ties identically on both rails", () => {
+  // Two people share a character name; the tiebreak must not be personName
+  // first, or the rails would diverge (different actors per rail).
+  const credits = [
+    credit({ kind: "voice_actor", personName: "JP Zed", character: "Twin", language: "ja", billingOrder: 5 }),
+    credit({ kind: "voice_actor", personName: "JP Ann", character: "Twin", language: "ja", billingOrder: 2 }),
+    credit({ kind: "voice_actor", personName: "EN Ann", character: "Twin", language: "en", billingOrder: 2 }),
+    credit({ kind: "voice_actor", personName: "EN Zed", character: "Twin", language: "en", billingOrder: 5 }),
+  ];
+
+  assert.deepEqual(
+    titleCastOriginalCredits(credits).map((entry) => entry.billingOrder),
+    titleCastDubCredits(credits, "en").map((entry) => entry.billingOrder),
+  );
 });

@@ -309,13 +309,29 @@ pub(super) fn approved_upstream_url(raw: &str) -> Option<String> {
     {
         return None;
     }
-    match parsed.host_str()?.to_ascii_lowercase().as_str() {
-        "image.tmdb.org" | "artworks.thetvdb.com" => {}
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    match host.as_str() {
+        "image.tmdb.org" | "artworks.thetvdb.com" | "cdn.myanimelist.net" => {}
+        _ if is_anilist_cdn_host(&host) => {}
         _ => return None,
     }
     parsed.set_scheme("https").ok()?;
     parsed.set_fragment(None);
     Some(parsed.to_string())
+}
+
+/// AniList serves portraits from numbered CDN shards (`s4.anilist.co` today,
+/// `s1`–`s3` on older records). Matching the shard pattern keeps a future `s5`
+/// working without admitting arbitrary `*.anilist.co` subdomains, which this
+/// allowlist exists to keep out.
+fn is_anilist_cdn_host(host: &str) -> bool {
+    let Some(shard) = host.strip_suffix(".anilist.co") else {
+        return false;
+    };
+    let Some(index) = shard.strip_prefix('s') else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 async fn persist_queued_sources(
@@ -450,6 +466,34 @@ mod tests {
         assert!(approved_upstream_url("https://image.tmdb.org:444/t/p/a.jpg").is_none());
         assert!(approved_upstream_url("ftp://image.tmdb.org/t/p/a.jpg").is_none());
         assert!(approved_upstream_url("https://127.0.0.1/a.jpg").is_none());
+    }
+
+    #[test]
+    fn source_allowlist_admits_anime_portrait_cdns() {
+        // Voice-actor portraits come from AniList's numbered shards and, on the
+        // Jikan backfill path, from MAL's CDN.
+        for host in ["s4.anilist.co", "s1.anilist.co", "s12.anilist.co"] {
+            assert_eq!(
+                approved_upstream_url(&format!("https://{host}/file/anilistcdn/a.jpg")).as_deref(),
+                Some(format!("https://{host}/file/anilistcdn/a.jpg").as_str()),
+                "{host} is an AniList CDN shard"
+            );
+        }
+        assert_eq!(
+            approved_upstream_url("https://cdn.myanimelist.net/images/voiceactors/a.jpg")
+                .as_deref(),
+            Some("https://cdn.myanimelist.net/images/voiceactors/a.jpg")
+        );
+
+        // The shard pattern must not widen into arbitrary AniList subdomains,
+        // nor into lookalike hosts that merely end with the CDN suffix.
+        assert!(approved_upstream_url("https://anilist.co/a.jpg").is_none());
+        assert!(approved_upstream_url("https://api.anilist.co/a.jpg").is_none());
+        assert!(approved_upstream_url("https://s.anilist.co/a.jpg").is_none());
+        assert!(approved_upstream_url("https://s4a.anilist.co/a.jpg").is_none());
+        assert!(approved_upstream_url("https://s4.anilist.co.evil.test/a.jpg").is_none());
+        assert!(approved_upstream_url("https://evil-s4.anilist.co/a.jpg").is_none());
+        assert!(approved_upstream_url("https://cdn.myanimelist.net.evil.test/a.jpg").is_none());
     }
 
     #[tokio::test]

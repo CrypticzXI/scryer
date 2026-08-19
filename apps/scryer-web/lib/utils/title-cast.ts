@@ -8,9 +8,9 @@ import type { TitleCreditRecord } from "@/lib/types/titles";
 export const TITLE_CAST_RAIL_DISPLAY_LIMIT = 15;
 
 /**
- * Drop credits with nothing to render. The server already filtered by kind,
- * ordered by billing rank, and applied the limit, so the surviving order is the
- * server's — never re-sort here.
+ * Drop credits with nothing to render. The server filtered by kind and ordered
+ * by billing rank; the rails re-order by character so the original and dub rails
+ * line up column-for-column (see `sortTitleCastByCharacter`).
  */
 export function titleCastCredits(
   credits: TitleCreditRecord[] | null | undefined,
@@ -21,6 +21,41 @@ export function titleCastCredits(
 }
 
 /**
+ * Order both cast rails identically so a character occupies the same column in
+ * the original rail and the dub rail, and the portraits line up vertically.
+ *
+ * The comparison has to be alignment-safe, which rules out anything that
+ * differs between the two rails: `personName` is a different actor per rail, so
+ * it is only ever the last-resort tiebreak. `billingOrder` comes from the
+ * provider's per-character edge and is therefore identical for a character's
+ * Japanese and dubbed rows, which makes it a safe first tiebreak. Credits with
+ * no character (crew, unnamed roles) sort last — they have nothing to align on.
+ */
+export function sortTitleCastByCharacter(
+  credits: TitleCreditRecord[],
+): TitleCreditRecord[] {
+  return [...credits].sort((left, right) => {
+    const leftCharacter = (left.character ?? "").trim();
+    const rightCharacter = (right.character ?? "").trim();
+    if (leftCharacter !== rightCharacter) {
+      if (leftCharacter.length === 0) {
+        return 1;
+      }
+      if (rightCharacter.length === 0) {
+        return -1;
+      }
+      return leftCharacter.localeCompare(rightCharacter);
+    }
+    const leftBilling = left.billingOrder ?? Number.MAX_SAFE_INTEGER;
+    const rightBilling = right.billingOrder ?? Number.MAX_SAFE_INTEGER;
+    if (leftBilling !== rightBilling) {
+      return leftBilling - rightBilling;
+    }
+    return (left.personName ?? "").localeCompare(right.personName ?? "");
+  });
+}
+
+/**
  * Main-rail cast: on-screen performers plus the original Japanese voice cast.
  * TMDB actor rows carry no language; anime titles only have voice_actor rows,
  * so the `ja` filter is what keeps the main rail single-cast.
@@ -28,12 +63,11 @@ export function titleCastCredits(
 export function titleCastOriginalCredits(
   credits: TitleCreditRecord[] | null | undefined,
 ): TitleCreditRecord[] {
-  return titleCastCredits(credits)
-    .filter(
-      (credit) =>
-        credit.kind !== "voice_actor" || (credit.language ?? "") === "ja",
-    )
-    .slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
+  const cast = titleCastCredits(credits).filter(
+    (credit) =>
+      credit.kind !== "voice_actor" || (credit.language ?? "") === "ja",
+  );
+  return sortTitleCastByCharacter(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
 }
 
 /**
@@ -48,15 +82,14 @@ export function titleCastDubCredits(
   credits: TitleCreditRecord[] | null | undefined,
   language?: string | null,
 ): TitleCreditRecord[] {
-  return titleCastCredits(credits)
-    .filter(
-      (credit) =>
-        credit.kind === "voice_actor" &&
-        (credit.language ?? "").length > 0 &&
-        credit.language !== "ja" &&
-        (!language || credit.language === language),
-    )
-    .slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
+  const cast = titleCastCredits(credits).filter(
+    (credit) =>
+      credit.kind === "voice_actor" &&
+      (credit.language ?? "").length > 0 &&
+      credit.language !== "ja" &&
+      (!language || credit.language === language),
+  );
+  return sortTitleCastByCharacter(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
 }
 
 /**

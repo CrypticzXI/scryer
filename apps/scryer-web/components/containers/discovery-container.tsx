@@ -19,6 +19,7 @@ import {
   discoveryHomeFilterOptionsQuery,
   discoveryItemDetailQuery,
 } from "@/lib/graphql/queries";
+import { CATALOG_TITLES_REFRESH_EVENT } from "@/lib/events/catalog-titles";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -229,6 +230,24 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   }, [refresh]);
 
   useEffect(() => {
+    // A global-search add leaves the panel open over this view, so the rails
+    // have to hear about the new title instead of waiting for a remount.
+    const handleCatalogTitlesRefresh = () => {
+      void refresh();
+    };
+
+    window.addEventListener(
+      CATALOG_TITLES_REFRESH_EVENT,
+      handleCatalogTitlesRefresh,
+    );
+    return () =>
+      window.removeEventListener(
+        CATALOG_TITLES_REFRESH_EVENT,
+        handleCatalogTitlesRefresh,
+      );
+  }, [refresh]);
+
+  useEffect(() => {
     const requestId = filterOptionsRequestIdRef.current + 1;
     filterOptionsRequestIdRef.current = requestId;
     void client
@@ -393,17 +412,11 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
           )}
           manageableLibraries={librariesByFacet[selectedFacet] ?? []}
           rootFolderOptions={rootFoldersByFacet[selectedFacet] ?? []}
-          onAdd={async (result, facet, options) => {
-            const titleId = await addMetadataSearchResultToCatalog(
-              result,
-              facet,
-              options,
-            );
-            if (titleId) {
-              await refresh();
-            }
-            return titleId;
-          }}
+          onAdd={(result, facet, options) =>
+            // The rails reload on the catalog-titles event, same as an add made
+            // from global search.
+            addMetadataSearchResultToCatalog(result, facet, options)
+          }
         />
       ) : null}
       {canRequestMedia && requestableFacets.length > 0 ? (

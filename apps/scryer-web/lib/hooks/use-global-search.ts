@@ -37,6 +37,7 @@ import {
 } from "@/lib/utils/quality-profiles";
 import { FACET_REGISTRY, facetById } from "@/lib/facets/registry";
 import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
+import { dispatchCatalogTitlesRefresh } from "@/lib/events/catalog-titles";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import {
@@ -1461,6 +1462,9 @@ export function useGlobalSearch({
               ? () => feedback.onViewInCatalog?.(titleId)
               : undefined,
         });
+        // Whatever view is mounted behind the search panel still shows the
+        // pre-add catalog, and nothing navigates now, so tell it to reload.
+        dispatchCatalogTitlesRefresh({ facet, titleId });
         void runMetadataAutocomplete(globalSearch.trim(), { surfaceErrors: false });
         return titleId;
       } catch (error) {

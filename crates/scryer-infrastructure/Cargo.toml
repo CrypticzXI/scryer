@@ -71,7 +71,7 @@ wiremock = { workspace = true }
 
 [build-dependencies]
 blake3 = "1"
-cc = "1.1"
+cc = "1.4"
 graphql-parser = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }

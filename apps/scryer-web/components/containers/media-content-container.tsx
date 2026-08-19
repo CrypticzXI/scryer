@@ -52,6 +52,10 @@ import {
   QUALITY_PROFILE_INHERIT_VALUE,
   viewToFacet,
 } from "@/lib/constants/settings";
+import {
+  CATALOG_TITLES_REFRESH_EVENT,
+  catalogTitlesRefreshDetail,
+} from "@/lib/events/catalog-titles";
 import { isAbortError } from "@/lib/graphql/urql-client";
 import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
 import type { InteractiveSearchProgress } from "@/lib/graphql/release-search";
@@ -2637,6 +2641,27 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [refreshTrackedDeletionJobs]);
+
+  React.useEffect(() => {
+    const handleCatalogTitlesRefresh = (event: Event) => {
+      const { facet } = catalogTitlesRefreshDetail(event);
+      if (facet && facet !== activeFacet) {
+        return;
+      }
+      void refreshTitles();
+      void refreshCatalogDiscovery();
+    };
+
+    window.addEventListener(
+      CATALOG_TITLES_REFRESH_EVENT,
+      handleCatalogTitlesRefresh,
+    );
+    return () =>
+      window.removeEventListener(
+        CATALOG_TITLES_REFRESH_EVENT,
+        handleCatalogTitlesRefresh,
+      );
+  }, [activeFacet, refreshCatalogDiscovery, refreshTitles]);
 
   const {
     bulkDeleteDialogOpen,
@@ -5384,20 +5409,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )}
           manageableLibraries={librariesByFacet[addDiscoveryFacet] ?? []}
           rootFolderOptions={rootFoldersByFacet[addDiscoveryFacet] ?? []}
-          onAdd={async (result, facet, options) => {
-            const titleId = await addMetadataSearchResultToCatalog(
-              result,
-              facet,
-              options,
-            );
-            if (titleId) {
-              await Promise.all([
-                refreshTitles(),
-                refreshCatalogDiscovery(),
-              ]);
-            }
-            return titleId;
-          }}
+          onAdd={(result, facet, options) =>
+            // The catalog reload rides the catalog-titles event, same as an add
+            // made from global search.
+            addMetadataSearchResultToCatalog(result, facet, options)
+          }
         />
       ) : null}
       {canRequestMedia ? (

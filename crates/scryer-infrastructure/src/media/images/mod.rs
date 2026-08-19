@@ -50,7 +50,9 @@ pub(crate) fn normalize_title_image_source_url(source_url: &str) -> AppResult<St
     parsed.set_path(&format!("/{normalized_path}"));
     image_proxy_store::approved_upstream_url(parsed.as_str()).ok_or_else(|| {
         AppError::Validation(
-            "title image URL host must be image.tmdb.org or artworks.thetvdb.com".into(),
+            "title image URL host must be image.tmdb.org, artworks.thetvdb.com, \
+             cdn.myanimelist.net, or an AniList CDN shard"
+                .into(),
         )
     })
 }

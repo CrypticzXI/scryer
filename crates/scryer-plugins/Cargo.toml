@@ -17,7 +17,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-aws-lc-sys = "0.43"
+aws-lc-sys = "0.44"
 crc-fast = "1.10.0"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "http2"] }
 quick-xml = { workspace = true }
