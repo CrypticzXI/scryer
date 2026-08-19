@@ -1210,6 +1210,11 @@ const de: LocaleDictionary = {
   "settings.plugins": "Plugins",
   "settings.pluginsSection": "Plugins verwalten",
   "settings.pluginsRefresh": "Registry aktualisieren",
+  "settings.pluginAutoUpdateEnabled": "Patch-Updates offizieller Plugins automatisch installieren",
+  "settings.pluginAutoUpdateEnabledHelp":
+    "Nur die geplante Plugin-Katalogaktualisierung wendet diese Updates an, und zwar ausschließlich Patch-Releases (sowie optimierte Builds der installierten Version) offizieller Plugins. Manuelle Katalogaktualisierungen und manuelle Updates bleiben unberührt.",
+  "settings.pluginAutoUpdateEnabledReadonly":
+    "Automatische Plugin-Updates werden von Benutzern verwaltet, die die Konfiguration verwalten dürfen.",
   "settings.host": "Host",
   "settings.port": "Port",
   "settings.baseUrl": "Basis-URL",
@@ -1270,6 +1275,7 @@ const de: LocaleDictionary = {
     "Plugin '{{name}}' wurde auf die integrierte Version zurückgesetzt.",
   "status.pluginUninstalled": "Plugin '{{name}}' deinstalliert.",
   "status.pluginUpgraded": "Plugin '{{name}}' auf v{{version}} aktualisiert.",
+  "status.pluginAutoUpdateSettingsSaved": "Einstellung für automatische Plugin-Updates gespeichert.",
   "status.pluginToggled": "Plugin '{{name}}' {{state}}.",
   "status.registryRefreshed": "Plugin-Registry aktualisiert.",
   "form.namePlaceholder": "Name",

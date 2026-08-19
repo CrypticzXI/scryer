@@ -2071,6 +2071,11 @@ const en: LocaleDictionary = {
   "settings.pluginRuntimeMemoryEstimate":
     "Estimated plugin runtime memory usage",
   "settings.pluginsRefresh": "Refresh Catalog",
+  "settings.pluginAutoUpdateEnabled": "Automatically install official plugin patch updates",
+  "settings.pluginAutoUpdateEnabledHelp":
+    "Only the scheduled Plugin Catalog Refresh applies these updates, and only patch-level releases (plus optimized builds of the installed version) of official plugins. Manual catalog refreshes and manual updates are unaffected.",
+  "settings.pluginAutoUpdateEnabledReadonly":
+    "Automatic plugin updates are controlled by users who can manage configuration.",
   "settings.pluginsUpdateAll": "Update All",
   "settings.pluginsUpdatingAll": "Updating All…",
   "settings.host": "Host",
@@ -2161,6 +2166,7 @@ const en: LocaleDictionary = {
   "status.pluginUninstalled": "Plugin '{{name}}' uninstalled.",
   "status.pluginUpgraded": "Plugin '{{name}}' upgraded to v{{version}}.",
   "status.pluginsUpgradeQueued": "Queued upgrades for {{count}} plugins.",
+  "status.pluginAutoUpdateSettingsSaved": "Automatic plugin update setting saved.",
   "status.pluginToggled": "Plugin '{{name}}' {{state}}.",
   "status.registryRefreshed": "Plugin registry refreshed.",
   "status.catalogRefreshed": "Plugin catalog refreshed.",

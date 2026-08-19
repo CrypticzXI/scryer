@@ -1174,6 +1174,11 @@ const ja: LocaleDictionary = {
   "settings.plugins": "プラグイン",
   "settings.pluginsSection": "プラグイン管理",
   "settings.pluginsRefresh": "レジストリを更新",
+  "settings.pluginAutoUpdateEnabled": "公式プラグインのパッチ更新を自動的にインストールする",
+  "settings.pluginAutoUpdateEnabledHelp":
+    "これらの更新を適用するのはスケジュールされたプラグイン カタログ更新のみで、対象は公式プラグインのパッチ リリース（およびインストール済みバージョンの最適化ビルド）に限られます。手動のカタログ更新と手動更新には影響しません。",
+  "settings.pluginAutoUpdateEnabledReadonly":
+    "プラグインの自動更新は、構成を管理できるユーザーが制御します。",
   "settings.host": "ホスト",
   "settings.port": "ポート",
   "settings.baseUrl": "ベースURL",
@@ -1236,6 +1241,7 @@ const ja: LocaleDictionary = {
     "プラグイン'{{name}}'がアンインストールされました。",
   "status.pluginUpgraded":
     "プラグイン'{{name}}'がv{{version}}にアップグレードされました。",
+  "status.pluginAutoUpdateSettingsSaved": "プラグインの自動更新設定を保存しました。",
   "status.pluginToggled": "プラグイン'{{name}}'が{{state}}されました。",
   "status.registryRefreshed": "プラグインレジストリが更新されました。",
   "form.namePlaceholder": "名前",

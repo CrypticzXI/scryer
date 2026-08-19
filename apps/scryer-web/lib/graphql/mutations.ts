@@ -1868,6 +1868,12 @@ export const updateRecycleBinSettingsMutation = `mutation UpdateRecycleBinSettin
   }
 }`;
 
+export const updatePluginAutoUpdateSettingsMutation = `mutation UpdatePluginAutoUpdateSettings($input: UpdatePluginAutoUpdateSettingsInput!) {
+  updatePluginAutoUpdateSettings(input: $input) {
+    enabled
+  }
+}`;
+
 // ── Notifications ────────────────────────────────────────────────────────
 
 export const createNotificationChannelMutation = `mutation CreateNotificationChannel($input: CreateNotificationChannelInput!) {

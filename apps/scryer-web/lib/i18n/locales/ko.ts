@@ -1159,6 +1159,11 @@ const ko: LocaleDictionary = {
   "settings.plugins": "플러그인",
   "settings.pluginsSection": "플러그인 관리",
   "settings.pluginsRefresh": "레지스트리 새로고침",
+  "settings.pluginAutoUpdateEnabled": "공식 플러그인 패치 업데이트 자동 설치",
+  "settings.pluginAutoUpdateEnabledHelp":
+    "예약된 플러그인 카탈로그 새로고침만 이러한 업데이트를 적용하며, 공식 플러그인의 패치 릴리스(및 설치된 버전의 최적화 빌드)만 대상입니다. 수동 카탈로그 새로고침과 수동 업데이트에는 영향을 주지 않습니다.",
+  "settings.pluginAutoUpdateEnabledReadonly":
+    "플러그인 자동 업데이트는 구성을 관리할 수 있는 사용자가 제어합니다.",
   "settings.host": "호스트",
   "settings.port": "포트",
   "settings.baseUrl": "기본 URL",
@@ -1214,6 +1219,7 @@ const ko: LocaleDictionary = {
   "status.pluginUninstalled": "'{{name}}' 플러그인이 제거되었습니다.",
   "status.pluginUpgraded":
     "'{{name}}' 플러그인이 v{{version}}으로 업그레이드되었습니다.",
+  "status.pluginAutoUpdateSettingsSaved": "플러그인 자동 업데이트 설정이 저장되었습니다.",
   "status.pluginToggled": "'{{name}}' 플러그인이 {{state}}되었습니다.",
   "status.registryRefreshed": "플러그인 레지스트리가 새로고침되었습니다.",
   "form.namePlaceholder": "이름",
