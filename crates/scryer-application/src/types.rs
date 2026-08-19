@@ -2365,6 +2365,7 @@ pub struct CollectionEpisodeProgressSummary {
     pub owned_episodes: i64,
     pub monitored_episodes: i64,
     pub total_episodes: i64,
+    pub episode_records_total: i64,
 }
 
 #[derive(Clone, Debug)]

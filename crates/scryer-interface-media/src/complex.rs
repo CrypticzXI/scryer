@@ -835,6 +835,32 @@ impl CollectionPayload {
         .await
     }
 
+    /// Total episode records in this collection including uncountable placeholders (TBA/undated), populated when requested.
+    async fn episode_records_total(&self, ctx: &Context<'_>) -> GqlResult<Option<i64>> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            let summary = loaders
+                .collection_episode_progress
+                .load_one((self.title_id.to_string(), self.id.to_string()))
+                .await?;
+            return Ok(summary.map(|summary| summary.episode_records_total));
+        }
+        Box::pin(async move {
+            let app = app_from_ctx(ctx)?;
+            let actor = actor_from_ctx(ctx)?;
+            let title_id = self.title_id.to_string();
+            let collection_id = self.id.to_string();
+            let summaries = app
+                .list_collection_episode_progress_summaries(&actor, std::slice::from_ref(&title_id))
+                .await
+                .map_err(to_gql_error)?;
+            Ok(summaries
+                .into_iter()
+                .find(|summary| summary.collection_id == collection_id)
+                .map(|summary| summary.episode_records_total))
+        })
+        .await
+    }
+
     /// Parent title for this collection, or null if the title is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;

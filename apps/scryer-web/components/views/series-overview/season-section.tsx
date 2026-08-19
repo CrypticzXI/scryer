@@ -61,6 +61,7 @@ export { SeriesMovieTimelineSection } from "./series-movie-row";
 export function SeasonSection({
   collection,
   episodes,
+  episodesReady = true,
   expanded,
   facet,
   onToggle,
@@ -97,6 +98,7 @@ export function SeasonSection({
   collection: TitleCollection;
   facet: string;
   episodes: CollectionEpisode[];
+  episodesReady?: boolean;
   expanded: boolean;
   onToggle: () => void;
   initiallyOpenEpisodeId?: string | null;
@@ -137,6 +139,24 @@ export function SeasonSection({
 
   const seasonCheckedState: boolean | "indeterminate" = React.useMemo(() => {
     if (episodes.length === 0) {
+      // Episodes hydrate lazily; before they load, derive the eye state from
+      // the SQL aggregate counts so collapsed seasons still reflect episode
+      // monitoring.
+      const aggregateTotal = collection.episodesTotal;
+      const aggregateMonitored = collection.episodesMonitored;
+      if (
+        typeof aggregateTotal === "number" &&
+        aggregateTotal > 0 &&
+        typeof aggregateMonitored === "number"
+      ) {
+        if (aggregateMonitored === 0) {
+          return false;
+        }
+        if (aggregateMonitored >= aggregateTotal) {
+          return true;
+        }
+        return "indeterminate";
+      }
       return collection.monitored;
     }
 
@@ -148,7 +168,12 @@ export function SeasonSection({
       return true;
     }
     return "indeterminate";
-  }, [collection.monitored, episodes]);
+  }, [
+    collection.episodesMonitored,
+    collection.episodesTotal,
+    collection.monitored,
+    episodes,
+  ]);
 
   const episodeRangeLabel = React.useMemo(() => {
     if (!collection.firstEpisodeNumber && !collection.lastEpisodeNumber) {
@@ -375,7 +400,17 @@ export function SeasonSection({
                 />
               </div>
             ) : null}
-            {episodes.length === 0 ? (
+            {!episodesReady ? (
+              <div
+                className={cn(
+                  showCollectionHeader && "border-t border-border",
+                  "flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground",
+                )}
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t("label.loading")}
+              </div>
+            ) : episodes.length === 0 ? (
               <div className={cn(showCollectionHeader && "border-t border-border", "px-4 py-3 text-sm text-muted-foreground")}>
                 {t("seasonSection.noEpisodeRecords")}
               </div>

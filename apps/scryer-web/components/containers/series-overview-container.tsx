@@ -4,8 +4,10 @@ import { facetById } from "@/lib/facets/registry";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
+  episodeCollectionRefQuery,
   episodeSidePanelDetailQuery,
   librariesQuery,
+  seriesCollectionEpisodesQuery,
   seriesSidePanelOverviewQuery,
   seriesOverviewSettingsInitQuery,
   titleMediaFilesQuery,
@@ -38,7 +40,7 @@ import {
   releaseQueueScopeInput,
 } from "@/lib/utils/release-queue-scope";
 import {
-  episodeIdsForCollections,
+  episodeIdsForEpisodeRecord,
   mergeLoadedEpisodeDetailsForCollections,
   pruneEpisodeRecord,
   pruneSeriesMovieLinkMediaFiles,
@@ -157,7 +159,7 @@ export type TitleCollection = {
   episodesOwned: number | null;
   episodesMonitored: number | null;
   episodesTotal: number | null;
-  episodes?: CollectionEpisode[];
+  episodeRecordsTotal: number | null;
   createdAt: string;
 };
 
@@ -359,6 +361,13 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
   const [episodesByCollection, setEpisodesByCollection] = React.useState<
     Record<string, CollectionEpisode[]>
   >({});
+  const episodesByCollectionRef = React.useRef(episodesByCollection);
+  episodesByCollectionRef.current = episodesByCollection;
+  const [collectionEpisodesLoading, setCollectionEpisodesLoading] = React.useState<
+    Record<string, boolean>
+  >({});
+  const collectionEpisodesLoadingRef = React.useRef<Set<string>>(new Set());
+  const deepLinkResolveAttemptedRef = React.useRef<string | null>(null);
   const [qualityProfiles, setQualityProfiles] = React.useState<{ id: string; name: string }[]>([]);
   const [defaultRootFolder, setDefaultRootFolder] = React.useState(DEFAULT_SERIES_LIBRARY_PATH);
   const [renameEnabled, setRenameEnabled] = React.useState(true);
@@ -462,6 +471,78 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     [],
   );
 
+  const loadCollectionEpisodes = React.useCallback(
+    async (collectionId: string, options: { force?: boolean } = {}) => {
+      if (!titleId) {
+        return;
+      }
+      if (collectionEpisodesLoadingRef.current.has(collectionId)) {
+        return;
+      }
+      if (!options.force && collectionId in episodesByCollectionRef.current) {
+        return;
+      }
+
+      const requestedTitleId = titleId;
+      collectionEpisodesLoadingRef.current.add(collectionId);
+      setCollectionEpisodesLoading((current) => ({
+        ...current,
+        [collectionId]: true,
+      }));
+      try {
+        const { data, error } = await client
+          .query(
+            seriesCollectionEpisodesQuery,
+            { id: collectionId },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (currentTitleIdRef.current !== requestedTitleId) {
+          return;
+        }
+        const collectionDetail = data?.collectionById as
+          | { episodes?: CollectionEpisode[] | null }
+          | null
+          | undefined;
+        const episodes = (collectionDetail?.episodes ?? []) as CollectionEpisode[];
+        setEpisodesByCollection((current) => ({
+          ...current,
+          [collectionId]:
+            mergeLoadedEpisodeDetailsForCollections(
+              [{ id: collectionId, episodes }],
+              current,
+              episodeDetailsLoadedRef.current,
+            )[collectionId] ?? episodes,
+        }));
+      } catch (error: unknown) {
+        if (currentTitleIdRef.current === requestedTitleId) {
+          // Mark the season as hydrated (empty) so the expand effect does not
+          // hot-loop on a persistent failure; the next overview refresh
+          // force-refetches it.
+          setEpisodesByCollection((current) =>
+            collectionId in current
+              ? current
+              : { ...current, [collectionId]: [] },
+          );
+          setGlobalStatus(
+            error instanceof Error ? error.message : t("status.apiError"),
+          );
+        }
+      } finally {
+        collectionEpisodesLoadingRef.current.delete(collectionId);
+        setCollectionEpisodesLoading((current) => {
+          const next = { ...current };
+          delete next[collectionId];
+          return next;
+        });
+      }
+    },
+    [client, setGlobalStatus, t, titleId],
+  );
+
   const applySidePanelOverviewSnapshot = React.useCallback(
     (
       snapshot: TitleSidePanelOverviewSnapshot<
@@ -496,32 +577,42 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       }
       setCollections(nextCollections);
       setSeriesMovieLinks(nextSeriesMovieLinks);
-      const nextEpisodeIds = episodeIdsForCollections(nextCollections);
-      setEpisodesByCollection((current) =>
-        mergeLoadedEpisodeDetailsForCollections(
-          nextCollections,
-          current,
-          episodeDetailsLoadedRef.current,
+      // Episodes hydrate per collection as seasons are opened; the overview
+      // snapshot only prunes cached seasons that no longer exist and refreshes
+      // the ones already loaded.
+      const nextCollectionIds = new Set(
+        nextCollections.map((collection) => collection.id),
+      );
+      const retainedEpisodesByCollection = Object.fromEntries(
+        Object.entries(episodesByCollectionRef.current).filter(([collectionId]) =>
+          nextCollectionIds.has(collectionId),
         ),
       );
+      const retainedEpisodeIds = episodeIdsForEpisodeRecord(
+        retainedEpisodesByCollection,
+      );
+      setEpisodesByCollection(retainedEpisodesByCollection);
       setEpisodeDetailsLoaded((current) => {
         const retained = new Set<string>();
         for (const episodeId of current) {
-          if (nextEpisodeIds.has(episodeId)) {
+          if (retainedEpisodeIds.has(episodeId)) {
             retained.add(episodeId);
           }
         }
         return retained;
       });
       setEpisodeDetailsLoading((current) =>
-        pruneEpisodeRecord(current, nextEpisodeIds),
+        pruneEpisodeRecord(current, retainedEpisodeIds),
       );
       setMediaFilesByEpisode((current) =>
-        pruneEpisodeRecord(current, nextEpisodeIds),
+        pruneEpisodeRecord(current, retainedEpisodeIds),
       );
       setMediaFilesBySeriesMovieLink((current) =>
-        pruneSeriesMovieLinkMediaFiles(current, nextEpisodeIds),
+        pruneSeriesMovieLinkMediaFiles(current, retainedEpisodeIds),
       );
+      for (const collectionId of Object.keys(retainedEpisodesByCollection)) {
+        void loadCollectionEpisodes(collectionId, { force: true });
+      }
       if (!nextTitle) {
         setMediaFilesByEpisode({});
         setMediaFilesBySeriesMovieLink({});
@@ -537,7 +628,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setDownloadFeedbackSettled(true);
       }
     },
-    [applyDownloadFeedbackSnapshot, onTitleResolved],
+    [applyDownloadFeedbackSnapshot, loadCollectionEpisodes, onTitleResolved],
   );
 
   useTitleOverviewReactiveRefresh<
@@ -804,7 +895,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         const linkFiles = mediaFiles.filter((file) =>
           (file.seriesMovieLinkIds ?? []).includes(link.id),
         );
-        const knownEpisodeIds = episodeIdsForCollections(collections);
+        const knownEpisodeIds = episodeIdsForEpisodeRecord(
+          episodesByCollectionRef.current,
+        );
         const mediaFilesByEpisode = groupMediaFilesByEpisode(mediaFiles);
 
         setMediaFilesBySeriesMovieLink((current) => ({
@@ -830,8 +923,56 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         seriesMovieDetailLoadingRef.current.delete(requestKey);
       }
     },
-    [client, collections, loadEpisodeDetail, setGlobalStatus, t, titleId],
+    [client, loadEpisodeDetail, setGlobalStatus, t, titleId],
   );
+
+  // A deep-linked episode may live in a season whose episodes are not loaded
+  // yet; resolve its collection and hydrate that season so the view can expand
+  // it and scroll to the episode.
+  React.useEffect(() => {
+    if (!titleId || !initialEpisodeId) {
+      return;
+    }
+    for (const episodes of Object.values(episodesByCollection)) {
+      if (episodes.some((episode) => episode.id === initialEpisodeId)) {
+        return;
+      }
+    }
+    const attemptKey = `${titleId}:${initialEpisodeId}`;
+    if (deepLinkResolveAttemptedRef.current === attemptKey) {
+      return;
+    }
+    deepLinkResolveAttemptedRef.current = attemptKey;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data, error } = await client
+          .query(
+            episodeCollectionRefQuery,
+            { titleId, episodeId: initialEpisodeId },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (cancelled || currentTitleIdRef.current !== titleId) {
+          return;
+        }
+        const collectionId = (
+          data?.episode as { collectionId?: string | null } | null | undefined
+        )?.collectionId;
+        if (collectionId) {
+          void loadCollectionEpisodes(collectionId);
+        }
+      } catch {
+        // Best-effort: a failed lookup degrades to the default season view.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, episodesByCollection, initialEpisodeId, loadCollectionEpisodes, titleId]);
 
   const handleClearReleaseBlocklistEntry = React.useCallback(async (entryId: string) => {
     setClearingReleaseBlocklistEntryId(entryId);
@@ -864,6 +1005,9 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEvents([]);
       setReleaseBlocklistEntries([]);
       setEpisodesByCollection({});
+      setCollectionEpisodesLoading({});
+      collectionEpisodesLoadingRef.current = new Set();
+      deepLinkResolveAttemptedRef.current = null;
       setMediaFilesByEpisode({});
       setDownloadQueueSeed([]);
       setDownloadFeedbackSettled(false);
@@ -883,6 +1027,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setTitleLookupAttempted(false);
     setTitleLookupFailed(false);
+    setEpisodesByCollection({});
+    setCollectionEpisodesLoading({});
+    collectionEpisodesLoadingRef.current = new Set();
+    deepLinkResolveAttemptedRef.current = null;
     setMediaFilesByEpisode({});
     setMediaFilesBySeriesMovieLink({});
     setEpisodeDetailsLoaded(new Set());
@@ -1477,6 +1625,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         seriesMovieLinks={seriesMovieLinks}
         events={events}
         episodesByCollection={episodesByCollection}
+        collectionEpisodesLoading={collectionEpisodesLoading}
+        onLoadCollectionEpisodes={loadCollectionEpisodes}
         mediaFilesByEpisode={mediaFilesByEpisode}
         mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
         onLoadEpisodeDetail={loadEpisodeDetail}

@@ -485,6 +485,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Plugin auto-update settings add one query root, one mutation root, one
     // payload object, and one input object: query 119->120, mutation 175->176,
     // OBJECT 292->293, INPUT_OBJECT 158->159, public types 561->563.
+    // The season-scoped panel's `Collection.episodeRecordsTotal` hangs off an
+    // existing type, so no census counts change.
     assert_eq!(
         query_field_count, 120,
         "query fields: {query_field_names:?}"
