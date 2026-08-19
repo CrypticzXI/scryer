@@ -6,6 +6,7 @@ import { persistOverviewWindowScroll } from "@/lib/hooks/use-overview-window-scr
 import type { TitleRecord } from "@/lib/types";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { TitleCard } from "@/components/title-card";
+import { titleDownloadActivityCornerBadge } from "@/components/common/title-download-activity";
 import { titleOverviewOpenButtonId } from "@/lib/utils/dom-ids";
 import {
   TitleCollectionEmptyState,
@@ -38,6 +39,8 @@ type PosterGridProps = {
   scanLibraryDisabled?: boolean;
   scanLibraryNotice?: string | null;
   scrollContainer?: boolean;
+  /** Titles with live, pending download work — shown as a pulsing card badge. */
+  activeDownloadTitleIds?: ReadonlySet<string>;
 };
 
 export const PosterGrid = React.memo(function PosterGrid({
@@ -60,6 +63,7 @@ export const PosterGrid = React.memo(function PosterGrid({
   scanLibraryDisabled = false,
   scanLibraryNotice,
   scrollContainer = false,
+  activeDownloadTitleIds,
 }: PosterGridProps) {
   const t = useTranslate();
   const endSentinelRef = React.useRef<HTMLDivElement | null>(null);
@@ -137,6 +141,7 @@ export const PosterGrid = React.memo(function PosterGrid({
             contextPanelId={contextPanelId}
             onSelectTitle={onSelectTitle}
             overviewTargetView={overviewTargetView}
+            downloadActive={activeDownloadTitleIds?.has(title.id) ?? false}
           />
         ))}
       </div>
@@ -157,6 +162,7 @@ type PosterCardProps = {
   contextPanelId?: string;
   onSelectTitle?: (title: TitleRecord) => void;
   overviewTargetView: ViewId;
+  downloadActive: boolean;
 };
 
 const PosterCard = React.memo(function PosterCard({
@@ -166,6 +172,7 @@ const PosterCard = React.memo(function PosterCard({
   contextPanelId,
   onSelectTitle,
   overviewTargetView,
+  downloadActive,
 }: PosterCardProps) {
   const location = useLocation();
   const t = useTranslate();
@@ -198,6 +205,9 @@ const PosterCard = React.memo(function PosterCard({
         createdAt={title.createdAt}
         monitored={title.monitored}
         selected={selected}
+        cornerBadge={
+          downloadActive ? titleDownloadActivityCornerBadge(t, title.name) : null
+        }
         revealTextOnHover
         emptyLabel={t("label.noArt")}
         onOpen={handleActivate}
