@@ -89,21 +89,25 @@ export function BulkRenamePreviewSummary({
                           key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
                           className="border-t border-border/60 px-2 py-2 first:border-t-0"
                         >
-                          <div
-                            data-ui="bulk-rename-plan-current-path"
-                            className="break-all font-[var(--font-code)] text-muted-foreground"
-                          >
-                            {item.currentPath || "—"}
-                          </div>
-                          <ArrowDown
-                            aria-hidden
-                            className="my-1 h-3.5 w-3.5 text-[var(--scry-accent-text)]"
-                          />
-                          <div
-                            data-ui="bulk-rename-plan-proposed-path"
-                            className="break-all font-[var(--font-code)] text-card-foreground"
-                          >
-                            {item.proposedPath ?? "—"}
+                          {/* Shrink-wrapping the pair keeps the arrow centered
+                              on the paths themselves, not the whole row. */}
+                          <div className="flex w-fit max-w-full flex-col items-start">
+                            <div
+                              data-ui="bulk-rename-plan-current-path"
+                              className="break-all font-[var(--font-code)] text-muted-foreground"
+                            >
+                              {item.currentPath || "—"}
+                            </div>
+                            <ArrowDown
+                              aria-hidden
+                              className="my-1 h-3.5 w-3.5 self-center text-[var(--scry-accent-text)]"
+                            />
+                            <div
+                              data-ui="bulk-rename-plan-proposed-path"
+                              className="break-all font-[var(--font-code)] text-card-foreground"
+                            >
+                              {item.proposedPath ?? "—"}
+                            </div>
                           </div>
                         </li>
                       ))}
