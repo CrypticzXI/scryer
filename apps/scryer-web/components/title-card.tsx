@@ -18,7 +18,7 @@ export type TitleCardCornerBadge = {
   icon?: LucideIcon | null;
   /** Visual emphasis. `accent` matches the app accent; `neutral` is a dark chip. */
   tone?: "accent" | "neutral";
-  /** Optional native title/tooltip text. Doubles as the accessible label. */
+  /** Optional native title/tooltip text. */
   title?: string;
   /**
    * Pulse the badge to signal live, in-flight work (e.g. an active download).
@@ -288,8 +288,6 @@ function TitleCardImpl({
           {cornerBadge ? (
             <span
               title={cornerBadge.title}
-              role={cornerBadge.title ? "img" : undefined}
-              aria-label={cornerBadge.title}
               className={cn(
                 "pointer-events-none inline-flex max-w-[110px] items-center gap-1 truncate rounded-[8px] font-semibold uppercase tracking-[0.03em] shadow-[0_6px_14px_rgba(0,0,0,0.28)] backdrop-blur",
                 compact ? "px-1.5 py-0.5 text-[9.5px]" : "px-2 py-0.5 text-[10px]",

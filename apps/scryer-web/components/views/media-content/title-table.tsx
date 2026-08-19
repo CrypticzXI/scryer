@@ -660,7 +660,7 @@ export const TitleTable = React.memo(function TitleTable({
                 <span className="block min-w-0 truncate">{item.name}</span>
               </button>
               {downloadActive ? (
-                <TitleDownloadActivityPill titleName={item.name} />
+                <TitleDownloadActivityPill />
               ) : null}
             </div>
           </TableCell>

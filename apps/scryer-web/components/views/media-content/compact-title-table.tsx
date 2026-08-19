@@ -730,7 +730,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
                 </span>
               </button>
               {downloadActive ? (
-                <TitleDownloadActivityPill titleName={item.name} />
+                <TitleDownloadActivityPill />
               ) : null}
             </div>
           </TableCell>
@@ -807,7 +807,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
                 <span className="block truncate">{item.name}</span>
               </button>
               {downloadActive ? (
-                <TitleDownloadActivityPill titleName={item.name} />
+                <TitleDownloadActivityPill />
               ) : null}
             </div>
           </TableCell>

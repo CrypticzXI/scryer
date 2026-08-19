@@ -206,7 +206,7 @@ const PosterCard = React.memo(function PosterCard({
         monitored={title.monitored}
         selected={selected}
         cornerBadge={
-          downloadActive ? titleDownloadActivityCornerBadge(t, title.name) : null
+          downloadActive ? titleDownloadActivityCornerBadge(t) : null
         }
         revealTextOnHover
         emptyLabel={t("label.noArt")}
