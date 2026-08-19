@@ -746,6 +746,7 @@ const it: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "Ancora nessun consiglio",
   "title.contextForYouEmptyBody":
     "Aggiungi o scansiona titoli per creare questa vista libreria.",
+  "title.topBilledCast": "Cast principale",
   "title.contextMoreLikeThis": "Titoli simili",
   "title.contextMoreLikeThisScope": "Dalla vista corrente",
   "title.contextOverview": "Panoramica",

@@ -750,6 +750,7 @@ const pt_BR: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "Ainda sem recomendações",
   "title.contextForYouEmptyBody":
     "Adicione ou escaneie títulos para criar esta visualização da biblioteca.",
+  "title.topBilledCast": "Elenco principal",
   "title.contextMoreLikeThis": "Títulos semelhantes",
   "title.contextMoreLikeThisScope": "Da visualização atual",
   "title.contextOverview": "Visão geral",

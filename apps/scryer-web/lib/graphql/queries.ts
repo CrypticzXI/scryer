@@ -237,6 +237,34 @@ const TITLE_RATING_SUMMARY_FIELDS = `
         url
       }`;
 
+/**
+ * Credit kinds the metadata provider uses for on-screen performers. Crew kinds
+ * (`director`, `writer`, `creator`, `composer`) are cached server-side but have
+ * no UI yet, so the overview asks for exactly these.
+ */
+export const TITLE_CAST_CREDIT_KINDS = ["actor", "voice_actor"] as const;
+
+/** Cards in the top-billed cast rail. The server clamps anything above 50. */
+export const TITLE_CAST_CREDIT_LIMIT = 15;
+
+/**
+ * Top-billed cast for the overview rail. The server does the kind filtering,
+ * billing-order sort, and truncation, so the rail renders the list as returned.
+ */
+const TITLE_CAST_CREDIT_FIELDS = `
+      kind
+      personName
+      personOriginalName
+      personImageUrl
+      character
+      language
+      billingOrder
+      episodeCount`;
+
+const TITLE_CAST_CREDIT_SELECTION = `
+    credits(kinds: [${TITLE_CAST_CREDIT_KINDS.map((kind) => `"${kind}"`).join(", ")}], limit: ${TITLE_CAST_CREDIT_LIMIT}) {${TITLE_CAST_CREDIT_FIELDS}
+    }`;
+
 export const PROVIDER_CONFIG_VALUE_FIELDS = `
     key
     label
@@ -525,7 +553,7 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
       }
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }
+    }${TITLE_CAST_CREDIT_SELECTION}
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
@@ -564,7 +592,7 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }`;
+    }${TITLE_CAST_CREDIT_SELECTION}`;
 
 export const TITLE_MUTATION_RESULT_FIELDS = `
     id

@@ -56,6 +56,7 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "../title-more-like-this-strip";
+import { TitleCastStrip } from "../title-cast-strip";
 import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
@@ -1167,6 +1168,8 @@ export function SeriesOverviewView({
           ) : null}
         </Card>
       </div>
+
+      <TitleCastStrip credits={title.credits} />
 
       <TitleMoreLikeThisStrip
         items={title.moreLikeThis ?? []}

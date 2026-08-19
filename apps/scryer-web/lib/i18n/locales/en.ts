@@ -1114,6 +1114,7 @@ const en: LocaleDictionary = {
   "title.contextForYouEmptyTitle": "No recommendations yet",
   "title.contextForYouEmptyBody":
     "Add or scan titles to build this library view.",
+  "title.topBilledCast": "Top billed cast",
   "title.contextMoreLikeThis": "More like this",
   "title.contextMoreLikeThisScope": "From the current view",
   "title.contextBlockedReleases": "Blocked Releases",

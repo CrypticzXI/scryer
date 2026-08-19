@@ -479,6 +479,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Restore the operator-selected replacement mutation: mutation 170->171.
     // Provider-level indexer/download-client compatibility adds one object so
     // unsaved indexer drafts can use the same server-derived routing contract.
+    // Cached title credits add one payload object behind the new `Title.credits`
+    // resolver; the field hangs off an existing type, so root counts are
+    // unchanged: OBJECT 291->292, public types 560->561.
     assert_eq!(
         query_field_count, 119,
         "query fields: {query_field_names:?}"
@@ -488,8 +491,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 560);
-    assert_eq!(kind_count("OBJECT"), 291);
+    assert_eq!(public_types.len(), 561);
+    assert_eq!(kind_count("OBJECT"), 292);
     assert_eq!(kind_count("INPUT_OBJECT"), 158);
     assert_eq!(kind_count("ENUM"), 99);
     assert_eq!(kind_count("SCALAR"), 10);

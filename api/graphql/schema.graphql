@@ -16011,6 +16011,46 @@ enum TitleCatalogSortKeyValue {
 }
 
 """
+One cast or crew credit cached from the title's last metadata hydration.
+"""
+type TitleCreditPayload {
+	"""
+	Credit kind exactly as the metadata provider spelled it, e.g. `actor`,
+	`voice_actor`, `director`, `writer`, `creator`, `composer`. Kept as a
+	string so a new provider kind reaches clients without a schema break.
+	"""
+	kind: String!
+	"""
+	Person's display name in the hydration language.
+	"""
+	personName: String!
+	"""
+	Person's name in their original language, or empty when the provider has none.
+	"""
+	personOriginalName: String!
+	"""
+	Proxied portrait for this person, or null when the provider has no image.
+	"""
+	personImageUrl: String
+	"""
+	Character played, or empty for crew credits.
+	"""
+	character: String!
+	"""
+	Language tag this credit was hydrated in, or empty when the provider has none.
+	"""
+	language: String!
+	"""
+	Provider billing rank; lower sorts closer to top billing.
+	"""
+	billingOrder: Int!
+	"""
+	Episodes this person appears in, or null for titles the provider does not count.
+	"""
+	episodeCount: Int
+}
+
+"""
 One external rating source and its normalized score.
 """
 type TitleExternalRatingPayload {
@@ -16746,6 +16786,20 @@ type TitlePayload {
 	Aggregated title ratings; the rating is null and source lists are empty when no rating exists.
 	"""
 	ratings: TitleRatingPayload!
+	"""
+	Cast and crew cached from this title's last metadata hydration, ordered
+	by billing rank. Reads the local cache only; hydration refills it.
+	"""
+	credits(
+		"""
+		Credit kinds to include, e.g. ["actor", "voice_actor"] for cast. Omit or leave empty for every cached kind.
+		"""
+		kinds: [String!],
+		"""
+		Maximum credits to return; defaults to 15 and clamps to 0 through 50.
+		"""
+		limit: Int! = 15
+	): [TitleCreditPayload!]!
 	"""
 	Discovery items related to this title, limited to the requested count.
 	"""

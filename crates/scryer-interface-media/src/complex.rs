@@ -8,7 +8,8 @@ use crate::mappers::{
     fallback_episode_media_availability, from_collection, from_discovery_item,
     from_download_queue_item, from_episode, from_episode_media_availability, from_library_settings,
     from_pending_release, from_release_decision, from_series_movie_link, from_submission_scope,
-    from_title, from_title_media_file, from_title_rating_summary, from_wanted_item,
+    from_title, from_title_credit, from_title_media_file, from_title_rating_summary,
+    from_wanted_item,
 };
 use crate::types::*;
 
@@ -372,6 +373,38 @@ impl TitlePayload {
                 .await
                 .map(from_title_rating_summary)
                 .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Cast and crew cached from this title's last metadata hydration, ordered
+    /// by billing rank. Reads the local cache only; hydration refills it.
+    async fn credits(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Credit kinds to include, e.g. [\"actor\", \"voice_actor\"] for cast. \
+                    Omit or leave empty for every cached kind."
+        )]
+        kinds: Option<Vec<String>>,
+        #[graphql(
+            desc = "Maximum credits to return; defaults to 15 and clamps to 0 through 50.",
+            default = 15
+        )]
+        limit: i32,
+    ) -> GqlResult<Vec<TitleCreditPayload>> {
+        Box::pin(async move {
+            let app = app_from_ctx(ctx)?;
+            let actor = actor_from_ctx(ctx)?;
+            let title_id = self.id.as_ref();
+            let credits = app
+                .title_credits(&actor, title_id, kinds.as_deref(), i64::from(limit))
+                .await
+                .map_err(to_gql_error)?;
+            Ok(credits
+                .into_iter()
+                .map(|credit| from_title_credit(&app, title_id, credit))
+                .collect())
         })
         .await
     }
