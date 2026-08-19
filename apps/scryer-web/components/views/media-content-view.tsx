@@ -11,6 +11,7 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  FolderPen,
   LayoutGrid,
   LayoutList,
   Loader2,
@@ -2098,6 +2099,7 @@ export function MediaContentView({
     bulkMonitorTitles: (monitored: boolean) => Promise<void> | void;
     openBulkTitleEdit: () => void;
     openBulkTitleDelete: () => void;
+    openBulkTitleRename: () => void;
   };
 }) {
   const t = useTranslate();
@@ -2297,6 +2299,7 @@ export function MediaContentView({
     bulkMonitorTitles,
     openBulkTitleEdit,
     openBulkTitleDelete,
+    openBulkTitleRename,
   } = state;
   const [titleFilterInputValue, setTitleFilterInputValue] =
     React.useState(titleFilter);
@@ -3322,6 +3325,15 @@ export function MediaContentView({
                     <Pencil className="h-4 w-4" />
                   </TitleTableActionButton>
                   <TitleTableActionButton
+                    tone="accent"
+                    label={t("title.renameAction")}
+                    onClick={openBulkTitleRename}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <FolderPen className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
                     tone="delete"
                     label={t("label.delete")}
                     onClick={openBulkTitleDelete}
@@ -3929,6 +3941,15 @@ export function MediaContentView({
                         >
                           <Pencil className="h-4 w-4" />
                           {t("label.edit")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={openBulkTitleRename}
+                          disabled={bulkActionBusy}
+                          className="justify-center gap-2"
+                        >
+                          <FolderPen className="h-4 w-4" />
+                          {t("title.renameAction")}
                         </Button>
                         <Button
                           variant="destructive"

@@ -941,6 +941,7 @@ const en: LocaleDictionary = {
   "rename.proposedPath": "Proposed",
   "rename.planSummary":
     "{{total}} item(s), {{renamable}} renamable, {{noop}} noop, {{conflicts}} conflicts, {{errors}} errors",
+  "rename.noRenamableFiles": "No files need renaming.",
   "settings.title": "Settings",
   "settings.sectionTitle": "Settings • {{section}}",
   "settings.generalText": "General application settings.",
@@ -1151,6 +1152,7 @@ const en: LocaleDictionary = {
   "title.addedAt": "Added {{date}}",
   "title.monitorAction": "Monitor",
   "title.unmonitorAction": "Unmonitor",
+  "title.renameAction": "Rename",
   "title.markWantedAction": "Mark Wanted",
   "title.searchMonitoredAction": "Search Monitored",
   "title.refreshAndScanAction": "Refresh & Scan",
@@ -1266,6 +1268,9 @@ const en: LocaleDictionary = {
   "title.bulkDeleteTitle": "Delete Selected Titles",
   "title.bulkDeleteDescription":
     "Remove {{count}} selected titles from the catalog.",
+  "title.bulkRenameTitle": "Rename Selected Titles",
+  "title.bulkRenameDescription":
+    "Preview and apply renames for {{count}} selected titles.",
   "title.selectTitle": "Select {{name}}",
   "title.selectAllTitles": "Select all visible titles",
   "title.interactiveSearchComingSoon": "Interactive search is coming soon.",
@@ -2606,6 +2611,12 @@ const en: LocaleDictionary = {
   "status.bulkTitleDeletePartial":
     "Deleted {{count}} titles; {{failed}} failed.",
   "status.bulkTitleDeleteFailed": "Failed to delete selected titles.",
+  "status.bulkRenamePreviewFailed":
+    "Failed to preview renames for {{failed}} titles.",
+  "status.bulkRenameSuccess": "Renamed {{files}} files across {{count}} titles.",
+  "status.bulkRenamePartial":
+    "Renamed files for {{count}} titles; {{failed}} failed.",
+  "status.bulkRenameFailed": "Failed to rename selected titles.",
   "status.titleMatchUpdated": "Updated match for {{name}}.",
   "status.qualityProfileBlocked":
     "Skipped: blocked by quality profile ({{reason}})",
