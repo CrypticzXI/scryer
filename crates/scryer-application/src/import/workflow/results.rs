@@ -154,6 +154,9 @@ async fn reconcile_terminal_download_cleanup(
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
     present_in_client: bool,
+    // The freshest seeding observation the caller holds, or `None` to have the
+    // gate look one up from the published tracked-download snapshot.
+    observation: Option<crate::seeding_gate::TorrentSeedingObservation>,
 ) -> TerminalDownloadCleanupOutcome {
     let client_id = client_id.trim();
     let routing_key = if client_id.is_empty() {
@@ -192,8 +195,13 @@ async fn reconcile_terminal_download_cleanup(
             client_item_id: download_client_item_id.trim().to_string(),
             info_hash: crate::normalize_torrent_info_hash(Some(download_client_item_id)),
         };
-        let decision =
-            crate::seeding_gate::evaluate_seeding_gate_for(app, &key, present_in_client).await;
+        let decision = crate::seeding_gate::evaluate_seeding_gate_with(
+            app,
+            &key,
+            present_in_client,
+            observation,
+        )
+        .await;
         match decision.outcome {
             crate::seeding_gate::SeedingGateOutcome::NotApplicable => {}
             crate::seeding_gate::SeedingGateOutcome::Vanished => {

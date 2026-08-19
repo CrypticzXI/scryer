@@ -292,6 +292,12 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
         // absent from the client's snapshot past the grace window is marked
         // untrackable. Reusing that avoids a per-item listing call every tick.
         tracked.is_trackable,
+        // The live tracked row was refreshed from the client earlier in this
+        // same tick, so its observation is fresher than the published snapshot
+        // (which is only republished *after* reconcile runs). Passing it in is
+        // what makes each cycle re-evaluate against current ratio/seed time
+        // rather than the answer that first parked the row.
+        crate::seeding_gate::observation_from_queue_item(&tracked.client_item),
     )
     .await
 }

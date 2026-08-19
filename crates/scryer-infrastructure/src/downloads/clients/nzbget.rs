@@ -722,6 +722,7 @@ impl NzbgetDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 })
             })
             .collect();
@@ -887,6 +888,7 @@ impl NzbgetDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 });
                 let next_index = items.len() - 1;
                 item_index_by_id.insert(id, next_index);
@@ -1007,6 +1009,7 @@ impl NzbgetDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 })
             })
             .collect())
@@ -2255,6 +2258,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         };
         let wrong_release = DownloadQueueItem {
             title_name: "Bluey.S02.720p.WEB-DL.AV1.AAC2.0-NTb".to_string(),

@@ -90,6 +90,7 @@ async fn list_download_queue_reads_cached_observed_items_without_client_calls() 
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition
@@ -174,6 +175,7 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
 
     let items = app
@@ -279,6 +281,7 @@ async fn list_download_queue_for_title_filters_the_shared_cache() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition
@@ -6673,6 +6676,7 @@ async fn download_queue_subscription_bootstraps_from_runtime_cache_without_clien
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition

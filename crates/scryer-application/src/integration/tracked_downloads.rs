@@ -130,7 +130,9 @@ pub struct NoVideoImportSourceSignature {
     pub latest_mtime: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `Eq` is not derivable: the client item carries an observed seed ratio
+/// (`f64`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackedDownloadQueueMetadata {
     pub client_item: DownloadQueueItem,
     pub client_id: String,
@@ -319,6 +321,17 @@ impl TrackedDownloadService {
             if existing.state == TrackedDownloadState::Downloading {
                 existing.status = TrackedDownloadStatus::Ok;
                 existing.status_messages.clear();
+            }
+            let mut client_item = client_item;
+            // A refresh that carries no seeding observation must not erase the
+            // one we have. Several sources for the same download report
+            // different shapes (a history row framed as a completed download
+            // has no seeding fields at all), and a torrent whose observation
+            // blinked out would be read as "unknown" and held forever. A
+            // *present* observation always wins, so this retains, it does not
+            // staleness-lock.
+            if client_item.seeding.is_none() {
+                client_item.seeding = existing.client_item.seeding.clone();
             }
             existing.client_item = client_item;
             existing.is_trackable = true;
@@ -2751,6 +2764,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         }
     }
 
@@ -2930,6 +2944,54 @@ mod tests {
             tracked_download_id_for_item(&item),
             "download:client-1:nzbget:scryer-download-10010"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_without_an_observation_keeps_the_last_one_but_never_overrides_a_new_one() {
+        // The same download arrives from more than one source: a queue row
+        // carries the plugin's seeding fields, a history row framed as a
+        // completed download carries none. Losing the observation on the
+        // history refresh would read as "unknown" and hold the torrent forever.
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app(download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut observed = build_client_item();
+        observed.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            seed_ratio: Some(0.5),
+            ..Default::default()
+        });
+        let id = tracked_download_id_for_item(&observed);
+        tracker.track(&app, observed.clone()).await;
+
+        let mut silent = build_client_item();
+        silent.seeding = None;
+        tracker.track(&app, silent).await;
+        assert_eq!(
+            tracker
+                .find(&id)
+                .and_then(|td| td.client_item.seeding.as_ref())
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(0.5),
+            "a refresh with nothing to say must not erase what the client already told us"
+        );
+
+        // A fresh observation always wins, so this retains rather than freezes.
+        let mut moved_on = build_client_item();
+        moved_on.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(2.6),
+            ..Default::default()
+        });
+        tracker.track(&app, moved_on).await;
+        let seeding = tracker
+            .find(&id)
+            .and_then(|td| td.client_item.seeding.clone())
+            .expect("observation");
+        assert_eq!(seeding.seed_ratio, Some(2.6));
+        assert_eq!(seeding.can_remove, Some(true));
     }
 
     #[tokio::test]

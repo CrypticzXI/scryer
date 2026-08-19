@@ -4149,6 +4149,30 @@ type DownloadQueueItemPayload {
 	"""
 	trackedMatchType: TitleMatchTypeValue
 	"""
+	Seeding obligation state, or null when the item carries no torrent seeding information.
+	"""
+	seedingState: DownloadSeedingStateValue
+	"""
+	Share ratio observed by the download client, or null when it reports none.
+	"""
+	seedRatio: Float
+	"""
+	Share ratio this download was grabbed under, or null when no profile applied.
+	"""
+	seedRatioGoal: Float
+	"""
+	Seconds spent seeding as reported by the client, or null when it has no counter.
+	"""
+	seedTimeSeconds: Long
+	"""
+	Seeding time in seconds this download was grabbed under, or null when no profile applied.
+	"""
+	seedTimeGoalSeconds: Long
+	"""
+	Whether the torrent's metainfo carries the private flag; null when the client cannot say.
+	"""
+	isPrivate: Boolean
+	"""
 	Acquisition scope for this queue item, or its episode scope when no more specific scope is available.
 	"""
 	queueScope: QueueDownloadScopePayload
@@ -4276,6 +4300,32 @@ type DownloadQueueSyncPayload {
 	Time the queue data was updated, in UTC, or null when no update exists.
 	"""
 	updatedAt: DateTime
+}
+
+"""
+Seeding obligation state for a torrent download.
+"""
+enum DownloadSeedingStateValue {
+	"""
+	Nothing to report yet: still downloading, or the client exposes no seeding state.
+	"""
+	NONE
+	"""
+	Seeding towards an obligation that is not yet discharged.
+	"""
+	SEEDING
+	"""
+	The seeding obligation is discharged.
+	"""
+	GOAL_MET
+	"""
+	Observed as a private torrent with no resolved goals, so it is never removed automatically.
+	"""
+	HELD_PRIVATE
+	"""
+	The seeding profile keeps this entry forever.
+	"""
+	NEVER_REMOVE
 }
 
 """

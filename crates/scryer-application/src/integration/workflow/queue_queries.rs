@@ -468,6 +468,42 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             .collect::<HashMap<_, _>>()
     };
 
+    // Seeding goals are frozen on the submission row at grab time; the queue
+    // needs them beside the observed ratio/seed time so a row can show progress
+    // against what it was actually grabbed under.
+    let seed_goal_map = if client_items.is_empty() {
+        HashMap::new()
+    } else {
+        match app
+            .services
+            .workflow
+            .download_submissions
+            .list_seed_goals_for_client_items(&client_items)
+            .await
+        {
+            Ok(goals) => goals
+                .into_iter()
+                .map(|(identity, goals)| {
+                    (
+                        download_queue_identity_key(
+                            identity.client_id.as_deref(),
+                            &identity.client_type,
+                            &identity.item_id,
+                        ),
+                        goals,
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to batch-load seeding goals for queue enrichment"
+                );
+                HashMap::new()
+            }
+        }
+    };
+
     let identity_tracked_state_map = if client_items.is_empty() {
         HashMap::new()
     } else {
@@ -543,6 +579,10 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             item.tracked_state = Some(TrackedDownloadState::Ignored);
         }
 
+        if let Some(goals) = lookup_keys.iter().find_map(|key| seed_goal_map.get(key)) {
+            apply_seed_goals_to_queue_item(item, goals);
+        }
+
         if let Some(submission) = lookup_keys
             .iter()
             .find_map(|key| submission_map.get(key))
@@ -558,6 +598,19 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             apply_submission_to_queue_item(item, &submission);
         }
     }
+}
+/// Join the goals a torrent was grabbed under onto its queue row.
+///
+/// These are policy, not client state, so they live beside the observation
+/// rather than inside it: the queue shows "ratio 1.4 of 2.0" only because both
+/// halves reach the same row. A row with goals but no client observation still
+/// gets a snapshot, so a held torrent whose client says nothing still shows
+/// what it is waiting for.
+fn apply_seed_goals_to_queue_item(item: &mut DownloadQueueItem, goals: &crate::PersistedSeedGoals) {
+    let snapshot = item.seeding.get_or_insert_with(Default::default);
+    snapshot.seed_goal_ratio = goals.seed_goal_ratio;
+    snapshot.seed_goal_seconds = goals.seed_goal_seconds;
+    snapshot.never_remove = goals.never_remove;
 }
 async fn find_submission_for_queue_item_by_download_id(
     app: &AppUseCase,
@@ -1725,6 +1778,7 @@ mod queue_query_unit_tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 

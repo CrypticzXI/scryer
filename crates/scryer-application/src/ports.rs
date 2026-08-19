@@ -3158,6 +3158,24 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Batch form of `get_seed_goals`, for the queue projection: it needs the
+    /// goals behind every visible torrent on every refresh, and one query per
+    /// row would put the poll cadence on a per-item round trip. The default
+    /// falls back to the single-row read so no implementor is forced to
+    /// reimplement it.
+    async fn list_seed_goals_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        let mut out = Vec::new();
+        for identity in client_items {
+            if let Some(goals) = self.get_seed_goals(identity).await? {
+                out.push((identity.clone(), goals));
+            }
+        }
+        Ok(out)
+    }
+
     async fn get_submission_actor_snapshot(
         &self,
         _identity: &DownloadSourceIdentity,

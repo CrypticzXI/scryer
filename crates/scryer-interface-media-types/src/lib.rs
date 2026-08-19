@@ -505,6 +505,22 @@ pub enum DownloadDisplayStateValue {
     RemoveFailed,
 }
 
+/// Seeding obligation state for a torrent download.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum DownloadSeedingStateValue {
+    /// Nothing to report yet: still downloading, or the client exposes no seeding state.
+    None,
+    /// Seeding towards an obligation that is not yet discharged.
+    Seeding,
+    /// The seeding obligation is discharged.
+    GoalMet,
+    /// Observed as a private torrent with no resolved goals, so it is never removed automatically.
+    HeldPrivate,
+    /// The seeding profile keeps this entry forever.
+    NeverRemove,
+}
+
 /// Filter for active download activity.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]

@@ -1576,6 +1576,7 @@ async fn graphql_traverses_core_graph_relationships() {
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
     };
     scryer_infrastructure::PendingReleaseStore::new(
         ctx.db.datastore(),
@@ -2298,6 +2299,7 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     };
     let completed = CompletedDownload {
         client_type: "weaver".to_string(),

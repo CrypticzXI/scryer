@@ -68,6 +68,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 
@@ -811,6 +812,176 @@ mod tests {
         assert_eq!(
             queue_item.title_name,
             "Ironclad.1997.2160p.UHD.BluRay.x265-GRP"
+        );
+    }
+
+    // ── queue seeding progress ─────────────────────────────────────────────
+
+    fn seeding_item(snapshot: scryer_domain::DownloadSeedingSnapshot) -> DownloadQueueItem {
+        let mut item = item("torrent-1", DownloadQueueState::Completed);
+        item.client_type = "qbittorrent".to_string();
+        item.seeding = Some(snapshot);
+        item
+    }
+
+    #[test]
+    fn a_usenet_row_has_no_seeding_state() {
+        // `can_remove` is reported by usenet clients too, so it alone must not
+        // make a row look like a torrent.
+        let item = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(crate::derive_download_seeding_state(&item), None);
+
+        let mut bare = item.clone();
+        bare.seeding = None;
+        assert_eq!(crate::derive_download_seeding_state(&bare), None);
+    }
+
+    #[test]
+    fn a_torrent_still_downloading_is_not_reported_as_seeding() {
+        let mut item = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            // Every audited plugin reports `Some(false)` for an incomplete
+            // payload; that means "not finished", not "still seeding".
+            can_remove: Some(false),
+            can_move_files: Some(false),
+            seed_ratio: Some(0.0),
+            ..Default::default()
+        });
+        item.state = DownloadQueueState::Downloading;
+        item.progress_percent = 42;
+        assert_eq!(
+            crate::derive_download_seeding_state(&item),
+            Some(crate::DownloadSeedingState::None)
+        );
+    }
+
+    #[test]
+    fn seeding_progress_reads_the_goal_beside_the_observation() {
+        let unmet = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.8),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&unmet),
+            Some(crate::DownloadSeedingState::Seeding)
+        );
+
+        let met = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.1),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&met),
+            Some(crate::DownloadSeedingState::GoalMet)
+        );
+    }
+
+    #[test]
+    fn a_client_verdict_alone_still_drives_the_badge_when_no_profile_applied() {
+        let done = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(1.1),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&done),
+            Some(crate::DownloadSeedingState::GoalMet)
+        );
+
+        let unknown = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: None,
+            seed_ratio: Some(1.1),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&unknown),
+            Some(crate::DownloadSeedingState::Seeding)
+        );
+    }
+
+    #[test]
+    fn the_private_rail_and_seed_forever_are_visible_in_the_queue() {
+        let private = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            is_private: Some(true),
+            seed_ratio: Some(4.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&private),
+            Some(crate::DownloadSeedingState::HeldPrivate)
+        );
+
+        let forever = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(4.0),
+            seed_goal_ratio: Some(1.0),
+            never_remove: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&forever),
+            Some(crate::DownloadSeedingState::NeverRemove)
+        );
+    }
+
+    #[test]
+    fn a_live_row_without_an_observation_inherits_the_tracked_one() {
+        let mut queue_item = item("job-1", DownloadQueueState::Completed);
+        assert!(queue_item.seeding.is_none());
+        let mut tracked = tracked_for_dispatch("qbittorrent:job-1");
+        tracked.client_item.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            seed_ratio: Some(1.1),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        apply_tracked_download_queue_metadata(&mut queue_item, &metadata);
+
+        assert_eq!(
+            queue_item
+                .seeding
+                .as_ref()
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(1.1)
+        );
+
+        // A live observation is never replaced by the tracked copy.
+        let mut fresher = item("job-1", DownloadQueueState::Completed);
+        fresher.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            seed_ratio: Some(2.6),
+            ..Default::default()
+        });
+        apply_tracked_download_queue_metadata(&mut fresher, &metadata);
+        assert_eq!(
+            fresher
+                .seeding
+                .as_ref()
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(2.6)
+        );
+    }
+
+    #[test]
+    fn a_row_parked_by_the_gate_reports_seeding_even_with_a_silent_client() {
+        // `ImportedSeeding` only exists because the gate held this torrent, so
+        // the row is a torrent regardless of what the client will admit to.
+        let mut item = seeding_item(scryer_domain::DownloadSeedingSnapshot::default());
+        item.tracked_state = Some(TrackedDownloadState::ImportedSeeding);
+        assert_eq!(
+            crate::derive_download_seeding_state(&item),
+            Some(crate::DownloadSeedingState::Seeding)
         );
     }
 }

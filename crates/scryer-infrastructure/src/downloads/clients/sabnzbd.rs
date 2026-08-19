@@ -964,6 +964,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 })
             })
             .collect())
@@ -1049,6 +1050,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 })
             })
             .collect())
@@ -1136,6 +1138,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     tracked_status: None,
                     tracked_status_messages: Vec::new(),
                     tracked_match_type: None,
+                    seeding: None,
                 })
             })
             .collect())

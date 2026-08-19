@@ -1155,9 +1155,8 @@ fn apply_download_queue_event(
     event: &DomainEvent,
 ) -> Option<Vec<DownloadQueueItem>> {
     match &event.payload {
-        DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
-            item,
-        }) => {
+        DomainEventPayload::DownloadQueueItemUpserted(upserted) => {
+            let DownloadQueueItemUpsertedEventData { item } = upserted.as_ref();
             items.insert(download_queue_item_key(item), item.clone());
             Some(sorted_download_queue_items(items))
         }
@@ -1490,6 +1489,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 

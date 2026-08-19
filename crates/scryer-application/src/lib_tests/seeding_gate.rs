@@ -8,7 +8,9 @@
 use super::*;
 use crate::import::import::TerminalDownloadCleanupOutcome;
 use crate::tracked_downloads::{TrackedDownload, tracked_download_id};
-use scryer_domain::{DownloadQueueState, ImportMode, MediaFacet, NewTitle};
+use scryer_domain::{
+    DownloadQueueState, DownloadSeedingSnapshot, ImportMode, MediaFacet, NewTitle,
+};
 
 /// A plugin provider that reports torrent inputs, so `client_type_is_torrent`
 /// classifies the fixture clients the way a real install would. Without one,
@@ -768,4 +770,545 @@ async fn a_never_remove_profile_holds_a_torrent_the_client_says_is_removable() {
 
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
     assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+// ── the gate goes live: real observations flip each decision-table row ─────
+//
+// Every one of these torrents is held on a build with no observation plumbing
+// (the gate's row 10, "no resolved goals and client verdict unknown"). They
+// reach a different verdict here only because the download-client adapter now
+// carries `can_remove` / `can_move_files` / the torrent projection onto the
+// client-item snapshot, and the reconcile tick hands that snapshot to the gate.
+
+fn observed(snapshot: DownloadSeedingSnapshot, tracked: &mut TrackedDownload) {
+    tracked.client_item.seeding = Some(snapshot);
+}
+
+fn goals_repo(item_id: &str, goals: PersistedSeedGoals) -> Arc<SeedGoalOnlySubmissionRepo> {
+    let repo = Arc::new(SeedGoalOnlySubmissionRepo::default());
+    repo.by_identity
+        .lock()
+        .expect("seed goals by identity")
+        .insert(item_id.to_string(), goals);
+    repo
+}
+
+async fn torrent_cleanup_fixture(
+    download_client: Arc<StubDownloadClient>,
+    name: &str,
+    item_id: &str,
+    goals: Option<PersistedSeedGoals>,
+) -> (AppUseCase, TrackedDownload) {
+    let (mut app, user, _) = bootstrap_with_torrent_clients(download_client);
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, name).await;
+    if let Some(goals) = goals {
+        app.services.workflow.download_submissions = goals_repo(item_id, goals);
+    }
+    let tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        item_id,
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    (app, tracked)
+}
+
+#[tokio::test]
+async fn a_client_that_reports_its_obligation_met_now_releases_the_entry() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Client Says Done",
+        "torrent-live-1",
+        None,
+    )
+    .await;
+
+    // Without the observation this is the fail-closed row: held forever.
+    let held = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+    assert_eq!(held, TerminalDownloadCleanupOutcome::HeldForSeeding);
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(3.1),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client
+            .deleted_requests
+            .lock()
+            .await
+            .iter()
+            .map(|(_, _, item_id, _)| item_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["torrent-live-1".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn an_observed_ratio_past_the_persisted_goal_beats_a_client_saying_no() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    // Persisted goal: ratio 2.0, remove the entry when met.
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Goal Met",
+        "torrent-live-2",
+        Some(persisted_goals(false)),
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            // The client is asserting one of *its* limits is unmet. That is a
+            // different question from the profile goal Scryer was told to
+            // enforce, and it is not a veto.
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.4),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+}
+
+#[tokio::test]
+async fn an_observed_ratio_short_of_the_persisted_goal_still_holds() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Goal Unmet",
+        "torrent-live-3",
+        Some(persisted_goals(false)),
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            // Even a client volunteering "yes, remove it" cannot discharge a
+            // Scryer goal that is demonstrably unmet.
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.7),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_observed_private_torrent_without_goals_is_held_forever() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Private Rail",
+        "torrent-live-4",
+        None,
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            is_private: Some(true),
+            seed_ratio: Some(9.0),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    // The same observation on a public (or unknown) torrent releases it; the
+    // private flag is the whole difference.
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
+
+    tracked
+        .client_item
+        .seeding
+        .as_mut()
+        .expect("observation")
+        .is_private = None;
+    let released = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+    assert_eq!(released, TerminalDownloadCleanupOutcome::Removed);
+}
+
+#[tokio::test]
+async fn an_absent_observation_holds_exactly_as_it_did_before_the_plumbing() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Nothing Observed",
+        "torrent-live-5",
+        None,
+    )
+    .await;
+    assert!(tracked.client_item.seeding.is_none());
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn every_tick_re_reads_the_observation_rather_than_the_one_that_parked_the_row() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Fresh Every Tick",
+        "torrent-live-6",
+        Some(persisted_goals(false)),
+    )
+    .await;
+
+    // Tick 1: ratio well short of the goal.
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.2),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+    assert_eq!(
+        crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+            &app,
+            &tracked,
+            TrackedDownloadState::ImportedSeeding,
+        )
+        .await,
+        TerminalDownloadCleanupOutcome::HeldForSeeding
+    );
+
+    // Tick 2: the poller refreshed the client item and the ratio has moved.
+    // A gate reading a cached first sighting would still hold here.
+    tracked
+        .client_item
+        .seeding
+        .as_mut()
+        .expect("observation")
+        .seed_ratio = Some(2.0);
+
+    assert_eq!(
+        crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+            &app,
+            &tracked,
+            TrackedDownloadState::ImportedSeeding,
+        )
+        .await,
+        TerminalDownloadCleanupOutcome::Removed
+    );
+}
+
+#[tokio::test]
+async fn the_wall_clock_fallback_covers_clients_with_no_seed_time_counter() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Wall Clock",
+        "torrent-live-7",
+        Some(PersistedSeedGoals {
+            seed_goal_ratio: None,
+            seed_goal_seconds: Some(3_600),
+            ..persisted_goals(false)
+        }),
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: None,
+            can_move_files: Some(true),
+            // No ratio, no seed-time counter — freebox, hadouken, aria2.
+            completed_at: Some(
+                (chrono::Utc::now() - chrono::Duration::seconds(7_200)).to_rfc3339(),
+            ),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    assert_eq!(
+        crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+            &app,
+            &tracked,
+            TrackedDownloadState::ImportedSeeding,
+        )
+        .await,
+        TerminalDownloadCleanupOutcome::Removed
+    );
+}
+
+#[tokio::test]
+async fn a_stop_seeding_profile_pauses_the_torrent_instead_of_removing_it() {
+    // Only reachable now that an observation can release a torrent: before the
+    // plumbing every wiring-level path either held or vanished, so the
+    // `StopSeeding` action had no end-to-end coverage.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Stop Seeding",
+        "torrent-live-8",
+        Some(PersistedSeedGoals {
+            goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+            ..persisted_goals(false)
+        }),
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.5),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::ImportedSeeding,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::SeedingEntryKept);
+    assert!(
+        download_client.deleted_requests.lock().await.is_empty(),
+        "stop-seeding must leave the entry in the client"
+    );
+    assert_eq!(
+        download_client
+            .paused_requests
+            .lock()
+            .await
+            .iter()
+            .map(|(_, item_id)| item_id.clone())
+            .collect::<Vec<_>>(),
+        vec!["torrent-live-8".to_string()]
+    );
+}
+
+// ── queue projection: goals joined beside the observation ─────────────────
+
+#[tokio::test]
+async fn queue_enrichment_joins_the_persisted_goals_onto_the_observed_row() {
+    let item_id = "abcdef0123456789abcdef0123456789abcdef09";
+    let repo = goals_repo(item_id, persisted_goals(false));
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo;
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 100);
+    item.client_id = "client-1".to_string();
+    item.client_type = "qbittorrent".to_string();
+    item.progress_percent = 100;
+    item.seeding = Some(DownloadSeedingSnapshot {
+        can_remove: Some(false),
+        can_move_files: Some(true),
+        seed_ratio: Some(0.8),
+        seed_time_seconds: Some(3_600),
+        is_private: Some(false),
+        ..DownloadSeedingSnapshot::default()
+    });
+    let mut items = vec![item];
+
+    crate::enrich_download_queue_items_from_submissions(&app, &mut items).await;
+
+    let seeding = items[0]
+        .seeding
+        .clone()
+        .expect("the observation must survive enrichment");
+    // Observation untouched, goals joined beside it.
+    assert_eq!(seeding.seed_ratio, Some(0.8));
+    assert_eq!(seeding.seed_time_seconds, Some(3_600));
+    assert_eq!(seeding.seed_goal_ratio, Some(2.0));
+    assert!(!seeding.never_remove);
+    assert_eq!(
+        crate::derive_download_seeding_state(&items[0]),
+        Some(crate::DownloadSeedingState::Seeding)
+    );
+}
+
+#[tokio::test]
+async fn a_torrent_in_plain_seeding_carries_progress_before_it_is_ever_imported() {
+    // Pre-import, post-completion: no tracked state at all, and the row still
+    // has to show what it is waiting on.
+    let item_id = "abcdef0123456789abcdef0123456789abcdef0a";
+    let repo = goals_repo(item_id, persisted_goals(false));
+    let (mut app, _user, _) =
+        bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    app.services.workflow.download_submissions = repo;
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 100);
+    item.client_id = "client-1".to_string();
+    item.client_type = "qbittorrent".to_string();
+    item.progress_percent = 100;
+    item.tracked_state = None;
+    item.seeding = Some(DownloadSeedingSnapshot {
+        can_remove: Some(false),
+        seed_ratio: Some(2.2),
+        ..DownloadSeedingSnapshot::default()
+    });
+    let mut items = vec![item];
+
+    crate::enrich_download_queue_items_from_submissions(&app, &mut items).await;
+
+    assert_eq!(
+        crate::derive_download_seeding_state(&items[0]),
+        Some(crate::DownloadSeedingState::GoalMet)
+    );
+    assert_eq!(
+        items[0]
+            .seeding
+            .as_ref()
+            .and_then(|seeding| seeding.seed_goal_ratio),
+        Some(2.0)
+    );
+}
+
+#[tokio::test]
+async fn the_import_mode_check_reads_the_observation_from_the_published_snapshot() {
+    // The manual-import path has no tracked row to hand the gate, so it falls
+    // back to the snapshot the poller publishes. Without that lookup a
+    // finished torrent could never be moved, only ever copied.
+    let item_id = "torrent-move-lookup-1";
+    let (app, user, _) = bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    let title = movie_title(&app, &user, "Move After Seeding").await;
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        UpdateMediaSettings {
+            import_mode: Some(ImportMode::Move),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("configure move import mode");
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        item_id,
+        &title,
+        TrackedDownloadState::ImportedSeeding,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(5.0),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked.id.clone(),
+            crate::tracked_downloads::TrackedDownloadQueueMetadata::from(&tracked),
+        );
+
+    let effective = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        &app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(&completed_for(&config.id, "qbittorrent", item_id)),
+    )
+    .await
+    .expect("resolve seeding-safe import mode");
+
+    assert_eq!(
+        effective,
+        ImportMode::Move,
+        "a torrent the client says is done, with stable data, may be moved"
+    );
+
+    // Flip only the seeding verdict: the move must go back to a copy.
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .get_mut(&tracked.id)
+        .expect("snapshot row")
+        .client_item
+        .seeding
+        .as_mut()
+        .expect("observation")
+        .can_remove = Some(false);
+
+    let effective = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        &app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(&completed_for(&config.id, "qbittorrent", item_id)),
+    )
+    .await
+    .expect("resolve seeding-safe import mode");
+
+    assert_eq!(effective, ImportMode::HardlinkOrCopy);
 }

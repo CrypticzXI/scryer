@@ -1369,6 +1369,7 @@ async fn persist_standby_candidates(
                 .get("info_hash")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
+            seed_minimums: crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
         };
 
         if app

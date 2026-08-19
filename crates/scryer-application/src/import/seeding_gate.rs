@@ -33,28 +33,56 @@
 //! veto a met one (the plugin is asserting an unmet *client* limit, which is
 //! not the policy Scryer was told to enforce).
 //!
-//! ## Observation plumbing (open seam)
+//! ## Observation plumbing
 //!
-//! `TorrentSeedingObservation` mirrors the fields the plugin SDK already
-//! carries on `PluginDownloadItem`/`PluginTorrentItem`. Core does **not**
-//! plumb them yet: `crates/scryer-plugins/src/download_client_adapter.rs`
-//! drops `can_remove`, `can_move_files` and the whole `torrent` sub-object
-//! when it maps a plugin item onto `DownloadQueueItem`. Until that lands
-//! (wave 3 / P3), `observe_torrent_seeding` returns `None` and the gate
-//! holds every torrent whose obligation it cannot prove — which is the
-//! conservative direction, but it does mean torrent entries are not
-//! auto-removed on this build. The one open seam is marked `SEAM:` below.
+//! `TorrentSeedingObservation` mirrors the fields the plugin SDK carries on
+//! `PluginDownloadItem`/`PluginTorrentItem`. The download-client adapter
+//! copies them onto `DownloadQueueItem::seeding`, and the tracked-download
+//! service keeps the latest one on `TrackedDownload::client_item`. The gate
+//! reads it from whichever is freshest:
 //!
-//! The other half — the goals a grab resolved to — is live: it reads the
+//! - callers that hold the tracked row (the reconcile tick) pass their own
+//!   copy in, so the decision uses the observation from *this* poll rather
+//!   than the published snapshot, which is only refreshed after reconcile;
+//! - callers that only have a client identity (the manual-import mode check)
+//!   fall back to `observe_torrent_seeding`, which reads the published
+//!   tracked-download snapshot.
+//!
+//! When neither answers, the observation is absent and the gate holds — the
+//! conservative direction, and the same fail-closed behaviour the universal
+//! gate had before the plumbing existed.
+//!
+//! The other half — the goals a grab resolved to — reads the
 //! `PersistedSeedGoals` the grab-time package freezes onto the
 //! download-submission row.
 
 use chrono::{DateTime, Utc};
-use scryer_domain::{CompletedDownload, ImportMode, MediaFacet, SeedGoalMetAction};
+use scryer_domain::{
+    CompletedDownload, DownloadQueueItem, DownloadSeedingSnapshot, ImportMode, MediaFacet,
+    SeedGoalMetAction,
+};
 
 use crate::{
     AppResult, AppUseCase, DownloadSourceIdentity, DownloadSourceKind, PersistedSeedGoals,
 };
+
+/// The reasons the gate reports, verbatim, in logs and outcomes.
+///
+/// Named because the queue projection derives its display state from them: the
+/// row the operator sees and the decision the reconciler took must never be
+/// able to disagree.
+pub(crate) mod reason {
+    pub const NON_TORRENT_PROTOCOL: &str = "non_torrent_protocol";
+    pub const TORRENT_NO_LONGER_IN_CLIENT: &str = "torrent_no_longer_in_client";
+    pub const BLACKHOLE_REMOVAL_IS_DESTRUCTIVE: &str = "torrent_blackhole_removal_is_destructive";
+    pub const PROFILE_NEVER_REMOVE: &str = "profile_never_remove";
+    pub const PRIVATE_WITHOUT_GOALS: &str = "private_torrent_without_resolved_goals";
+    pub const PROFILE_GOAL_MET: &str = "profile_goal_met";
+    pub const PROFILE_GOAL_UNMET: &str = "profile_goal_unmet";
+    pub const CLIENT_OBLIGATION_MET: &str = "client_reports_seeding_obligation_met";
+    pub const CLIENT_LIMIT_UNMET: &str = "client_reports_unmet_seed_limit";
+    pub const CLIENT_VERDICT_UNKNOWN: &str = "no_resolved_goals_and_client_verdict_unknown";
+}
 
 /// Client type whose "remove" is a filesystem delete, not a session command.
 ///
@@ -161,6 +189,36 @@ pub(crate) struct TorrentSeedingObservation {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+impl From<&DownloadSeedingSnapshot> for TorrentSeedingObservation {
+    /// Field-for-field, tri-states intact. The snapshot's goal fields are not
+    /// read here: the gate reads goals from the persisted resolution so that a
+    /// projection that never ran cannot silently mean "no goals".
+    fn from(snapshot: &DownloadSeedingSnapshot) -> Self {
+        Self {
+            can_remove: snapshot.can_remove,
+            can_move_files: snapshot.can_move_files,
+            seed_ratio: snapshot.seed_ratio,
+            seed_time_seconds: snapshot.seed_time_seconds,
+            is_private: snapshot.is_private,
+            completed_at: snapshot
+                .completed_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc)),
+        }
+    }
+}
+
+/// The observation carried by one client-item snapshot, if any.
+pub(crate) fn observation_from_queue_item(
+    item: &DownloadQueueItem,
+) -> Option<TorrentSeedingObservation> {
+    item.seeding
+        .as_ref()
+        .map(TorrentSeedingObservation::from)
+        .filter(|observation| *observation != TorrentSeedingObservation::default())
+}
+
 /// Everything the pure gate needs. Assembled by `evaluate_seeding_gate_for`.
 #[derive(Clone, Debug)]
 pub(crate) struct SeedingGateInput {
@@ -224,7 +282,7 @@ impl SeedingGateDecision {
     pub(crate) fn not_applicable() -> Self {
         Self::new(
             SeedingGateOutcome::NotApplicable,
-            "non_torrent_protocol",
+            reason::NON_TORRENT_PROTOCOL,
             true,
         )
     }
@@ -263,7 +321,7 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
     if !input.present_in_client {
         return SeedingGateDecision::new(
             SeedingGateOutcome::Vanished,
-            "torrent_no_longer_in_client",
+            reason::TORRENT_NO_LONGER_IN_CLIENT,
             data_stable,
         );
     }
@@ -280,7 +338,7 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
             SeedingGateOutcome::Released {
                 action: SeedGoalMetAction::Keep,
             },
-            "torrent_blackhole_removal_is_destructive",
+            reason::BLACKHOLE_REMOVAL_IS_DESTRUCTIVE,
             data_stable && observation.can_move_files == Some(true),
         );
     }
@@ -289,7 +347,11 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
 
     // Profile-level hard stop: seed forever.
     if goals.never_remove {
-        return SeedingGateDecision::new(SeedingGateOutcome::Hold, "profile_never_remove", false);
+        return SeedingGateDecision::new(
+            SeedingGateOutcome::Hold,
+            reason::PROFILE_NEVER_REMOVE,
+            false,
+        );
     }
 
     // Hard private rail. An observed private torrent is never released on the
@@ -298,7 +360,7 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
     if observation.is_private == Some(true) && !goals.has_goals() {
         return SeedingGateDecision::new(
             SeedingGateOutcome::Hold,
-            "private_torrent_without_resolved_goals",
+            reason::PRIVATE_WITHOUT_GOALS,
             false,
         );
     }
@@ -311,11 +373,11 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
                 SeedingGateOutcome::Released {
                     action: goal_met_action_for(&goals),
                 },
-                "profile_goal_met",
+                reason::PROFILE_GOAL_MET,
                 data_stable,
             )
         } else {
-            SeedingGateDecision::new(SeedingGateOutcome::Hold, "profile_goal_unmet", false)
+            SeedingGateDecision::new(SeedingGateOutcome::Hold, reason::PROFILE_GOAL_UNMET, false)
         };
     }
 
@@ -326,17 +388,15 @@ pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDeci
             SeedingGateOutcome::Released {
                 action: goal_met_action_for(&goals),
             },
-            "client_reports_seeding_obligation_met",
+            reason::CLIENT_OBLIGATION_MET,
             data_stable,
         ),
-        Some(false) => SeedingGateDecision::new(
-            SeedingGateOutcome::Hold,
-            "client_reports_unmet_seed_limit",
-            false,
-        ),
+        Some(false) => {
+            SeedingGateDecision::new(SeedingGateOutcome::Hold, reason::CLIENT_LIMIT_UNMET, false)
+        }
         None => SeedingGateDecision::new(
             SeedingGateOutcome::Hold,
-            "no_resolved_goals_and_client_verdict_unknown",
+            reason::CLIENT_VERDICT_UNKNOWN,
             false,
         ),
     }
@@ -396,19 +456,57 @@ pub(crate) fn client_type_is_torrent(app: &AppUseCase, client_type: &str) -> boo
         })
 }
 
-/// SEAM (P3 / wave 3): the observed torrent state for one client item.
+/// The observed torrent state for one client item, from the published
+/// tracked-download snapshot.
 ///
-/// The plugin SDK already carries every field on `PluginDownloadItem` and
-/// `PluginTorrentItem`, but `download_client_adapter::map_queue_item` drops
-/// them when it builds a `DownloadQueueItem`, and the router does not forward
-/// a per-item lookup. Until that plumbing lands this returns `None`, and the
-/// gate holds anything it cannot prove.
+/// The snapshot is the cache the download-client poller republishes at the end
+/// of every cycle, so it is one tick behind while a cycle is running. Callers
+/// that hold the live tracked row must pass their own observation to
+/// `evaluate_seeding_gate_with` instead of relying on this; this is the lookup
+/// for callers that only have a client identity (manual import), where being a
+/// tick behind changes nothing — the answer only ever downgrades a `Move` to a
+/// copy.
 async fn observe_torrent_seeding(
     app: &AppUseCase,
     key: &SeedGoalLookupKey,
 ) -> Option<TorrentSeedingObservation> {
-    let _ = (app, key);
-    None
+    let snapshot = app
+        .runtime
+        .acquisition
+        .tracked_download_snapshot
+        .read()
+        .await;
+    snapshot
+        .values()
+        .find(|tracked| tracked_matches_lookup_key(&tracked.client_item, key))
+        .and_then(|tracked| observation_from_queue_item(&tracked.client_item))
+}
+
+fn tracked_matches_lookup_key(item: &DownloadQueueItem, key: &SeedGoalLookupKey) -> bool {
+    if !item
+        .client_type
+        .trim()
+        .eq_ignore_ascii_case(&key.client_type)
+    {
+        return false;
+    }
+    let client_id = item.client_id.trim();
+    // An empty configured client id on either side means "the only client of
+    // this type", which is how the routing key is built elsewhere.
+    if !client_id.is_empty() && !key.client_id.is_empty() && client_id != key.client_id {
+        return false;
+    }
+    let item_id = item.download_client_item_id.trim();
+    if item_id.eq_ignore_ascii_case(key.client_item_id.trim()) {
+        return true;
+    }
+    match (
+        crate::normalize_torrent_info_hash(Some(item_id)),
+        key.info_hash.as_deref(),
+    ) {
+        (Some(observed), Some(expected)) => observed == expected,
+        _ => false,
+    }
 }
 
 /// Assemble the gate input for one client item and decide.
@@ -417,15 +515,33 @@ pub(crate) async fn evaluate_seeding_gate_for(
     key: &SeedGoalLookupKey,
     present_in_client: bool,
 ) -> SeedingGateDecision {
+    evaluate_seeding_gate_with(app, key, present_in_client, None).await
+}
+
+/// As `evaluate_seeding_gate_for`, with an observation the caller already has.
+///
+/// `None` means "look one up"; it does not mean "there is none". A caller that
+/// holds the live tracked row always passes `Some(...)` — even an all-unknown
+/// observation — because its copy is the freshest one that exists.
+pub(crate) async fn evaluate_seeding_gate_with(
+    app: &AppUseCase,
+    key: &SeedGoalLookupKey,
+    present_in_client: bool,
+    observation: Option<TorrentSeedingObservation>,
+) -> SeedingGateDecision {
     if !client_type_is_torrent(app, &key.client_type) {
         return SeedingGateDecision::not_applicable();
     }
 
+    let observation = match observation {
+        Some(observation) => Some(observation),
+        None => observe_torrent_seeding(app, key).await,
+    };
     let input = SeedingGateInput {
         is_torrent: true,
         client_type: key.client_type.clone(),
         present_in_client,
-        observation: observe_torrent_seeding(app, key).await,
+        observation,
         goals: app.resolved_seed_goals(key).await,
         now: Utc::now(),
     };

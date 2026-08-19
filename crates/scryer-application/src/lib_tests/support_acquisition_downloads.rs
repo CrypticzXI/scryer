@@ -1378,6 +1378,9 @@ pub(super) struct StubDownloadClient {
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
+    /// Tracker-declared minimums as they reached the client, so a caller-level
+    /// test can prove the clamp inputs survived the path under test.
+    pub(super) submitted_seed_minimums: Arc<Mutex<Vec<crate::ReleaseSeedMinimums>>>,
     pub(super) queue_calls: Arc<Mutex<usize>>,
     pub(super) queue_for_title_calls: Arc<Mutex<Vec<String>>>,
     pub(super) history_calls: Arc<Mutex<usize>>,
@@ -1387,6 +1390,10 @@ pub(super) struct StubDownloadClient {
     pub(super) recent_completed_download_calls: Arc<Mutex<Vec<usize>>>,
     pub(super) targeted_completed_downloads: Arc<Mutex<HashMap<String, CompletedDownload>>>,
     pub(super) targeted_completed_download_calls: Arc<Mutex<Vec<String>>>,
+    /// `(client_id, item_id)` for every pause the caller issued. Pause is how a
+    /// `StopSeeding` seeding profile stops a finished torrent uploading, so the
+    /// gate's non-removal actions are observable.
+    pub(super) paused_requests: PausedDownloadRequests,
 }
 
 impl StubDownloadClient {
@@ -1454,6 +1461,15 @@ impl DownloadClient for StubDownloadClient {
             .lock()
             .await
             .push(request.source_password.clone());
+        self.submitted_seed_minimums
+            .lock()
+            .await
+            .push(crate::ReleaseSeedMinimums {
+                min_seed_ratio: request.tracker_min_seed_ratio,
+                min_seed_time_minutes: request.tracker_min_seed_time_minutes,
+                season_pack_seed_ratio: request.season_pack_seed_ratio,
+                season_pack_seed_time_minutes: request.season_pack_seed_time_minutes,
+            });
         if let Some(error) = self.submit_error.lock().await.clone() {
             return Err(error.into_app_error());
         }
@@ -1594,6 +1610,22 @@ impl DownloadClient for StubDownloadClient {
     ) -> AppResult<()> {
         self.record_delete(None, Some(client_type), id, is_history)
             .await
+    }
+
+    async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
+        self.paused_requests
+            .lock()
+            .await
+            .push((None, id.to_string()));
+        Ok(())
+    }
+
+    async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        self.paused_requests
+            .lock()
+            .await
+            .push((Some(client_id.to_string()), id.to_string()));
+        Ok(())
     }
 }
 

@@ -130,6 +130,18 @@ impl FromApplication<scryer_application::DownloadDisplayState> for DownloadDispl
     }
 }
 
+impl FromApplication<scryer_application::DownloadSeedingState> for DownloadSeedingStateValue {
+    fn from_application(value: scryer_application::DownloadSeedingState) -> Self {
+        match value {
+            scryer_application::DownloadSeedingState::None => Self::None,
+            scryer_application::DownloadSeedingState::Seeding => Self::Seeding,
+            scryer_application::DownloadSeedingState::GoalMet => Self::GoalMet,
+            scryer_application::DownloadSeedingState::HeldPrivate => Self::HeldPrivate,
+            scryer_application::DownloadSeedingState::NeverRemove => Self::NeverRemove,
+        }
+    }
+}
+
 impl IntoApplication<scryer_application::DownloadActivityFilter> for DownloadActivityFilterValue {
     fn into_application(self) -> scryer_application::DownloadActivityFilter {
         match self {

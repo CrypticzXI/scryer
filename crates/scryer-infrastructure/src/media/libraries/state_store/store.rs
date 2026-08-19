@@ -9,7 +9,7 @@ use scryer_application::{
     HousekeepingMediaFileRootRow, HousekeepingRepository, LibraryProbeRepository,
     LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleasePageSort,
     PendingReleaseRepository, PendingReleaseStatus, PendingReleasesPageQuery, ReleaseDecision,
-    SubtitleDownloadRepository,
+    ReleaseSeedMinimums, SubtitleDownloadRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1493,7 +1493,9 @@ impl HousekeepingRepository for HousekeepingStore {
 const PENDING_RELEASE_COLUMNS: &str =
     "id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
     source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
-    added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash";
+    added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
+    minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
+    season_pack_seed_time_minutes";
 
 /// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
 /// so the paged read can JOIN `titles` for library scoping without ambiguous
@@ -1501,7 +1503,9 @@ const PENDING_RELEASE_COLUMNS: &str =
 const PENDING_RELEASE_COLUMNS_PR: &str =
     "pr.id, pr.wanted_item_id, pr.title_id, pr.release_title, pr.release_url, pr.release_size_bytes,
     pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.indexer_id, pr.release_guid,
-    pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash";
+    pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash,
+    pr.minimum_seed_ratio, pr.minimum_seed_time_minutes, pr.season_pack_seed_ratio,
+    pr.season_pack_seed_time_minutes";
 
 fn pending_release_row_to_item(
     row: &SqlRow,
@@ -1535,6 +1539,14 @@ fn pending_release_row_to_item(
         )?,
         published_at: opt_timestamp_text(row, "published_at")?,
         info_hash: row.opt_text("info_hash")?,
+        // Rows parked before migration 0163 read back as all-`None`; the grab
+        // then falls back to the profile's own goals with no tracker clamp.
+        seed_minimums: ReleaseSeedMinimums {
+            min_seed_ratio: row.opt_f64("minimum_seed_ratio")?,
+            min_seed_time_minutes: row.opt_i64("minimum_seed_time_minutes")?,
+            season_pack_seed_ratio: row.opt_f64("season_pack_seed_ratio")?,
+            season_pack_seed_time_minutes: row.opt_i64("season_pack_seed_time_minutes")?,
+        },
     })
 }
 
@@ -1579,6 +1591,10 @@ fn pending_release_insert_args(
         )?),
         opt_timestamp_arg_for_datastore(datastore, release.published_at.as_deref())?,
         SqlArg::OptText(release.info_hash.clone()),
+        SqlArg::OptF64(release.seed_minimums.min_seed_ratio),
+        SqlArg::OptI64(release.seed_minimums.min_seed_time_minutes),
+        SqlArg::OptF64(release.seed_minimums.season_pack_seed_ratio),
+        SqlArg::OptI64(release.seed_minimums.season_pack_seed_time_minutes),
     ])
 }
 
@@ -1606,8 +1622,11 @@ impl PendingReleaseRepository for PendingReleaseStore {
             "INSERT INTO pending_releases
              (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
               source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
-              added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+              added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
+              minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
+              season_pack_seed_time_minutes)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+                     {}, {}, {}, {})",
             pending_release_insert_args(&self.datastore, release, encryption_key.as_ref())?,
         )
         .await?;

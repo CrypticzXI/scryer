@@ -1,5 +1,99 @@
 use super::*;
 
+/// Migration 0163 gave `pending_releases` the four tracker-minimum columns a
+/// delayed grab needs. Proves both directions through the real migrated schema:
+/// a parked row keeps its minimums, and a row written without them (the shape
+/// every pre-0163 row has) reads back as `None` rather than failing the map.
+#[tokio::test]
+async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_as_none() {
+    let (services, db) = temp_services("scryer_pending_release_seed_minimums").await;
+    let pending_store =
+        PendingReleaseStore::new(services.datastore(), services.encryption_key_state());
+    let now = Utc::now().to_rfc3339();
+
+    let mut parked = scryer_application::PendingRelease {
+        id: "pending-with-minimums".to_string(),
+        wanted_item_id: "wanted-minimums".to_string(),
+        title_id: "title-minimums".to_string(),
+        release_title: "Tracker.Minimums.2024.1080p-GRP".to_string(),
+        release_url: Some("https://example.invalid/minimums.torrent".to_string()),
+        source_kind: None,
+        release_size_bytes: Some(2_048),
+        release_score: 1200,
+        scoring_log_json: None,
+        indexer_source: Some("private-tracker".to_string()),
+        indexer_id: None,
+        release_guid: Some("guid-minimums".to_string()),
+        added_at: now.clone(),
+        delay_until: now.clone(),
+        status: scryer_application::PendingReleaseStatus::Waiting,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+        seed_minimums: Default::default(),
+    };
+    parked.seed_minimums = scryer_application::ReleaseSeedMinimums {
+        min_seed_ratio: Some(1.5),
+        min_seed_time_minutes: Some(4_320),
+        season_pack_seed_ratio: Some(2.5),
+        season_pack_seed_time_minutes: Some(10_080),
+    };
+    PendingReleaseRepository::insert_pending_release(&pending_store, &parked)
+        .await
+        .expect("pending release with minimums should insert");
+
+    let loaded =
+        PendingReleaseRepository::get_pending_release(&pending_store, "pending-with-minimums")
+            .await
+            .expect("pending release should load")
+            .expect("pending release should exist");
+    assert_eq!(loaded.seed_minimums, parked.seed_minimums);
+
+    // Written the way every row parked before 0163 was: the four columns absent
+    // from the INSERT, so the migration's defaults (NULL) apply.
+    sqlx::query(
+        "INSERT INTO pending_releases
+         (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
+          source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
+          added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("pending-legacy")
+    .bind("wanted-legacy")
+    .bind("title-legacy")
+    .bind("Legacy.Pending.2024.1080p-GRP")
+    .bind(None::<String>)
+    .bind(None::<i64>)
+    .bind(None::<String>)
+    .bind(900_i32)
+    .bind(None::<String>)
+    .bind(None::<String>)
+    .bind(None::<String>)
+    .bind("guid-legacy")
+    .bind(&now)
+    .bind(&now)
+    .bind("waiting")
+    .bind(None::<String>)
+    .bind(None::<String>)
+    .bind(None::<String>)
+    .bind(None::<String>)
+    .execute(services.pool())
+    .await
+    .expect("legacy pending release should insert");
+
+    let legacy = PendingReleaseRepository::get_pending_release(&pending_store, "pending-legacy")
+        .await
+        .expect("legacy pending release should load")
+        .expect("legacy pending release should exist");
+    assert_eq!(
+        legacy.seed_minimums,
+        scryer_application::ReleaseSeedMinimums::default()
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
 #[tokio::test]
 async fn sqlite_database_maintenance_runs_without_command_bus() {
     let (services, db) = temp_services("scryer_sqlite_database_maintenance").await;

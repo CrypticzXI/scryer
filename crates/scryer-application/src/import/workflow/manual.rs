@@ -228,6 +228,8 @@ async fn maybe_remove_completed_manual_import_download(
         Some(&facet),
         TrackedDownloadState::Imported,
         true,
+        // No tracked row here, so the gate reads the published snapshot.
+        None,
     )
     .await;
 }

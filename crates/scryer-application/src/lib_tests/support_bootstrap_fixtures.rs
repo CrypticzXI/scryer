@@ -1679,6 +1679,7 @@ pub(super) fn queue_history_fixture_item(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }
 }
 
@@ -1829,6 +1830,7 @@ pub(super) fn failed_history_item(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }
 }
 
@@ -1862,6 +1864,7 @@ pub(super) fn pending_movie_release(
         source_password: None,
         published_at: Some(now.to_rfc3339()),
         info_hash: None,
+        seed_minimums: Default::default(),
     }
 }
 

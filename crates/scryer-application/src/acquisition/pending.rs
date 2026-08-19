@@ -7,6 +7,7 @@ use chrono::{Duration, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
 use tracing::{info, warn};
 
+use crate::acquisition::seed_goals::ReleaseSeedMinimums;
 use crate::delay_profile::DelayProfile;
 use crate::types::{PendingRelease, PendingReleaseStatus};
 use std::collections::HashSet;
@@ -52,6 +53,7 @@ impl AppUseCase {
         source_password: Option<&str>,
         published_at: Option<&str>,
         info_hash: Option<&str>,
+        seed_minimums: ReleaseSeedMinimums,
     ) {
         let now = Utc::now();
         let delay_until = now + Duration::minutes(delay_minutes);
@@ -76,6 +78,7 @@ impl AppUseCase {
             source_password: crate::normalize_release_password(source_password),
             published_at: published_at.map(str::to_string),
             info_hash: info_hash.map(str::to_string),
+            seed_minimums,
         };
 
         // Supersede any existing waiting releases for this wanted item with a lower score
@@ -198,6 +201,7 @@ impl AppUseCase {
                 .get("info_hash")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
+            seed_minimums: ReleaseSeedMinimums::from_release_extra(&candidate.extra),
         };
 
         match self
@@ -867,13 +871,14 @@ impl AppUseCase {
                 info_hash_hint: pr.info_hash.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
-                // Persisted pending releases do not carry the indexer `extra`
-                // map, so tracker minimums are unavailable on this path; the
-                // profile's own goals still apply.
-                tracker_min_seed_ratio: None,
-                tracker_min_seed_time_minutes: None,
-                season_pack_seed_ratio: None,
-                season_pack_seed_time_minutes: None,
+                // Captured off the release `extra` map when the row was parked
+                // (migration 0163), so a delayed grab gets the same tracker
+                // clamp as an immediate one. Rows parked before that migration
+                // carry `None` and simply fall back to the profile's own goals.
+                tracker_min_seed_ratio: pr.seed_minimums.min_seed_ratio,
+                tracker_min_seed_time_minutes: pr.seed_minimums.min_seed_time_minutes,
+                season_pack_seed_ratio: pr.seed_minimums.season_pack_seed_ratio,
+                season_pack_seed_time_minutes: pr.seed_minimums.season_pack_seed_time_minutes,
                 is_recent,
                 season_pack: is_season_pack.then_some(true),
             })

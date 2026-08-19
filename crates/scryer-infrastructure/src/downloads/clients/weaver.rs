@@ -950,6 +950,7 @@ pub(crate) fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueI
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }
 }
 

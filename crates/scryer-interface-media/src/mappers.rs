@@ -1182,7 +1182,16 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
     let display_state = DownloadDisplayStateValue::from_application(
         scryer_application::derive_download_queue_display_state(&item),
     );
+    let seeding_state = scryer_application::derive_download_seeding_state(&item)
+        .map(DownloadSeedingStateValue::from_application);
+    let seeding = item.seeding.clone().unwrap_or_default();
     DownloadQueueItemPayload {
+        seeding_state,
+        seed_ratio: seeding.seed_ratio,
+        seed_ratio_goal: seeding.seed_goal_ratio,
+        seed_time_seconds: seeding.seed_time_seconds.map(Long::from),
+        seed_time_goal_seconds: seeding.seed_goal_seconds.map(Long::from),
+        is_private: seeding.is_private,
         id: item.id.into(),
         title_id: item.title_id.map(Into::into),
         episode_id: item.episode_id.map(Into::into),
@@ -3631,9 +3640,10 @@ pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        discovery_home_query_from_input, discovery_surface_value, from_import_record,
-        from_title_history_record, from_wanted_item, preferred_discovery_poster_source,
-        provider_config_values_from_json_with_fields, provider_config_values_to_json,
+        discovery_home_query_from_input, discovery_surface_value, from_download_queue_item,
+        from_import_record, from_title_history_record, from_wanted_item,
+        preferred_discovery_poster_source, provider_config_values_from_json_with_fields,
+        provider_config_values_to_json,
     };
     use crate::types::{
         BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
@@ -4032,5 +4042,91 @@ mod tests {
             .expect("unsupported media facets must be returned as validation errors");
 
         assert!(error.to_string().contains("card targetKind"));
+    }
+
+    fn torrent_queue_item() -> scryer_domain::DownloadQueueItem {
+        scryer_domain::DownloadQueueItem {
+            id: "qbittorrent:abc".to_string(),
+            title_id: None,
+            episode_id: None,
+            title_name: "Example".to_string(),
+            facet: None,
+            category: None,
+            client_id: "client-1".to_string(),
+            client_name: "qBittorrent".to_string(),
+            client_type: "qbittorrent".to_string(),
+            state: scryer_domain::DownloadQueueState::Completed,
+            progress_percent: 100,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            size_bytes: Some(1024),
+            remaining_seconds: Some(0),
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: "abc".to_string(),
+            download_id: None,
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            source_provider: None,
+            is_scryer_origin: true,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
+            seeding: None,
+        }
+    }
+
+    #[test]
+    fn the_queue_payload_carries_seeding_progress_and_its_goals() {
+        let mut item = torrent_queue_item();
+        item.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.75),
+            seed_time_seconds: Some(5_400),
+            is_private: Some(true),
+            uploaded_bytes: Some(768),
+            completed_at: None,
+            seed_goal_ratio: Some(2.0),
+            seed_goal_seconds: Some(86_400),
+            never_remove: false,
+        });
+
+        let payload = from_download_queue_item(item);
+
+        assert_eq!(payload.seed_ratio, Some(0.75));
+        assert_eq!(payload.seed_ratio_goal, Some(2.0));
+        assert_eq!(payload.seed_time_seconds.map(|value| value.0), Some(5_400));
+        assert_eq!(
+            payload.seed_time_goal_seconds.map(|value| value.0),
+            Some(86_400)
+        );
+        assert_eq!(payload.is_private, Some(true));
+        assert!(matches!(
+            payload.seeding_state,
+            Some(crate::types::DownloadSeedingStateValue::Seeding)
+        ));
+    }
+
+    #[test]
+    fn a_row_without_seeding_information_leaves_every_new_field_null() {
+        let payload = from_download_queue_item(torrent_queue_item());
+
+        assert_eq!(payload.seed_ratio, None);
+        assert_eq!(payload.seed_ratio_goal, None);
+        assert_eq!(payload.seed_time_seconds.map(|value| value.0), None);
+        assert_eq!(payload.seed_time_goal_seconds.map(|value| value.0), None);
+        assert_eq!(payload.is_private, None);
+        assert!(payload.seeding_state.is_none());
     }
 }

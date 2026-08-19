@@ -823,6 +823,58 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .map(Option::flatten)
     }
 
+    async fn list_seed_goals_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        let chunks = chunk_download_submission_client_items(client_items);
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for chunk in chunks {
+            let mut args = Vec::with_capacity(chunk.len() * 3);
+            let clauses = chunk
+                .iter()
+                .map(|identity| {
+                    args.push(SqlArg::Text(identity.client_type.clone()));
+                    args.push(SqlArg::Text(identity.item_id.clone()));
+                    args.push(SqlArg::Text(normalize_download_client_id(
+                        identity.client_id.as_deref(),
+                    )));
+                    "(download_client_type = {} AND download_client_item_id = {} AND download_client_id = {})"
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let rows = SqlRuntime::fetch_all(
+                self.datastore.read_exec(),
+                &format!(
+                    "SELECT download_client_id, download_client_type, download_client_item_id, \
+                     {SEED_GOAL_COLUMNS}
+                     FROM download_submissions
+                     WHERE {clauses}"
+                ),
+                &args,
+            )
+            .await?;
+            for row in rows {
+                let Some(goals) = seed_goals_from_row(&row)? else {
+                    continue;
+                };
+                let client_id = row.opt_text("download_client_id")?;
+                out.push((
+                    DownloadSourceIdentity::new(
+                        client_id.as_deref(),
+                        &row.text("download_client_type")?,
+                        &row.text("download_client_item_id")?,
+                    ),
+                    goals,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
     async fn find_seed_goals_by_info_hash(
         &self,
         info_hash: &str,
@@ -986,6 +1038,46 @@ mod seed_goal_tests {
                 info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn seed_goals_load_in_one_batch_for_the_queue_projection() {
+        let store = store().await;
+        store
+            .record_seed_goals(record())
+            .await
+            .expect("seed goals should persist");
+        let mut second = record();
+        second.client_item_id = "job-2".to_string();
+        second.goals.seed_goal_ratio = Some(1.25);
+        second.goals.info_hash = None;
+        store
+            .record_seed_goals(second)
+            .await
+            .expect("seed goals should persist");
+
+        let loaded = store
+            .list_seed_goals_for_client_items(&[
+                identity(),
+                DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-2"),
+                // A row with no resolution at all must simply be absent, not a
+                // default-valued entry that would read as "no goals resolved".
+                DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-missing"),
+            ])
+            .await
+            .expect("batch read should succeed");
+
+        let mut by_item = loaded
+            .into_iter()
+            .map(|(identity, goals)| (identity.item_id, goals))
+            .collect::<Vec<_>>();
+        by_item.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(by_item.len(), 2);
+        assert_eq!(by_item[0].0, "job-1");
+        assert_eq!(by_item[0].1.seed_goal_ratio, Some(2.5));
+        assert!(by_item[0].1.never_remove);
+        assert_eq!(by_item[1].0, "job-2");
+        assert_eq!(by_item[1].1.seed_goal_ratio, Some(1.25));
     }
 
     #[tokio::test]

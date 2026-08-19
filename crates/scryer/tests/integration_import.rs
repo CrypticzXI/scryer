@@ -2318,6 +2318,7 @@ fn tracked_movie_download(
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         },
         completed_source: Some(completed.clone()),
         state: scryer_domain::TrackedDownloadState::ImportBlocked,

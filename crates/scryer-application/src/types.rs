@@ -4,6 +4,7 @@ use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, T
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
+use crate::acquisition::seed_goals::ReleaseSeedMinimums;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
 use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
@@ -1182,6 +1183,12 @@ pub struct PendingRelease {
     pub published_at: Option<String>,
     /// Torrent info hash — passed to download client for magnet resolution.
     pub info_hash: Option<String>,
+    /// Tracker-declared seeding minimums lifted off the release `extra` map at
+    /// park time. The `extra` map itself is not persisted, so without these the
+    /// delayed grab would reach the client with profile goals but no tracker
+    /// clamp — the immediate-grab paths read them straight off the release.
+    /// Rows parked before migration 0163 read back as all-`None`.
+    pub seed_minimums: ReleaseSeedMinimums,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

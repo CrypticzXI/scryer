@@ -1248,7 +1248,14 @@ mod tests {
         columns
             .entry("pending_releases".to_string())
             .or_default()
-            .insert("indexer_id".to_string());
+            .extend([
+                "indexer_id".to_string(),
+                // Tracker seeding minimums (migration 0163).
+                "minimum_seed_ratio".to_string(),
+                "minimum_seed_time_minutes".to_string(),
+                "season_pack_seed_ratio".to_string(),
+                "season_pack_seed_time_minutes".to_string(),
+            ]);
         columns
             .entry("rule_sets".to_string())
             .or_default()
@@ -1259,6 +1266,14 @@ mod tests {
             .extend([
                 "source_provider_id".to_string(),
                 "source_provider_name".to_string(),
+                // Resolved seeding goals (migration 0162).
+                "seeding_profile_id".to_string(),
+                "seed_goal_ratio".to_string(),
+                "seed_goal_seconds".to_string(),
+                "seed_never_remove".to_string(),
+                "seed_goal_met_action".to_string(),
+                "seed_goal_source".to_string(),
+                "seed_info_hash".to_string(),
             ]);
         columns
             .entry("discovery_titles".to_string())

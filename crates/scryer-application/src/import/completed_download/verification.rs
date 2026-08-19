@@ -704,6 +704,7 @@ mod expected_episode_release_title_tests {
                 tracked_status: None,
                 tracked_status_messages: vec![],
                 tracked_match_type: None,
+                seeding: None,
             },
             completed_source: None,
             state: TrackedDownloadState::ImportPending,

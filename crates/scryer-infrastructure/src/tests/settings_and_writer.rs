@@ -594,6 +594,7 @@ async fn source_password_writes_are_encrypted_at_rest_sqlite() {
         source_password: Some("pending-secret".to_string()),
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
     };
     PendingReleaseRepository::insert_pending_release(&pending_store, &pending_release)
         .await

@@ -143,6 +143,7 @@ async fn seed_pending_release(
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
     };
     scryer_infrastructure::PendingReleaseStore::new(
         ctx.db.datastore(),
@@ -320,6 +321,7 @@ async fn pending_release_roundtrips_indexer_provenance() {
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
     };
     scryer_infrastructure::PendingReleaseStore::new(
         ctx.db.datastore(),

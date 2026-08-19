@@ -815,6 +815,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         },
         DownloadQueueItem {
             id: "queue-fallback".to_string(),
@@ -853,6 +854,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         },
         DownloadQueueItem {
             id: "queue-unrelated".to_string(),
@@ -891,6 +893,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         },
     ];
 

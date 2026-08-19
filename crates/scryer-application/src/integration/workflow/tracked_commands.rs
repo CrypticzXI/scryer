@@ -255,6 +255,14 @@ fn apply_tracked_download_queue_metadata(
     if item.facet.is_none() && tracked.facet.is_some() {
         item.facet.clone_from(&tracked.facet);
     }
+    // Same rule the tracker itself uses when a refresh arrives without one: a
+    // known observation is better than none, and a present one always wins.
+    // Without this a held torrent whose live row came back framed as a
+    // completed download would show no seeding progress even though the gate
+    // is acting on an observation it has.
+    if item.seeding.is_none() && tracked.client_item.seeding.is_some() {
+        item.seeding.clone_from(&tracked.client_item.seeding);
+    }
 }
 fn apply_tracked_download_activity_projection(
     item: &mut DownloadQueueItem,

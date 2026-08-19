@@ -483,6 +483,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // payload objects, four inputs, and two enums: query 119->121, mutation
     // 175->180, OBJECT 291->294, INPUT_OBJECT 158->162, ENUM 99->101, public
     // types 560->569.
+    // Queue seeding progress adds six nullable fields on DownloadQueueItemPayload
+    // and the enum behind one of them: ENUM 101->102, public types 569->570.
+    // Root-field and OBJECT counts are unchanged — the fields are additive on an
+    // existing type.
     assert_eq!(
         query_field_count, 121,
         "query fields: {query_field_names:?}"
@@ -492,10 +496,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 569);
+    assert_eq!(public_types.len(), 570);
     assert_eq!(kind_count("OBJECT"), 294);
     assert_eq!(kind_count("INPUT_OBJECT"), 162);
-    assert_eq!(kind_count("ENUM"), 101);
+    assert_eq!(kind_count("ENUM"), 102);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));

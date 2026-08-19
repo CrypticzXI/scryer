@@ -226,6 +226,7 @@ pub use app_usecase_integration::{
     DownloadQueuePollerOptions, start_download_queue_poller,
     start_download_queue_poller_with_options,
 };
+pub use app_usecase_integration::{DownloadSeedingState, derive_download_seeding_state};
 pub use app_usecase_post_processing::{PostProcessingContext, run_post_processing};
 pub use app_usecase_rss::RssSyncReport;
 #[cfg(test)]

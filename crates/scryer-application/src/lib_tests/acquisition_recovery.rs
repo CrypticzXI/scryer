@@ -218,6 +218,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             source_password: None,
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: Some(info_hash.to_string()),
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed standby");
@@ -557,6 +558,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             source_password: None,
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed standby");
@@ -2385,6 +2387,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
 
     app.run_convergence_cycle_once().await;
@@ -2590,6 +2593,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
 
     app.run_convergence_cycle_once().await;
@@ -3937,6 +3941,7 @@ async fn insert_pending_release_normalizes_source_password_flags() {
             raw,
             Some("2024-01-01T00:00:00Z"),
             None,
+            Default::default(),
         )
         .await;
 
@@ -4070,6 +4075,232 @@ async fn legacy_pending_release_real_password_is_preserved_on_grab() {
     );
 }
 
+/// Tracker minimums live in the indexer `extra` map, which the pending row does
+/// not persist. Migration 0163 gave `pending_releases` four columns for them so
+/// a delayed grab reaches the client with the same clamp inputs an immediate
+/// grab gets — park time reads them off `extra`, grab time reads them back off
+/// the row.
+#[tokio::test]
+async fn tracker_minimums_survive_the_pending_release_park_and_reach_the_grab() {
+    let release_title = "Tracker.Minimums.Movie.2024.1080p-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Tracker Minimums Movie",
+        2024,
+    )
+    .await;
+    let wanted = wanted_items
+        .store
+        .lock()
+        .await
+        .iter()
+        .find(|item| item.id == wanted_id)
+        .cloned()
+        .expect("wanted item should exist");
+
+    // Shaped like `indexer_adapter.rs` writes them, including the stringified
+    // attribute some Torznab proxies emit.
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("minimum_seed_ratio".to_string(), serde_json::json!(1.5));
+    extra.insert(
+        "minimum_seed_time_minutes".to_string(),
+        serde_json::json!(4320),
+    );
+    extra.insert("season_pack_seed_ratio".to_string(), serde_json::json!("2"));
+    extra.insert(
+        "season_pack_seed_time_minutes".to_string(),
+        serde_json::json!(10080),
+    );
+
+    app.insert_pending_release(
+        &wanted,
+        &title,
+        release_title,
+        Some("https://example.invalid/tracker-minimums.nzb"),
+        Some(DownloadSourceKind::NzbUrl),
+        Some(1_000),
+        1000,
+        None,
+        Some("test-indexer"),
+        None,
+        Some("tracker-minimums-guid"),
+        10,
+        None,
+        Some("2024-01-01T00:00:00Z"),
+        None,
+        crate::ReleaseSeedMinimums::from_release_extra(&extra),
+    )
+    .await;
+
+    let parked = pending_releases
+        .store
+        .lock()
+        .await
+        .iter()
+        .find(|release| release.release_guid.as_deref() == Some("tracker-minimums-guid"))
+        .cloned()
+        .expect("pending release should be parked");
+    assert_eq!(parked.seed_minimums.min_seed_ratio, Some(1.5));
+    assert_eq!(parked.seed_minimums.min_seed_time_minutes, Some(4320));
+    assert_eq!(parked.seed_minimums.season_pack_seed_ratio, Some(2.0));
+    assert_eq!(
+        parked.seed_minimums.season_pack_seed_time_minutes,
+        Some(10080)
+    );
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &parked.id)
+        .await
+        .expect("force grab pending release");
+    assert!(grabbed);
+
+    let submitted = download_client.submitted_seed_minimums.lock().await;
+    assert_eq!(submitted.as_slice(), &[parked.seed_minimums]);
+}
+
+/// Rows parked before migration 0163 read back with every minimum `NULL`. The
+/// grab must still go through — it simply falls back to the profile's own goals
+/// with no tracker clamp.
+#[tokio::test]
+async fn pending_releases_parked_before_the_minimums_migration_still_grab() {
+    let release_title = "Pre.Migration.Pending.Movie.2024.1080p-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Pre Migration Pending Movie",
+        2024,
+    )
+    .await;
+    // `pending_movie_release` mirrors the pre-0163 read-back shape: every
+    // minimum `None`.
+    let pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    assert_eq!(pending.seed_minimums, crate::ReleaseSeedMinimums::default());
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release");
+
+    assert!(grabbed);
+    assert_eq!(
+        download_client
+            .submitted_seed_minimums
+            .lock()
+            .await
+            .as_slice(),
+        &[crate::ReleaseSeedMinimums::default()]
+    );
+}
+
+/// A tracker that declares no minimum, or declares a nonsense one, must not
+/// park a clamp: zero and negative attributes are dropped rather than persisted
+/// as a goal of zero.
+#[tokio::test]
+async fn non_positive_or_absent_release_minimums_are_not_parked() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Junk Minimums Movie", 2024)
+            .await;
+    let wanted = wanted_items
+        .store
+        .lock()
+        .await
+        .iter()
+        .find(|item| item.id == wanted_id)
+        .cloned()
+        .expect("wanted item should exist");
+
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("minimum_seed_ratio".to_string(), serde_json::json!(0));
+    extra.insert(
+        "minimum_seed_time_minutes".to_string(),
+        serde_json::json!(-1),
+    );
+    // `season_pack_*` absent entirely.
+
+    app.insert_pending_release(
+        &wanted,
+        &title,
+        "Junk.Minimums.Movie.2024.1080p-GRP",
+        Some("https://example.invalid/junk-minimums.nzb"),
+        Some(DownloadSourceKind::NzbUrl),
+        Some(1_000),
+        1000,
+        None,
+        Some("test-indexer"),
+        None,
+        Some("junk-minimums-guid"),
+        10,
+        None,
+        Some("2024-01-01T00:00:00Z"),
+        None,
+        crate::ReleaseSeedMinimums::from_release_extra(&extra),
+    )
+    .await;
+
+    let parked = pending_releases
+        .store
+        .lock()
+        .await
+        .iter()
+        .find(|release| release.release_guid.as_deref() == Some("junk-minimums-guid"))
+        .cloned()
+        .expect("pending release should be parked");
+    assert_eq!(
+        parked.seed_minimums,
+        crate::ReleaseSeedMinimums::default(),
+        "non-positive and absent tracker attributes must not become goals"
+    );
+}
+
 #[tokio::test]
 async fn pending_release_submit_unavailable_records_pending_without_failed_signature() {
     let release_title = "Pending.Deferred.Movie.2024.1080p.WEB-DL-GRP";
@@ -4121,6 +4352,7 @@ async fn pending_release_submit_unavailable_records_pending_without_failed_signa
             source_password: None,
             published_at: Some(now),
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed pending release");
@@ -5312,6 +5544,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
 
     app.run_convergence_cycle_once().await;
@@ -5873,6 +6106,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             source_password: None,
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed standby");
@@ -5996,6 +6230,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
             source_password: None,
             published_at: None,
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed stale standby");
@@ -6277,6 +6512,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
             source_password: None,
             published_at: None,
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed stale standby");
@@ -7885,6 +8121,7 @@ async fn assert_pending_release_submit_decision(
             source_password: None,
             published_at: Some(now),
             info_hash: None,
+            seed_minimums: Default::default(),
         })
         .await
         .expect("seed pending release");

@@ -1528,6 +1528,7 @@ impl AppUseCase {
                     candidate.password_hint.as_deref(),
                     candidate.published_at.as_deref(),
                     candidate.extra.get("info_hash").and_then(|v| v.as_str()),
+                    crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
                 )
                 .await;
                 report.releases_held += 1;

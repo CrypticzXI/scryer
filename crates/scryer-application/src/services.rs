@@ -1347,6 +1347,7 @@ mod download_queue_snapshot_cache_tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 

@@ -1498,7 +1498,82 @@ impl ImportArtifactResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Torrent seeding state for one download-queue row.
+///
+/// The first block is **observed**: the download-client plugin reports it on
+/// every poll (`PluginDownloadItem::{can_remove, can_move_files, completed_at}`
+/// plus `PluginTorrentItem::{seed_ratio, seed_time_seconds, is_private,
+/// uploaded_bytes}`), and the download-client adapter copies it verbatim onto
+/// the queue item. Every field is `Option` because the clients differ wildly in
+/// what they expose, and each `None` is load-bearing: it means *unknown*, never
+/// `false` and never `true`.
+///
+/// The second block is **policy**: the seeding goals the grab was resolved
+/// under, frozen on the download-submission row at grab time and joined back
+/// onto the queue item during enrichment. They are not client state and are
+/// absent for downloads Scryer did not grab under a seeding profile.
+///
+/// `Eq` is deliberately not derived (and is dropped from `DownloadQueueItem`
+/// along with it): a seed ratio is a real number and only `PartialEq` is
+/// meaningful for it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DownloadSeedingSnapshot {
+    /// The client's own verdict on whether the seeding obligation is
+    /// discharged. Tri-state: `None` means this client cannot answer.
+    #[serde(default)]
+    pub can_remove: Option<bool>,
+    /// Whether the payload is complete and stable on disk. **Not** permission
+    /// to move it — that additionally requires seeding to be done.
+    #[serde(default)]
+    pub can_move_files: Option<bool>,
+    #[serde(default)]
+    pub seed_ratio: Option<f64>,
+    #[serde(default)]
+    pub seed_time_seconds: Option<i64>,
+    /// `Some(true)` arms the private-tracker rail. `None` is unknown, never
+    /// "public".
+    #[serde(default)]
+    pub is_private: Option<bool>,
+    #[serde(default)]
+    pub uploaded_bytes: Option<i64>,
+    /// When the payload finished downloading, RFC3339. The wall-clock fallback
+    /// for the time axis on clients with no seed-time counter.
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    /// Resolved ratio goal from the seeding profile this grab used.
+    #[serde(default)]
+    pub seed_goal_ratio: Option<f64>,
+    /// Resolved seed-time goal, in seconds.
+    #[serde(default)]
+    pub seed_goal_seconds: Option<i64>,
+    /// The profile said "seed forever"; this entry is never auto-removed.
+    #[serde(default)]
+    pub never_remove: bool,
+}
+
+impl DownloadSeedingSnapshot {
+    /// Whether anything here could only have come from a torrent.
+    ///
+    /// `can_remove` / `can_move_files` are reported by usenet clients too, so
+    /// they do not count; the torrent sub-object fields and the resolved goals
+    /// do.
+    pub fn has_torrent_signal(&self) -> bool {
+        self.seed_ratio.is_some()
+            || self.seed_time_seconds.is_some()
+            || self.is_private.is_some()
+            || self.uploaded_bytes.is_some()
+            || self.seed_goal_ratio.is_some()
+            || self.seed_goal_seconds.is_some()
+            || self.never_remove
+    }
+
+    /// Whether the client reported anything at all worth carrying.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DownloadQueueItem {
     pub id: String,
     pub title_id: Option<String>,
@@ -1554,6 +1629,11 @@ pub struct DownloadQueueItem {
     /// How the title was resolved for tracking.
     #[serde(default)]
     pub tracked_match_type: Option<TitleMatchType>,
+    /// Torrent seeding observation from the latest client poll, plus the goals
+    /// the grab resolved to. `None` for usenet and for clients that report
+    /// nothing.
+    #[serde(default)]
+    pub seeding: Option<DownloadSeedingSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -3021,7 +3101,9 @@ pub struct JobNextRunUpdatedEventData {
     pub next_run_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable here: the queue item carries an observed seed ratio,
+/// which is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DownloadQueueItemUpsertedEventData {
     pub item: DownloadQueueItem,
 }
@@ -3046,7 +3128,10 @@ pub struct DownloadIgnoredEventData {
     pub source_title: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable: the download-queue payload carries an observed seed
+/// ratio (`f64`). Nothing keys a map or set on an event payload, so `PartialEq`
+/// is the whole requirement.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
     MediaRequestSubmitted(MediaRequestSubmittedEventData),
@@ -3090,7 +3175,9 @@ pub enum DomainEventPayload {
     JobRunCompleted(JobRunCompletedEventData),
     JobRunFailed(JobRunFailedEventData),
     JobNextRunUpdated(JobNextRunUpdatedEventData),
-    DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData),
+    /// Boxed: this payload embeds a whole `DownloadQueueItem` and would
+    /// otherwise set the size of every `DomainEventPayload` in the system.
+    DownloadQueueItemUpserted(Box<DownloadQueueItemUpsertedEventData>),
     DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData),
     DownloadIgnored(DownloadIgnoredEventData),
 }
@@ -3207,7 +3294,9 @@ impl DomainEventActorKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable: a download-queue payload carries an observed seed
+/// ratio (`f64`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DomainEvent {
     pub sequence: i64,
     pub event_id: String,
@@ -3224,7 +3313,9 @@ pub struct DomainEvent {
     pub payload: DomainEventPayload,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable: a download-queue payload carries an observed seed
+/// ratio (`f64`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NewDomainEvent {
     pub event_id: String,
     pub occurred_at: DateTime<Utc>,

@@ -588,6 +588,18 @@ pub struct DownloadQueueItemPayload {
     pub tracked_status_messages: Vec<String>,
     /// Match classification for the tracked download, or null when unmatched.
     pub tracked_match_type: Option<TitleMatchTypeValue>,
+    /// Seeding obligation state, or null when the item carries no torrent seeding information.
+    pub seeding_state: Option<DownloadSeedingStateValue>,
+    /// Share ratio observed by the download client, or null when it reports none.
+    pub seed_ratio: Option<f64>,
+    /// Share ratio this download was grabbed under, or null when no profile applied.
+    pub seed_ratio_goal: Option<f64>,
+    /// Seconds spent seeding as reported by the client, or null when it has no counter.
+    pub seed_time_seconds: Option<Long>,
+    /// Seeding time in seconds this download was grabbed under, or null when no profile applied.
+    pub seed_time_goal_seconds: Option<Long>,
+    /// Whether the torrent's metainfo carries the private flag; null when the client cannot say.
+    pub is_private: Option<bool>,
 }
 
 #[derive(SimpleObject, Clone)]

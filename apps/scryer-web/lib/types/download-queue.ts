@@ -49,6 +49,13 @@ export type TrackedDownloadState =
 
 export type TrackedDownloadStatus = "OK" | "WARNING" | "ERROR";
 
+export type DownloadSeedingState =
+  | "NONE"
+  | "SEEDING"
+  | "GOAL_MET"
+  | "HELD_PRIVATE"
+  | "NEVER_REMOVE";
+
 export type DownloadDisplayState =
   | "QUEUED"
   | "DOWNLOADING"
@@ -133,6 +140,14 @@ export type DownloadQueueItem = {
   trackedStatus: TrackedDownloadStatus | null;
   trackedStatusMessages: string[];
   trackedMatchType: TitleMatchType | null;
+  // Seeding progress. Optional because the queue documents select them only
+  // from the package that renders them; the payload always offers them.
+  seedingState?: DownloadSeedingState | null;
+  seedRatio?: number | null;
+  seedRatioGoal?: number | null;
+  seedTimeSeconds?: number | null;
+  seedTimeGoalSeconds?: number | null;
+  isPrivate?: boolean | null;
   queueScope: ReleaseQueueScope | null;
 };
 
