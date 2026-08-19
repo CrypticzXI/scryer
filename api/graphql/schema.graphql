@@ -10374,7 +10374,7 @@ type MutationRoot {
 		Facet, title identity, preview fingerprint, and optional idempotency key.
 		"""
 		input: MediaRenameApplyInput!
-	): MediaRenameApplyPayload!
+	): MediaRenameApplyPayload! @deprecated(reason: "use renameTitles, which runs the work as a job")
 	"""
 	Accept a background job to delete a media file, optionally removing it from disk.
 	"""
@@ -10401,7 +10401,7 @@ type MutationRoot {
 		Facet, preview fingerprint, and optional idempotency key.
 		"""
 		input: MediaRenameBulkApplyInput!
-	): MediaRenameApplyPayload!
+	): MediaRenameApplyPayload! @deprecated(reason: "use renameTitles, which runs the work as a job")
 	"""
 	Rehydrate accessible title metadata for one language and report cleared title counts.
 	"""

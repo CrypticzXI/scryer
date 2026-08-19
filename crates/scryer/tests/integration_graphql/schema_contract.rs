@@ -519,12 +519,16 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // key enum: mutation 181->182, OBJECT 299->300, INPUT_OBJECT 164->165,
     // public types 579->581. ENUM is unchanged: the value joins an enum that
     // already exists.
+    // Deprecating applyMediaRename and applyMediaRenameBulk in favour of that
+    // job drops both from this count: introspection omits deprecated fields
+    // unless asked for them, so the census measures live surface. The fields
+    // and their input types are still served: mutation 182->180.
     assert_eq!(
         query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 182,
+        mutation_field_count, 180,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);

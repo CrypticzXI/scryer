@@ -323,6 +323,7 @@ impl LibraryMutations {
     }
 
     /// Apply a title rename plan after validating its preview fingerprint and optional idempotency key.
+    #[graphql(deprecation = "use renameTitles, which runs the work as a job")]
     async fn apply_media_rename(
         &self,
         ctx: &Context<'_>,
@@ -425,6 +426,7 @@ impl LibraryMutations {
     }
 
     /// Apply a facet-wide rename plan after validating its preview fingerprint and optional idempotency key.
+    #[graphql(deprecation = "use renameTitles, which runs the work as a job")]
     async fn apply_media_rename_bulk(
         &self,
         ctx: &Context<'_>,

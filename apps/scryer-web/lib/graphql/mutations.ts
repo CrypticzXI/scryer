@@ -677,48 +677,6 @@ ${JOB_RUN_FIELDS}
   }
 }`;
 
-export const applyMediaRenameMutation = `mutation ApplyMediaRename($input: MediaRenameApplyInput!) {
-  applyMediaRename(input: $input) {
-    planFingerprint
-    total
-    applied
-    skipped
-    failed
-    items {
-      collectionId
-      seriesMovieLinkIds
-      currentPath
-      proposedPath
-      finalPath
-      writeAction
-      status
-      reasonCode
-      errorMessage
-    }
-  }
-}`;
-
-export const applyMediaRenameBulkMutation = `mutation ApplyMediaRenameBulk($input: MediaRenameBulkApplyInput!) {
-  applyMediaRenameBulk(input: $input) {
-    planFingerprint
-    total
-    applied
-    skipped
-    failed
-    items {
-      collectionId
-      seriesMovieLinkIds
-      currentPath
-      proposedPath
-      finalPath
-      writeAction
-      status
-      reasonCode
-      errorMessage
-    }
-  }
-}`;
-
 export const updateSubtitleSettingsMutation = `mutation UpdateSubtitleSettings($input: UpdateSubtitleSettingsInput!) {
   updateSubtitleSettings(input: $input) {${SUBTITLE_SETTINGS_FIELDS}
   }
