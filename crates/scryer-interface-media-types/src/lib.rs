@@ -5211,6 +5211,19 @@ pub struct MediaRenamePreviewInput {
 }
 
 #[derive(InputObject, Clone)]
+/// Scope and mode for previewing renames across several titles at once.
+pub struct MediaRenamePreviewBulkInput {
+    /// Facet shared by every requested title.
+    pub facet: MediaFacetValue,
+    /// Titles whose rename plans are returned, in the order supplied.
+    pub title_ids: Vec<ID>,
+    /// Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+    pub renamable_only: Option<bool>,
+    /// Maximum number of `items` returned across all plans; counts and fingerprints still describe the whole plan.
+    pub max_items: Option<i32>,
+}
+
+#[derive(InputObject, Clone)]
 /// Idempotent request to apply a title's rename plan.
 pub struct MediaRenameApplyInput {
     /// Facet containing the title.

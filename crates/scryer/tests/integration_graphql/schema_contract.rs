@@ -497,8 +497,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // payload, which add no types), and recently-imported enrichment adds
     // libraryId/sizeBytes to TitleHistoryEventPayload: ENUM 99->100,
     // public types 566->567. Root-field counts unchanged.
+    // Batched rename preview adds the mediaRenamePreviewBulk query root and its
+    // input object, reusing the existing plan payload: query 122->123,
+    // INPUT_OBJECT 159->160, public types 567->568.
     assert_eq!(
-        query_field_count, 122,
+        query_field_count, 123,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
@@ -506,9 +509,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 567);
+    assert_eq!(public_types.len(), 568);
     assert_eq!(kind_count("OBJECT"), 296);
-    assert_eq!(kind_count("INPUT_OBJECT"), 159);
+    assert_eq!(kind_count("INPUT_OBJECT"), 160);
     assert_eq!(kind_count("ENUM"), 100);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

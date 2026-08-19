@@ -207,6 +207,13 @@ impl ShowRepository for ShowStore {
         get_collection_by_ordered_path_query(self.read_target(), ordered_path).await
     }
 
+    async fn list_collections_by_ordered_paths(
+        &self,
+        ordered_paths: &[String],
+    ) -> AppResult<Vec<Collection>> {
+        list_collections_by_ordered_paths_query(self.read_target(), ordered_paths).await
+    }
+
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection> {
         SqlRuntime::run_in_transaction(&self.datastore, "create_collection", move |tx| {
             let collection = collection.clone();
@@ -1040,6 +1047,28 @@ async fn get_collection_by_ordered_path_query(
     row.as_ref().map(row_to_collection).transpose()
 }
 
+async fn list_collections_by_ordered_paths_query(
+    target: SqlTarget<'_>,
+    ordered_paths: &[String],
+) -> AppResult<Vec<Collection>> {
+    if ordered_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut collections = Vec::new();
+    for chunk in ordered_paths.chunks(SQL_BIND_CHUNK) {
+        let placeholders = bind_placeholders(chunk.len());
+        let sql = format!(
+            "SELECT {COLLECTION_COLUMNS} FROM collections WHERE ordered_path IN ({placeholders}) ORDER BY id ASC"
+        );
+        let args = chunk.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+        let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+        for row in &rows {
+            collections.push(row_to_collection(row)?);
+        }
+    }
+    Ok(collections)
+}
+
 async fn list_episodes_for_collection_query(
     target: SqlTarget<'_>,
     collection_id: &str,
@@ -1635,6 +1664,10 @@ fn bind_placeholders(count: usize) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+/// Binds per `IN (...)` lookup, kept at or below sqlite's historical 999
+/// variable ceiling and postgres' 65535-parameter wire limit.
+const SQL_BIND_CHUNK: usize = 900;
 
 fn row_to_scoped_external_id(row: &SqlRow) -> AppResult<ScopedExternalId> {
     let source_scope = row.opt_text("source_scope")?.unwrap_or_default();

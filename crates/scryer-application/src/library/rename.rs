@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -219,6 +219,7 @@ struct RenameRollbackOutcome {
     detail: String,
 }
 
+#[derive(Clone)]
 struct RenamePlanSettings {
     template: String,
     folder_template: String,
@@ -264,6 +265,57 @@ impl AppUseCase {
             settings,
         )
         .await
+    }
+
+    /// Previews each title's rename plan, resolving shared settings once.
+    ///
+    /// Titles keep their own plan (and their own fingerprint, which apply still
+    /// validates per title); batching only removes the per-request title load,
+    /// permission check, and settings reads that a preview-per-title fan-out
+    /// repeats for every title.
+    pub async fn preview_rename_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+        facet: MediaFacet,
+    ) -> AppResult<Vec<RenamePlan>> {
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
+        let settings = self.read_rename_plan_settings(&facet).await?;
+
+        let mut plans = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+            if title.facet != facet {
+                return Err(AppError::Validation(
+                    "requested facet does not match title facet".into(),
+                ));
+            }
+
+            plans.push(
+                self.build_rename_plan_for_titles(
+                    title.facet.clone(),
+                    std::slice::from_ref(&title),
+                    Some(title.id.clone()),
+                    settings.clone(),
+                )
+                .await?,
+            );
+        }
+        Ok(plans)
     }
 
     pub async fn preview_rename_for_facet(
@@ -779,7 +831,7 @@ impl AppUseCase {
         title_id: Option<String>,
         settings: RenamePlanSettings,
     ) -> AppResult<RenamePlan> {
-        let mut planned_targets = HashSet::new();
+        let mut planning = RenamePlanningState::default();
         let mut items = Vec::new();
         for title in titles {
             let mut title_items = self
@@ -789,7 +841,7 @@ impl AppUseCase {
                     &settings.folder_template,
                     &settings.collision_policy,
                     &settings.missing_metadata_policy,
-                    &mut planned_targets,
+                    &mut planning,
                 )
                 .await?;
             items.append(&mut title_items);
@@ -812,7 +864,7 @@ impl AppUseCase {
         folder_template: &str,
         collision_policy: &RenameCollisionPolicy,
         missing_metadata_policy: &RenameMissingMetadataPolicy,
-        planned_targets: &mut HashSet<String>,
+        planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
         let import_paths = crate::resolve_import_paths(self, title).await?;
         let collections = self
@@ -830,53 +882,110 @@ impl AppUseCase {
             .into_iter()
             .filter(|file| file.role.is_primary())
             .collect::<Vec<_>>();
-
-        let items = match title.facet.clone() {
-            MediaFacet::Movie => {
-                let mut options = MovieRenamePlanOptions {
-                    media_root: &import_paths.media_root,
-                    folder_template,
-                    template,
-                    collision_policy,
-                    missing_metadata_policy,
-                    planned_targets,
-                };
-                build_movie_rename_plan_items(title, collections, media_files, &mut options)
-            }
+        let episodes = match title.facet {
+            MediaFacet::Movie => Vec::new(),
             MediaFacet::Series | MediaFacet::Anime => {
-                let episodes = self
-                    .services
+                self.services
                     .catalog
                     .shows
                     .list_episodes_for_title(&title.id)
-                    .await?;
-
-                build_series_rename_plan_items_from_media_files(
-                    title,
-                    collections,
-                    episodes,
-                    media_files,
-                    &import_paths.media_root,
-                    folder_template,
-                    &import_paths.season_folder_template,
-                    &import_paths.specials_folder_template,
-                    template,
-                    collision_policy,
-                    missing_metadata_policy,
-                    planned_targets,
-                )
+                    .await?
             }
         };
 
-        self.normalize_existing_rename_collisions(items).await
+        // Item building stats every source file and probes every destination,
+        // so it runs on the blocking pool instead of stalling a runtime worker
+        // for the whole title.
+        let items = {
+            let title = title.clone();
+            let template = template.to_string();
+            let folder_template = folder_template.to_string();
+            let collision_policy = collision_policy.clone();
+            let missing_metadata_policy = missing_metadata_policy.clone();
+            let import_paths = import_paths.clone();
+            let mut owned_planning = std::mem::take(planning);
+            let (built, returned_planning) = tokio::task::spawn_blocking(move || {
+                let items = match title.facet.clone() {
+                    MediaFacet::Movie => {
+                        let mut options = MovieRenamePlanOptions {
+                            media_root: &import_paths.media_root,
+                            folder_template: &folder_template,
+                            template: &template,
+                            collision_policy: &collision_policy,
+                            missing_metadata_policy: &missing_metadata_policy,
+                            planning: &mut owned_planning,
+                        };
+                        build_movie_rename_plan_items(&title, collections, media_files, &mut options)
+                    }
+                    MediaFacet::Series | MediaFacet::Anime => {
+                        build_series_rename_plan_items_from_media_files(
+                            &title,
+                            collections,
+                            episodes,
+                            media_files,
+                            &import_paths.media_root,
+                            &folder_template,
+                            &import_paths.season_folder_template,
+                            &import_paths.specials_folder_template,
+                            &template,
+                            &collision_policy,
+                            &missing_metadata_policy,
+                            &mut owned_planning,
+                        )
+                    }
+                };
+                (items, owned_planning)
+            })
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("rename plan build task failed to join: {error}"))
+            })?;
+            *planning = returned_planning;
+            built
+        };
+
+        self.normalize_existing_rename_collisions(items, planning)
+            .await
     }
 
     async fn normalize_existing_rename_collisions(
         &self,
         items: Vec<RenamePlanItem>,
+        planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
-        let mut collection_cache = HashMap::<String, Option<Collection>>::new();
-        let mut media_file_cache = HashMap::<String, Option<TitleMediaFile>>::new();
+        // One lookup per store for the whole title instead of two point queries
+        // per item; the destination probes were already memoized while building.
+        let lookup_paths = items
+            .iter()
+            .filter_map(|item| {
+                let proposed_path = item.proposed_path.as_ref()?;
+                (*proposed_path != item.current_path).then(|| proposed_path.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let media_file_cache = self
+            .services
+            .library
+            .media_files
+            .list_media_files_by_paths(&lookup_paths)
+            .await?
+            .into_iter()
+            .collect::<HashMap<String, TitleMediaFile>>();
+        let mut collection_cache = HashMap::<String, Collection>::new();
+        for collection in self
+            .services
+            .catalog
+            .shows
+            .list_collections_by_ordered_paths(&lookup_paths)
+            .await?
+        {
+            if let Some(ordered_path) = collection.ordered_path.clone() {
+                collection_cache.insert(ordered_path, collection);
+            }
+        }
+
         let mut out = Vec::with_capacity(items.len());
 
         for mut item in items {
@@ -890,32 +999,9 @@ impl AppUseCase {
                 continue;
             }
 
-            let destination_exists_on_disk = stored_path_to_path_buf(&proposed_path).exists();
-
-            let tracked_media_file = if let Some(existing) = media_file_cache.get(&proposed_path) {
-                existing.clone()
-            } else {
-                let loaded = self
-                    .services
-                    .library
-                    .media_files
-                    .get_media_file_by_path(&proposed_path)
-                    .await?;
-                media_file_cache.insert(proposed_path.clone(), loaded.clone());
-                loaded
-            };
-            let tracked_collection = if let Some(existing) = collection_cache.get(&proposed_path) {
-                existing.clone()
-            } else {
-                let loaded = self
-                    .services
-                    .catalog
-                    .shows
-                    .get_collection_by_ordered_path(&proposed_path)
-                    .await?;
-                collection_cache.insert(proposed_path.clone(), loaded.clone());
-                loaded
-            };
+            let destination_exists_on_disk = planning.destination_exists(&proposed_path);
+            let tracked_media_file = media_file_cache.get(&proposed_path);
+            let tracked_collection = collection_cache.get(&proposed_path);
 
             let tracked_media_conflict = tracked_media_file.as_ref().is_some_and(|media_file| {
                 item.media_file_id.as_deref() != Some(media_file.id.as_str())
@@ -1081,7 +1167,7 @@ struct MovieRenamePlanOptions<'a> {
     template: &'a str,
     collision_policy: &'a RenameCollisionPolicy,
     missing_metadata_policy: &'a RenameMissingMetadataPolicy,
-    planned_targets: &'a mut HashSet<String>,
+    planning: &'a mut RenamePlanningState,
 }
 
 const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
@@ -1631,6 +1717,35 @@ fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -
     Some(final_parent.to_path_buf())
 }
 
+/// Plan-wide state shared by every title in one preview.
+///
+/// `planned_targets` claims destinations so two files cannot plan onto the same
+/// path, and `destination_exists` memoizes the on-disk probe for each proposed
+/// path: item building and the collision-normalizing pass both need it, and on
+/// a network mount that stat is the most expensive thing the planner does.
+#[derive(Debug, Default)]
+pub(crate) struct RenamePlanningState {
+    planned_targets: HashSet<String>,
+    destination_exists: HashMap<String, bool>,
+}
+
+impl RenamePlanningState {
+    /// Claims `key` as a plan target, returning false when it is already taken.
+    fn claim_target(&mut self, key: String) -> bool {
+        self.planned_targets.insert(key)
+    }
+
+    fn destination_exists(&mut self, stored_path: &str) -> bool {
+        if let Some(probed) = self.destination_exists.get(stored_path) {
+            return *probed;
+        }
+        let exists = stored_path_to_path_buf(stored_path).exists();
+        self.destination_exists
+            .insert(stored_path.to_string(), exists);
+        exists
+    }
+}
+
 pub fn build_rename_plan_fingerprint(
     items: &[RenamePlanItem],
     template: &str,
@@ -2072,7 +2187,7 @@ fn finalize_rename_plan_item(
     target_parent: PathBuf,
     rendered: String,
     collision_policy: &RenameCollisionPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
     let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
     let proposed_path_key = rename_planning_path_key(&proposed_path_str);
@@ -2089,7 +2204,7 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if !planned_targets.insert(proposed_path_key.clone()) {
+    if !planning.claim_target(proposed_path_key.clone()) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -2100,8 +2215,7 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if proposed_path_key != current_path_key && stored_path_to_path_buf(&proposed_path_str).exists()
-    {
+    if proposed_path_key != current_path_key && planning.destination_exists(&proposed_path_str) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -2147,7 +2261,7 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> Vec<RenamePlanItem> {
     collections.sort_by(|left, right| left.id.cmp(&right.id));
 
@@ -2185,7 +2299,7 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
                 template,
                 collision_policy,
                 missing_metadata_policy,
-                planned_targets,
+                planning,
             )
         })
         .collect()
@@ -2240,7 +2354,7 @@ fn build_series_media_file_rename_plan_item(
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
     let source_item_ids = RenamePlanItemIds {
         collection_id: None,
@@ -2329,7 +2443,7 @@ fn build_series_media_file_rename_plan_item(
         target_parent,
         rendered,
         collision_policy,
-        planned_targets,
+        planning,
     )
 }
 
@@ -2675,7 +2789,7 @@ fn build_movie_rename_plan_item(
         target_parent,
         rendered,
         options.collision_policy,
-        options.planned_targets,
+        options.planning,
     )
 }
 

@@ -8246,6 +8246,28 @@ type MediaRenamePlanPayload {
 }
 
 """
+Scope and mode for previewing renames across several titles at once.
+"""
+input MediaRenamePreviewBulkInput {
+	"""
+	Facet shared by every requested title.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Titles whose rename plans are returned, in the order supplied.
+	"""
+	titleIds: [ID!]!
+	"""
+	Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+	"""
+	renamableOnly: Boolean
+	"""
+	Maximum number of `items` returned across all plans; counts and fingerprints still describe the whole plan.
+	"""
+	maxItems: Int
+}
+
+"""
 Scope and mode for previewing media file renames.
 """
 input MediaRenamePreviewInput {
@@ -12632,6 +12654,15 @@ type QueryRoot {
 		"""
 		input: MediaRenamePreviewInput!
 	): MediaRenamePlanPayload!
+	"""
+	Preview rename plans for several titles of one facet without changing files.
+	"""
+	mediaRenamePreviewBulk(
+		"""
+		Titles whose rename plans are returned, in the order supplied; no files are changed.
+		"""
+		input: MediaRenamePreviewBulkInput!
+	): [MediaRenamePlanPayload!]!
 	"""
 	Preview deleting all media files for one title without changing files.
 	"""

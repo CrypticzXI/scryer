@@ -51,6 +51,7 @@ impl StoreDatastore {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum SqlTarget<'a> {
     Sqlite(&'a SqlitePool),
     Postgres(&'a PgPool),

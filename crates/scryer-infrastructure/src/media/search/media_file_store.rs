@@ -10,6 +10,7 @@ use scryer_application::{
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 use serde_json::Value as JsonValue;
 
 use crate::queries::common::parse_utc_datetime;
@@ -1183,34 +1184,7 @@ impl MediaFileRepository for MediaFileStore {
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
         let dialect = dialect_for_datastore(&self.datastore);
-        #[cfg(windows)]
-        let (where_clause, args) = if file_path.starts_with("scryer-path-v1:") {
-            (
-                "mf.file_path = {}".to_string(),
-                vec![SqlArg::Text(file_path.to_string())],
-            )
-        } else {
-            let normalized_path = normalize_windows_plain_media_file_path_lookup(file_path);
-            (
-                "(
-                    mf.file_path = {}
-                    OR (
-                        mf.file_path NOT LIKE 'scryer-path-v1:%'
-                        AND lower(replace(mf.file_path, '/', '\\')) = {}
-                    )
-                )"
-                .to_string(),
-                vec![
-                    SqlArg::Text(file_path.to_string()),
-                    SqlArg::Text(normalized_path),
-                ],
-            )
-        };
-        #[cfg(not(windows))]
-        let (where_clause, args) = (
-            "mf.file_path = {}".to_string(),
-            vec![SqlArg::Text(file_path.to_string())],
-        );
+        let (where_clause, args) = media_file_path_predicate(file_path);
         let sql = format!(
             "SELECT {}
              FROM media_files mf
@@ -1219,6 +1193,48 @@ impl MediaFileRepository for MediaFileStore {
             media_file_select_columns(dialect, "NULL", "mf.role")
         );
         fetch_optional_media_file(self.datastore.read_exec(), &sql, &args).await
+    }
+
+    async fn list_media_files_by_paths(
+        &self,
+        file_paths: &[String],
+    ) -> AppResult<Vec<(String, TitleMediaFile)>> {
+        if file_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dialect = dialect_for_datastore(&self.datastore);
+        let mut media_files = Vec::new();
+        // Each path keeps the same predicate the single-path lookup uses, so
+        // Windows' stored-vs-plain path matching stays identical here.
+        for chunk in file_paths.chunks(MEDIA_FILE_PATH_LOOKUP_CHUNK) {
+            let mut predicates = Vec::with_capacity(chunk.len());
+            let mut args = Vec::new();
+            let mut requested_by_match_key = HashMap::with_capacity(chunk.len());
+            for file_path in chunk {
+                let (predicate, mut predicate_args) = media_file_path_predicate(file_path);
+                predicates.push(predicate);
+                args.append(&mut predicate_args);
+                requested_by_match_key
+                    .insert(media_file_path_match_key(file_path), file_path.clone());
+            }
+            let where_clause = predicates.join(" OR ");
+            let sql = format!(
+                "SELECT {}
+                 FROM media_files mf
+                 WHERE {where_clause}",
+                media_file_select_columns(dialect, "NULL", "mf.role")
+            );
+            for media_file in fetch_media_files(self.datastore.read_exec(), &sql, &args).await? {
+                // Attribute each row to the path the caller asked for, using the
+                // same equivalence the predicate above matched on.
+                if let Some(requested) =
+                    requested_by_match_key.get(&media_file_path_match_key(&media_file.file_path))
+                {
+                    media_files.push((requested.clone(), media_file));
+                }
+            }
+        }
+        Ok(media_files)
     }
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
@@ -1230,6 +1246,61 @@ impl MediaFileRepository for MediaFileStore {
         )
         .await?;
         Ok(())
+    }
+}
+
+/// Paths per batched lookup. Windows spends two binds per path, so the chunk
+/// stays well under sqlite's historical 999-variable ceiling.
+const MEDIA_FILE_PATH_LOOKUP_CHUNK: usize = 400;
+
+/// The key two paths share when [`media_file_path_predicate`] treats them as
+/// the same file, used to attribute batched rows back to a requested path.
+fn media_file_path_match_key(file_path: &str) -> String {
+    #[cfg(windows)]
+    {
+        if file_path.starts_with("scryer-path-v1:") {
+            return file_path.to_string();
+        }
+        normalize_windows_plain_media_file_path_lookup(file_path)
+    }
+    #[cfg(not(windows))]
+    {
+        file_path.to_string()
+    }
+}
+
+/// The `WHERE` fragment matching one stored media-file path, with its binds.
+fn media_file_path_predicate(file_path: &str) -> (String, Vec<SqlArg>) {
+    #[cfg(windows)]
+    {
+        if file_path.starts_with("scryer-path-v1:") {
+            return (
+                "mf.file_path = {}".to_string(),
+                vec![SqlArg::Text(file_path.to_string())],
+            );
+        }
+        let normalized_path = normalize_windows_plain_media_file_path_lookup(file_path);
+        (
+            "(
+                mf.file_path = {}
+                OR (
+                    mf.file_path NOT LIKE 'scryer-path-v1:%'
+                    AND lower(replace(mf.file_path, '/', '\\')) = {}
+                )
+            )"
+            .to_string(),
+            vec![
+                SqlArg::Text(file_path.to_string()),
+                SqlArg::Text(normalized_path),
+            ],
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        (
+            "mf.file_path = {}".to_string(),
+            vec![SqlArg::Text(file_path.to_string())],
+        )
     }
 }
 
