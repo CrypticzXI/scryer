@@ -2693,7 +2693,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     t,
     setGlobalStatus,
     recordCriticalCatalogMutation,
-    reloadTitles,
+    registerInteractiveJobRun,
     setSelectedTitleIds,
     batchFailureDetail,
     withFailureDetail,

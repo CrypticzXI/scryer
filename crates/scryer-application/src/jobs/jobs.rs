@@ -718,7 +718,7 @@ impl AppUseCase {
             return Ok(false);
         }
         match run.job_key {
-            JobKey::TitleDeletion => Ok(true),
+            JobKey::TitleDeletion | JobKey::TitleRename => Ok(true),
             JobKey::MediaFileDeletion | JobKey::RecycleBinRestore | JobKey::RecycleBinPurge => {
                 let Some((prefix, remainder)) = run.operation_type.split_once(':') else {
                     return Ok(false);
@@ -819,6 +819,7 @@ impl AppUseCase {
             && !matches!(
                 job_key,
                 JobKey::TitleDeletion
+                    | JobKey::TitleRename
                     | JobKey::MediaFileDeletion
                     | JobKey::RecycleBinRestore
                     | JobKey::RecycleBinPurge
@@ -1600,6 +1601,9 @@ impl AppUseCase {
             }
             JobKey::TitleDeletion => Err(AppError::Validation(
                 "title deletion jobs must be started from the title deletion mutation".into(),
+            )),
+            JobKey::TitleRename => Err(AppError::Validation(
+                "title rename jobs must be started from the rename mutation".into(),
             )),
             JobKey::MediaFileDeletion => Err(AppError::Validation(
                 "media file deletion jobs must be started from the media file deletion mutation"

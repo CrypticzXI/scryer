@@ -3134,3 +3134,340 @@ async fn first_library_id_in_plan(app: &AppUseCase, preview: &RenamePlan) -> Opt
     }
     None
 }
+
+// ── Rename as a background job ───────────────────────────────────────────────
+//
+// Renaming walks every file of every selected title and moves them on disk, so
+// it does not belong on a request. It runs as a job, and each title it touches
+// is locked for the duration so a second rename cannot start moving the same
+// files underneath the first.
+
+#[derive(Clone, Debug)]
+pub struct RenameTitlesJobAccepted {
+    pub job_run: crate::JobRun,
+    pub accepted_title_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameProgress {
+    status: String,
+    phase: String,
+    total: usize,
+    processed: usize,
+    succeeded: usize,
+    failed: usize,
+    files_renamed: usize,
+    current_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameSummary {
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+    files_renamed: usize,
+    failures: Vec<TitleRenameFailure>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameFailure {
+    title_id: String,
+    message: String,
+}
+
+/// The guard key reserving one title against concurrent renames.
+fn title_rename_guard_key(title_id: &str) -> String {
+    format!("title-rename:{title_id}")
+}
+
+impl AppUseCase {
+    /// Accepts a rename for the given titles and returns immediately.
+    ///
+    /// Every title is authorized and locked before the job starts, so a caller
+    /// either gets the whole set reserved or a clear failure naming the title
+    /// that is already being renamed.
+    pub async fn start_rename_titles_job(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+        facet: MediaFacet,
+    ) -> AppResult<RenameTitlesJobAccepted> {
+        if title_ids.is_empty() {
+            return Err(AppError::Validation(
+                "at least one title is required for renaming".into(),
+            ));
+        }
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
+
+        let mut seen = HashSet::new();
+        let mut titles = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            if !seen.insert(title_id.clone()) {
+                return Err(AppError::Validation(format!(
+                    "duplicate title id in rename request: {title_id}"
+                )));
+            }
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+            if title.facet != facet {
+                return Err(AppError::Validation(
+                    "requested facet does not match title facet".into(),
+                ));
+            }
+            titles.push(title);
+        }
+
+        // Hold a guard per title for the life of the job. Acquiring them all up
+        // front means a partially reserved set never starts moving files.
+        let mut guards = Vec::with_capacity(titles.len());
+        for title in &titles {
+            let guard = self
+                .runtime
+                .jobs
+                .interactive_operation_guards
+                .try_acquire(&title_rename_guard_key(&title.id))
+                .await
+                .ok_or_else(|| {
+                    AppError::Validation(format!("a rename is already running for {}", title.name))
+                })?;
+            guards.push(guard);
+        }
+
+        let accepted_title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let now = chrono::Utc::now();
+        let mut run = crate::JobRunRecord {
+            id: scryer_domain::Id::new().0,
+            job_key: crate::JobKey::TitleRename,
+            operation_type: format!("title_rename:{}", accepted_title_ids.len()),
+            status: crate::JobRunStatus::Running,
+            trigger_source: crate::JobTriggerSource::Manual,
+            actor_user_id: Some(actor.id.clone()),
+            progress_json: serde_json::to_string(&TitleRenameProgress {
+                status: crate::JobRunStatus::Running.as_str().to_string(),
+                phase: "queued".to_string(),
+                total: accepted_title_ids.len(),
+                processed: 0,
+                succeeded: 0,
+                failed: 0,
+                files_renamed: 0,
+                current_title: None,
+            })
+            .ok(),
+            summary_json: None,
+            summary_text: None,
+            error_text: None,
+            started_at: now,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        run = self.services.events.job_runs.create_job_run(&run).await?;
+        let run_payload = crate::JobRun::from_record(&run, None);
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(run_payload.clone())
+            .await;
+        let actor_event = crate::domain_events::DomainEventActor::from(actor);
+        let _ = self
+            .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                actor_event.clone(),
+                run.id.clone(),
+                DomainEventPayload::JobRunStarted(scryer_domain::JobRunStartedEventData {
+                    run_id: run.id.clone(),
+                    job_key: run.job_key.as_str().to_string(),
+                    operation_type: run.operation_type.clone(),
+                    trigger_source: run.trigger_source.as_str().to_string(),
+                }),
+            ))
+            .await;
+
+        let app = self.clone();
+        let job_actor = actor.clone();
+        tokio::spawn(async move {
+            app.run_rename_titles_job(run, job_actor, actor_event, titles, guards)
+                .await;
+        });
+
+        Ok(RenameTitlesJobAccepted {
+            job_run: run_payload,
+            accepted_title_ids,
+        })
+    }
+
+    async fn run_rename_titles_job(
+        &self,
+        mut run: crate::JobRunRecord,
+        actor: User,
+        actor_event: crate::domain_events::DomainEventActor,
+        titles: Vec<Title>,
+        _guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+    ) {
+        let total = titles.len();
+        let mut succeeded = 0usize;
+        let mut files_renamed = 0usize;
+        let mut failures = Vec::new();
+
+        for (index, title) in titles.iter().enumerate() {
+            let _ = self
+                .update_title_rename_progress(
+                    &mut run,
+                    TitleRenameProgress {
+                        status: crate::JobRunStatus::Running.as_str().to_string(),
+                        phase: "renaming".to_string(),
+                        total,
+                        processed: index,
+                        succeeded,
+                        failed: failures.len(),
+                        files_renamed,
+                        current_title: Some(title.name.clone()),
+                    },
+                )
+                .await;
+
+            // Each title is previewed and applied inside the job so the plan is
+            // built against what is on disk now, not what the caller saw.
+            let outcome = async {
+                let preview = self
+                    .preview_rename_for_title(&actor, &title.id, title.facet.clone())
+                    .await?;
+                let fingerprint = preview.fingerprint.clone();
+                self.apply_rename_for_title(&actor, &title.id, title.facet.clone(), &fingerprint)
+                    .await
+            }
+            .await;
+
+            match outcome {
+                Ok(result) => {
+                    succeeded += 1;
+                    files_renamed += result.applied;
+                }
+                Err(error) => failures.push(TitleRenameFailure {
+                    title_id: title.id.clone(),
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        let failed = failures.len();
+        let status = if succeeded == 0 && failed > 0 {
+            crate::JobRunStatus::Failed
+        } else if failed > 0 {
+            crate::JobRunStatus::Warning
+        } else {
+            crate::JobRunStatus::Completed
+        };
+        let summary_text = format!(
+            "Renamed {files_renamed} file(s) across {succeeded} title(s); {failed} failed."
+        );
+        let _ = self
+            .finish_title_rename_job(
+                run,
+                actor_event,
+                status,
+                summary_text,
+                TitleRenameSummary {
+                    total,
+                    succeeded,
+                    failed,
+                    files_renamed,
+                    failures,
+                },
+            )
+            .await;
+    }
+
+    async fn update_title_rename_progress(
+        &self,
+        run: &mut crate::JobRunRecord,
+        progress: TitleRenameProgress,
+    ) -> AppResult<()> {
+        run.progress_json = serde_json::to_string(&progress).ok();
+        run.updated_at = chrono::Utc::now();
+        let updated = self.services.events.job_runs.update_job_run(run).await?;
+        *run = updated.clone();
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(crate::JobRun::from_record(&updated, None))
+            .await;
+        Ok(())
+    }
+
+    async fn finish_title_rename_job(
+        &self,
+        mut run: crate::JobRunRecord,
+        actor: crate::domain_events::DomainEventActor,
+        status: crate::JobRunStatus,
+        summary_text: String,
+        summary: TitleRenameSummary,
+    ) -> AppResult<()> {
+        let completed_at = chrono::Utc::now();
+        run.status = status;
+        run.progress_json = Some(
+            serde_json::json!({
+                "status": status.as_str(),
+                "phase": "completed",
+                "total": summary.total,
+                "processed": summary.total,
+                "succeeded": summary.succeeded,
+                "failed": summary.failed,
+                "filesRenamed": summary.files_renamed,
+                "currentTitle": null,
+            })
+            .to_string(),
+        );
+        run.summary_text = Some(summary_text);
+        run.summary_json = serde_json::to_string(&summary).ok();
+        run.error_text =
+            (status == crate::JobRunStatus::Failed).then(|| "all title renames failed".to_string());
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+        let updated = self.services.events.job_runs.update_job_run(&run).await?;
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(crate::JobRun::from_record(&updated, None))
+            .await;
+        let payload = if status == crate::JobRunStatus::Failed {
+            DomainEventPayload::JobRunFailed(scryer_domain::JobRunFailedEventData {
+                run_id: updated.id.clone(),
+                job_key: updated.job_key.as_str().to_string(),
+                error_text: updated.error_text.clone(),
+            })
+        } else {
+            DomainEventPayload::JobRunCompleted(scryer_domain::JobRunCompletedEventData {
+                run_id: updated.id.clone(),
+                job_key: updated.job_key.as_str().to_string(),
+                summary_text: updated.summary_text.clone(),
+            })
+        };
+        let _ = self
+            .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                actor,
+                updated.id.clone(),
+                payload,
+            ))
+            .await;
+        Ok(())
+    }
+}

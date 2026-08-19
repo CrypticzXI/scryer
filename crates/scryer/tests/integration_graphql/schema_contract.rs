@@ -514,18 +514,23 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Batched rename preview adds the mediaRenamePreviewBulk query root and its
     // input object, reusing the existing plan payload: query 124->125,
     // INPUT_OBJECT 163->164, public types 578->579.
+    // Renaming as a background job adds the renameTitles mutation root, its
+    // input object and payload, and a TITLE_RENAME value on the existing job
+    // key enum: mutation 181->182, OBJECT 299->300, INPUT_OBJECT 164->165,
+    // public types 579->581. ENUM is unchanged: the value joins an enum that
+    // already exists.
     assert_eq!(
         query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 181,
+        mutation_field_count, 182,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 579);
-    assert_eq!(kind_count("OBJECT"), 299);
-    assert_eq!(kind_count("INPUT_OBJECT"), 164);
+    assert_eq!(public_types.len(), 581);
+    assert_eq!(kind_count("OBJECT"), 300);
+    assert_eq!(kind_count("INPUT_OBJECT"), 165);
     assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

@@ -1,12 +1,13 @@
 import * as React from "react";
 import type { Client } from "urql";
-import { applyMediaRenameMutation } from "@/lib/graphql/mutations";
+import { renameTitlesMutation } from "@/lib/graphql/mutations";
 import {
   mediaRenamePreviewBulkQuery,
   mediaRenamePreviewQuery,
 } from "@/lib/graphql/queries";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
-import type { TitleRecord } from "@/lib/types";
+import type { JobRun, TitleRecord } from "@/lib/types";
+import { normalizeJobRun } from "@/lib/utils/job-runs";
 import type { Translate } from "@/components/root/types";
 import type { SetGlobalStatus } from "@/lib/context/global-status-context";
 
@@ -23,7 +24,7 @@ type UseBulkRenameArgs = {
   t: Translate;
   setGlobalStatus: SetGlobalStatus;
   recordCriticalCatalogMutation: () => void;
-  reloadTitles: () => Promise<TitleRecord[] | null>;
+  registerInteractiveJobRun: (run: JobRun) => void;
   setSelectedTitleIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   batchFailureDetail: (error: unknown) => string | null;
   withFailureDetail: (message: string, detail: string | null) => string;
@@ -46,7 +47,7 @@ export function useBulkRename({
   t,
   setGlobalStatus,
   recordCriticalCatalogMutation,
-  reloadTitles,
+  registerInteractiveJobRun,
   setSelectedTitleIds,
   batchFailureDetail,
   withFailureDetail,
@@ -276,72 +277,60 @@ export function useBulkRename({
     setBulkActionBusy(true);
     try {
       recordCriticalCatalogMutation();
-      let appliedFiles = 0;
-      const succeededIds: string[] = [];
-      const failedIds: string[] = [];
-      let firstFailureDetail: string | null = null;
-
+      // Renaming moves every file of every selected title, so the request only
+      // starts the job. Each title stays locked against further renames until
+      // the job reaches it, and progress arrives through the job run.
+      const byFacet = new Map<string, TitleRecord[]>();
       for (const title of targets) {
-        const plan = bulkRenamePlansByTitleId[title.id];
+        const bucket = byFacet.get(title.facet);
+        if (bucket) {
+          bucket.push(title);
+        } else {
+          byFacet.set(title.facet, [title]);
+        }
+      }
+
+      let accepted = 0;
+      let firstFailureDetail: string | null = null;
+      for (const [facet, facetTitles] of byFacet) {
         try {
           const result = await client
             .mutation<{
-              applyMediaRename: {
-                applied: number;
-                skipped: number;
-                failed: number;
+              renameTitles: {
+                acceptedTitleIds: string[];
+                jobRun?: unknown;
               };
-            }>(applyMediaRenameMutation, {
-              input: {
-                facet: title.facet,
-                titleId: title.id,
-                fingerprint: plan.fingerprint,
-              },
+            }>(renameTitlesMutation, {
+              input: { facet, titleIds: facetTitles.map((title) => title.id) },
             })
             .toPromise();
           if (result.error) {
             throw result.error;
           }
-          const payload = result.data?.applyMediaRename;
-          appliedFiles += payload?.applied ?? 0;
-          if ((payload?.failed ?? 0) > 0) {
-            failedIds.push(title.id);
-          } else {
-            succeededIds.push(title.id);
+          accepted += result.data?.renameTitles.acceptedTitleIds.length ?? 0;
+          const run = normalizeJobRun(result.data?.renameTitles.jobRun);
+          if (run) {
+            registerInteractiveJobRun(run);
           }
         } catch (error) {
-          failedIds.push(title.id);
           firstFailureDetail ??= batchFailureDetail(error);
         }
       }
 
-      await reloadTitles();
-      setSelectedTitleIds(new Set(failedIds));
+      setSelectedTitleIds(new Set());
       closeBulkRenameDialog();
 
-      if (succeededIds.length === 0) {
+      if (accepted === 0) {
         setGlobalStatus(
           withFailureDetail(t("status.bulkRenameFailed"), firstFailureDetail),
         );
         return;
       }
-      if (failedIds.length > 0) {
-        setGlobalStatus(
-          withFailureDetail(
-            t("status.bulkRenamePartial", {
-              count: succeededIds.length,
-              failed: failedIds.length,
-            }),
-            firstFailureDetail,
-          ),
-        );
-        return;
-      }
       setGlobalStatus(
-        t("status.bulkRenameSuccess", {
-          files: appliedFiles,
-          count: succeededIds.length,
-        }),
+        withFailureDetail(
+          t("status.bulkRenameQueued", { count: accepted }),
+          firstFailureDetail,
+        ),
       );
     } catch (error) {
       setGlobalStatus(
@@ -360,7 +349,7 @@ export function useBulkRename({
     client,
     closeBulkRenameDialog,
     recordCriticalCatalogMutation,
-    reloadTitles,
+    registerInteractiveJobRun,
     selectedTitles,
     setBulkActionBusy,
     setGlobalStatus,

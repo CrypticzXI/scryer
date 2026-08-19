@@ -2711,6 +2711,8 @@ const en: LocaleDictionary = {
   "status.bulkRenamePartial":
     "Renamed files for {{count}} titles; {{failed}} failed.",
   "status.bulkRenameFailed": "Failed to rename selected titles.",
+  "status.bulkRenameQueued":
+    "Renaming {{count}} titles in the background; progress appears in Activity.",
   "status.bulkRenameForbidden":
     "You do not have permission to rename titles in every selected library.",
   "status.titleMatchUpdated": "Updated match for {{name}}.",

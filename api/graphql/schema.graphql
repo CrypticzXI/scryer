@@ -7023,6 +7023,10 @@ enum JobKeyValue {
 	"""
 	TITLE_DELETION
 	"""
+	Title rename.
+	"""
+	TITLE_RENAME
+	"""
 	Media-file deletion.
 	"""
 	MEDIA_FILE_DELETION
@@ -10380,6 +10384,15 @@ type MutationRoot {
 		"""
 		input: DeleteMediaFileInput!
 	): DeleteMediaFilePayload!
+	"""
+	Start a background job renaming the files of the given titles.
+	"""
+	renameTitles(
+		"""
+		Facet and titles whose files are renamed; the work runs in the background.
+		"""
+		input: RenameTitlesInput!
+	): RenameTitlesPayload!
 	"""
 	Apply a facet-wide rename plan after validating its preview fingerprint and optional idempotency key.
 	"""
@@ -14426,6 +14439,34 @@ enum RenameMissingMetadataPolicyValue {
 	Use the title as fallback metadata.
 	"""
 	FALLBACK_TITLE
+}
+
+"""
+Titles whose files should be renamed in the background.
+"""
+input RenameTitlesInput {
+	"""
+	Facet shared by every requested title.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Titles to rename; each is locked until the job finishes with it.
+	"""
+	titleIds: [ID!]!
+}
+
+"""
+Accepted rename work and the job run tracking it.
+"""
+type RenameTitlesPayload {
+	"""
+	Background job run tracking the rename work.
+	"""
+	jobRun: JobRunPayload!
+	"""
+	Title IDs accepted for processing.
+	"""
+	acceptedTitleIds: [ID!]!
 }
 
 """

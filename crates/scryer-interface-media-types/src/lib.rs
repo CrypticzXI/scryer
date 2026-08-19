@@ -2382,6 +2382,8 @@ pub enum JobKeyValue {
     TitleImageCacheRefresh,
     /// Title deletion.
     TitleDeletion,
+    /// Title rename.
+    TitleRename,
     /// Media-file deletion.
     MediaFileDeletion,
     /// Recycle-bin restore.
@@ -5307,6 +5309,24 @@ pub struct MediaRenamePreviewInput {
     pub renamable_only: Option<bool>,
     /// Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
     pub max_items: Option<i32>,
+}
+
+#[derive(InputObject, Clone)]
+/// Titles whose files should be renamed in the background.
+pub struct RenameTitlesInput {
+    /// Facet shared by every requested title.
+    pub facet: MediaFacetValue,
+    /// Titles to rename; each is locked until the job finishes with it.
+    pub title_ids: Vec<ID>,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Accepted rename work and the job run tracking it.
+pub struct RenameTitlesPayload {
+    /// Background job run tracking the rename work.
+    pub job_run: JobRunPayload,
+    /// Title IDs accepted for processing.
+    pub accepted_title_ids: Vec<ID>,
 }
 
 #[derive(InputObject, Clone)]
