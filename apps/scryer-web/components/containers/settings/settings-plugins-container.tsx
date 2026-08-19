@@ -11,7 +11,11 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
-import { pluginsQuery, pluginInstallProgressSubscription } from "@/lib/graphql/queries";
+import {
+  pluginsQuery,
+  pluginAutoUpdateSettingsQuery,
+  pluginInstallProgressSubscription,
+} from "@/lib/graphql/queries";
 import {
   beginInstallPluginMutation,
   beginUpgradePluginMutation,
@@ -21,7 +25,11 @@ import {
   installUploadedPluginMutation,
   uninstallPluginMutation,
   togglePluginMutation,
+  updatePluginAutoUpdateSettingsMutation,
 } from "@/lib/graphql/mutations";
+import { useAuth } from "@/lib/hooks/use-auth";
+import { APP_PERMISSIONS, hasAnyAppPermission } from "@/lib/utils/permissions";
+import type { PluginAutoUpdateSettings } from "@/lib/types/settings";
 import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog-subscription";
 import { wsClient } from "@/lib/graphql/ws-client";
 import {
@@ -48,6 +56,14 @@ type PluginInstallProgressSubscriptionResult = {
   data?: {
     pluginInstallProgress?: PluginInstallProgressRecord;
   };
+};
+
+type PluginAutoUpdateSettingsQueryResult = {
+  pluginAutoUpdateSettings?: PluginAutoUpdateSettings | null;
+};
+
+type UpdatePluginAutoUpdateSettingsResult = {
+  updatePluginAutoUpdateSettings?: PluginAutoUpdateSettings | null;
 };
 
 function extractPluginMutationErrorMessage(error: unknown): string | null {
@@ -144,6 +160,8 @@ export function SettingsPluginsContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const { user } = useAuth();
+  const canManageConfig = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const [plugins, _setPlugins] = useState<RegistryPluginRecord[]>([]);
   const [catalogStatus, setCatalogStatus] = useState<PluginCatalogStatusRecord | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -156,6 +174,9 @@ export function SettingsPluginsContainer() {
   const [manualUploadRiskAccepted, setManualUploadRiskAccepted] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
+  const [autoUpdateLoading, setAutoUpdateLoading] = useState(true);
+  const [autoUpdateSaving, setAutoUpdateSaving] = useState(false);
 
   const setPlugins = useCallback((
     next:
@@ -295,6 +316,45 @@ export function SettingsPluginsContainer() {
   useEffect(() => {
     void refreshPlugins();
   }, [refreshPlugins]);
+
+  const fetchAutoUpdateSettings = useCallback(async () => {
+    setAutoUpdateLoading(true);
+    try {
+      const { data, error } = await client
+        .query<PluginAutoUpdateSettingsQueryResult>(pluginAutoUpdateSettingsQuery, {})
+        .toPromise();
+      if (error) throw error;
+      setAutoUpdateEnabled(data?.pluginAutoUpdateSettings?.enabled ?? false);
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    } finally {
+      setAutoUpdateLoading(false);
+    }
+  }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    void fetchAutoUpdateSettings();
+  }, [fetchAutoUpdateSettings]);
+
+  const updateAutoUpdateEnabled = useCallback(async (enabled: boolean) => {
+    if (!canManageConfig) return;
+    setAutoUpdateSaving(true);
+    try {
+      const { data, error } = await client
+        .mutation<UpdatePluginAutoUpdateSettingsResult>(
+          updatePluginAutoUpdateSettingsMutation,
+          { input: { enabled } },
+        )
+        .toPromise();
+      if (error) throw error;
+      setAutoUpdateEnabled(data?.updatePluginAutoUpdateSettings?.enabled ?? enabled);
+      setGlobalStatus(t("status.pluginAutoUpdateSettingsSaved"));
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setAutoUpdateSaving(false);
+    }
+  }, [canManageConfig, client, setGlobalStatus, t]);
 
   useProviderCatalogSubscription(() => {
     if (
@@ -733,6 +793,11 @@ export function SettingsPluginsContainer() {
         manualBusy={manualBusy}
         showManualInstall={showManualInstall}
         headerActionsTarget={headerActionsTarget}
+        autoUpdateEnabled={autoUpdateEnabled}
+        autoUpdateLoading={autoUpdateLoading}
+        autoUpdateSaving={autoUpdateSaving}
+        canManageAutoUpdate={canManageConfig}
+        onAutoUpdateEnabledChange={updateAutoUpdateEnabled}
         remoteActionsBlocked={{
           refresh: blockedRemoteActions.has("catalog_refresh"),
           install: blockedRemoteActions.has("install"),

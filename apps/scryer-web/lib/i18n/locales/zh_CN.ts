@@ -1114,6 +1114,11 @@ const zh_CN: LocaleDictionary = {
   "settings.plugins": "插件",
   "settings.pluginsSection": "管理插件",
   "settings.pluginsRefresh": "刷新注册表",
+  "settings.pluginAutoUpdateEnabled": "自动安装官方插件的补丁更新",
+  "settings.pluginAutoUpdateEnabledHelp":
+    "仅计划中的插件目录刷新会应用这些更新，且仅限官方插件的补丁版本（以及已安装版本的优化构建）。手动刷新目录和手动更新不受影响。",
+  "settings.pluginAutoUpdateEnabledReadonly":
+    "插件自动更新由可管理配置的用户控制。",
   "settings.host": "主机",
   "settings.port": "端口",
   "settings.baseUrl": "基础 URL",
@@ -1165,6 +1170,7 @@ const zh_CN: LocaleDictionary = {
   "status.pluginRevertedToBundled": "插件'{{name}}'已恢复为内置版本。",
   "status.pluginUninstalled": "插件'{{name}}'已卸载。",
   "status.pluginUpgraded": "插件'{{name}}'已升级到 v{{version}}。",
+  "status.pluginAutoUpdateSettingsSaved": "插件自动更新设置已保存。",
   "status.pluginToggled": "插件'{{name}}'已{{state}}。",
   "status.registryRefreshed": "插件注册表已刷新。",
   "form.namePlaceholder": "名称",

@@ -9586,6 +9586,15 @@ type MutationRoot {
 		input: UpdateRecycleBinSettingsInput!
 	): RecycleBinSettingsPayload!
 	"""
+	Saves the automatic official-plugin patch update setting after checking the system-settings permission.
+	"""
+	updatePluginAutoUpdateSettings(
+		"""
+		Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+		"""
+		input: UpdatePluginAutoUpdateSettingsInput!
+	): PluginAutoUpdateSettingsPayload!
+	"""
 	Saves auto-backup scheduling and key changes after checking the system-settings permission.
 	"""
 	updateAutoBackupSettings(
@@ -11389,6 +11398,16 @@ type PlexServerDiscoveryPayload {
 }
 
 """
+Automatic official-plugin patch update setting.
+"""
+type PluginAutoUpdateSettingsPayload {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
+}
+
+"""
 Plugin catalog refresh state, trust warnings, and blocked actions.
 """
 type PluginCatalogStatusPayload {
@@ -12951,6 +12970,10 @@ type QueryRoot {
 	Returns whether the recycle bin is enabled for the authenticated actor.
 	"""
 	recycleBinSettings: RecycleBinSettingsPayload!
+	"""
+	Returns whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	pluginAutoUpdateSettings: PluginAutoUpdateSettingsPayload!
 	"""
 	Returns auto-backup scheduling metadata without exposing the backup key.
 	"""
@@ -17974,6 +17997,16 @@ input UpdateNotificationSubscriptionInput {
 	Replacement enabled state, or null to leave it unchanged.
 	"""
 	isEnabled: Boolean
+}
+
+"""
+Automatic official-plugin patch update setting.
+"""
+input UpdatePluginAutoUpdateSettingsInput {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
 }
 
 """

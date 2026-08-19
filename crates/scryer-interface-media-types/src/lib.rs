@@ -4270,6 +4270,13 @@ pub struct RecycleBinSettingsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+/// Automatic official-plugin patch update setting.
+pub struct PluginAutoUpdateSettingsPayload {
+    /// Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+    pub enabled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
 /// Acquisition worker enablement and polling or convergence limits.
 pub struct AcquisitionSettingsPayload {
     /// Whether automatic acquisition is enabled.
@@ -5755,6 +5762,13 @@ pub struct UpdateSubtitleSettingsInput {
 /// Recycle-bin enablement setting.
 pub struct UpdateRecycleBinSettingsInput {
     /// Whether deleted media is retained in the recycle bin.
+    pub enabled: bool,
+}
+
+#[derive(InputObject, Clone)]
+/// Automatic official-plugin patch update setting.
+pub struct UpdatePluginAutoUpdateSettingsInput {
+    /// Whether the scheduled plugin catalog refresh installs official patch updates automatically.
     pub enabled: bool,
 }
 

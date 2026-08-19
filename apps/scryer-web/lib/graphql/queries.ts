@@ -3066,6 +3066,12 @@ export const recycleBinSettingsQuery = `query RecycleBinSettings {
   }
 }`;
 
+export const pluginAutoUpdateSettingsQuery = `query PluginAutoUpdateSettings {
+  pluginAutoUpdateSettings {
+    enabled
+  }
+}`;
+
 export const recycledItemsQuery = `query RecycledItems($libraryIds: [ID!]) {
   recycledItems(libraryIds: $libraryIds) {
     items {
