@@ -3614,11 +3614,7 @@ export const dashboardOverviewQuery = `query DashboardOverview($activityWindowHo
     username
   }
   navigationBadgeCounts {
-    pendingImportCounts {
-      movie
-      series
-      anime
-    }
+    activityImportCount
     pendingMediaRequestCounts {
       movie
       series
@@ -3722,53 +3718,6 @@ export const dashboardRecentImportsQuery = `query DashboardRecentImports($limit:
       quality
       sizeBytes
       occurredAt
-    }
-  }
-}`;
-
-// `pendingImports` is facet-scoped, so the cross-facet panel asks for all three
-// facets in one round trip and merges them client-side.
-export const dashboardPendingImportsQuery = `query DashboardPendingImports($limit: Int!) {
-  movie: pendingImports(facet: MOVIE, status: PENDING, limit: $limit) {
-    totalCount
-    items {
-      id
-      libraryId
-      facet
-      displayName
-      path
-      reason
-      reasonClass
-      sizeBytes
-      createdAt
-    }
-  }
-  series: pendingImports(facet: SERIES, status: PENDING, limit: $limit) {
-    totalCount
-    items {
-      id
-      libraryId
-      facet
-      displayName
-      path
-      reason
-      reasonClass
-      sizeBytes
-      createdAt
-    }
-  }
-  anime: pendingImports(facet: ANIME, status: PENDING, limit: $limit) {
-    totalCount
-    items {
-      id
-      libraryId
-      facet
-      displayName
-      path
-      reason
-      reasonClass
-      sizeBytes
-      createdAt
     }
   }
 }`;

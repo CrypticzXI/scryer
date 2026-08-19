@@ -58,7 +58,8 @@ export type DashboardStorageRoot = {
 export type DashboardOverview = {
   username: string | null;
   pendingRequestCount: number;
-  pendingImportCount: number;
+  /** Items in the Activity → Imports list: downloads that could not auto-import. */
+  activityImportCount: number;
   library: {
     movies: number;
     series: number;
@@ -97,24 +98,6 @@ export type DashboardRequestLibrary = {
   facet: Facet;
   qualityProfileId: string | null;
   requestQualityProfileDefaultId: string | null;
-};
-
-export type DashboardPendingImportReasonClass =
-  | "UNMATCHED"
-  | "AMBIGUOUS"
-  | "QUALITY_UNKNOWN"
-  | "OTHER";
-
-export type DashboardPendingImport = {
-  id: string;
-  libraryId: string;
-  facet: Facet;
-  displayName: string;
-  path: string;
-  reason: string;
-  reasonClass: DashboardPendingImportReasonClass;
-  sizeBytes: number | null;
-  createdAt: string;
 };
 
 export type DashboardImportedItem = {

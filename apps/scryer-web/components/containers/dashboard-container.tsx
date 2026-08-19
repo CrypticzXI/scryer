@@ -15,16 +15,15 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   dashboardOverviewQuery,
-  dashboardPendingImportsQuery,
   dashboardPendingRequestsQuery,
   dashboardRecentImportsQuery,
+  downloadImportQuery,
   downloadQueuePageQuery,
 } from "@/lib/graphql/queries";
 import { usePluginManagement } from "@/lib/hooks/use-plugin-management";
 import type {
   DashboardImportedItem,
   DashboardOverview,
-  DashboardPendingImport,
   DashboardPluginUpdate,
   DashboardRequest,
   DashboardRequestLibrary,
@@ -57,10 +56,10 @@ export function DashboardContainer() {
   const [requestLibraries, setRequestLibraries] = React.useState<
     DashboardRequestLibrary[]
   >([]);
-  const [pendingImports, setPendingImports] = React.useState<
-    DashboardPendingImport[]
-  >([]);
-  const [pendingImportTotal, setPendingImportTotal] = React.useState(0);
+  const [importActivity, setImportActivity] = React.useState<DownloadQueueItem[]>(
+    [],
+  );
+  const [importActivityTotal, setImportActivityTotal] = React.useState(0);
   const [recentImports, setRecentImports] = React.useState<DashboardImportedItem[]>(
     [],
   );
@@ -119,7 +118,7 @@ export function DashboardContainer() {
     setOverview({
       username: data?.me?.username ?? null,
       pendingRequestCount: sumFacetCounts(badges?.pendingMediaRequestCounts),
-      pendingImportCount: sumFacetCounts(badges?.pendingImportCounts),
+      activityImportCount: badges?.activityImportCount ?? 0,
       library: {
         movies: health?.titlesMovie ?? 0,
         series: health?.titlesSeries ?? 0,
@@ -152,27 +151,28 @@ export function DashboardContainer() {
     setRequestLibraries((data?.libraries ?? []) as DashboardRequestLibrary[]);
   }, [client]);
 
-  const refreshPendingImports = React.useCallback(async () => {
+  // The panel mirrors Activity → Imports: downloads that could not be
+  // auto-imported, in the same list the nav badge counts.
+  const refreshImportActivity = React.useCallback(async () => {
     const { data, error } = await client
-      .query(dashboardPendingImportsQuery, { limit: PREVIEW_FETCH_LIMIT })
+      .query(downloadImportQuery, {
+        limit: PREVIEW_FETCH_LIMIT,
+        offset: 0,
+        filter: "ALL",
+      })
       .toPromise();
     if (error) throw error;
 
-    const merged = [
-      ...((data?.movie?.items ?? []) as DashboardPendingImport[]),
-      ...((data?.series?.items ?? []) as DashboardPendingImport[]),
-      ...((data?.anime?.items ?? []) as DashboardPendingImport[]),
-    ];
-    setPendingImports(
-      merged
-        .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
-        .slice(0, PREVIEW_FETCH_LIMIT),
+    const items = (data?.downloadImport?.items ?? []) as DownloadQueueItem[];
+    // Oldest first: the download that has been stuck longest leads.
+    setImportActivity(
+      [...items].sort(
+        (left, right) =>
+          Date.parse(left.queuedAt ?? left.lastUpdatedAt ?? "") -
+          Date.parse(right.queuedAt ?? right.lastUpdatedAt ?? ""),
+      ),
     );
-    setPendingImportTotal(
-      (data?.movie?.totalCount ?? 0) +
-        (data?.series?.totalCount ?? 0) +
-        (data?.anime?.totalCount ?? 0),
-    );
+    setImportActivityTotal(data?.downloadImport?.totalCount ?? 0);
   }, [client]);
 
   const refreshRecentImports = React.useCallback(async () => {
@@ -208,7 +208,7 @@ export function DashboardContainer() {
       await Promise.all([
         refreshOverview(),
         refreshRequests(),
-        refreshPendingImports(),
+        refreshImportActivity(),
         refreshRecentImports(),
         refreshQueue(),
       ]);
@@ -219,7 +219,7 @@ export function DashboardContainer() {
     }
   }, [
     refreshOverview,
-    refreshPendingImports,
+    refreshImportActivity,
     refreshQueue,
     refreshRecentImports,
     refreshRequests,
@@ -353,8 +353,8 @@ export function DashboardContainer() {
       loading={loading}
       overview={overview}
       requests={requests}
-      pendingImports={pendingImports}
-      pendingImportTotal={pendingImportTotal}
+      importActivity={importActivity}
+      importActivityTotal={importActivityTotal}
       recentImports={recentImports}
       queueItems={queueItems}
       queueTotal={queueTotal}

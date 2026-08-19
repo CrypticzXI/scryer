@@ -4,8 +4,6 @@ import {
   Clock,
   Database,
   Download,
-  FileQuestion,
-  FileSearch,
   FileVideo,
   FolderInput,
   HardDrive,
@@ -52,7 +50,6 @@ import type {
   DashboardImportedItem,
   DashboardIndexerStat,
   DashboardOverview,
-  DashboardPendingImport,
   DashboardPluginUpdate,
   DashboardRequest,
   DashboardStorageRoot,
@@ -87,8 +84,8 @@ export type DashboardViewProps = {
   loading: boolean;
   overview: DashboardOverview | null;
   requests: DashboardRequest[];
-  pendingImports: DashboardPendingImport[];
-  pendingImportTotal: number;
+  importActivity: DownloadQueueItem[];
+  importActivityTotal: number;
   recentImports: DashboardImportedItem[];
   queueItems: DownloadQueueItem[];
   queueTotal: number;
@@ -105,8 +102,8 @@ export function DashboardView({
   loading,
   overview,
   requests,
-  pendingImports,
-  pendingImportTotal,
+  importActivity,
+  importActivityTotal,
   recentImports,
   queueItems,
   queueTotal,
@@ -132,7 +129,7 @@ export function DashboardView({
       <DashboardHeader
         username={overview?.username ?? null}
         requestCount={overview?.pendingRequestCount ?? 0}
-        importCount={overview?.pendingImportCount ?? 0}
+        importCount={overview?.activityImportCount ?? 0}
         pluginCount={pluginUpdates.length}
         indexerErrorCount={indexerHealth.erroring}
       />
@@ -155,8 +152,8 @@ export function DashboardView({
           onDismiss={onDismissRequest}
         />
         <ManualImportsPanel
-          imports={pendingImports}
-          totalCount={pendingImportTotal}
+          items={importActivity}
+          totalCount={importActivityTotal}
         />
         <RecentlyImportedPanel items={recentImports} />
       </div>
@@ -591,123 +588,90 @@ function RequestPoster({ request }: { request: DashboardRequest }) {
 
 // ── Manual imports ──────────────────────────────────────────────────────────
 
-const REASON_PRESENTATION: Record<
-  DashboardPendingImport["reasonClass"],
-  { labelKey: string; className: string; icon: typeof FileVideo }
-> = {
-  UNMATCHED: {
-    labelKey: "dashboard.reasonUnmatched",
-    className: "text-[var(--scry-danger-text)]",
-    icon: FileQuestion,
-  },
-  AMBIGUOUS: {
-    labelKey: "dashboard.reasonAmbiguous",
-    className: "text-[var(--scry-warning-text)]",
-    icon: FileSearch,
-  },
-  QUALITY_UNKNOWN: {
-    labelKey: "dashboard.reasonQualityUnknown",
-    className: "text-[var(--scry-info-text)]",
-    icon: FileVideo,
-  },
-  OTHER: {
-    labelKey: "dashboard.reasonOther",
-    className: "text-[var(--scry-muted)]",
-    icon: FileVideo,
-  },
-};
-
 function ManualImportsPanel({
-  imports,
+  items,
   totalCount,
 }: {
-  imports: DashboardPendingImport[];
+  items: DownloadQueueItem[];
   totalCount: number;
 }) {
   const t = useTranslate();
-  // Pending imports are facet-scoped pages, so the panel link follows whichever
-  // facet has the most waiting items.
-  const busiestFacet = React.useMemo(() => busiestImportFacet(imports), [imports]);
-  const importsHref = importPathForFacet(busiestFacet);
 
   return (
     <DashboardPanel
       icon={FolderInput}
       title={t("dashboard.manualImports")}
       count={totalCount}
-      linkTo={importsHref}
+      linkTo="/activity/import"
       linkLabel={t("dashboard.viewAll")}
       bodyClassName={PREVIEW_PANE_CLASS}
     >
-      {imports.length === 0 ? (
+      {items.length === 0 ? (
         <DashboardPanelEmpty message={t("dashboard.emptyImports")} />
       ) : (
         <ul>
-          {imports.map((item) => {
-            const presentation = REASON_PRESENTATION[item.reasonClass];
-            const ReasonIcon = presentation.icon;
-            return (
-              <li
-                key={item.id}
-                className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-[7px] last:border-b-0"
-              >
-                <ReasonIcon
-                  className={cn("h-4 w-4 shrink-0", presentation.className)}
-                  aria-hidden="true"
-                />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span
-                    className="truncate font-[var(--font-code)] text-[11px] text-[var(--scry-ink2)]"
-                    title={item.path}
-                  >
-                    {item.displayName}
-                  </span>
-                  <span className="flex items-center gap-1.5 text-[11px]">
-                    <span className={presentation.className} title={item.reason}>
-                      {t(presentation.labelKey)}
-                    </span>
-                    <span className="text-[var(--scry-muted2)] tabular-nums">
-                      {formatBytes(item.sizeBytes)}
-                    </span>
-                  </span>
-                </span>
-                <AgeLabel isoDate={item.createdAt} />
-                <Link
-                  to={importPathForFacet(item.facet)}
-                  aria-label={t("dashboard.resolveImport")}
-                  title={t("dashboard.resolveImport")}
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.2)]"
-                >
-                  <WandSparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                </Link>
-              </li>
-            );
-          })}
+          {items.map((item) => (
+            <ImportActivityRow key={item.id} item={item} />
+          ))}
         </ul>
       )}
     </DashboardPanel>
   );
 }
 
-function busiestImportFacet(imports: DashboardPendingImport[]): Facet {
-  const counts = new Map<Facet, number>();
-  for (const item of imports) {
-    counts.set(item.facet, (counts.get(item.facet) ?? 0) + 1);
-  }
-  let busiest: Facet = "MOVIE";
-  let best = -1;
-  for (const [facet, count] of counts) {
-    if (count > best) {
-      busiest = facet;
-      best = count;
-    }
-  }
-  return busiest;
-}
+function ImportActivityRow({ item }: { item: DownloadQueueItem }) {
+  const t = useTranslate();
+  // The same derivation Activity → Imports uses, so the dashboard can never
+  // disagree with that page about what an import is doing or why it stopped.
+  const presentation = deriveQueueRowPresentation(item, t);
+  const failed =
+    item.attentionRequired ||
+    presentation.displayStateKey === "IMPORT_FAILED" ||
+    presentation.displayStateKey === "FAILED";
+  const blocked = presentation.displayStateKey === "IMPORT_BLOCKED";
+  const StateIcon = failed ? TriangleAlert : FileVideo;
+  const stateClass = failed
+    ? "text-[var(--scry-danger-text)]"
+    : blocked
+      ? "text-[var(--scry-warning-text)]"
+      : "text-[var(--scry-muted)]";
 
-function importPathForFacet(facet: Facet): string {
-  const viewId = facetById(facet)?.viewId ?? "movies";
-  return `/${viewId}/import`;
+  return (
+    <li className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-[7px] last:border-b-0">
+      <StateIcon
+        className={cn("h-4 w-4 shrink-0", stateClass)}
+        aria-hidden="true"
+      />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          className="truncate text-[12px] font-medium text-[var(--scry-ink2)]"
+          title={presentation.releaseTitle || presentation.displayTitle}
+        >
+          {presentation.displayTitle}
+        </span>
+        <span className="flex items-center gap-1.5 text-[11px]">
+          <span
+            className={stateClass}
+            title={presentation.failureReason || undefined}
+          >
+            {presentation.statusLabel}
+          </span>
+          <span className="text-[var(--scry-muted2)] tabular-nums">
+            {formatBytes(item.sizeBytes)}
+          </span>
+        </span>
+      </span>
+      <AgeLabel isoDate={item.queuedAt ?? item.lastUpdatedAt} />
+      <Link
+        to="/activity/import"
+        aria-label={t("dashboard.resolveImport")}
+        title={t("dashboard.resolveImport")}
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[rgba(var(--scry-accent-rgb),0.3)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)] transition-colors hover:bg-[rgba(var(--scry-accent-rgb),0.2)]"
+      >
+        <WandSparkles className="h-3.5 w-3.5" aria-hidden="true" />
+      </Link>
+    </li>
+  );
 }
 
 // ── Recently imported ───────────────────────────────────────────────────────
