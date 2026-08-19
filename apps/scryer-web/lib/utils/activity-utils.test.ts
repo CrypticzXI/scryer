@@ -52,7 +52,7 @@ function blockedItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueueI
     titleId: null,
     episodeId: null,
     titleName:
-      "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]",
+      "[Erai-raws].Yuki-sama.Kagami.no.Toki.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]",
     facet: "ANIME",
     isScryerOrigin: true,
     sourceProvider: null,

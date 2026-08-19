@@ -3,6 +3,7 @@ use super::lookup::{
 };
 use super::result_state::apply_import_result_with_completed;
 use super::*;
+use crate::import_workflow::import_completed_download_with_target_title;
 
 pub(crate) fn mark_importing(td: &mut TrackedDownload) {
     td.state = TrackedDownloadState::Importing;
@@ -44,38 +45,31 @@ async fn import_inner(
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
-    let completed = match resolve_completed_download_origin_for_import(
-        app,
-        &completed,
-        Some(&td.client_item),
-    )
-    .await
-    {
-        Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => completed,
-        Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
-        Ok(ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }) => {
-            block_completed_download_origin_conflict_for_manual_review(
-                app, &completed, reason, &detail,
-            )
-            .await;
-            td.state = TrackedDownloadState::ImportBlocked;
-            td.status = TrackedDownloadStatus::Warning;
-            td.status_messages = vec![format!(
-                "Download origin scope conflicts with the matched submission ({reason}). Manual confirmation required before import."
-            )];
-            return false;
-        }
-        Err(error) => {
-            tracing::warn!(
-                id = %td.id,
-                item_id = %td.client_item.download_client_item_id,
-                error = %error,
-                "import: completed download origin resolution failed, will retry"
-            );
-            td.state = TrackedDownloadState::ImportPending;
-            return false;
-        }
-    };
+    let (completed, release_evidence) =
+        match resolve_completed_download_origin_for_import(app, &completed, Some(&td.client_item))
+            .await
+        {
+            Ok(ResolvedCompletedDownloadOriginForImport::Ready {
+                completed,
+                release_evidence,
+            }) => (*completed, Some(release_evidence)),
+            Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => (completed, None),
+            Err(error) => {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    error = %error,
+                    "import: completed download origin resolution failed, will retry"
+                );
+                td.state = TrackedDownloadState::ImportPending;
+                td.status = TrackedDownloadStatus::Warning;
+                td.status_messages = vec![
+                    "Download origin could not be resolved yet; retrying automatically."
+                        .to_string(),
+                ];
+                return false;
+            }
+        };
 
     match crate::import_workflow::recent_download_submission_persistence_is_pending(app, &completed)
         .await
@@ -111,7 +105,29 @@ async fn import_inner(
     td.import_attempted = true;
 
     let import_actor = actor_for_tracked_download_import(app, actor, td).await;
-    match import_completed_download(app, &import_actor, &completed).await {
+    let target_title_id = tracked_import_target_title_id(td, release_evidence.as_ref());
+    let import = match (release_evidence.as_ref(), target_title_id.as_deref()) {
+        (Some(release_evidence), _) => {
+            import_completed_download_with_release_evidence(
+                app,
+                &import_actor,
+                &completed,
+                release_evidence,
+            )
+            .await
+        }
+        (None, Some(target_title_id)) => {
+            import_completed_download_with_target_title(
+                app,
+                &import_actor,
+                &completed,
+                target_title_id,
+            )
+            .await
+        }
+        (None, None) => import_completed_download(app, &import_actor, &completed).await,
+    };
+    match import {
         Ok(result) => {
             let success_after = total_successful_artifacts(app, td).await;
             let files_imported_this_pass = success_after.saturating_sub(success_before) as usize;
@@ -129,21 +145,68 @@ async fn import_inner(
                 result,
                 files_imported_this_pass,
                 Some(&completed),
+                release_evidence.as_ref(),
             )
             .await
         }
         Err(error) => {
+            // The pipeline itself erred before it could produce a result
+            // (repository/DB failure while queueing or resolving the attempt).
+            // That is an execution failure of an approved import, so it gets
+            // the same automatic re-attempt as a `Failed` result — Sonarr
+            // leaves the item in place and re-processes it on the next
+            // refresh; nothing here warrants a sticky manual-review block.
             tracing::warn!(
                 id = %td.id,
                 error = %error,
                 dest_dir = %completed.dest_dir,
-                "import: pipeline returned error"
+                "import: pipeline returned error; scheduling automatic retry"
             );
-            td.state = TrackedDownloadState::ImportBlocked;
-            td.status = TrackedDownloadStatus::Error;
-            td.status_messages = vec![format!("Import failed: {error}")];
+            td.schedule_import_execution_retry(Utc::now(), |attempts, next_retry_at| {
+                format!(
+                    "Import failed: {error} Retrying automatically (attempt {attempts}) at {}.",
+                    next_retry_at.to_rfc3339()
+                )
+            });
             false
         }
+    }
+}
+
+/// The title the import must land in for this tracked download.
+///
+/// A durable Scryer submission (the only release evidence
+/// `resolve_completed_download_origin_for_import` returns) is authoritative:
+/// its title drives target resolution and no separate target is passed. For a
+/// downloader observation — a parse match the completed-check proved, or an
+/// operator assignment — the tracked download's validated title is the target,
+/// so the import does not re-derive it from a context-free parse of the
+/// release name and land elsewhere.
+pub(super) fn tracked_import_target_title_id(
+    td: &TrackedDownload,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
+) -> Option<String> {
+    let tracked_title_id = td
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match release_evidence.and_then(crate::import_workflow::ReleaseEvidence::title_id) {
+        Some(submission_title_id) => {
+            if let Some(tracked_title_id) = tracked_title_id
+                && tracked_title_id != submission_title_id
+            {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    tracked_title_id,
+                    submission_title_id,
+                    "import: tracked download title disagrees with the durable Scryer submission; importing into the submission title"
+                );
+            }
+            None
+        }
+        None => tracked_title_id.map(str::to_string),
     }
 }
 
@@ -254,7 +317,7 @@ pub(super) async fn resolve_completed_download_for_import(
     };
 
     if let Some(completed) = manual_completed {
-        let completed = prepare_completed_download_for_tracked_import(app, td, completed).await;
+        let completed = prepare_completed_download_for_tracked_import(app, td, *completed).await;
         td.completed_source = Some(completed.clone());
         return Some(completed);
     }

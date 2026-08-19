@@ -1392,12 +1392,12 @@ async fn bootstrap_application(
         tracing::warn!(error = %e, "failed to normalize routing settings on startup");
     }
     if let Err(e) = app_use_case
-        .refresh_owned_download_client_categories()
+        .refresh_download_client_category_admission()
         .await
     {
         tracing::warn!(
             error = %e,
-            "failed to build download-client category ownership snapshot on startup; unmanaged-download visibility will fail open"
+            "failed to build download-client category admission snapshot on startup; untracked observations will be deferred"
         );
     }
     let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
@@ -1630,6 +1630,10 @@ async fn bootstrap_application(
 
     let mut compressed_router = Router::new()
         .route("/health", get(health_handler))
+        // The splash router owns both health routes for the process lifetime
+        // (it never delegates them); this keeps the bare app router
+        // self-consistent for anything that mounts it directly.
+        .route("/health/ready", get(health_handler))
         .route(
             "/authless-client",
             get(authless_web_client_proof_handler)

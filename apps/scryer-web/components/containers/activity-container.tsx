@@ -39,6 +39,10 @@ import {
   downloadQueueItemIdentityKey,
   matchesImportStatuses,
 } from "@/lib/utils/download-queue";
+import {
+  type DirectMovieManualImportCandidate,
+  directMovieManualImportMappings,
+} from "@/lib/utils/manual-import-actions";
 
 const HISTORY_STATES = new Set(["completed", "failed", "import_pending", "importpending"]);
 type ActivityTab = ActivitySection;
@@ -458,12 +462,15 @@ export const ActivityContainer = memo(function ActivityContainer({
 
       // queueManualImport is selection-based: it takes a selectionId plus
       // per-candidate mappings, not the raw client/title identity. Open a
-      // selection first and import every candidate it reports.
+      // selection first and map its primary candidate.
       //
-      // Movies carry no episode or series-movie target, so each mapping is just
-      // its candidateId — both target fields on ManualImportCandidateMappingInput
-      // are optional. Series and anime never reach here; they open the dialog
-      // above so the user can map files to episodes.
+      // Movies carry no episode or series-movie target, so the mapping is just
+      // a candidateId — both target fields on ManualImportCandidateMappingInput
+      // are optional. A movie import lands exactly one file, so only the
+      // largest candidate is mapped; the server independently picks the primary
+      // among whatever is mapped and skips the rest. Series and anime never
+      // reach here; they open the dialog above so the user can map files to
+      // episodes.
       const selection = await executeBeginManualImportSelection({
         input: {
           clientId: item.clientId,
@@ -479,9 +486,8 @@ export const ActivityContainer = memo(function ActivityContainer({
       }
 
       const preview = selection.data?.beginManualImportSelection;
-      const files = (preview?.files ?? []).map((file: { candidateId: string }) => ({
-        candidateId: file.candidateId,
-      }));
+      const candidates: DirectMovieManualImportCandidate[] = preview?.files ?? [];
+      const files = directMovieManualImportMappings(candidates);
       if (!preview?.selectionId || files.length === 0) {
         setGlobalStatus(t("queue.manualImportFailed"));
         return;

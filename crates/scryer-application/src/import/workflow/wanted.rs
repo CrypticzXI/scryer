@@ -496,6 +496,7 @@ async fn execute_resolved_episode_import(
         match crate::upgrade::execute_upgrade(
             app,
             actor,
+            import_id,
             title,
             &upgrade_plan.primary_incumbent.media_file,
             source_video,

@@ -828,15 +828,15 @@ async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title()
     .await;
     set_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
-    let movie_dir = media_root.path().join("Redline (2010)");
+    let movie_dir = media_root.path().join("Emberline (2010)");
     std::fs::create_dir_all(&movie_dir).expect("create movie dir");
     let movie_file = movie_dir.join("Totally.Wrong.Name.2010.mkv");
     write_fake_media_file(&movie_file);
 
     let title = seed_series_title(
         &ctx,
-        "title-redline",
-        "Redline",
+        "title-emberline",
+        "Emberline",
         MediaFacet::Movie,
         media_root.path(),
         Some(&movie_dir),
@@ -883,7 +883,7 @@ async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title()
         scan_root: media_root.path().to_string_lossy().to_string(),
         item_path: movie_file.to_string_lossy().to_string(),
         display_name: "Totally.Wrong.Name.2010".to_string(),
-        query: "Redline".to_string(),
+        query: "Emberline".to_string(),
         year_hint: Some(2010),
         reason_code: "stale_duplicate_pending_import".to_string(),
         error_message: None,
@@ -903,7 +903,7 @@ async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title()
         .resolve_pending_import(
             &actor,
             &pending_id,
-            pending_import_title_request(MediaFacet::Movie, "Redline", "123456"),
+            pending_import_title_request(MediaFacet::Movie, "Emberline", "123456"),
         )
         .await
         .expect_err("stale pending import should be rejected when title already exists");

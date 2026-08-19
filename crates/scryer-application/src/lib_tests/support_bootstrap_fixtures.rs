@@ -1691,6 +1691,7 @@ pub(super) fn completed_download_fixture_item(
         download_client_item_id: download_client_item_id.to_string(),
         download_id: None,
         name: name.to_string(),
+        release_name: None,
         dest_dir: dest_dir.to_string(),
         category: Some("movie".to_string()),
         size_bytes: None,
@@ -1756,32 +1757,6 @@ pub(super) async fn create_enabled_download_client_config(
     )
     .await
     .expect("create download client config")
-}
-
-pub(super) async fn seed_download_client_config(
-    app: &AppUseCase,
-    id: &str,
-    name: &str,
-    client_type: &str,
-) -> DownloadClientConfig {
-    app.services
-        .integrations
-        .download_client_configs
-        .create(DownloadClientConfig {
-            id: id.to_string(),
-            name: name.to_string(),
-            client_type: client_type.to_string(),
-            config_json: "{}".to_string(),
-            is_enabled: true,
-            status: scryer_domain::DownloadClientStatus::Healthy,
-            last_error: None,
-            last_seen_at: None,
-            client_priority: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .expect("seed download client config")
 }
 
 pub(super) async fn set_download_client_cleanup_routing(

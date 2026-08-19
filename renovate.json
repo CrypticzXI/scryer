@@ -19,6 +19,12 @@
       "groupName": "npm dependencies"
     },
     {
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["lucide-react"],
+      "allowedVersions": "<1.0.0",
+      "description": "Keep lucide-react on the pre-1.0 line."
+    },
+    {
       "matchManagers": ["github-actions"],
       "groupName": "GitHub Actions",
       "separateMajorMinor": true

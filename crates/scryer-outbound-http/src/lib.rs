@@ -719,6 +719,44 @@ impl RateLimitRegistry {
         }
     }
 
+    fn acquire_host_rps_blocking_until(
+        &self,
+        host: &HostKey,
+        deadline: std::time::Instant,
+    ) -> Result<Option<Duration>, ()> {
+        let Some(entry) = self.host_limiter_for(host, None) else {
+            return Ok(None);
+        };
+        let mut total_wait = Duration::ZERO;
+
+        loop {
+            match entry.limiter.check() {
+                Ok(()) => return Ok((!total_wait.is_zero()).then_some(total_wait)),
+                Err(not_until) => {
+                    let wait = not_until.wait_time_from(entry.limiter.clock().now());
+                    if wait.is_zero() {
+                        continue;
+                    }
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() || wait >= remaining {
+                        return Err(());
+                    }
+                    entry.observe_wait(wait);
+                    debug!(
+                        host = host.as_str(),
+                        requests_per_second = entry.assignment.profile.requests_per_second,
+                        burst = entry.assignment.profile.burst,
+                        profile_source = ?entry.assignment.source,
+                        wait_ms = wait.as_millis(),
+                        "outbound host quota waiting"
+                    );
+                    total_wait += wait;
+                    std::thread::sleep(wait);
+                }
+            }
+        }
+    }
+
     pub fn register_host_profile(
         &self,
         host: HostKey,
@@ -915,6 +953,8 @@ impl Default for RateLimitRegistry {
 }
 
 pub const DEFAULT_USER_AGENT: &str = concat!("Scryer/", env!("CARGO_PKG_VERSION"));
+pub const INDEXER_PROXY_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 pub const STANDARD_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
@@ -1463,6 +1503,31 @@ pub fn generic_reqwest_client() -> Client {
     CLIENT.clone()
 }
 
+/// Returns the operator-managed client used for normal indexer-proxy solve
+/// requests. These requests deliberately present a stable browser-like user
+/// agent while retaining the shared client's no-redirect policy.
+pub fn indexer_proxy_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .user_agent(INDEXER_PROXY_USER_AGENT)
+            .build()
+            .expect("indexer proxy client should build")
+    });
+    CLIENT.clone()
+}
+
+/// Builds the indexer-proxy health client. The redirect limit preserves
+/// reqwest's historical default for this path.
+pub fn indexer_proxy_health_reqwest_client(timeout: Duration) -> Result<Client, reqwest::Error> {
+    reqwest_client_builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::limited(
+            DEFAULT_TRUSTED_REDIRECT_HOPS,
+        ))
+        .user_agent(INDEXER_PROXY_USER_AGENT)
+        .build()
+}
+
 pub fn external_arr_reqwest_client() -> Client {
     let mut builder = reqwest_client_builder()
         .timeout(Duration::from_secs(15))
@@ -1516,6 +1581,23 @@ pub fn blocking_plugin_host_client(extra_ca_bundle_pem: &str) -> Result<Blocking
         .map_err(|error| format!("failed to build plugin HTTP client: {error}"))
 }
 
+/// Builds the blocking operator-managed client used for indexer-proxy solve
+/// requests from the plugin host. Redirects remain disabled to preserve the
+/// existing solve-call behavior.
+pub fn blocking_indexer_proxy_reqwest_client(
+    extra_ca_bundle_pem: &str,
+) -> Result<BlockingClient, String> {
+    let mut builder = blocking_reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(INDEXER_PROXY_USER_AGENT);
+    if !extra_ca_bundle_pem.trim().is_empty() {
+        builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
+    }
+    builder
+        .build()
+        .map_err(|error| format!("failed to build indexer proxy HTTP client: {error}"))
+}
+
 pub fn blocking_reqwest_client() -> Result<BlockingClient, reqwest::Error> {
     blocking_reqwest_client_builder().build()
 }
@@ -1550,6 +1632,67 @@ pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, r
     Ok(response)
 }
 
+/// Sends an async request while bounding time spent waiting for a persisted
+/// destination cooldown. Artifact acquisition uses a zero-duration budget so
+/// a cooling host is surfaced as a retryable application error instead of
+/// consuming the entire fetch deadline.
+pub async fn send_reqwest_request_with_cooldown_budget(
+    request: RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+) -> Result<Response, AsyncOutboundHttpError> {
+    let registry = RateLimitRegistry::new();
+    let destination = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| destination_key_from_url(request.url()));
+    let host = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| host_key_from_url(request.url()));
+
+    if let Some(destination) = destination.as_ref()
+        && let Some(remaining) = registry.active_destination_cooldown(destination)
+    {
+        if let Some(budget) = max_cooldown_wait
+            && remaining > budget
+        {
+            return Err(AsyncOutboundHttpError::CooldownBudgetExceeded {
+                destination: destination.clone(),
+                remaining,
+                budget,
+            });
+        }
+        registry.wait_for_destination_if_needed(destination).await;
+    }
+    if let Some(host) = host.as_ref() {
+        let _ = registry.acquire_host_rps(host).await;
+    }
+    let response = request.send().await?;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && let Some(destination) = destination_key_from_url(response.url()).or(destination)
+    {
+        let (delay, source) = retry_after_delay(response.headers(), Duration::from_secs(1));
+        let _ = registry
+            .record_destination_cooldown(&destination, delay, source)
+            .await;
+    }
+    Ok(response)
+}
+
+#[derive(Debug, Error)]
+pub enum AsyncOutboundHttpError {
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(
+        "destination '{destination}' is rate limited for {remaining:?}, exceeding async wait budget {budget:?}"
+    )]
+    CooldownBudgetExceeded {
+        destination: DestinationKey,
+        remaining: Duration,
+        budget: Duration,
+    },
+}
+
 pub fn send_blocking_reqwest_request(
     request: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response, reqwest::Error> {
@@ -1557,6 +1700,9 @@ pub fn send_blocking_reqwest_request(
         BlockingOutboundHttpError::Request(error) => error,
         BlockingOutboundHttpError::CooldownBudgetExceeded { .. } => {
             unreachable!("unbounded blocking request cannot exhaust cooldown budget")
+        }
+        BlockingOutboundHttpError::DeadlineExceeded => {
+            unreachable!("unbounded blocking request has no dispatch deadline")
         }
     })
 }
@@ -1568,10 +1714,39 @@ pub fn send_blocking_reqwest_request_with_cooldown_budget(
     send_blocking_reqwest_request_with_cooldown_policy(request, max_cooldown_wait, None)
 }
 
+/// Sends a blocking request with the existing cooldown policy while ensuring
+/// destination waiting and shared host pacing cannot outlive `deadline`.
+pub fn send_blocking_reqwest_request_with_cooldown_budget_until(
+    request: reqwest::blocking::RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+    deadline: std::time::Instant,
+) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
+    send_blocking_reqwest_request_with_cooldown_policy_inner(
+        request,
+        max_cooldown_wait,
+        None,
+        Some(deadline),
+    )
+}
+
 pub fn send_blocking_reqwest_request_with_cooldown_policy(
     request: reqwest::blocking::RequestBuilder,
     max_cooldown_wait: Option<Duration>,
     destination_cooldown_override: Option<DestinationKey>,
+) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
+    send_blocking_reqwest_request_with_cooldown_policy_inner(
+        request,
+        max_cooldown_wait,
+        destination_cooldown_override,
+        None,
+    )
+}
+
+fn send_blocking_reqwest_request_with_cooldown_policy_inner(
+    mut request: reqwest::blocking::RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+    destination_cooldown_override: Option<DestinationKey>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
     let registry = RateLimitRegistry::new();
     let has_destination_override = destination_cooldown_override.is_some();
@@ -1587,21 +1762,38 @@ pub fn send_blocking_reqwest_request_with_cooldown_policy(
         .and_then(|request| host_key_from_url(request.url()));
 
     if let Some(destination) = destination.as_ref() {
-        if let (Some(max_wait), Some(remaining)) = (
-            max_cooldown_wait,
-            registry.active_destination_cooldown(destination),
-        ) && remaining > max_wait
-        {
-            return Err(BlockingOutboundHttpError::CooldownBudgetExceeded {
-                destination: destination.clone(),
-                remaining,
-                budget: max_wait,
-            });
+        if let Some(remaining) = registry.active_destination_cooldown(destination) {
+            if let Some(max_wait) = max_cooldown_wait
+                && remaining > max_wait
+            {
+                return Err(BlockingOutboundHttpError::CooldownBudgetExceeded {
+                    destination: destination.clone(),
+                    remaining,
+                    budget: max_wait,
+                });
+            }
+            if deadline.is_some_and(|deadline| {
+                remaining >= deadline.saturating_duration_since(std::time::Instant::now())
+            }) {
+                return Err(BlockingOutboundHttpError::DeadlineExceeded);
+            }
         }
         let _ = registry.wait_for_destination_if_needed_blocking(destination);
     }
     if let Some(host) = host.as_ref() {
-        let _ = registry.acquire_host_rps_blocking(host);
+        match deadline {
+            Some(deadline) => registry
+                .acquire_host_rps_blocking_until(host, deadline)
+                .map_err(|()| BlockingOutboundHttpError::DeadlineExceeded)?,
+            None => registry.acquire_host_rps_blocking(host),
+        };
+    }
+    if let Some(deadline) = deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(BlockingOutboundHttpError::DeadlineExceeded);
+        }
+        request = request.timeout(remaining);
     }
 
     let response = request.send()?;
@@ -1631,6 +1823,8 @@ pub enum BlockingOutboundHttpError {
         remaining: Duration,
         budget: Duration,
     },
+    #[error("outbound request deadline elapsed before dispatch")]
+    DeadlineExceeded,
 }
 
 fn uploaded_root_certificates(bundle_pem: &str) -> Result<Vec<Certificate>, String> {
@@ -2461,6 +2655,32 @@ mod tests {
         assert_eq!(registry.snapshot().host_rps.len(), 1);
     }
 
+    #[tokio::test]
+    async fn async_zero_cooldown_budget_returns_without_dispatching() {
+        let (url, hits) = spawn_http_server(vec![
+            http_response(429, &[("Retry-After", "60")], "rate limited"),
+            http_response(200, &[], "must not be dispatched"),
+        ])
+        .await;
+        let client = reqwest_client_builder().build().unwrap();
+
+        let first = send_reqwest_request_with_cooldown_budget(client.get(&url), None)
+            .await
+            .expect("first request should return the 429 response");
+        assert_eq!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(first);
+
+        let error =
+            send_reqwest_request_with_cooldown_budget(client.get(&url), Some(Duration::ZERO))
+                .await
+                .expect_err("active cooldown must exceed a zero wait budget");
+        assert!(matches!(
+            error,
+            AsyncOutboundHttpError::CooldownBudgetExceeded { .. }
+        ));
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn blocking_destination_override_keeps_sibling_child_dispatchable() {
         let (url, hits) = spawn_http_server(vec![
@@ -2910,6 +3130,46 @@ mod tests {
             blocking_registry.acquire_host_rps_blocking(&blocking_host)
         });
         assert!(blocking.await.unwrap().is_some());
+    }
+
+    #[test]
+    fn blocking_host_pacing_refuses_to_outlive_deadline() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "deadline-blocking.example.test".into();
+        registry.register_host_profile(
+            host.clone(),
+            HostRpsProfile::limited(1.0, 1),
+            HostRpsProfileSource::ExplicitRegistration,
+        );
+
+        assert_eq!(registry.acquire_host_rps_blocking(&host), None);
+        let started_at = std::time::Instant::now();
+        assert!(
+            registry
+                .acquire_host_rps_blocking_until(&host, started_at + Duration::from_millis(25),)
+                .is_err()
+        );
+        assert!(started_at.elapsed() < Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn async_host_pacing_is_cancellable_by_caller_deadline() {
+        let registry = RateLimitRegistry::isolated();
+        let host: HostKey = "deadline-async.example.test".into();
+        registry.register_host_profile(
+            host.clone(),
+            HostRpsProfile::limited(1.0, 1),
+            HostRpsProfileSource::ExplicitRegistration,
+        );
+
+        assert_eq!(registry.acquire_host_rps(&host).await, None);
+        let started_at = Instant::now();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), registry.acquire_host_rps(&host),)
+                .await
+                .is_err()
+        );
+        assert!(started_at.elapsed() < Duration::from_millis(200));
     }
 
     #[tokio::test]

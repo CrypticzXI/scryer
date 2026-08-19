@@ -1983,6 +1983,15 @@ pub struct PluginCompletedDownload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub name: String,
+    /// The original release name of the downloaded artifact, when the client
+    /// exposes one that is more stable than its mutable display `name` (for
+    /// example the original upload filename, or the torrent's metainfo name
+    /// when it differs from a user-renamed display name). Scryer only relies
+    /// on this for downloads it did not grab itself; for its own grabs it uses
+    /// the indexer release title it persisted at grab time. Optional for
+    /// compatibility with older download-client plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_name: Option<String>,
     pub dest_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,

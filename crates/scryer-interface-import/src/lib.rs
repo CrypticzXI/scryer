@@ -3635,8 +3635,8 @@ mod tests {
 
     #[test]
     fn radarr_warmup_builds_movie_hint_with_tmdb_and_imdb() {
-        let path = "/Movies/The Bourne Supremacy (2004)";
-        let file_path = "/Movies/The Bourne Supremacy (2004)/The Bourne Supremacy.mkv";
+        let path = "/Movies/The Lantern Supremacy (2004)";
+        let file_path = "/Movies/The Lantern Supremacy (2004)/The Lantern Supremacy.mkv";
         let hint = movie_scan_hint_from_arr(&ArrMovie {
             id: 1,
             root_folder_path: "/Movies".into(),
@@ -3736,7 +3736,7 @@ mod tests {
 
     #[test]
     fn sonarr_warmup_builds_series_hint_with_tvdb() {
-        let path = "/Series/Foundation (2021)";
+        let path = "/Series/Fathomline (2021)";
         let series = ArrSeries {
             id: 1,
             root_folder_path: "/Series".into(),
@@ -3767,7 +3767,7 @@ mod tests {
                 .any(|id| { id.provider == ExternalIdProvider::Tvdb && id.value == "366972" })
         );
 
-        let episode_path = "/Series/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let episode_path = "/Series/Fathomline (2021)/Season 01/Fathomline.S01E01.mkv";
         let episode_hint = series_episode_scan_hint_from_arr(
             &series,
             &ArrEpisode {
@@ -3799,8 +3799,8 @@ mod tests {
 
     #[test]
     fn sonarr_mapping_scan_hints_include_series_and_anime_facets() {
-        let series_path = "/srv/media/tv/Foundation (2021)";
-        let episode_path = "/srv/media/tv/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let series_path = "/srv/media/tv/Fathomline (2021)";
+        let episode_path = "/srv/media/tv/Fathomline (2021)/Season 01/Fathomline.S01E01.mkv";
         let series = ArrSeries {
             id: 1,
             root_folder_path: "/srv/media/tv".into(),

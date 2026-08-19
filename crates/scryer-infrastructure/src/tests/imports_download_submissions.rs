@@ -741,7 +741,7 @@ async fn record_download_submission_persists_episode_set_scope() {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("BASTARD 01-13".to_string()),
+            source_title: Some("RASCAL 01-13".to_string()),
             request_signature: None,
             scope: SubmissionScope::EpisodeSet {
                 episode_ids: vec!["ep-13".to_string(), "ep-1".to_string()],

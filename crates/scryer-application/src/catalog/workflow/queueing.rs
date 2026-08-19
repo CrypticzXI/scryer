@@ -347,7 +347,45 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        self.services.workflow.blocklist_repo.remove(id).await
+        self.services.workflow.blocklist_repo.remove(id).await?;
+
+        // Removal re-allows the release for this title immediately, so it must
+        // also clear every sibling entry that names the same release (the same
+        // failure is often recorded from more than one path, e.g. a grab-time
+        // `add` and a client-failure `add_failed_download_if_absent`). Siblings
+        // match on the normalized source title or source hint; both sides are
+        // normalized because grab-path writers keep the indexer casing.
+        // `release_download_attempts` history is left untouched.
+        let removed_source_title = normalize_release_attempt_title(entry.source_title.as_deref());
+        let removed_source_hint = normalize_release_attempt_hint(entry.source_hint.as_deref());
+        if removed_source_title.is_none() && removed_source_hint.is_none() {
+            return Ok(());
+        }
+        let siblings = self
+            .services
+            .workflow
+            .blocklist_repo
+            .list_for_title(&entry.title_id, 1_000)
+            .await?;
+        for sibling in siblings {
+            if sibling.id == entry.id {
+                continue;
+            }
+            let same_title = removed_source_title.is_some()
+                && normalize_release_attempt_title(sibling.source_title.as_deref())
+                    == removed_source_title;
+            let same_hint = removed_source_hint.is_some()
+                && normalize_release_attempt_hint(sibling.source_hint.as_deref())
+                    == removed_source_hint;
+            if same_title || same_hint {
+                self.services
+                    .workflow
+                    .blocklist_repo
+                    .remove(&sibling.id)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 impl AppUseCase {
@@ -577,7 +615,47 @@ impl AppUseCase {
                             source_password.clone(),
                         )
                         .await;
+                    // The client accepted a job Scryer can no longer track, so
+                    // burn the release for this title (visible and removable in
+                    // the blocklist) rather than re-grabbing it into a duplicate.
+                    let blocklist_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
+                    let _ = self
+                        .services
+                        .workflow
+                        .blocklist_repo
+                        .add(&NewBlocklistEntry {
+                            title_id: title.id.clone(),
+                            source_title: source_title_for_attempt.clone(),
+                            source_hint: source_hint_for_attempt.clone(),
+                            quality: None,
+                            download_id: None,
+                            reason: Some(format!(
+                                "grab accepted but download tracking could not be persisted: {error}"
+                            )),
+                            data: blocklist_entry_data(
+                                &blocklist_episode_ids,
+                                scope.collection_id(),
+                                scope.series_movie_link_id(),
+                            ),
+                        })
+                        .await;
                     return Err(error);
+                }
+                if source_title_for_attempt.is_none() {
+                    // The persisted indexer release title is THE name the
+                    // import parses at completion. Only the API/SDK
+                    // `addTitle{sourceHint}` grab can omit it (candidate-token,
+                    // best-release, RSS, pending, and auto-search grabs always
+                    // carry one); the import then degrades to the client-
+                    // reported release name, so leave a grab-time breadcrumb.
+                    tracing::info!(
+                        title_id = %title.id,
+                        client_id = ?grab.client_id,
+                        client_type = %grab.client_type,
+                        download_client_item_id = %grab.job_id,
+                        source_hint = ?source_hint_for_attempt,
+                        "queued download submission without a release title; import will parse the client-reported release name"
+                    );
                 }
                 let submission_identity = DownloadSourceIdentity::new(
                     grab.client_id.as_deref(),
@@ -637,44 +715,10 @@ impl AppUseCase {
                     )
                     .await;
                 if !submit_unavailable {
-                    let blocklist_episode_ids = match &scope {
-                        SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
-                        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
-                        SubmissionScope::Collection { collection_id } => self
-                            .services
-                            .catalog
-                            .shows
-                            .list_episodes_for_collection(collection_id)
-                            .await
-                            .map(|episodes| {
-                                episodes.into_iter().map(|episode| episode.id).collect()
-                            })
-                            .unwrap_or_default(),
-                        SubmissionScope::SeriesMovie { .. } => Vec::new(),
-                        SubmissionScope::Title | SubmissionScope::Orphan => Vec::new(),
-                    };
-                    let mut blocklist_data = HashMap::new();
-                    if !blocklist_episode_ids.is_empty() {
-                        blocklist_data.insert(
-                            "episode_ids".to_string(),
-                            serde_json::json!(blocklist_episode_ids),
-                        );
-                    }
-                    if let SubmissionScope::Collection { collection_id } = &scope {
-                        blocklist_data.insert(
-                            "collection_id".to_string(),
-                            serde_json::json!(collection_id),
-                        );
-                    }
-                    if let SubmissionScope::SeriesMovie {
-                        series_movie_link_id,
-                    } = &scope
-                    {
-                        blocklist_data.insert(
-                            "series_movie_link_id".to_string(),
-                            serde_json::json!(series_movie_link_id),
-                        );
-                    }
+                    // The per-title blocklist entry is what search-time
+                    // exclusion consults (and what the operator can remove);
+                    // the Failed attempt above is the audit record.
+                    let blocklist_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
                     let _ = self
                         .services
                         .workflow
@@ -686,7 +730,11 @@ impl AppUseCase {
                             quality: None,
                             download_id: None,
                             reason: Some(error_message.clone()),
-                            data: blocklist_data,
+                            data: blocklist_entry_data(
+                                &blocklist_episode_ids,
+                                scope.collection_id(),
+                                scope.series_movie_link_id(),
+                            ),
                         })
                         .await;
                 }
@@ -979,9 +1027,10 @@ impl AppUseCase {
             if !seen.insert(release_title.to_ascii_lowercase()) {
                 continue;
             }
-            // A Failed release attempt is what search-time exclusion
-            // (`is_release_blocklisted`) actually consults, so the old release is
-            // not auto-re-grabbed over the manual replacement.
+            // The Failed release attempt is the audit record; the per-title
+            // blocklist entry below is what search-time exclusion
+            // (`is_release_blocklisted`) consults, so the old release is not
+            // auto-re-grabbed over the manual replacement.
             let _ = self
                 .services
                 .workflow
@@ -995,7 +1044,6 @@ impl AppUseCase {
                     None,
                 )
                 .await;
-            // Also record a user-visible blocklist entry for the title's blocklist view.
             let _ = self
                 .services
                 .workflow
@@ -1231,13 +1279,14 @@ impl AppUseCase {
             scope
         };
 
+        let canonical_source = best.canonical_download_source();
         self.queue_existing_title_download(
             actor,
             title_id,
             QueuedReleaseSelection {
                 indexer_id: best.indexer_id.clone(),
-                source_hint: best.download_url.clone().or(best.link.clone()),
-                source_kind: best.source_kind,
+                source_hint: canonical_source.as_ref().map(|(source, _)| source.clone()),
+                source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
             },
@@ -1252,4 +1301,196 @@ fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// Grab-time persistence of the indexer release title for the manual queue
+/// path (`queue_manual_release_for_title`), which every interactive/API grab
+/// funnels through. The best-release, RSS, pending-release, and auto-search
+/// paths already assert their persisted `source_title` in `lib_tests`.
+#[cfg(test)]
+mod grab_time_release_title_tests {
+    use crate::{
+        AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+        QueuedReleaseSelection, SubmissionConflictPolicy, SubmissionScope,
+    };
+    use async_trait::async_trait;
+    use scryer_domain::{MediaFacet, NewTitle};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingDownloadSubmissionRepo {
+        rows: Arc<Mutex<Vec<DownloadSubmission>>>,
+    }
+
+    #[async_trait]
+    impl DownloadSubmissionRepository for RecordingDownloadSubmissionRepo {
+        async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+            self.rows.lock().await.push(submission);
+            Ok(())
+        }
+
+        async fn find_by_client_item_id(
+            &self,
+            identity: &DownloadSourceIdentity,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|row| DownloadSourceIdentity::from_submission(row) == *identity)
+                .cloned())
+        }
+
+        async fn list_for_client_items(
+            &self,
+            client_items: &[DownloadSourceIdentity],
+        ) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|row| client_items.contains(&DownloadSourceIdentity::from_submission(row)))
+                .cloned()
+                .collect())
+        }
+
+        async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .filter(|row| row.title_id == title_id)
+                .cloned()
+                .collect())
+        }
+
+        async fn find_by_title_and_request_signature(
+            &self,
+            title_id: &str,
+            request_signature: &str,
+            purpose: crate::DownloadSubmissionPurpose,
+            scope: &SubmissionScope,
+        ) -> AppResult<Option<DownloadSubmission>> {
+            Ok(self
+                .rows
+                .lock()
+                .await
+                .iter()
+                .find(|row| {
+                    row.title_id == title_id
+                        && row.request_signature.as_deref() == Some(request_signature)
+                        && row.purpose == purpose
+                        && &row.scope == scope
+                })
+                .cloned())
+        }
+
+        async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
+            self.rows.lock().await.retain(|row| row.title_id != title_id);
+            Ok(())
+        }
+
+        async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+            self.rows
+                .lock()
+                .await
+                .retain(|row| DownloadSourceIdentity::from_submission(row) != *identity);
+            Ok(())
+        }
+
+        async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    fn movie_request(name: &str) -> NewTitle {
+        NewTitle {
+            name: name.to_string(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_queue_persists_the_indexer_release_title_on_the_submission_row() {
+        let (base_app, user) = crate::lib_tests::bootstrap();
+        let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
+        let app = base_app
+            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+        let title = app
+            .add_title(&user, movie_request("Paper Lantern"))
+            .await
+            .expect("create title");
+
+        // The shape a candidate token / best-release selection arrives in.
+        app.queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some("https://indexer.invalid/get/paper-lantern.nzb".to_string()),
+                source_kind: None,
+                source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect("queue release");
+
+        let rows = submissions.rows.lock().await.clone();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].title_id, title.id);
+        assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(
+            rows[0].source_title.as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL-GRP"),
+            "the indexer release title must be persisted (trimmed) at grab time"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_title_source_hint_only_grab_records_no_release_title() {
+        // The API/SDK `addTitleAndQueueDownload{sourceHint}` path may omit the
+        // release title; the row is still a non-orphan Scryer submission (the
+        // import degrades only the parsed name, see ReleaseEvidence).
+        let (base_app, user) = crate::lib_tests::bootstrap();
+        let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
+        let app = base_app
+            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+
+        let (title, _job_id) = app
+            .add_title_and_queue_download(
+                &user,
+                movie_request("Harbor Lights"),
+                QueuedReleaseSelection {
+                    indexer_id: None,
+                    source_hint: Some("https://indexer.invalid/get/harbor-lights.nzb".to_string()),
+                    source_kind: None,
+                    source_title: None,
+                    source_password: None,
+                },
+            )
+            .await
+            .expect("add title and queue");
+
+        let rows = submissions.rows.lock().await.clone();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].title_id, title.id);
+        assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(rows[0].source_title, None);
+        assert!(crate::import_parameters::submission_has_scryer_origin(&rows[0]));
+    }
 }

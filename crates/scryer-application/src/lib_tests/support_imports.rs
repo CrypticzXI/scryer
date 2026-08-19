@@ -143,6 +143,69 @@ impl FileImporter for CopyingFileImporter {
     }
 }
 
+/// [`CopyingFileImporter`] that also reports transfer progress the way the
+/// real importer does (copying 0 → total, then finalizing), so tests can
+/// observe what an import path writes onto its import record.
+pub(super) struct ProgressReportingFileImporter;
+
+#[async_trait]
+impl FileImporter for ProgressReportingFileImporter {
+    async fn snapshot_import_source(
+        &self,
+        source: &Path,
+    ) -> AppResult<scryer_domain::ImportSourceSnapshot> {
+        CopyingFileImporter.snapshot_import_source(source).await
+    }
+
+    async fn import_file(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+    ) -> AppResult<scryer_domain::ImportFileResult> {
+        CopyingFileImporter
+            .import_file(source, dest, mode, expected_source)
+            .await
+    }
+
+    async fn import_file_with_progress_and_permissions(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+        progress: Option<crate::ImportFileTransferProgressSender>,
+        _permissions: &crate::ImportFilePermissions,
+    ) -> AppResult<scryer_domain::ImportFileResult> {
+        let total_bytes = std::fs::metadata(source)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if let Some(progress) = progress.as_ref() {
+            for (phase, bytes) in [
+                (scryer_domain::ImportTransferPhase::Copying, 0),
+                (scryer_domain::ImportTransferPhase::Copying, total_bytes),
+                (scryer_domain::ImportTransferPhase::Finalizing, total_bytes),
+            ] {
+                let _ = progress.send(crate::ImportFileTransferProgress {
+                    phase,
+                    bytes,
+                    total_bytes,
+                });
+            }
+        }
+        self.import_file(source, dest, mode, expected_source).await
+    }
+
+    async fn remove_import_source_after_verified_import(
+        &self,
+        _guard: scryer_domain::ImportSourceCleanupGuard,
+        _final_dest_path: &Path,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
 #[derive(Default, Clone)]
 pub(super) struct MockMediaFileRepo {
     pub(super) store: Arc<Mutex<Vec<TitleMediaFile>>>,

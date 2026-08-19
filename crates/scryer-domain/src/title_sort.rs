@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn strips_multilingual_articles_before_sort_key_generation() {
-        assert_eq!(title_catalog_sort_input("The Matrix"), "Matrix");
+        assert_eq!(title_catalog_sort_input("The Meridian"), "Meridian");
         assert_eq!(title_catalog_sort_input("L’Arc-en-Ciel"), "Arc-en-Ciel");
         assert_eq!(
             title_catalog_sort_input("O Auto da Compadecida"),
@@ -233,8 +233,8 @@ mod tests {
 
     #[test]
     fn normalizes_cjk_width_before_sort_key_generation() {
-        assert_eq!(title_catalog_sort_input("Ｔｈｅ　Matrix"), "Matrix");
-        assert_eq!(title_catalog_sort_input("ＡＫＩＲＡ"), "AKIRA");
+        assert_eq!(title_catalog_sort_input("Ｔｈｅ　Meridian"), "Meridian");
+        assert_eq!(title_catalog_sort_input("ＡＮＣＨＯＲ"), "ANCHOR");
     }
 
     #[test]
@@ -261,8 +261,8 @@ mod tests {
     #[test]
     fn invalid_language_falls_back_to_default_locale() {
         assert_eq!(
-            title_catalog_sort_key("The Matrix", Some("not a language")),
-            title_catalog_sort_key("The Matrix", Some("eng"))
+            title_catalog_sort_key("The Meridian", Some("not a language")),
+            title_catalog_sort_key("The Meridian", Some("eng"))
         );
     }
 }

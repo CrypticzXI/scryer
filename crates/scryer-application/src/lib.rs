@@ -286,8 +286,7 @@ pub use import_workflow::{
     ManualImportCandidateMapping, ManualImportExecutionResult, ManualImportFileMapping,
     ManualImportFileResult, ManualImportRequestPayload, begin_manual_import_selection,
     execute_manual_import, execute_queued_manual_import, import_completed_download,
-    retry_failed_import, start_background_manual_import_poller, try_import_completed_downloads,
-    try_import_provided_completed_downloads, try_import_recent_completed_downloads,
+    retry_failed_import, start_background_manual_import_poller,
 };
 pub use integration::download_queue_commands::start_background_download_delete_poller;
 pub(crate) use integration::integration::ManualImportSourceResolution;
@@ -585,6 +584,7 @@ pub use types::{
 pub use types::{
     IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
     IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    extract_magnet_info_hash, is_valid_magnet_uri,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 
@@ -613,6 +613,14 @@ pub enum AppError {
 
     #[error("{0}")]
     DownloadSubmitUnavailable(String),
+
+    /// Every eligible download client in the routing order was tried and none
+    /// enqueued the release. A retryable submission failure like
+    /// `DownloadSubmitUnavailable`, kept distinct for diagnostics; the payload
+    /// is display-only context (the final client error when one was captured)
+    /// and no consumer may inspect it to make an operational decision.
+    #[error("{0}")]
+    DownloadSubmitFailoverExhausted(String),
 
     #[error("{message}")]
     ArchiveExtractionPluginRequired {
@@ -658,6 +666,10 @@ impl AppError {
         Self::DownloadSubmitUnavailable(message.into())
     }
 
+    pub fn download_submit_failover_exhausted(message: impl Into<String>) -> Self {
+        Self::DownloadSubmitFailoverExhausted(message.into())
+    }
+
     pub fn archive_extraction_plugin_required(source_path: Option<String>) -> Self {
         Self::ArchiveExtractionPluginRequired {
             message: "This import is blocked because the download contains archive files. Install, update, or enable the Archive Extraction plugin, then re-import.".to_string(),
@@ -691,6 +703,7 @@ impl AppError {
     pub fn into_download_submit_unavailable(self) -> Self {
         match self {
             Self::DownloadSubmitUnavailable(_)
+            | Self::DownloadSubmitFailoverExhausted(_)
             | Self::DownloadSubmitAmbiguous(_)
             | Self::DownloadSubmitRejected(_) => self,
             _ => Self::DownloadSubmitUnavailable(self.to_string()),
@@ -699,6 +712,17 @@ impl AppError {
 
     pub fn is_download_submit_unavailable(&self) -> bool {
         matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
+
+    /// The typed retryable download-submission failures: the submitter was
+    /// unavailable, or every prioritized client was tried and failed. Text is
+    /// never consulted — renaming, prefixing, or wrapping a message cannot
+    /// change scheduling.
+    pub fn is_retryable_download_submit_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::DownloadSubmitUnavailable(_) | Self::DownloadSubmitFailoverExhausted(_)
+        )
     }
 
     pub fn is_download_submit_ambiguous(&self) -> bool {

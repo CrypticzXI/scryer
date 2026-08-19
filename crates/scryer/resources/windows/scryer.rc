@@ -1,4 +1,5 @@
 1 24 "resources/windows/scryer.exe.manifest"
+1 ICON "resources/windows/scryer.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION SCRYER_VERSION_MAJOR,SCRYER_VERSION_MINOR,SCRYER_VERSION_PATCH,0

@@ -601,7 +601,7 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
 async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Nightfall.Heavy.Metal.Dark.Fantasy.S01E01.1080p.NF.WEB-DL",
+        "Nightfall.Heavy.Chorus.Dark.Lantern.S01E01.1080p.NF.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -666,7 +666,7 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
             &title.id,
             TitleMetadataUpdate {
                 tagged_aliases: vec![scryer_domain::TaggedAlias {
-                    name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
+                    name: "Nightfall Heavy Chorus Dark Lantern".to_string(),
                     language: "eng".to_string(),
                 }],
                 ..Default::default()
@@ -826,4 +826,410 @@ async fn list_cutoff_unmet_titles_page_bounds_and_total() {
         .expect("paged cutoff query should succeed");
     assert_eq!(page.total, 3);
     assert!(page.items.is_empty());
+}
+
+// ── Per-title release blocklist (search-time exclusion) ─────────────────────
+
+/// Interactive-search fixture with an in-memory blocklist repo: a fixed
+/// indexer answering `release_title` for every query and one NZBGet client so
+/// NZB results survive the download-capability filter.
+async fn bootstrap_interactive_search_with_blocklist(
+    release_title: &str,
+) -> (AppUseCase, User, Arc<MockBlocklistRepo>) {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
+    let blocklist = Arc::new(MockBlocklistRepo::default());
+    let app = app.with_test_overrides(|services| services.with_blocklist_repo(blocklist.clone()));
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    (app, user, blocklist)
+}
+
+async fn add_movie_title_for_search(app: &AppUseCase, user: &User, name: &str) -> Title {
+    app.add_title(
+        user,
+        NewTitle {
+            name: name.into(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            tags: vec![],
+            external_ids: vec![],
+            min_availability: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create title")
+}
+
+async fn interactive_search_titles(app: &AppUseCase, user: &User, title_id: &str) -> Vec<String> {
+    app.search_indexers_for_title(
+        user,
+        title_id.to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("search indexers for title")
+    .into_iter()
+    .map(|result| result.title)
+    .collect()
+}
+
+fn blocklist_entry_for(
+    title_id: &str,
+    source_title: Option<&str>,
+    source_hint: Option<&str>,
+    reason: &str,
+) -> NewBlocklistEntry {
+    NewBlocklistEntry {
+        title_id: title_id.to_string(),
+        source_title: source_title.map(str::to_string),
+        source_hint: source_hint.map(str::to_string),
+        quality: None,
+        download_id: None,
+        reason: Some(reason.to_string()),
+        data: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn interactive_search_blocklist_is_per_title_and_removal_reallows_the_release() {
+    let release_title = "Blocklisted.Movie.2024.1080p.WEB-DL-GRP";
+    let (app, user, blocklist) = bootstrap_interactive_search_with_blocklist(release_title).await;
+    let blocked = add_movie_title_for_search(&app, &user, "Blocklisted Movie").await;
+    let other = add_movie_title_for_search(&app, &user, "Other Movie").await;
+
+    // Grab-path writers keep the indexer casing (and may carry whitespace); the
+    // read side normalizes both sides, so this must still exclude the release.
+    let entry_id = blocklist
+        .add(&blocklist_entry_for(
+            &blocked.id,
+            Some("  BLOCKLISTED.Movie.2024.1080p.WEB-DL-GRP "),
+            None,
+            "download client failure: corrupt archive",
+        ))
+        .await
+        .expect("seed blocklist entry");
+
+    assert!(
+        interactive_search_titles(&app, &user, &blocked.id)
+            .await
+            .is_empty(),
+        "a blocklisted release must not be offered for its title"
+    );
+    assert_eq!(
+        interactive_search_titles(&app, &user, &other.id).await,
+        vec![release_title.to_string()],
+        "an entry for one title must never hide the same release from another title"
+    );
+
+    // Removal from the UI re-allows the release immediately; no retention purge
+    // of the failed-attempt log is involved.
+    app.clear_title_release_blocklist_entry(&user, &entry_id)
+        .await
+        .expect("clear blocklist entry");
+    assert_eq!(
+        interactive_search_titles(&app, &user, &blocked.id).await,
+        vec![release_title.to_string()],
+        "removing the entry must re-allow the release for its title"
+    );
+}
+
+#[tokio::test]
+async fn interactive_search_ignores_failed_attempt_history_without_a_blocklist_entry() {
+    // The failed-attempt log is history/audit only: a Failed attempt with no
+    // blocklist entry (e.g. one whose entry the operator removed) must not gate.
+    let release_title = "Attempted.Movie.2024.1080p.WEB-DL-GRP";
+    let (app, user, blocklist) = bootstrap_interactive_search_with_blocklist(release_title).await;
+    let title = add_movie_title_for_search(&app, &user, "Attempted Movie").await;
+
+    app.services
+        .workflow
+        .release_attempts
+        .record_release_attempt(
+            Some(title.id.clone()),
+            Some("https://example.invalid/attempted.nzb".to_string()),
+            Some(release_title.to_string()),
+            ReleaseDownloadAttemptOutcome::Failed,
+            Some("download client failure: corrupt archive".to_string()),
+            None,
+        )
+        .await
+        .expect("record failed attempt");
+    assert!(
+        blocklist
+            .list_for_title(&title.id, 10)
+            .await
+            .expect("list blocklist")
+            .is_empty()
+    );
+
+    assert_eq!(
+        interactive_search_titles(&app, &user, &title.id).await,
+        vec![release_title.to_string()],
+        "a failed attempt without a blocklist entry must not exclude the release"
+    );
+}
+
+#[tokio::test]
+async fn interactive_search_excludes_blocklisted_release_by_source_hint() {
+    // API/SDK grabs can fail with only a source hint (no release title); the
+    // hint alone must still exclude the release for that title.
+    let release_title = "Hinted.Movie.2024.1080p.WEB-DL-GRP";
+    let (app, user, blocklist) = bootstrap_interactive_search_with_blocklist(release_title).await;
+    let title = add_movie_title_for_search(&app, &user, "Hinted Movie").await;
+
+    blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            None,
+            Some("https://example.invalid/download.nzb"),
+            "grab failed: rejected",
+        ))
+        .await
+        .expect("seed blocklist entry");
+
+    assert!(
+        interactive_search_titles(&app, &user, &title.id)
+            .await
+            .is_empty(),
+        "a hint-only blocklist entry must exclude the release for its title"
+    );
+}
+
+#[tokio::test]
+async fn clearing_a_blocklist_entry_clears_sibling_entries_for_the_same_release() {
+    let release_title = "Duplicated.Movie.2024.1080p.WEB-DL-GRP";
+    let source_hint = "https://example.invalid/download.nzb";
+    let (app, user, blocklist) = bootstrap_interactive_search_with_blocklist(release_title).await;
+    let title = add_movie_title_for_search(&app, &user, "Duplicated Movie").await;
+    let other = add_movie_title_for_search(&app, &user, "Other Movie").await;
+
+    // The same failure recorded from two paths: a grab-time `add` (indexer
+    // casing, with hint) and a client-failure `add_failed_download_if_absent`
+    // (normalized title, no hint) — the dedupe does not collapse them.
+    let grab_entry_id = blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            Some(release_title),
+            Some(source_hint),
+            "grab failed: rejected by client",
+        ))
+        .await
+        .expect("seed grab-path entry");
+    assert!(
+        blocklist
+            .add_failed_download_if_absent(&blocklist_entry_for(
+                &title.id,
+                Some(&release_title.to_ascii_lowercase()),
+                None,
+                "download client failure: corrupt archive",
+            ))
+            .await
+            .expect("seed failure-path entry")
+    );
+    // A third, hint-only sibling from an API grab that failed with no title.
+    blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            None,
+            Some(source_hint),
+            "grab failed: rejected by client",
+        ))
+        .await
+        .expect("seed hint-only entry");
+    // Unrelated entries that must survive: a different release on the same
+    // title, and the same release on another title.
+    let unrelated_id = blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            Some("Unrelated.Movie.2024.720p.WEB-DL-GRP"),
+            Some("https://example.invalid/unrelated.nzb"),
+            "manual_replacement",
+        ))
+        .await
+        .expect("seed unrelated entry");
+    let other_title_entry_id = blocklist
+        .add(&blocklist_entry_for(
+            &other.id,
+            Some(release_title),
+            Some(source_hint),
+            "grab failed: rejected by client",
+        ))
+        .await
+        .expect("seed other-title entry");
+    assert_eq!(
+        blocklist
+            .list_for_title(&title.id, 10)
+            .await
+            .expect("list blocklist")
+            .len(),
+        4
+    );
+    assert!(
+        interactive_search_titles(&app, &user, &title.id)
+            .await
+            .is_empty()
+    );
+
+    app.clear_title_release_blocklist_entry(&user, &grab_entry_id)
+        .await
+        .expect("clear blocklist entry");
+
+    let remaining = blocklist
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![unrelated_id.as_str()],
+        "every sibling naming the same release must go; unrelated entries must stay"
+    );
+    assert_eq!(
+        blocklist
+            .list_for_title(&other.id, 10)
+            .await
+            .expect("list other blocklist")
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![other_title_entry_id.as_str()],
+        "another title's entry for the same release must be untouched"
+    );
+    assert_eq!(
+        interactive_search_titles(&app, &user, &title.id).await,
+        vec![release_title.to_string()],
+        "the release must be searchable again once its entries are cleared"
+    );
+    // The failed-attempt history is never deleted by removal.
+    assert!(
+        app.services
+            .workflow
+            .release_attempts
+            .list_failed_release_signatures_for_title(&title.id, 10)
+            .await
+            .expect("list failed signatures")
+            .is_empty(),
+        "sanity: this fixture recorded no attempts"
+    );
+}
+
+/// A blocklist repository whose every call fails, to prove search fails open.
+struct FailingBlocklistRepo;
+
+#[async_trait]
+impl BlocklistRepository for FailingBlocklistRepo {
+    async fn add(&self, _: &NewBlocklistEntry) -> AppResult<String> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn list_for_title(&self, _: &str, _: usize) -> AppResult<Vec<BlocklistEntry>> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn list_all(&self, _: usize, _: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn has_recorded_download_failure(&self, _: &str, _: Option<&str>) -> AppResult<bool> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn remove(&self, _: &str) -> AppResult<()> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn is_blocklisted(&self, _: &str, _: &str) -> AppResult<bool> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+    async fn delete_for_title(&self, _: &str) -> AppResult<()> {
+        Err(AppError::Repository("blocklist unavailable".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn interactive_search_fails_open_when_the_blocklist_repository_errors() {
+    let release_title = "Unblocked.Movie.2024.1080p.WEB-DL-GRP";
+    let (app, user, _) = bootstrap_interactive_search_with_blocklist(release_title).await;
+    let app = app.with_test_overrides(|services| {
+        services.with_blocklist_repo(Arc::new(FailingBlocklistRepo))
+    });
+    let title = add_movie_title_for_search(&app, &user, "Unblocked Movie").await;
+
+    assert_eq!(
+        interactive_search_titles(&app, &user, &title.id).await,
+        vec![release_title.to_string()],
+        "a blocklist read failure must warn and exclude nothing, not fail the search"
+    );
+}
+
+#[tokio::test]
+async fn title_release_blocklist_signatures_are_per_title_and_normalized() {
+    let (app, user, blocklist) =
+        bootstrap_interactive_search_with_blocklist("Irrelevant.Release.2024.1080p").await;
+    let title = add_movie_title_for_search(&app, &user, "Normalized Movie").await;
+    let other = add_movie_title_for_search(&app, &user, "Other Movie").await;
+
+    // Titles compare trimmed + lowercased; hints compare trimmed but
+    // case-preserving (URLs and magnet hashes are matched verbatim).
+    blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            Some("  Mixed.Case.Release.2024.1080p "),
+            Some("  https://Example.invalid/Path/Release.nzb "),
+            "grab failed",
+        ))
+        .await
+        .expect("seed mixed-case entry");
+    // Whitespace-only and absent signatures contribute nothing.
+    blocklist
+        .add(&blocklist_entry_for(
+            &title.id,
+            Some("   "),
+            Some(""),
+            "empty",
+        ))
+        .await
+        .expect("seed empty entry");
+    blocklist
+        .add(&blocklist_entry_for(&title.id, None, None, "bare"))
+        .await
+        .expect("seed bare entry");
+    blocklist
+        .add(&blocklist_entry_for(
+            &other.id,
+            Some("Other.Title.Release.2024.1080p"),
+            None,
+            "grab failed",
+        ))
+        .await
+        .expect("seed other-title entry");
+
+    let signatures = app.load_title_release_blocklist_signatures(&title.id).await;
+    assert_eq!(
+        signatures.source_titles,
+        HashSet::from(["mixed.case.release.2024.1080p".to_string()])
+    );
+    assert_eq!(
+        signatures.source_hints,
+        HashSet::from(["https://Example.invalid/Path/Release.nzb".to_string()])
+    );
+
+    let other_signatures = app.load_title_release_blocklist_signatures(&other.id).await;
+    assert_eq!(
+        other_signatures.source_titles,
+        HashSet::from(["other.title.release.2024.1080p".to_string()])
+    );
+    assert!(other_signatures.source_hints.is_empty());
 }

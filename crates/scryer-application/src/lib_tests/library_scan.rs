@@ -977,7 +977,7 @@ async fn title_scan_returns_error_when_one_off_walk_fails() {
 #[tokio::test]
 async fn movie_title_scan_removes_missing_tracked_movie_file() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let movie_path = tempdir.path().join("Titanic (1997) - 2160p.mkv");
+    let movie_path = tempdir.path().join("Ironclad (1997) - 2160p.mkv");
     std::fs::write(&movie_path, b"movie").expect("write movie file");
 
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -1013,7 +1013,7 @@ async fn movie_title_scan_removes_missing_tracked_movie_file() {
         .add_title(
             &user,
             NewTitle {
-                name: "Titanic".into(),
+                name: "Ironclad".into(),
                 facet: MediaFacet::Movie,
                 monitored: false,
                 tags: vec![],
@@ -2803,7 +2803,7 @@ async fn movie_full_scan_batches_unhinted_fuzzy_candidates_at_gateway_cap() {
         "Distant Meadow",
         "Emerald Signal",
         "Frosted Avenue",
-        "Golden Compass",
+        "Golden Trellis",
         "Hidden Valley",
         "Ivory Station",
         "Jade Horizon",
@@ -6705,8 +6705,8 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                 MovieMetadata {
                     target_key: None,
                     tvdb_id: 123_456,
-                    name: "デューン".into(),
-                    slug: "dune".into(),
+                    name: "サンドライン".into(),
+                    slug: "sandline".into(),
                     year: Some(2021),
                     content_status: "Released".into(),
                     overview: "日本語概要".into(),
@@ -6715,7 +6715,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                     language: "jpn".into(),
                     original_language: Some("jpn".into()),
                     runtime_minutes: 155,
-                    sort_title: "デューン".into(),
+                    sort_title: "サンドライン".into(),
                     imdb_id: "tt1160419".into(),
                     tmdb_id: None,
                     popularity: None,
@@ -6771,7 +6771,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .hydrated_titles
         .remove(&created_title.id)
         .expect("hydrated title should be returned");
-    assert_eq!(hydrated.name, "デューン");
+    assert_eq!(hydrated.name, "サンドライン");
     assert_eq!(hydrated.metadata_language.as_deref(), Some("jpn"));
     assert_eq!(hydrated.overview.as_deref(), Some("日本語概要"));
 
@@ -6779,7 +6779,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
         .expect("list titles");
-    assert_eq!(persisted[0].name, "デューン");
+    assert_eq!(persisted[0].name, "サンドライン");
     assert_eq!(persisted[0].metadata_language.as_deref(), Some("jpn"));
 }
 

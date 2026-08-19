@@ -37,7 +37,7 @@ const DISCOVERY_SYNC_DOMAIN_EVENT_CATCH_UP_MAX_BATCHES: usize = 20;
 const DISCOVERY_DIRTY_REASON_TITLE_CHANGE: i64 = 1 << 0;
 const DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY: i64 = 1 << 1;
 const DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS: u64 = 30;
-const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
+pub(crate) const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 
 #[derive(Clone)]
 enum JobExecutionPrincipal {
@@ -196,6 +196,13 @@ fn discovery_prefer_earlier_gate(
 
 struct DiscoveryNextRunCandidates {
     next_incremental: DateTime<Utc>,
+    /// An incremental reload only ever runs against an existing personalized
+    /// snapshot (`incremental_due` requires `last_success_generation_id`), so
+    /// its cadence bucket is not a reason to wake before the first snapshot
+    /// has landed. Waking for it anyway was pure waste — and, because the
+    /// bucket is seed-jittered, it could land inside the first-snapshot
+    /// window and pre-empt the wake the state actually scheduled.
+    incremental_reload_possible: bool,
     next_context: DateTime<Utc>,
     next_public: DateTime<Utc>,
     bootstrap_quiet_until: Option<DateTime<Utc>>,
@@ -210,6 +217,7 @@ fn discovery_next_run_at(
 ) -> DateTime<Utc> {
     let DiscoveryNextRunCandidates {
         next_incremental,
+        incremental_reload_possible,
         next_context,
         next_public,
         bootstrap_quiet_until,
@@ -218,7 +226,7 @@ fn discovery_next_run_at(
         pending_changes_quiet_at,
     } = candidates;
     [
-        Some(next_incremental),
+        incremental_reload_possible.then_some(next_incremental),
         Some(next_context),
         Some(next_public),
         bootstrap_quiet_until,
@@ -1911,6 +1919,7 @@ impl AppUseCase {
             now,
             DiscoveryNextRunCandidates {
                 next_incremental: effective_next_incremental,
+                incremental_reload_possible: state.last_success_generation_id.is_some(),
                 next_context: effective_next_context,
                 next_public: effective_next_public,
                 bootstrap_quiet_until: state.bootstrap_quiet_until,
@@ -3277,6 +3286,37 @@ fn summary_text_from_library_scan(summary: &LibraryScanSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn discovery_next_run_ignores_the_incremental_bucket_before_the_first_snapshot() {
+        // Before a personalized snapshot exists there is nothing to reload
+        // incrementally, so the seed-jittered incremental bucket must not be
+        // the wake reason — otherwise it can pre-empt the first-snapshot gate
+        // the state scheduled. Once a snapshot exists it is a normal candidate.
+        let now = Utc.timestamp_opt(10_000, 0).unwrap();
+        let candidates = |incremental_reload_possible: bool| DiscoveryNextRunCandidates {
+            next_incremental: now + chrono::Duration::seconds(37),
+            incremental_reload_possible,
+            next_context: now + chrono::Duration::seconds(358),
+            next_public: now + chrono::Duration::days(1),
+            bootstrap_quiet_until: None,
+            backoff_until: None,
+            scan_blocked_retry_at: None,
+            pending_changes_quiet_at: None,
+        };
+
+        assert_eq!(
+            discovery_next_run_at(now, candidates(false)),
+            now + chrono::Duration::seconds(358),
+            "first snapshot pending: the context gate wins even though the incremental bucket is earlier"
+        );
+        assert_eq!(
+            discovery_next_run_at(now, candidates(true)),
+            now + chrono::Duration::seconds(37),
+            "after the first snapshot the incremental bucket is a normal wake candidate"
+        );
+    }
 
     #[test]
     fn background_library_refresh_initial_delays_are_staggered_by_facet() {

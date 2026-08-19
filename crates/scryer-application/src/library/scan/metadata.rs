@@ -2018,7 +2018,7 @@ mod tests {
         let scan_hint = LibraryScanHint {
             source: LibraryScanHintSource::ExternalImportRadarr,
             facet: LibraryScanHintFacet::Movie,
-            path_key: path_to_stored_string(Path::new("/movies/The Bourne Supremacy (2004)")),
+            path_key: path_to_stored_string(Path::new("/movies/The Lantern Supremacy (2004)")),
             full_path_key: None,
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tmdb,
@@ -2027,11 +2027,11 @@ mod tests {
         };
         let nfo = NfoMetadata {
             tvdb_id: Some("2502".into()),
-            title: Some("Patton".into()),
+            title: Some("Pelton".into()),
             ..Default::default()
         };
         let parsed = crate::ParsedReleaseMetadata {
-            normalized_title: "Patton".into(),
+            normalized_title: "Pelton".into(),
             year: Some(1970),
             ..Default::default()
         };
@@ -2043,7 +2043,7 @@ mod tests {
             file_walk: None,
             folder_walk: None,
             parsed: &parsed,
-            fallback_query: "Patton",
+            fallback_query: "Pelton",
             fallback_year: Some(1970),
         })
         .expect("identity hint");
@@ -2056,17 +2056,17 @@ mod tests {
 
     #[test]
     fn select_safe_batch_match_trusts_smg_auto_match_safe() {
-        let patton_tvdb_signal = MetadataSearchItem {
+        let pelton_tvdb_signal = MetadataSearchItem {
             tvdb_id: "2502".to_string(),
-            name: "Patton".to_string(),
+            name: "Pelton".to_string(),
             year: Some(1970),
             auto_match_safe: true,
             auto_match_signals: vec!["external_id:tvdb".to_string()],
         };
 
         assert_eq!(
-            select_safe_batch_match(&[patton_tvdb_signal]).map(|item| item.name),
-            Some("Patton".to_string())
+            select_safe_batch_match(&[pelton_tvdb_signal]).map(|item| item.name),
+            Some("Pelton".to_string())
         );
     }
 
@@ -2079,11 +2079,11 @@ mod tests {
             r#"<movie><title>Noisy NFO Title</title><year>1901</year><tvdbid>1</tvdbid></movie>"#,
         )
         .expect("write misleading movie nfo");
-        let file_path = path_to_stored_string(Path::new("/scryer/Patton (1970)/Patton.1970.mkv"));
-        let arr_file_path = r"D:\Movies\Patton (1970)\Patton.1970.mkv";
+        let file_path = path_to_stored_string(Path::new("/scryer/Pelton (1970)/Pelton.1970.mkv"));
+        let arr_file_path = r"D:\Movies\Pelton (1970)\Pelton.1970.mkv";
         let file = LibraryFile {
             path: file_path.clone(),
-            display_name: "Patton.1970".to_string(),
+            display_name: "Pelton.1970".to_string(),
             nfo_path: Some(path_to_stored_string(&nfo_path)),
             size_bytes: None,
             source_signature_scheme: None,
@@ -2137,7 +2137,7 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "2502".to_string(),
-                name: "The Bourne Supremacy".to_string(),
+                name: "The Lantern Supremacy".to_string(),
                 year: Some(2004),
                 auto_match_safe: true,
                 auto_match_signals: vec!["external_id:tmdb".to_string()],
@@ -2148,14 +2148,14 @@ mod tests {
             select_movie_metadata_from_batch_results(&candidate, &results)
                 .expect("metadata selection")
                 .map(|item| item.name),
-            Some("The Bourne Supremacy".to_string())
+            Some("The Lantern Supremacy".to_string())
         );
     }
 
     #[tokio::test]
     async fn arr_series_folder_hint_matches_leaf_folder_across_roots() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let folder = tempdir.path().join("Foundation (2021)");
+        let folder = tempdir.path().join("Fathomline (2021)");
         std::fs::create_dir_all(&folder).expect("create folder");
         std::fs::write(
             folder.join("tvshow.nfo"),
@@ -2171,7 +2171,7 @@ mod tests {
         scan_hints.push(LibraryScanHint {
             source: LibraryScanHintSource::ExternalImportSonarr,
             facet: LibraryScanHintFacet::Series,
-            path_key: crate::library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
+            path_key: crate::library_scan_folder_leaf_key(r"D:\Series\Fathomline (2021)")
                 .expect("leaf key"),
             full_path_key: None,
             ids: vec![ExternalIdHint {
@@ -2332,7 +2332,7 @@ mod tests {
     #[test]
     fn extract_library_queries_uses_movie_title_variants_for_root_files() {
         let (queries, year) = extract_library_queries(
-            "/library/Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.mkv",
+            "/library/Mon.Phare.A.K.A.My.Lighthouse.2020.1080p.BluRay.mkv",
             "/library",
         );
 
@@ -2340,9 +2340,9 @@ mod tests {
         assert_eq!(
             queries,
             vec![
-                "MON COUSIN AKA MY COUSIN".to_string(),
-                "MON COUSIN".to_string(),
-                "MY COUSIN".to_string()
+                "MON PHARE AKA MY LIGHTHOUSE".to_string(),
+                "MON PHARE".to_string(),
+                "MY LIGHTHOUSE".to_string()
             ]
         );
     }
@@ -2350,15 +2350,15 @@ mod tests {
     #[test]
     fn extract_library_queries_prefers_simple_file_title_walk() {
         let (queries, year) = extract_library_queries(
-            "/Volumes/Media/Movies/Furiosa A Mad Max Saga (2024)/Furiosa A Mad Max Saga (2024) Remux-2160p.mkv",
+            "/Volumes/Media/Movies/Feranki A Sand Max Saga (2024)/Feranki A Sand Max Saga (2024) Remux-2160p.mkv",
             "/Volumes/Media/Movies",
         );
 
         assert_eq!(
             queries.first().map(String::as_str),
-            Some("Furiosa A Mad Max Saga")
+            Some("Feranki A Sand Max Saga")
         );
-        assert!(queries.iter().any(|query| query == "FURIOSA A MAD"));
+        assert!(queries.iter().any(|query| query == "FERANKI A SAND"));
         assert_eq!(year, Some(2024));
     }
 
@@ -2377,47 +2377,47 @@ mod tests {
     #[tokio::test]
     async fn prepare_series_folder_candidate_uses_simple_title_walk() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let folder = dir.path().join("Foundation (2021)");
+        let folder = dir.path().join("Fathomline (2021)");
         std::fs::create_dir_all(&folder).expect("create series folder");
 
         let candidate = prepare_series_library_scan_candidate(folder, None)
             .await
             .expect("prepared candidate");
 
-        assert_eq!(candidate.query, "Foundation");
+        assert_eq!(candidate.query, "Fathomline");
         assert_eq!(candidate.year_hint, Some(2021));
         assert_eq!(
             candidate.search_candidates.first().map(String::as_str),
-            Some("Foundation")
+            Some("Fathomline")
         );
     }
 
     #[tokio::test]
     async fn prepare_series_folder_candidate_uses_title_and_year_hint_shape() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let folder = dir.path().join("Bastard!! (2022)");
+        let folder = dir.path().join("Rascal!! (2022)");
         std::fs::create_dir_all(&folder).expect("create series folder");
 
         let candidate = prepare_series_library_scan_candidate(folder, None)
             .await
             .expect("prepared candidate");
 
-        assert_eq!(candidate.query, "Bastard!!");
+        assert_eq!(candidate.query, "Rascal!!");
         assert_eq!(candidate.year_hint, Some(2022));
         assert_eq!(
             candidate.search_candidates.first().map(String::as_str),
-            Some("Bastard!!")
+            Some("Rascal!!")
         );
         assert!(
             !candidate
                 .search_candidates
                 .iter()
-                .any(|query| query == "Bastard!! (2022)")
+                .any(|query| query == "Rascal!! (2022)")
         );
 
         let key = BatchMetadataSearchKey::new(
             METADATA_TYPE_SERIES,
-            "Bastard!!",
+            "Rascal!!",
             Some(2022),
             candidate.identity_hint.as_ref(),
         )
@@ -2427,7 +2427,7 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "415677".into(),
-                name: "Bastard!! (2022)".into(),
+                name: "Rascal!! (2022)".into(),
                 year: Some(2022),
                 auto_match_safe: true,
                 auto_match_signals: vec![
@@ -2447,22 +2447,22 @@ mod tests {
     #[test]
     fn extract_library_queries_uses_parent_folder_when_filename_is_placeholder() {
         let (queries, year) =
-            extract_library_queries("/library/My Cousin (2020)/movie.mkv", "/library");
+            extract_library_queries("/library/My Lighthouse (2020)/movie.mkv", "/library");
 
-        assert_eq!(queries, vec!["MY COUSIN".to_string()]);
+        assert_eq!(queries, vec!["MY LIGHTHOUSE".to_string()]);
         assert_eq!(year, Some(2020));
     }
 
     #[test]
     fn extract_library_queries_uses_parent_folder_when_filename_is_obfuscated() {
         let (queries, year) = extract_library_queries(
-            "/library/Harry.Potter.And.The.Deathly.Hallows.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated/aUUKqrO833LbSr7VlByumnR24y7ULADpVJ7K0FTnPhPMqpp0KIIaLSLYXJmyjm.mkv",
+            "/library/Harbor.Pilot.And.The.Silent.Harbors.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated/aUUKqrO833LbSr7VlByumnR24y7ULADpVJ7K0FTnPhPMqpp0KIIaLSLYXJmyjm.mkv",
             "/library",
         );
 
         assert_eq!(
             queries,
-            vec!["HARRY POTTER AND THE DEATHLY HALLOWS PART 1".to_string()]
+            vec!["HARBOR PILOT AND THE SILENT HARBORS PART 1".to_string()]
         );
         assert_eq!(year, Some(2010));
     }
@@ -2470,34 +2470,34 @@ mod tests {
     #[test]
     fn extract_library_queries_keeps_raw_parent_folder_title_when_parser_is_lossy() {
         let (queries, year) = extract_library_queries(
-            "/library/The Lion King 1½ (2004)/The Lion King 1½ (2004) Bluray-1080p.mkv",
+            "/library/The Harbor King 1½ (2004)/The Harbor King 1½ (2004) Bluray-1080p.mkv",
             "/library",
         );
 
         assert_eq!(year, Some(2004));
-        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
+        assert!(queries.iter().any(|query| query == "The Harbor King 1½"));
     }
 
     #[test]
     fn extract_library_queries_keeps_raw_human_folder_title_without_explicit_year_suffix() {
         let (queries, year) = extract_library_queries(
-            "/library/The Lion King 1½/The Lion King 1½ Bluray-1080p.mkv",
+            "/library/The Harbor King 1½/The Harbor King 1½ Bluray-1080p.mkv",
             "/library",
         );
 
         assert_eq!(year, None);
-        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
+        assert!(queries.iter().any(|query| query == "The Harbor King 1½"));
     }
 
     #[test]
     fn extract_library_queries_keeps_raw_parent_folder_title_when_context_parse_supplies_year() {
         let (queries, year) = extract_library_queries(
-            "/library/The Lion King 1½ 2004/The Lion King 1½ Bluray-1080p.mkv",
+            "/library/The Harbor King 1½ 2004/The Harbor King 1½ Bluray-1080p.mkv",
             "/library",
         );
 
         assert_eq!(year, Some(2004));
-        assert!(queries.iter().any(|query| query == "The Lion King 1½"));
+        assert!(queries.iter().any(|query| query == "The Harbor King 1½"));
     }
 
     #[test]
@@ -2561,12 +2561,12 @@ mod tests {
         let raw_candidates = vec![
             "Glass Harbor".to_string(),
             "Glass.Harbor".to_string(),
-            "DUFF, The".to_string(),
+            "LANTERN, The".to_string(),
         ];
 
         assert_eq!(
             build_title_match_candidates(&raw_candidates),
-            vec!["glass harbor".to_string(), "the duff".to_string()]
+            vec!["glass harbor".to_string(), "the lantern".to_string()]
         );
     }
 
@@ -2771,18 +2771,18 @@ mod tests {
 
     #[test]
     fn select_movie_metadata_from_batch_results_trusts_smg_safe_with_conflicting_local_evidence() {
-        let mut candidate = build_prepared_movie_candidate(&["The Bourne Supremacy"]);
+        let mut candidate = build_prepared_movie_candidate(&["The Lantern Supremacy"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Nfo,
             imdb_id: None,
             tmdb_id: None,
             tvdb_id: Some("2502".into()),
-            title: Some("The Bourne Supremacy".into()),
+            title: Some("The Lantern Supremacy".into()),
             year: Some(2004),
         });
         let key = BatchMetadataSearchKey::new(
             METADATA_TYPE_MOVIE,
-            "The Bourne Supremacy",
+            "The Lantern Supremacy",
             None,
             candidate.identity_hint.as_ref(),
         )
@@ -2792,7 +2792,7 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "2502".into(),
-                name: "Patton".into(),
+                name: "Pelton".into(),
                 year: Some(1970),
                 auto_match_safe: true,
                 auto_match_signals: vec!["external_id:tvdb".into()],
@@ -2808,18 +2808,18 @@ mod tests {
 
     #[test]
     fn select_movie_metadata_from_batch_results_accepts_external_id_with_title_nuance() {
-        let mut candidate = build_prepared_movie_candidate(&["Furiosa A Mad Max Saga"]);
+        let mut candidate = build_prepared_movie_candidate(&["Feranki A Sand Kettle Saga"]);
         candidate.identity_hint = Some(MetadataIdentityHint {
             source: MetadataIdentitySource::Filename,
             imdb_id: Some("tt12037194".into()),
             tmdb_id: None,
             tvdb_id: None,
-            title: Some("Furiosa A Mad Max Saga".into()),
+            title: Some("Feranki A Sand Kettle Saga".into()),
             year: Some(2024),
         });
         let key = BatchMetadataSearchKey::new(
             METADATA_TYPE_MOVIE,
-            "Furiosa A Mad Max Saga",
+            "Feranki A Sand Kettle Saga",
             None,
             candidate.identity_hint.as_ref(),
         )
@@ -2829,7 +2829,7 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "157390".into(),
-                name: "Furiosa: A Mad Max Saga".into(),
+                name: "Feranki: A Sand Kettle Saga".into(),
                 year: Some(2024),
                 auto_match_safe: true,
                 auto_match_signals: vec!["external_id:imdb".into()],
@@ -3190,14 +3190,14 @@ mod tests {
     #[tokio::test]
     async fn preload_movie_library_scan_candidates_reuses_shared_fallback_queries() {
         let gateway = CountingMetadataGateway::default();
-        gateway.set_search_results(METADATA_TYPE_MOVIE, "MON COUSIN AKA MY COUSIN", vec![]);
-        gateway.set_search_results(METADATA_TYPE_MOVIE, "MON COUSIN", vec![]);
+        gateway.set_search_results(METADATA_TYPE_MOVIE, "MON PHARE AKA MY LIGHTHOUSE", vec![]);
+        gateway.set_search_results(METADATA_TYPE_MOVIE, "MON PHARE", vec![]);
         gateway.set_search_results(
             METADATA_TYPE_MOVIE,
-            "MY COUSIN",
+            "MY LIGHTHOUSE",
             vec![MetadataSearchItem {
                 tvdb_id: "movie-2".into(),
-                name: "My Cousin".into(),
+                name: "My Lighthouse".into(),
                 year: Some(2020),
                 auto_match_safe: true,
                 auto_match_signals: vec!["exact_title".into(), "exact_year".into()],
@@ -3205,8 +3205,8 @@ mod tests {
         );
 
         let files = vec![
-            build_library_file("/library/Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.mkv"),
-            build_library_file("/library/My.Cousin.2020.720p.WEB-DL.mkv"),
+            build_library_file("/library/Mon.Phare.A.K.A.My.Lighthouse.2020.1080p.BluRay.mkv"),
+            build_library_file("/library/My.Lighthouse.2020.720p.WEB-DL.mkv"),
         ];
 
         let (candidates, stats) =
@@ -3215,7 +3215,7 @@ mod tests {
                 .expect("movie preload should succeed");
 
         assert_eq!(
-            gateway.search_call_count(METADATA_TYPE_MOVIE, "MY COUSIN"),
+            gateway.search_call_count(METADATA_TYPE_MOVIE, "MY LIGHTHOUSE"),
             1
         );
         assert_eq!(stats.logical_lookups, 2);
@@ -3298,20 +3298,20 @@ mod tests {
     #[tokio::test]
     async fn prepare_movie_candidate_ignores_plexmatch_hint() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let folder = tempdir.path().join("The Bourne Supremacy (2004)");
+        let folder = tempdir.path().join("The Lantern Supremacy (2004)");
         std::fs::create_dir_all(&folder).expect("create movie dir");
-        let movie_path = folder.join("The Bourne Supremacy (2004) Remux-1080p.mkv");
+        let movie_path = folder.join("The Lantern Supremacy (2004) Remux-1080p.mkv");
         std::fs::write(&movie_path, b"movie").expect("write movie");
         std::fs::write(
             folder.join(".plexmatch"),
-            "title: Patton\nyear: 1970\ntvdbid: 2502\n",
+            "title: Pelton\nyear: 1970\ntvdbid: 2502\n",
         )
         .expect("write plexmatch");
 
         let candidate = prepare_movie_library_scan_candidate(
             LibraryFile {
                 path: path_to_stored_string(&movie_path),
-                display_name: "The Bourne Supremacy (2004) Remux-1080p".into(),
+                display_name: "The Lantern Supremacy (2004) Remux-1080p".into(),
                 nfo_path: None,
                 size_bytes: None,
                 source_signature_scheme: None,
@@ -3322,11 +3322,11 @@ mod tests {
         .await
         .expect("prepare movie candidate");
 
-        assert_eq!(candidate.query, "The Bourne Supremacy");
+        assert_eq!(candidate.query, "The Lantern Supremacy");
         assert_eq!(candidate.year_hint, Some(2004));
         assert!(candidate.identity_hint.as_ref().is_none_or(|hint| {
             hint.tvdb_id.as_deref() != Some("2502")
-                && hint.title.as_deref() != Some("Patton")
+                && hint.title.as_deref() != Some("Pelton")
                 && hint.year != Some(1970)
         }));
     }
@@ -3636,16 +3636,16 @@ mod tests {
     #[tokio::test]
     async fn directory_movie_nfo_path_finds_folder_movie_nfo_without_same_stem() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let movie_dir = dir.path().join("Anastasia (1997)");
+        let movie_dir = dir.path().join("Aurelia (1997)");
         tokio::fs::create_dir_all(&movie_dir)
             .await
             .expect("movie dir");
-        let movie_path = movie_dir.join("Anastasia (1997) Bluray-1080p.mkv");
+        let movie_path = movie_dir.join("Aurelia (1997) Bluray-1080p.mkv");
         tokio::fs::write(&movie_path, b"movie")
             .await
             .expect("movie file");
         let movie_nfo = movie_dir.join("movie.nfo");
-        tokio::fs::write(&movie_nfo, b"<movie><title>Anastasia</title></movie>")
+        tokio::fs::write(&movie_nfo, b"<movie><title>Aurelia</title></movie>")
             .await
             .expect("movie nfo");
 
@@ -3663,21 +3663,21 @@ mod tests {
     #[tokio::test]
     async fn prepare_movie_candidate_leads_with_id_anchored_lookup_for_nfo_ids() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let folder = tempdir.path().join("Anastasia (1997)");
+        let folder = tempdir.path().join("Aurelia (1997)");
         std::fs::create_dir_all(&folder).expect("create movie dir");
-        let movie_path = folder.join("Anastasia (1997) Bluray-1080p.mkv");
+        let movie_path = folder.join("Aurelia (1997) Bluray-1080p.mkv");
         std::fs::write(&movie_path, b"movie").expect("write movie");
         let movie_nfo = folder.join("movie.nfo");
         std::fs::write(
             &movie_nfo,
-            r#"<movie><title>Anastasia</title><year>1997</year><imdbid>tt0118617</imdbid><tvdbid>933</tvdbid><tmdbid>9444</tmdbid></movie>"#,
+            r#"<movie><title>Aurelia</title><year>1997</year><imdbid>tt0118617</imdbid><tvdbid>933</tvdbid><tmdbid>9444</tmdbid></movie>"#,
         )
         .expect("write movie nfo");
 
         let candidate = prepare_movie_library_scan_candidate(
             LibraryFile {
                 path: path_to_stored_string(&movie_path),
-                display_name: "Anastasia (1997) Bluray-1080p".into(),
+                display_name: "Aurelia (1997) Bluray-1080p".into(),
                 nfo_path: Some(path_to_stored_string(&movie_nfo)),
                 size_bytes: None,
                 source_signature_scheme: None,

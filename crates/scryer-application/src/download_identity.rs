@@ -1,6 +1,9 @@
 use scryer_domain::{CompletedDownload, Id};
 
-use crate::{DownloadSourceKind, DownloadSubmission, DownloadSubmissionIdentity, SubmissionScope};
+use crate::{
+    DownloadSourceKind, DownloadSubmission, DownloadSubmissionIdentity, SubmissionScope,
+    extract_magnet_info_hash,
+};
 
 pub const DOWNLOAD_ID_PARAMETER: &str = "*scryer_download_id";
 
@@ -192,14 +195,7 @@ fn normalize_observed_identity_field(value: &str) -> String {
 }
 
 fn normalize_magnet_info_hash(raw: Option<&str>) -> Option<String> {
-    let value = normalize_lower(raw)?;
-    if !value.starts_with("magnet:?") {
-        return None;
-    }
-    let hash = value
-        .split('&')
-        .find_map(|part| part.strip_prefix("xt=urn:btih:").map(str::to_string))?;
-    normalize_torrent_info_hash(Some(&hash))
+    raw.and_then(extract_magnet_info_hash)
 }
 
 fn source_kind_is_torrent(source_kind: Option<DownloadSourceKind>) -> bool {

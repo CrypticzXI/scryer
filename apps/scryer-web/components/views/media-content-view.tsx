@@ -26,6 +26,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { deriveInteractiveSearchPresentation } from "@/lib/utils/interactive-search-presentation";
 import {
   AnidbExternalLink,
   AnilistExternalLink,
@@ -716,25 +717,39 @@ function TitleContextReleaseSearchPanel({
     React.useState<ReleaseSearchSortKey>("score");
   const [sortDirection, setSortDirection] =
     React.useState<ReleaseSearchSortDirection>("desc");
+  const searchPresentation = React.useMemo(
+    () =>
+      deriveInteractiveSearchPresentation({
+        hasSnapshot: results !== null,
+        loading,
+        resultCount: results?.length ?? 0,
+        indexers: indexerProgress ?? [],
+      }),
+    [indexerProgress, loading, results],
+  );
   const releaseSearchDescription = React.useMemo(() => {
     if (results === null) {
       return t("help.interactiveSearchTooltip");
     }
 
     if (loading && indexerProgress !== null) {
-      const done = indexerProgress.filter(
-        (indexer) =>
-          indexer.status === "COMPLETED" ||
-          indexer.status === "FAILED" ||
-          indexer.status === "SKIPPED",
-      ).length;
       return t("title.contextReleaseSearchProgress", {
         releaseCount: results.length,
-        done,
-        total: indexerProgress.length,
+        done: searchPresentation.completedIndexerCount,
+        total: searchPresentation.totalIndexerCount,
       });
     }
 
+    // Report what the run did, not which sources happened to return
+    // results: an indexer that answered with nothing still searched, and one
+    // that failed or was skipped is called out on its own line below.
+    if (searchPresentation.totalIndexerCount > 0) {
+      return t("title.contextReleaseSearchSummaryDetailed", {
+        releaseCount: results.length,
+        searched: searchPresentation.searchedIndexerCount,
+        total: searchPresentation.totalIndexerCount,
+      });
+    }
     const sourceCount = new Set(
       results
         .map((release) => release.source?.trim())
@@ -744,12 +759,7 @@ function TitleContextReleaseSearchPanel({
       releaseCount: results.length,
       indexerCount: sourceCount,
     });
-  }, [indexerProgress, loading, results, t]);
-  const failedIndexers = React.useMemo(
-    () =>
-      (indexerProgress ?? []).filter((indexer) => indexer.status === "FAILED"),
-    [indexerProgress],
-  );
+  }, [indexerProgress, loading, results, searchPresentation, t]);
 
   const handleSortChange = React.useCallback(
     (
@@ -858,14 +868,41 @@ function TitleContextReleaseSearchPanel({
           <h3 className="truncate text-[14.5px] font-bold text-[var(--scry-ink2)]">
             {t("label.interactiveSearch")}
           </h3>
-          <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-faint)]">
-            {releaseSearchDescription}
+          <p
+            className="mt-0.5 flex items-center gap-1.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+            data-ui="title-release-search-summary"
+            data-search-state={loading ? "searching" : "done"}
+          >
+            {loading && indexerProgress !== null ? (
+              <Loader2
+                className="h-3 w-3 shrink-0 animate-spin"
+                aria-label={t("label.searching")}
+              />
+            ) : null}
+            <span className="truncate">{releaseSearchDescription}</span>
           </p>
-          {!loading && failedIndexers.length > 0 ? (
+          {!loading && searchPresentation.failedIndexerNames.length > 0 ? (
             <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-danger-text)]">
               {t("title.contextReleaseSearchIndexerFailures", {
-                count: failedIndexers.length,
-                names: failedIndexers.map((indexer) => indexer.name).join(", "),
+                count: searchPresentation.failedIndexerNames.length,
+                names: searchPresentation.failedIndexerNames.join(", "),
+              })}
+            </p>
+          ) : null}
+          {!loading && searchPresentation.skippedIndexers.length > 0 ? (
+            <p
+              className="mt-0.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+              title={searchPresentation.skippedIndexers
+                .map((indexer) =>
+                  indexer.reason ? `${indexer.name}: ${indexer.reason}` : indexer.name,
+                )
+                .join("\n")}
+            >
+              {t("title.contextReleaseSearchIndexerSkipped", {
+                count: searchPresentation.skippedIndexers.length,
+                names: searchPresentation.skippedIndexers
+                  .map((indexer) => indexer.name)
+                  .join(", "),
               })}
             </p>
           ) : null}

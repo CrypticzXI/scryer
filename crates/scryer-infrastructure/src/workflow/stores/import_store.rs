@@ -232,6 +232,28 @@ impl ImportRepository for ImportStore {
         .await
     }
 
+    async fn list_completed_manual_imports(
+        &self,
+        updated_after: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> AppResult<Vec<ImportRecord>> {
+        fetch_imports(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {IMPORT_COLUMNS} FROM imports
+                 WHERE import_type = {{}} AND status = 'completed'
+                   AND updated_at >= {{}}
+                 ORDER BY updated_at DESC LIMIT {{}}"
+            ),
+            &[
+                SqlArg::Text(ImportType::ManualImport.as_str().to_string()),
+                SqlArg::Timestamp(updated_after),
+                SqlArg::I64((limit as i64).clamp(1, 500)),
+            ],
+        )
+        .await
+    }
+
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
         let already_imported_predicate = already_imported_status_predicate(&self.datastore);
         let row = SqlRuntime::fetch_optional(
@@ -346,8 +368,8 @@ impl ImportRepository for ImportStore {
                         SqlExec::Tx(tx),
                         "INSERT INTO manual_import_selections
                          (id, actor_user_id, title_id, source_client_id, source_system, source_ref,
-                          consumed_at, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, NULL, {}, {})",
+                          release_evidence_json, consumed_at, created_at, updated_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, NULL, {}, {})",
                         &[
                             SqlArg::Text(selection.id.clone()),
                             SqlArg::Text(selection.actor_user_id.clone()),
@@ -355,6 +377,7 @@ impl ImportRepository for ImportStore {
                             identity_args[0].clone(),
                             identity_args[1].clone(),
                             identity_args[2].clone(),
+                            SqlArg::OptText(selection.release_evidence_json.clone()),
                             SqlArg::Timestamp(now),
                             SqlArg::Timestamp(now),
                         ],
@@ -370,7 +393,10 @@ impl ImportRepository for ImportStore {
                                 SqlArg::Text(candidate.id.clone()),
                                 SqlArg::Text(selection.id.clone()),
                                 SqlArg::Text(candidate.canonical_path.clone()),
-                                SqlArg::OptText(candidate.quality.clone()),
+                                // Retain the legacy column for already-created
+                                // databases, but never persist filename-derived
+                                // quality as manual-import score evidence.
+                                SqlArg::OptText(None),
                                 SqlArg::Timestamp(now),
                             ],
                         )
@@ -391,7 +417,7 @@ impl ImportRepository for ImportStore {
     ) -> AppResult<Option<ManualImportSelection>> {
         let selection = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref
+            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
              FROM manual_import_selections
              WHERE actor_user_id = {} AND title_id = {}
                AND source_client_id = {} AND source_system = {} AND source_ref = {}
@@ -429,7 +455,7 @@ impl ImportRepository for ImportStore {
     ) -> AppResult<Option<ManualImportSelection>> {
         let selection = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref
+            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
              FROM manual_import_selections
              WHERE id = {} AND actor_user_id = {} AND consumed_at IS NULL",
             &[
@@ -474,7 +500,7 @@ impl ImportRepository for ImportStore {
                 Box::pin(async move {
                     let selection = SqlRuntime::fetch_optional(
                         SqlExec::Tx(tx),
-                        "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref
+                        "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
                          FROM manual_import_selections
                          WHERE id = {} AND actor_user_id = {} AND consumed_at IS NULL",
                         &[
@@ -588,7 +614,6 @@ fn manual_import_selection_from_rows(
             Ok(ManualImportSelectionCandidate {
                 id: candidate.text("id")?,
                 canonical_path: candidate.text("canonical_path")?,
-                quality: candidate.opt_text("quality")?,
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
@@ -596,6 +621,7 @@ fn manual_import_selection_from_rows(
         id: row.text("id")?,
         actor_user_id: row.text("actor_user_id")?,
         title_id: row.text("title_id")?,
+        release_evidence_json: row.opt_text("release_evidence_json")?,
         source_identity: DownloadSourceIdentity::new(
             row.opt_text("source_client_id")?.as_deref(),
             row.text("source_system")?,

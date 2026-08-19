@@ -1562,15 +1562,15 @@ mod tests {
 
     #[test]
     fn title_scan_prefers_unlinked_series_movie_title_over_weak_episode_identity() {
-        let title = title("Psycho-Pass", MediaFacet::Anime);
+        let title = title("Cipher-Pass", MediaFacet::Anime);
         let episodes = vec![episode("ep-1-3", "1", "3")];
         let series_movie_links = vec![series_movie_link(
-            "Psycho-Pass: Sinners of the System - Case.3 In the Realm Beyond Is ____",
+            "Cipher-Pass: Keepers of the Signal - Case.3 In the Harbor Beyond Is ____",
             None,
         )];
         let input = LibraryFilenameParseInput {
             path: Path::new(
-                "/library/Psycho-Pass (2024)/Psycho-Pass.Sinners.of.the.System.Case.3.In.the.Realm.Beyond.Is.2024.720p.WEB-DL.AV1.mkv",
+                "/library/Cipher-Pass (2024)/Cipher-Pass.Keepers.of.the.Signal.Case.3.In.the.Harbor.Beyond.Is.2024.720p.WEB-DL.AV1.mkv",
             ),
             display_name: None,
             library_root: Some(Path::new("/library")),

@@ -8,7 +8,7 @@ async fn check_emits_manual_interaction_notification_once() {
     let completed = build_completed_download(
         "Unknown.Show.S01.Complete.1080p",
         existing_dir.to_string_lossy().as_ref(),
-        None,
+        Some("series"),
     );
     let download_client = Arc::new(TestDownloadClient {
         completed_downloads: Arc::new(Mutex::new(vec![CompletedDownload {
@@ -42,7 +42,7 @@ async fn check_emits_manual_interaction_notification_once() {
             episode_id: None,
             title_name: "Unknown.Show.S01.Complete.1080p".to_string(),
             facet: Some("series".to_string()),
-            category: None,
+            category: Some("series".to_string()),
             client_id: "client-1".to_string(),
             client_name: "NZBGet".to_string(),
             client_type: "nzbget".to_string(),
@@ -90,6 +90,7 @@ async fn check_emits_manual_interaction_notification_once() {
         waiting_for_completed_history: false,
         path_missing_since: None,
         no_video_import_retry: None,
+        import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
         snapshot_missing_since: None,

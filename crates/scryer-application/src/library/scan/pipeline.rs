@@ -2383,7 +2383,7 @@ struct QueuedMatchCandidate {
 
 struct ScanMatchWorkerState {
     existing_titles: Vec<Title>,
-    existing_titles_by_name: HashMap<String, usize>,
+    existing_titles_by_name: TitleNameIndex,
     existing_titles_by_tvdb_id: HashMap<String, usize>,
     existing_titles_by_imdb_id: HashMap<String, usize>,
     existing_titles_by_tmdb_id: HashMap<String, usize>,

@@ -1,11 +1,13 @@
 use super::*;
 use super::{check::*, execute::*, lookup::*, path_state::*, result_state::*, verification::*};
 
-mod category_gate;
+mod category_admission;
+mod import_target;
 mod lookup_identity;
 mod notifications;
 mod path_state;
 mod result_state;
+mod route_gate;
 mod snapshot_resolution;
 mod verification;
 
@@ -15,15 +17,13 @@ use crate::null_repositories::test_nulls::{
 };
 use crate::{
     ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
-    CreateTitleOutcome, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, DomainEventRepository, DownloadClient,
-    DownloadClientAddRequest, DownloadClientConfigRepository, DownloadGrabResult,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry, ImportArtifact,
-    ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration,
-    QualityProfile, QualityProfileRepository, SETTINGS_SCOPE_SYSTEM, ScopedExternalId,
-    SeriesMovieExternalIdLookupMatch, SettingsRepository, ShowRepository, SubmissionScope,
-    TitleExternalIdLookup, TitleMetadataUpdate, TitleRepository,
+    CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
+    DownloadClientConfigRepository, DownloadGrabResult, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry,
+    ImportArtifact, ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig,
+    PendingTitleHydration, QualityProfile, QualityProfileRepository, ScopedExternalId,
+    SeriesMovieExternalIdLookupMatch, SettingsRepository, ShowRepository, TitleExternalIdLookup,
+    TitleMetadataUpdate, TitleRepository,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -33,12 +33,9 @@ use scryer_domain::{
     MediaFacet, NewDomainEvent, Title, TitleHistoryEventType, TitleMatchType, TrackedDownloadState,
     TrackedDownloadStatus, User,
 };
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use tokio::sync::Mutex;
 
@@ -519,6 +516,217 @@ impl ShowRepository for TestShowRepo {
         _: Vec<ScopedExternalId>,
     ) -> AppResult<()> {
         Ok(())
+    }
+}
+
+type ImportStatusUpdates = Arc<Mutex<Vec<(String, ImportStatus, Option<String>)>>>;
+
+/// In-memory `imports` table: queued requests are appended (newest first on
+/// listing, like the store), status updates are recorded per import id.
+#[derive(Default)]
+struct TestImportRepo {
+    records: Arc<Mutex<Vec<scryer_domain::ImportRecord>>>,
+    status_updates: ImportStatusUpdates,
+    /// When set, `queue_import_request` fails with a repository error — the
+    /// shape of a DB hiccup that surfaces before an attempt can be recorded.
+    fail_queue: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TestImportRepo {
+    fn with_records(records: Vec<scryer_domain::ImportRecord>) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(records)),
+            status_updates: Arc::new(Mutex::new(Vec::new())),
+            fail_queue: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn fail_queueing(&self) {
+        self.fail_queue
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The most recent `ImportResult` recorded through a status update.
+    async fn last_import_result(&self) -> Option<ImportResult> {
+        self.status_updates
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .find_map(|(_, _, result_json)| {
+                result_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<ImportResult>(json).ok())
+            })
+    }
+
+    /// `target_title_id` persisted in the most recently queued request payload.
+    async fn last_queued_target_title_id(&self) -> Option<String> {
+        let records = self.records.lock().await;
+        let record = records.last()?;
+        let payload: serde_json::Value = serde_json::from_str(&record.payload_json).ok()?;
+        payload
+            .get("target_title_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    }
+}
+
+fn test_import_record(
+    id: &str,
+    source_identity: &DownloadSourceIdentity,
+    status: ImportStatus,
+    payload_json: String,
+) -> scryer_domain::ImportRecord {
+    let now = Utc::now().to_rfc3339();
+    scryer_domain::ImportRecord {
+        id: id.to_string(),
+        source_client_id: source_identity.client_id.clone(),
+        source_system: source_identity.client_type.clone(),
+        source_ref: source_identity.item_id.clone(),
+        import_type: scryer_domain::ImportType::MovieDownload,
+        status,
+        payload_json,
+        result_json: None,
+        download_id: None,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
+        started_at: Some(now.clone()),
+        finished_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+#[async_trait]
+impl crate::ImportRepository for TestImportRepo {
+    async fn queue_import_request(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+    ) -> AppResult<String> {
+        if self.fail_queue.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AppError::Repository(
+                "simulated import queue failure".to_string(),
+            ));
+        }
+        let import_id = Id::new().0;
+        let import_type = scryer_domain::ImportType::parse(&import_type)
+            .unwrap_or(scryer_domain::ImportType::MovieDownload);
+        let mut record = test_import_record(
+            &import_id,
+            &source_identity,
+            ImportStatus::Pending,
+            payload_json,
+        );
+        record.import_type = import_type;
+        self.records.lock().await.push(record);
+        Ok(import_id)
+    }
+
+    async fn get_import_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .find(|record| record.id == id)
+            .cloned())
+    }
+
+    async fn update_import_status(
+        &self,
+        import_id: &str,
+        status: ImportStatus,
+        result_json: Option<String>,
+    ) -> AppResult<()> {
+        if let Some(record) = self
+            .records
+            .lock()
+            .await
+            .iter_mut()
+            .find(|record| record.id == import_id)
+        {
+            record.status = status;
+            record.result_json = result_json.clone();
+        }
+        self.status_updates
+            .lock()
+            .await
+            .push((import_id.to_string(), status, result_json));
+        Ok(())
+    }
+
+    async fn update_import_transfer_progress(
+        &self,
+        _: &str,
+        _: scryer_domain::ImportTransferPhase,
+        _: i64,
+        _: i64,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn recover_stale_processing_imports(&self, _: i64) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn recover_stale_processing_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+        _: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_pending_imports(&self) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(vec![])
+    }
+
+    async fn list_pending_imports_for_type(
+        &self,
+        _: scryer_domain::ImportType,
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(vec![])
+    }
+
+    async fn list_imports_for_identities(
+        &self,
+        identities: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(self
+            .records
+            .lock()
+            .await
+            .iter()
+            .rev()
+            .filter(|record| {
+                identities.iter().any(|identity| {
+                    record.source_client_id.as_deref().unwrap_or("")
+                        == identity.client_id_or_empty()
+                        && record.source_system == identity.client_type
+                        && record.source_ref == identity.item_id
+                })
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        Ok(self.records.lock().await.iter().any(|record| {
+            record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
+                && record.source_system == identity.client_type
+                && record.source_ref == identity.item_id
+                && record.status == ImportStatus::Completed
+        }))
+    }
+
+    async fn list_imports(&self, _: usize) -> AppResult<Vec<scryer_domain::ImportRecord>> {
+        Ok(self.records.lock().await.clone())
     }
 }
 
@@ -1138,102 +1346,6 @@ impl DomainEventRepository for TestDomainEventRepo {
     }
 }
 
-type TestSettingsKey = (String, String, Option<String>);
-type TestSettingsValues = Arc<Mutex<HashMap<TestSettingsKey, String>>>;
-
-#[derive(Default)]
-struct TestSettingsRepo {
-    values: TestSettingsValues,
-    failing_read_key: Option<String>,
-}
-
-impl TestSettingsRepo {
-    fn failing_reads_for(key_name: &str) -> Self {
-        Self {
-            values: Arc::new(Mutex::new(HashMap::new())),
-            failing_read_key: Some(key_name.to_string()),
-        }
-    }
-
-    async fn set_scoped_json(&self, scope: &str, key_name: &str, scope_id: &str, value_json: &str) {
-        self.values.lock().await.insert(
-            (
-                scope.to_string(),
-                key_name.to_string(),
-                Some(scope_id.to_string()),
-            ),
-            value_json.to_string(),
-        );
-    }
-}
-
-#[async_trait]
-impl SettingsRepository for TestSettingsRepo {
-    async fn get_setting_json(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<String>> {
-        if self.failing_read_key.as_deref() == Some(key_name) {
-            return Err(AppError::Repository(format!(
-                "settings read deliberately failed for {key_name}"
-            )));
-        }
-        Ok(self
-            .values
-            .lock()
-            .await
-            .get(&(scope.to_string(), key_name.to_string(), scope_id))
-            .cloned())
-    }
-
-    async fn get_setting_json_explicit(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<Option<String>> {
-        self.get_setting_json(scope, key_name, scope_id).await
-    }
-
-    async fn upsert_setting_json(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-        value_json: String,
-        _source: &str,
-        _updated_by_user_id: Option<String>,
-    ) -> AppResult<()> {
-        self.values.lock().await.insert(
-            (scope.to_string(), key_name.to_string(), scope_id),
-            value_json,
-        );
-        Ok(())
-    }
-
-    async fn delete_setting_value(
-        &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-    ) -> AppResult<()> {
-        self.values
-            .lock()
-            .await
-            .remove(&(scope.to_string(), key_name.to_string(), scope_id));
-        Ok(())
-    }
-
-    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
-        let mut values = self.values.lock().await;
-        let before = values.len();
-        values.retain(|(_, _, stored_scope_id), _| stored_scope_id.as_deref() != Some(scope_id));
-        Ok((before - values.len()) as u32)
-    }
-}
-
 fn build_app(
     titles: Vec<Title>,
     collections: Vec<Collection>,
@@ -1360,13 +1472,6 @@ fn build_app_with_download_client_configs_submissions_and_settings(
 }
 
 /// A facet registry populated the way production populates it.
-///
-/// An EMPTY registry makes `derive_download_category_for_ownership` fall through
-/// to its `"other"` fallback for every facet, so the owned-category snapshot
-/// ends up as `{"other"}` — and a download carrying a perfectly ordinary
-/// `movie` category looks like a category Scryer never configured, is
-/// classified ForeignCategory, and never reaches the checks these tests are
-/// actually about.
 fn test_facet_registry() -> FacetRegistry {
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(crate::MovieFacetHandler));
@@ -1588,6 +1693,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
         waiting_for_completed_history: false,
         path_missing_since: None,
         no_video_import_retry: None,
+        import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
         snapshot_missing_since: None,
@@ -1605,6 +1711,7 @@ fn build_completed_download(
         download_client_item_id: "dl-1".to_string(),
         download_id: None,
         name: name.to_string(),
+        release_name: None,
         dest_dir: dest_dir.to_string(),
         category: category.map(str::to_string),
         size_bytes: None,
@@ -1620,115 +1727,4 @@ fn test_download_client_with_completed(completed: CompletedDownload) -> Arc<Test
         recent_completed_download_calls: Arc::new(AtomicUsize::new(0)),
         scoped_recent_completed_calls: Arc::new(Mutex::new(Vec::new())),
     })
-}
-
-fn build_unmanaged_completed_tracked_download(
-    category: Option<&str>,
-    match_type: TitleMatchType,
-    is_scryer_origin: bool,
-) -> TrackedDownload {
-    let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p.WEB-DL");
-    td.client_item.is_scryer_origin = is_scryer_origin;
-    td.client_item.category = category.map(str::to_string);
-    td.match_type = match_type;
-    td
-}
-
-async fn run_category_gate_check(
-    settings: Arc<TestSettingsRepo>,
-    completed_category: Option<&str>,
-    queue_category: Option<&str>,
-    match_type: TitleMatchType,
-    is_scryer_origin: bool,
-) -> TrackedDownload {
-    if matches!(
-        settings
-            .get_setting_json(
-                SETTINGS_SCOPE_SYSTEM,
-                DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-                Some("movie".to_string()),
-            )
-            .await,
-        Ok(None)
-    ) {
-        set_scoped_default_category(&settings, "movie", "movie").await;
-    }
-
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    // These cases exercise the CATEGORY gate, so the download must otherwise be
-    // importable. An empty directory is not: a non-Scryer-origin download with
-    // no video is classified NoImportableVideo and parked, which masked the
-    // category outcome under an unrelated one. Tests that mean to exercise the
-    // no-video path build their own fixture without this file.
-    std::fs::write(
-        temp_dir.path().join("Paper.Lantern.2012.1080p.WEB-DL.mkv"),
-        b"video",
-    )
-    .expect("write fixture video");
-    let completed = build_completed_download(
-        "Paper.Lantern.2012.1080p.WEB-DL",
-        temp_dir.path().to_string_lossy().as_ref(),
-        completed_category,
-    );
-    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
-    let download_client = test_download_client_with_completed(completed);
-    let app = build_app_with_download_client_configs_submissions_and_settings(
-        vec![title],
-        vec![],
-        vec![],
-        vec![],
-        TestAppRepositories {
-            download_client,
-            // The category gate reads ownership from CONFIGURED clients; with a
-            // null config repo the ownership snapshot never exists and the gate
-            // silently never runs, so these cases were asserting against a gate
-            // that was switched off.
-            download_client_configs: Arc::new(TestDownloadClientConfigRepo {
-                configs: vec![DownloadClientConfig {
-                    id: "client-1".to_string(),
-                    name: "Test NZBGet".to_string(),
-                    client_type: "nzbget".to_string(),
-                    config_json: "{}".to_string(),
-                    is_enabled: true,
-                    status: scryer_domain::DownloadClientStatus::Healthy,
-                    last_error: None,
-                    last_seen_at: None,
-                    client_priority: 0,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
-                }],
-            }),
-            download_submissions: Arc::new(
-                crate::null_repositories::NullDownloadSubmissionRepository,
-            ),
-            settings,
-        },
-    );
-    let mut td =
-        build_unmanaged_completed_tracked_download(queue_category, match_type, is_scryer_origin);
-
-    check(&app, &mut td).await;
-    td
-}
-
-async fn set_scoped_routing(settings: &TestSettingsRepo, scope_id: &str, routing_json: &str) {
-    settings
-        .set_scoped_json(
-            SETTINGS_SCOPE_SYSTEM,
-            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-            scope_id,
-            routing_json,
-        )
-        .await;
-}
-
-async fn set_scoped_default_category(settings: &TestSettingsRepo, scope_id: &str, category: &str) {
-    settings
-        .set_scoped_json(
-            SETTINGS_SCOPE_SYSTEM,
-            DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-            scope_id,
-            &serde_json::json!(category).to_string(),
-        )
-        .await;
 }

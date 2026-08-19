@@ -705,9 +705,8 @@ async fn process_single_target(
                         // ── End season pack upgrade guard ────────────────────────────
 
                         let pack_url = best_pack
-                            .download_url
-                            .clone()
-                            .or_else(|| best_pack.link.clone());
+                            .canonical_download_source()
+                            .map(|(source, _)| source);
                         let url_str = pack_url.as_deref().unwrap_or("").to_string();
                         let pack_attempt = (pack_route.clone(), url_str.clone());
 
@@ -960,15 +959,20 @@ async fn process_single_target(
                                         retry_alternate_route = submit_unavailable,
                                         "season pack grab failed"
                                     );
+                                    // Transient (client unavailable) and ambiguous
+                                    // (request may have been accepted) submits are
+                                    // deferred: Pending attempt, never blocklisted.
+                                    // Only a definitive failure burns the pack.
+                                    let defer = submit_unavailable || ambiguous;
                                     let _ = app
                                         .services
                                         .workflow
                                         .release_attempts
                                         .record_release_attempt(
                                             Some(title.id.clone()),
-                                            pack_hint,
-                                            pack_title_norm,
-                                            if submit_unavailable {
+                                            pack_hint.clone(),
+                                            pack_title_norm.clone(),
+                                            if defer {
                                                 ReleaseDownloadAttemptOutcome::Pending
                                             } else {
                                                 ReleaseDownloadAttemptOutcome::Failed
@@ -977,6 +981,41 @@ async fn process_single_target(
                                             pack_password,
                                         )
                                         .await;
+                                    if !defer {
+                                        let pack_scope =
+                                            collection_download_submission_scope_for_wanted_item(
+                                                item,
+                                                episode.as_ref(),
+                                            );
+                                        if let Err(error) = app
+                                            .services
+                                            .workflow
+                                            .blocklist_repo
+                                            .add(&NewBlocklistEntry {
+                                                title_id: title.id.clone(),
+                                                source_title: pack_title_norm,
+                                                source_hint: pack_hint,
+                                                quality: None,
+                                                download_id: None,
+                                                reason: Some(format!(
+                                                    "season pack grab failed: {err}"
+                                                )),
+                                                data: blocklist_entry_data(
+                                                    item.episode_id.as_slice(),
+                                                    pack_scope.collection_id(),
+                                                    pack_scope.series_movie_link_id(),
+                                                ),
+                                            })
+                                            .await
+                                        {
+                                            warn!(
+                                                error = %error,
+                                                title_id = title.id.as_str(),
+                                                release = best_pack.title.as_str(),
+                                                "failed to persist blocklist entry for failed season pack grab"
+                                            );
+                                        }
+                                    }
                                     if !submit_unavailable {
                                         break 'season_pack_candidates;
                                     }
@@ -1085,19 +1124,13 @@ async fn process_single_target(
         "background acquisition: evaluating candidates"
     );
 
-    // Load DB-level blocklist (covers post-import failures like fake/non-video files,
-    // in addition to the download-client snapshot checked below).
-    let db_blocklist: std::collections::HashSet<String> = app
-        .services
-        .workflow
-        .release_attempts
-        .list_failed_release_signatures_for_title(&title.id, 200)
+    // Load the per-title blocklist (covers post-import failures like fake/non-video
+    // files, in addition to the download-client snapshot checked below). It is the
+    // single, removable exclusion source; the failed-attempt log never gates.
+    let db_blocklist = app
+        .load_title_release_blocklist_signatures(&title.id)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|e| e.source_title)
-        .map(|t| t.to_ascii_lowercase())
-        .collect();
+        .source_titles;
     let existing_files = app
         .services
         .library
@@ -1286,15 +1319,16 @@ async fn process_single_target(
                     .unwrap_or_default()
                 });
 
+                let canonical_source = candidate.canonical_download_source();
                 app.insert_pending_release(
                     item,
                     &title,
                     &candidate.title,
-                    candidate
-                        .download_url
-                        .as_deref()
-                        .or(candidate.link.as_deref()),
-                    candidate.source_kind,
+                    canonical_source.as_ref().map(|(source, _)| source.as_str()),
+                    canonical_source
+                        .as_ref()
+                        .map(|(_, kind)| *kind)
+                        .or(candidate.source_kind),
                     candidate.size_bytes,
                     candidate_score,
                     scoring_json,
@@ -1339,10 +1373,10 @@ async fn process_single_target(
         }
 
         // Submit to download client
-        let source_hint = candidate
-            .download_url
-            .clone()
-            .or_else(|| candidate.link.clone());
+        let canonical_source = candidate.canonical_download_source();
+        let source_hint = canonical_source
+            .as_ref()
+            .map(|(source, _)| source.clone());
 
         // Successful or ambiguous submissions stay globally deduplicated, but
         // a failed URL is suppressed only within its source/indexer route.
@@ -1372,13 +1406,14 @@ async fn process_single_target(
         }
 
         let source_title = Some(candidate.title.clone());
+        let canonical_source_kind = canonical_source.as_ref().map(|(_, kind)| *kind).or(candidate.source_kind);
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
         let source_password = normalize_release_password(candidate.password_hint.as_deref());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
             source_title.as_deref(),
-            candidate.source_kind,
+            canonical_source_kind,
         );
 
         let _ = app
@@ -1435,7 +1470,7 @@ async fn process_single_target(
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 resolved_download_artifact: None,
-                source_kind: candidate.source_kind,
+                source_kind: canonical_source_kind,
                 source_title: source_title.clone(),
                 source_password: source_password.clone(),
                 category: Some(download_cat.clone()),
@@ -1652,9 +1687,8 @@ async fn process_single_target(
                         collection_id: item.collection_id.clone(),
                     };
                     let candidate_source_hint = candidate
-                        .download_url
-                        .clone()
-                        .or_else(|| candidate.link.clone())
+                        .canonical_download_source()
+                        .map(|(source, _)| source)
                         .unwrap_or_else(|| candidate.source.clone());
                     let quality = candidate
                         .parsed_release_metadata
@@ -1662,6 +1696,11 @@ async fn process_single_target(
                         .and_then(|parsed| parsed.quality.clone())
                         .or_else(|| release_quality_hint(Some(candidate.title.as_str())));
 
+                    // A definitive grab failure burns the release for this title:
+                    // the per-title blocklist entry is what search-time exclusion
+                    // consults (and what the operator can remove); the Failed
+                    // attempt is the audit record. Transient failures never
+                    // reach here (Pending above).
                     record_failed_release_outcome(
                         app,
                         Some(title.id.as_str()),
@@ -1674,7 +1713,7 @@ async fn process_single_target(
                         None,
                         quality,
                         Some(failure_reason),
-                        None,
+                        Some(format!("grab failed: {err}")),
                         source_password.clone(),
                     )
                     .await;

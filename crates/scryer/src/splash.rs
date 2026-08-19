@@ -22,18 +22,64 @@ pub(crate) struct SplashState {
     pub(crate) status_rx: watch::Receiver<BootstrapStatus>,
 }
 
+/// `GET /health` — the health check for every orchestrator probe (liveness,
+/// readiness, startup, reverse-proxy upstream checks).
+///
+/// Reports HTTP 200 for the whole time the process is alive and making
+/// progress — including while migrations run — so Docker/Compose healthchecks,
+/// Kubernetes probes, autoheal, etc. never recycle the container in the middle
+/// of a long migration. User traffic does not need to be held back during that
+/// window either: the splash fallback serves the "Upgrading database…" page on
+/// every route and it reloads into the app the moment bootstrap finishes, so a
+/// readiness probe here is correct too. The JSON body carries the bootstrap
+/// phase (`"migrating"` / `"ok"`) plus a `ready` flag, and every in-tree poller
+/// (splash page, web client restart overlay, xtask, seed) keys on
+/// `status == "ok"`, not on the HTTP status. Only a failed bootstrap returns a
+/// non-2xx code, because a process that will never become ready *should* be
+/// recycled.
+///
+/// Automation that needs the *API* up (not just the process) uses
+/// `GET /health/ready` (see [`splash_ready_handler`]).
 pub(crate) async fn splash_health_handler(State(state): State<SplashState>) -> Response {
+    let status = state.status_rx.borrow().clone();
+    match status {
+        BootstrapStatus::Migrating => {
+            Json(serde_json::json!({"status": "migrating", "ready": false})).into_response()
+        }
+        BootstrapStatus::Ready(_) => {
+            Json(serde_json::json!({"status": "ok", "ready": true})).into_response()
+        }
+        BootstrapStatus::Failed(message) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"status": "error", "ready": false, "message": message})),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /health/ready` — "is the application (GraphQL/UI) serving yet?"
+///
+/// Returns 503 until the full application router is serving, 200 afterwards,
+/// and 500 if bootstrap failed. This is for automation that must not call the
+/// API before bootstrap completes (CI, seed/provisioning scripts, e2e, boot-time
+/// sidecars) and wants the HTTP status code rather than the JSON body to say
+/// so. It is *not* the orchestrator health check — a restart-on-unhealthy or
+/// `startupProbe` pointed here would kill a long migration; those belong on
+/// `/health`.
+pub(crate) async fn splash_ready_handler(State(state): State<SplashState>) -> Response {
     let status = state.status_rx.borrow().clone();
     match status {
         BootstrapStatus::Migrating => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"status": "migrating"})),
+            Json(serde_json::json!({"status": "migrating", "ready": false})),
         )
             .into_response(),
-        BootstrapStatus::Ready(_) => Json(serde_json::json!({"status": "ok"})).into_response(),
+        BootstrapStatus::Ready(_) => {
+            Json(serde_json::json!({"status": "ok", "ready": true})).into_response()
+        }
         BootstrapStatus::Failed(message) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"status": "error", "message": message})),
+            Json(serde_json::json!({"status": "error", "ready": false, "message": message})),
         )
             .into_response(),
     }
@@ -65,6 +111,10 @@ pub(crate) fn build_splash_router(
         .route(
             "/health",
             get(splash_health_handler).with_state(state.clone()),
+        )
+        .route(
+            "/health/ready",
+            get(splash_ready_handler).with_state(state.clone()),
         )
         .fallback(splash_fallback_handler)
         .with_state(state)
@@ -208,13 +258,18 @@ mod tests {
     use crate::middleware::CorsConfig;
     use axum::Router;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
     use axum::routing::get;
     use tokio::sync::watch;
     use tower::ServiceExt;
 
     fn ready_splash_router(inner: Router) -> Router {
-        let (_status_tx, status_rx) = watch::channel(BootstrapStatus::Ready(inner));
+        splash_router_for(BootstrapStatus::Ready(inner))
+    }
+
+    fn splash_router_for(status: BootstrapStatus) -> Router {
+        // Dropping the sender is fine: `borrow()` keeps returning the last value.
+        let (_status_tx, status_rx) = watch::channel(status);
         build_splash_router(
             SplashState { status_rx },
             CorsConfig {
@@ -223,6 +278,123 @@ mod tests {
             },
             BasePath::from_raw(Some("/scryer/")),
         )
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let payload = serde_json::from_slice(&bytes).expect("json body");
+        (status, payload)
+    }
+
+    #[tokio::test]
+    async fn liveness_reports_ok_while_migrating_but_flags_not_ready() {
+        // Orchestrator liveness probes must not recycle the process during a
+        // long migration: HTTP 200, with the phase carried in the body.
+        let (status, payload) = get_json(
+            splash_router_for(BootstrapStatus::Migrating),
+            "/scryer/health",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "migrating");
+        assert_eq!(payload["ready"], false);
+    }
+
+    #[tokio::test]
+    async fn readiness_is_unavailable_while_migrating() {
+        let (status, payload) = get_json(
+            splash_router_for(BootstrapStatus::Migrating),
+            "/scryer/health/ready",
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload["status"], "migrating");
+        assert_eq!(payload["ready"], false);
+    }
+
+    #[tokio::test]
+    async fn liveness_and_readiness_report_ok_once_ready() {
+        let inner = || Router::new().route("/", get(|| async { StatusCode::OK }));
+        let (status, payload) = get_json(ready_splash_router(inner()), "/scryer/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["ready"], true);
+
+        let (status, payload) =
+            get_json(ready_splash_router(inner()), "/scryer/health/ready").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["ready"], true);
+    }
+
+    #[tokio::test]
+    async fn failed_bootstrap_reports_error_on_both_probes() {
+        // A process that will never become ready should be recycled, so both
+        // probes go non-2xx and carry the failure message.
+        for path in ["/scryer/health", "/scryer/health/ready"] {
+            let (status, payload) = get_json(
+                splash_router_for(BootstrapStatus::Failed("boom".to_string())),
+                path,
+            )
+            .await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{path}");
+            assert_eq!(payload["status"], "error", "{path}");
+            assert_eq!(payload["ready"], false, "{path}");
+            assert_eq!(payload["message"], "boom", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn health_probes_answer_head_requests_like_get() {
+        // `wget --spider` and `curl -I` style orchestrator probes send HEAD;
+        // they must see the same status codes as GET on both endpoints.
+        let cases = [
+            (BootstrapStatus::Migrating, "/scryer/health", StatusCode::OK),
+            (
+                BootstrapStatus::Migrating,
+                "/scryer/health/ready",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                BootstrapStatus::Ready(Router::new()),
+                "/scryer/health",
+                StatusCode::OK,
+            ),
+            (
+                BootstrapStatus::Ready(Router::new()),
+                "/scryer/health/ready",
+                StatusCode::OK,
+            ),
+        ];
+        for (state, path, expected) in cases {
+            let response = splash_router_for(state)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::HEAD)
+                        .uri(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), expected, "HEAD {path}");
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body");
+            assert!(bytes.is_empty(), "HEAD {path} must not carry a body");
+        }
     }
 
     #[tokio::test]

@@ -117,7 +117,8 @@ impl AppUseCase {
 
         let completed = self
             .find_completed_manual_import_source(client_id, client_type, source_ref)
-            .await?;
+            .await?
+            .map(Box::new);
         if completed.is_some() {
             Ok(ManualImportSourceResolution::Eligible { completed })
         } else {
@@ -145,11 +146,34 @@ impl AppUseCase {
             return Ok(None);
         }
 
-        self.services
+        let identity = DownloadSourceIdentity::new(
+            Some(client_id),
+            client_type,
+            download_client_item_id,
+        );
+        let has_scryer_submission = self
+            .services
+            .workflow
+            .download_submissions
+            .find_by_client_item_id(&identity)
+            .await?
+            .as_ref()
+            .is_some_and(crate::import_parameters::submission_has_scryer_origin);
+
+        let Some(completed) = self
+            .services
             .integrations
             .download_client
             .get_completed_download_for_source(client_id, client_type, download_client_item_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok((self
+            .completed_download_admission(has_scryer_submission, &completed, None)
             .await
+            == crate::services::CompletedDownloadAdmission::Admitted)
+            .then_some(completed))
     }
 }
 impl AppUseCase {
@@ -225,7 +249,7 @@ impl AppUseCase {
             .download_client_configs
             .create(config)
             .await?;
-        self.refresh_owned_download_client_categories_best_effort()
+        self.refresh_download_client_category_admission_best_effort()
             .await;
         self.emit_configuration_changed_event(
             actor,
@@ -316,7 +340,7 @@ impl AppUseCase {
                 is_enabled: update.is_enabled,
             })
             .await?;
-        self.refresh_owned_download_client_categories_best_effort()
+        self.refresh_download_client_category_admission_best_effort()
             .await;
         self.emit_configuration_changed_event(
             actor,
@@ -359,7 +383,7 @@ impl AppUseCase {
             .download_client_configs
             .delete_with_cleared_indexer_mapping_count(client_id)
             .await?;
-        self.refresh_owned_download_client_categories_best_effort()
+        self.refresh_download_client_category_admission_best_effort()
             .await;
         for indexer_id in mapped_indexer_ids {
             self.emit_configuration_changed_event(

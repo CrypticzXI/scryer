@@ -146,52 +146,52 @@ mod tests {
 
     #[test]
     fn canonical_lookup_key_reorders_trailing_articles() {
-        assert_eq!(canonical_lookup_key("DUFF, The"), "the duff");
-        assert_eq!(canonical_lookup_key("The DUFF"), "the duff");
+        assert_eq!(canonical_lookup_key("LANTERN, The"), "the lantern");
+        assert_eq!(canonical_lookup_key("The LANTERN"), "the lantern");
     }
 
     #[test]
     fn canonical_lookup_key_normalizes_unicode_and_punctuation() {
         assert_eq!(
-            canonical_lookup_key("Poke\u{301}mon: Detective Pikachu"),
-            "pokémon detective pikachu"
+            canonical_lookup_key("Kelu\u{301}ne: Detective Kestrel"),
+            "kelúne detective kestrel"
         );
         assert_eq!(
-            canonical_lookup_key("Leon: The Professional"),
-            "leon the professional"
+            canonical_lookup_key("Kessler: The Courier"),
+            "kessler the courier"
         );
     }
 
     #[test]
     fn reduced_comparison_key_drops_bounded_movie_boilerplate() {
         assert_eq!(
-            reduced_comparison_key("Given The Movie Hiiragi Mix", TitleMatchProfile::Movie),
-            "given hiiragi mix"
+            reduced_comparison_key("Nagare The Movie Kagami Mix", TitleMatchProfile::Movie),
+            "nagare kagami mix"
         );
         assert_eq!(
-            reduced_comparison_key("Eiga Given: Hiiragi Mix", TitleMatchProfile::Movie),
-            "given hiiragi mix"
+            reduced_comparison_key("Eiga Nagare: Kagami Mix", TitleMatchProfile::Movie),
+            "nagare kagami mix"
         );
         assert_eq!(
             reduced_comparison_key(
-                "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+                "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
                 TitleMatchProfile::Movie
             ),
-            "demon slayer kimetsu no yaiba mugen train"
+            "ember saga kage no kotoba iron rail"
         );
     }
 
     #[test]
     fn search_variants_adds_canonical_form_when_needed() {
         assert_eq!(
-            search_variants("DUFF, The"),
-            vec!["DUFF, The".to_string(), "the duff".to_string()]
+            search_variants("LANTERN, The"),
+            vec!["LANTERN, The".to_string(), "the lantern".to_string()]
         );
         assert_eq!(
-            search_variants("Leon: The Professional"),
+            search_variants("Kessler: The Courier"),
             vec![
-                "Leon: The Professional".to_string(),
-                "leon the professional".to_string()
+                "Kessler: The Courier".to_string(),
+                "kessler the courier".to_string()
             ]
         );
     }

@@ -135,8 +135,12 @@ function isUsablePendingImportSearchSeed(value: string | null | undefined): bool
   return !isObfuscatedPendingImportSeed(trimmed);
 }
 
-function summarizePendingImport(item: PendingImportItem): string {
-  const parts = [item.reason];
+function summarizePendingImport(item: PendingImportItem, t: Translate): string {
+  const reasonKey = `pendingImports.reason.${item.reason}` as const;
+  const reasonLabel = t(reasonKey);
+  // Unknown reason codes fall through the dictionary unchanged; keep showing
+  // the raw code for those rather than the lookup key.
+  const parts = [reasonLabel === reasonKey ? item.reason : reasonLabel];
 
   if (item.query.trim()) {
     parts.push(item.query.trim());
@@ -981,7 +985,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             libraryLabel={libraryLabel}
             knownTitleHref={knownTitleHref}
             knownTitleLabel={knownTitleLabel}
-            summary={summarizePendingImport(item)}
+            summary={summarizePendingImport(item, t)}
             bindingLoading={bindingLoading}
             bindingError={bindingError}
             bindingPreview={bindingPreview}

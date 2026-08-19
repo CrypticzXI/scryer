@@ -1,7 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { manualImportActions } from "./manual-import-actions.ts";
+import {
+  directMovieManualImportMappings,
+  manualImportActions,
+} from "./manual-import-actions.ts";
+
+test("direct movie manual import maps only the largest candidate", () => {
+  assert.deepEqual(
+    directMovieManualImportMappings([
+      { candidateId: "sample", sizeBytes: 12_000_000 },
+      { candidateId: "movie", sizeBytes: 4_200_000_000 },
+      { candidateId: "featurette", sizeBytes: 300_000_000 },
+    ]),
+    [{ candidateId: "movie" }],
+  );
+});
+
+test("direct movie manual import treats unknown sizes as smallest and keeps ties stable", () => {
+  assert.deepEqual(
+    directMovieManualImportMappings([
+      { candidateId: "unknown-size", sizeBytes: null },
+      { candidateId: "first-of-tie", sizeBytes: 100 },
+      { candidateId: "second-of-tie", sizeBytes: 100 },
+    ]),
+    [{ candidateId: "first-of-tie" }],
+  );
+  assert.deepEqual(directMovieManualImportMappings([{ candidateId: "only" }]), [
+    { candidateId: "only" },
+  ]);
+});
+
+test("direct movie manual import maps nothing without candidates", () => {
+  assert.deepEqual(directMovieManualImportMappings([]), []);
+});
 
 for (const facet of ["MOVIE", "SERIES", "ANIME"] as const) {
   test(`pending ${facet} import exposes no manual action`, () => {

@@ -1,88 +1,41 @@
-# scryer service
+# `scryer` (service binary)
 
-This crate provides a first-version executable that exposes:
+The single deployable: HTTP server, GraphQL endpoint (`POST /graphql`),
+embedded web UI, database migrations, background jobs, and the desktop/tray
+entry points. Everything user-facing is documented on the website linked from
+the [repository README](../../README.md); this file only covers running the
+crate from a checkout.
 
-- `GET /` backend notice page (points to Next.js app)
-- `POST /graphql` GraphQL endpoint
-
-## Run
-
-```bash
-cd crates/scryer
-cargo run
-```
-
-Run the SPA separately:
+## Run from source
 
 ```bash
-cd apps/scryer-web
-npm install
-npm run dev
+cargo run -p scryer
 ```
 
-The backend can expose the SPA URL in the root notice via:
+The web app is served from the embedded build when present, or from
+`SCRYER_WEB_DIST_DIR` when set. During UI development run the Next.js app from
+`apps/scryer-web` and point the backend notice at it with `SCRYER_WEB_UI_URL`.
 
-```bash
-SCRYER_WEB_UI_URL=http://127.0.0.1:3000
-```
-`SCRYER_WEB_DIST_DIR` controls where the service serves embedded static UI assets from.
-When set (for example `${SCRYER_DIST=...}` by the build pipeline), the service serves the built SPA from that path at `/`.
+`crates/scryer/.env.example` lists the bootstrap environment; the ones you are
+most likely to touch:
 
-Copy and edit the config template:
+- `SCRYER_BIND` — listen address (default `127.0.0.1:8080`)
+- `SCRYER_DB_PATH` — database location override
+- `SCRYER_BASE_PATH` — serve UI, GraphQL, health, and WebSocket endpoints
+  under a path prefix when hosted behind a reverse proxy
+- `SCRYER_WEB_DIST_DIR`, `SCRYER_WEB_UI_URL` — see above
 
-```bash
-cp crates/scryer/.env.example .env
-```
+Application settings themselves live in the database and are managed through
+the UI/GraphQL, not environment variables.
 
-Load values before running (choose a preferred loader):
+## Layout
 
-```bash
-set -a
-. .env
-set +a
-cargo run
-```
+- `src/main.rs`, `src/init.rs`: startup, runtime composition, job wiring
+- `src/db/`: migration manifest, SQLite and PostgreSQL migrations, baselines
+- `src/middleware.rs`, `src/http_error.rs`, `src/rate_limit.rs`: HTTP surface
+- `src/ui_assets.rs`, `src/base_path.rs`: embedded UI and prefix handling
+- `src/tray.rs`, `src/splash.rs`: desktop entry points
+- `tests/`: integration suites (GraphQL, import, download, search, …)
 
-Runtime bootstrap environment values (optional, used when DB settings are empty):
-
-- `SCRYER_DB_PATH` (default `sqlite://file::memory:?mode=memory&cache=shared`)
-- `SCRYER_BIND` (default `127.0.0.1:8080`)
-- `SCRYER_BASE_PATH` (optional, defaults to `/`; set to `/scryer` to host behind a reverse-proxy path prefix)
-
-Application configuration now lives in `settings_definitions` and `settings_values`.
-
-Configuration reads and writes are exposed through typed GraphQL fields on `POST /graphql`,
-including:
-
-- `serviceSettings` / `updateServiceSettings(...)`
-- `libraryPaths` / `updateLibraryPaths(...)`
-- `mediaSettings(scope: ...)` / `updateMediaSettings(...)`
-- `qualityProfileSettings` / `saveQualityProfileSettings(...)`
-- `downloadClientRouting(scope: ...)` / `updateDownloadClientRouting(...)`
-- `indexerRouting(scope: ...)` / `updateIndexerRouting(...)`
-
-Common managed keys:
-
-- `media.media.movies.path`
-- `media.media.series.path`
-
-Other bootstrap environment values:
-
-- `SCRYER_BASE_PATH` (optional; serves the UI, GraphQL, health, and WebSocket endpoints under that prefix)
-
-MVP workflow: open the SPA on `http://127.0.0.1:3000` and use the nav/search experience for title add/queue actions.
-`addTitleAndQueueDownload` should return success only when NZBGet accepts the exact NZB URL.
-
-### NZBGet category routing
-
-When queueing titles, Scryer now submits an NZBGet category derived from the title facet (`movie`, `series`, `anime`, or `other`).
-
-For a standard completed-directory workflow:
-- Configure NZBGet with matching category definitions for `movie`, `series`, `anime`, and `other`.
-- Set category-specific `DestDir` under a common completed root (for example, `/data/completed/movie`, `/data/completed/series`, etc.).
-- Configure your Servarr clients to monitor the completed directories and move final assets into your library destinations.
-- Keep this scryer category on queued items as the routing key; NZBGet category should remain your integration point for mover semantics.
-
-Data storage:
-- SQLite is used with SQLx and runs through the bundled SQLite library from `libsqlite3-sys`.
-- No system SQLite package is required at runtime for basic DB access.
+Use the workspace release tooling (`xtask-release`) for builds and releases;
+see [CONTRIBUTING.md](../../CONTRIBUTING.md).

@@ -1,7 +1,7 @@
 use super::*;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubmissionScope {
     Episode { episode_id: String },
     EpisodeSet { episode_ids: Vec<String> },
@@ -11,7 +11,7 @@ pub enum SubmissionScope {
     Orphan,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,

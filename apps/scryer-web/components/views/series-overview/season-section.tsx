@@ -18,6 +18,7 @@ import {
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { useTranslate } from "@/lib/context/translate-context";
+import type { InteractiveSearchIndexerProgress } from "@/lib/graphql/release-search";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
@@ -53,6 +54,8 @@ import {
   EMPTY_SUBTITLE_DOWNLOADS,
 } from "./season-section-utils";
 
+const EMPTY_INDEXER_PROGRESS: InteractiveSearchIndexerProgress[] = [];
+
 export { SeriesMovieTimelineSection } from "./series-movie-row";
 
 export function SeasonSection({
@@ -70,6 +73,7 @@ export function SeasonSection({
   subtitleDownloads,
   onRefreshSubtitles,
   searchResultsByEpisode,
+  searchIndexerProgressByEpisode,
   searchLoadingByEpisode,
   searchBlockedByEpisode,
   onRunEpisodeSearch,
@@ -104,6 +108,7 @@ export function SeasonSection({
   releaseBlocklistEntries: TitleReleaseBlocklistEntry[];
   clearingReleaseBlocklistEntryId?: string | null;
   searchResultsByEpisode: Record<string, Release[]>;
+  searchIndexerProgressByEpisode: Record<string, InteractiveSearchIndexerProgress[]>;
   searchLoadingByEpisode: Record<string, boolean>;
   searchBlockedByEpisode: Record<string, boolean>;
   autoSearchLoadingByEpisode: Record<string, boolean>;
@@ -385,6 +390,9 @@ export function SeasonSection({
                       clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                       episode={episode}
                       episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
+                      episodeIndexerProgress={
+                        searchIndexerProgressByEpisode[episode.id] ?? EMPTY_INDEXER_PROGRESS
+                      }
                       episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
                       facet={facet}
                       hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}
@@ -433,6 +441,9 @@ export function SeasonSection({
                         clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                         episode={episode}
                         episodeFiles={mediaFilesByEpisode[episode.id] ?? EMPTY_EPISODE_FILES}
+                        episodeIndexerProgress={
+                          searchIndexerProgressByEpisode[episode.id] ?? EMPTY_INDEXER_PROGRESS
+                        }
                         episodeResults={searchResultsByEpisode[episode.id] ?? EMPTY_RELEASES}
                         facet={facet}
                         hasSearchResults={Object.prototype.hasOwnProperty.call(searchResultsByEpisode, episode.id)}

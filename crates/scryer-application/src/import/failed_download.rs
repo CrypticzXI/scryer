@@ -3,9 +3,7 @@
 //! check(): detects downloads that failed in the client or are encrypted.
 //! process_failed(): records the failure, emits events, and optionally reacquires.
 
-use scryer_domain::{
-    DownloadQueueState, TitleMatchType, TrackedDownloadState, TrackedDownloadStatus,
-};
+use scryer_domain::{DownloadQueueState, TrackedDownloadState, TrackedDownloadStatus};
 
 use crate::acquisition_workflow::{DownloadFailureContext, FailureHandlingOutcome};
 use crate::tracked_downloads::TrackedDownload;
@@ -117,7 +115,7 @@ pub(crate) fn tracked_download_failure_submission_identity(
 }
 
 fn tracked_download_has_scryer_failure_origin(td: &TrackedDownload) -> bool {
-    matches!(td.match_type, TitleMatchType::Submission)
+    td.client_item.is_scryer_origin
 }
 
 pub(crate) async fn tracked_download_has_grabbed_submission(

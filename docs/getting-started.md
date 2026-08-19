@@ -260,6 +260,38 @@ resources {
 }
 ```
 
+### Health Checks
+
+Use `GET /health` for every orchestrator health check — liveness, readiness, startup, reverse-proxy upstream checks, uptime monitors. It honors `SCRYER_BASE_PATH` (e.g. `/scryer/health`), answers `GET` and `HEAD` with a small JSON body, and needs no special headers, so `curl -f`, `wget --spider`, Kubernetes `httpGet`, Docker `HEALTHCHECK`, Unraid, autoheal, Swarm, Traefik/Caddy/nginx/HAProxy checks, and Uptime Kuma all work as-is.
+
+| Endpoint | Booting / migrating | Serving | Bootstrap failed |
+|---|---|---|---|
+| `GET /health` | `200` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+| `GET /health/ready` | `503` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+
+Database migrations run at startup and can take a while on large libraries. `/health` stays `200` for the entire migration, so nothing recycles Scryer part-way through one — and there is no reason to hold traffic back either: while migrating, Scryer serves a "Upgrading database…" page on every route that refreshes into the app by itself the moment migrations finish. So send users through as normal; a Kubernetes `readinessProbe` on `/health` is correct, not a shortcut. `/health` only goes non-2xx (`500`) when bootstrap has failed and a restart is actually the right call. Process supervisors that don't probe HTTP at all (`brew services`, `systemd`, NSSM / the Windows service, launchd) are unaffected either way — they restart on exit.
+
+`/health/ready` exists for automation that needs the **API** (GraphQL) to be up before it proceeds — CI, seed/provisioning scripts, `depends_on` for a sidecar that calls Scryer on boot. It answers `503` until the full application is serving. Don't wire a Kubernetes `startupProbe` or a restart-on-unhealthy check to it: with a short `failureThreshold` that would kill the pod during a long migration, which is exactly what `/health` avoids. If a script must use `/health` for the same purpose, key on the JSON body (`"status":"ok"`), not on the HTTP status.
+
+```yaml
+# Kubernetes
+livenessProbe:
+  httpGet: { path: /health, port: 8080 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /health, port: 8080 }
+  periodSeconds: 5
+```
+
+```yaml
+# Docker Compose
+healthcheck:
+  test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+```
+
 ## Upgrading
 
 Pull the latest image and recreate the container:

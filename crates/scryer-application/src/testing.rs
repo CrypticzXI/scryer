@@ -97,9 +97,12 @@ pub async fn execute_upgrade_for_test_with_import_mode(
     )
     .map(|root| crate::stored_paths::path_to_stored_string(&root));
 
+    // Tests exercise the upgrade without a queued import record; the
+    // progress writes for this id simply match no row.
     crate::upgrade::execute_upgrade(
         app,
         actor,
+        "upgrade-for-test",
         title,
         existing_file,
         source_path,

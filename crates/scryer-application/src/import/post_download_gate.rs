@@ -5,9 +5,8 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, build_release_parse_context,
-    normalize_release_attempt_hint, normalize_release_attempt_title,
-    parse_release_metadata_for_target,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
+    normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -133,22 +132,6 @@ pub(crate) const REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE: &str = "replace_blocked_
 
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
-}
-
-fn contextualize_import_release(
-    parsed: &crate::ParsedReleaseMetadata,
-    title: &Title,
-) -> crate::ParsedReleaseMetadata {
-    let context = build_release_parse_context(
-        title,
-        None,
-        None,
-        Some(facet_to_category_hint(&title.facet)),
-    );
-    let targeted = parse_release_metadata_for_target(&parsed.raw_title, &context);
-    let mut contextualized = parsed.clone();
-    contextualized.guide_facts = targeted.guide_facts;
-    contextualized
 }
 
 #[cfg(any(feature = "runtime-media-analysis", test))]
@@ -828,6 +811,11 @@ pub(crate) async fn probe_and_validate(
 /// Probe a source file once, apply the existing gate, and merge detected media
 /// facts back into parsed metadata so downstream rename and scoring decisions
 /// use the same resolved view that will later be persisted.
+///
+/// `parsed` is the canonical import parse of the release evidence — the same
+/// title-aware parse the grab path scored (see
+/// `import_workflow::parse_import_release_for_title`) — and is consumed as is:
+/// re-parsing here would either double-parse or diverge from what was grabbed.
 #[expect(
     clippy::too_many_arguments,
     reason = "prepared import candidates need the full gate context plus caller scoring state"
@@ -844,7 +832,6 @@ pub(crate) async fn prepare_import_candidate(
     is_filler: bool,
     runtime_sample_validation: RuntimeSampleValidation,
 ) -> Result<PreparedImportCandidate, ImportedFileRejection> {
-    let parsed = contextualize_import_release(parsed, title);
     let source_snapshot_before = app
         .services
         .workflow
@@ -856,7 +843,7 @@ pub(crate) async fn prepare_import_candidate(
     match probe_and_validate(
         app,
         title,
-        &parsed,
+        parsed,
         quality_profile,
         path,
         size_bytes,
@@ -883,7 +870,7 @@ pub(crate) async fn prepare_import_candidate(
                 ));
             }
 
-            let (parsed, rescore_changes) = rescore_from_mediainfo(&parsed, accepted.as_ref());
+            let (parsed, rescore_changes) = rescore_from_mediainfo(parsed, accepted.as_ref());
             if !rescore_changes.is_empty() {
                 tracing::debug!(
                     title = %title.name,
@@ -1035,6 +1022,10 @@ pub(crate) fn rescore_from_mediainfo(
 }
 /// Compute acquisition score from a gate acceptance, applying mediainfo rescoring.
 /// Returns the final score and the rescored parsed metadata (for logging).
+///
+/// Order is fixed: canonical (grab-equivalent) parse supplied by the caller →
+/// mediainfo deltas → profile decision + user rules + min-score gate → final
+/// score. `parsed` is not re-parsed here.
 #[expect(
     clippy::too_many_arguments,
     reason = "post-download scoring needs the full import context to match search-time policy decisions"
@@ -1052,8 +1043,7 @@ pub(crate) async fn compute_post_download_acquisition_decision(
     prior_rescore_changes: &[String],
     is_filler: bool,
 ) -> PostDownloadAcquisitionDecision {
-    let contextualized = contextualize_import_release(parsed, title);
-    let (rescored, changes) = rescore_from_mediainfo(&contextualized, acceptance);
+    let (rescored, changes) = rescore_from_mediainfo(parsed, acceptance);
     let mut rescore_changes = prior_rescore_changes.to_vec();
     for change in changes {
         if !rescore_changes
@@ -1450,47 +1440,6 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
 mod tests {
     use super::*;
 
-    fn test_title(facet: MediaFacet) -> Title {
-        Title {
-            id: "title-1".to_string(),
-            name: "Test Title".to_string(),
-            library_id: scryer_domain::default_library_id_for_facet(&facet),
-            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
-            facet,
-            monitored: true,
-            tags: vec![],
-            canonical_tags: vec![],
-            external_ids: vec![],
-            created_by: None,
-            created_at: chrono::Utc::now(),
-            year: Some(2024),
-            overview: None,
-            poster_url: None,
-            poster_source_url: None,
-            background_url: None,
-            background_source_url: None,
-            sort_title: None,
-            catalog_sort_key: String::new(),
-            slug: None,
-            imdb_id: None,
-            runtime_minutes: None,
-            popularity: None,
-            content_status: None,
-            language: None,
-            first_aired: None,
-            network: None,
-            studio: None,
-            country: None,
-            aliases: vec![],
-            tagged_aliases: vec![],
-            metadata_language: None,
-            metadata_fetched_at: None,
-            min_availability: None,
-            digital_release_date: None,
-            folder_path: None,
-        }
-    }
-
     fn automatic(expected_runtime_seconds: Option<i32>) -> RuntimeSampleValidation {
         RuntimeSampleValidation::automatic(expected_runtime_seconds)
     }
@@ -1499,25 +1448,11 @@ mod tests {
         RuntimeSampleValidation::manual_override(expected_runtime_seconds)
     }
 
-    #[test]
-    fn import_release_facts_are_rederived_for_the_title_facet() {
-        let title = test_title(MediaFacet::Series);
-        let parsed = crate::parse_release_metadata("Test.Title.2160p.WEB-DL.DDP5.1.H.264-BiTOR");
-        assert!(
-            !parsed
-                .guide_facts
-                .iter()
-                .any(|fact| fact.code == "trash.blocked.lq_release_title")
-        );
-
-        let contextualized = contextualize_import_release(&parsed, &title);
-        assert!(
-            contextualized
-                .guide_facts
-                .iter()
-                .any(|fact| fact.code == "trash.blocked.lq_release_title")
-        );
-    }
+    // The title-facet guide-fact derivation formerly asserted here against
+    // `contextualize_import_release` now happens once, in the canonical import
+    // parse (`import_workflow::parse_import_release_for_title`); see
+    // `canonical_import_parse_derives_title_facet_guide_facts` in
+    // `import/app_usecase_import_tests.rs`.
 
     #[test]
     fn automatic_movie_import_rejects_twenty_second_runtime_for_normal_movie() {
@@ -1587,7 +1522,7 @@ mod tests {
 
     #[test]
     fn automatic_import_rejects_anime_length_file_for_live_action_episode() {
-        // One Piece incident: a 24:55 anime episode imported against the ~55-minute
+        // Tide Chart incident: a 24:55 anime episode imported against the ~55-minute
         // live-action episode. Well clear of the sample threshold, far below the band.
         let rejection = runtime_sample_rejection(automatic(Some(3300)), Some(1495))
             .expect("45%-of-expected runtime should reject");
@@ -1676,7 +1611,7 @@ mod tests {
 
     #[test]
     fn replace_guard_blocks_anime_length_file_over_live_action_incumbent() {
-        // One Piece incident with no catalog runtime: the band cannot run against
+        // Tide Chart incident with no catalog runtime: the band cannot run against
         // metadata, so the 24:55 file is measured against the ~55-minute file it
         // would overwrite.
         let message = replace_runtime_band_block(

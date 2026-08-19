@@ -84,6 +84,33 @@ async fn check_with_lookup_remaps_remote_completed_download_paths_before_readine
 }
 
 #[tokio::test]
+async fn check_requires_canonical_completion_evidence_for_title_parse_observation() {
+    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let completed_dir = tempfile::tempdir().expect("create completed directory");
+    let mut completed = build_completed_download(
+        "downloader display label",
+        completed_dir.path().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.release_name = Some("unrecognized-completed-release".to_string());
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    let app = build_app(vec![title.clone()], vec![], vec![], vec![]);
+    let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
+    td.match_type = TitleMatchType::TitleParse;
+    td.client_item.is_scryer_origin = false;
+
+    check_with_lookup(&app, &mut td, Some(&lookup)).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        td.status_messages
+            .iter()
+            .any(|message| { message.contains("completed release name no longer proves") })
+    );
+}
+
+#[tokio::test]
 async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
     let title = build_title("title-1", "Paperman", MediaFacet::Movie);
     let release_title = "Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb";
@@ -130,10 +157,11 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
     let completed_dir = std::env::temp_dir().join(format!("scryer-qbit-completed-{}", Id::new().0));
     std::fs::create_dir_all(&completed_dir).expect("create completed dir");
     let mut completed = build_completed_download(
-        release_title,
+        "qBit display label",
         completed_dir.to_string_lossy().as_ref(),
         Some("movie"),
     );
+    completed.release_name = Some("downloader-provided-name".to_string());
     completed.client_type = "qbittorrent".to_string();
     completed.client_id = "client-1".to_string();
     completed.download_client_item_id = info_hash.to_string();
@@ -164,6 +192,14 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
 
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
     assert!(td.status_messages.is_empty());
+    let evidence = crate::import_workflow::resolve_release_evidence_for_completed_download(
+        &app,
+        td.completed_source.as_ref().expect("completed source"),
+        None,
+    )
+    .await
+    .expect("resolve persisted qBit submission evidence");
+    assert_eq!(evidence.release_title(None).as_deref(), Some(release_title));
 
     std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
 }

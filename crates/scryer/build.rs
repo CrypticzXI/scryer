@@ -152,6 +152,7 @@ fn main() {
 fn compile_windows_resources() {
     println!("cargo:rerun-if-changed=resources/windows/scryer.rc");
     println!("cargo:rerun-if-changed=resources/windows/scryer.exe.manifest");
+    println!("cargo:rerun-if-changed=resources/windows/scryer.ico");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

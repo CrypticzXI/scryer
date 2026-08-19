@@ -225,12 +225,12 @@ mod tests {
     #[test]
     fn movie_text_search_query_includes_year_only_for_named_movies() {
         assert_eq!(
-            movie_text_search_query(" Resident Evil ", Some(2026)),
-            "Resident Evil 2026"
+            movie_text_search_query(" Amber Circuit ", Some(2026)),
+            "Amber Circuit 2026"
         );
         assert_eq!(
-            movie_text_search_query("Resident Evil", None),
-            "Resident Evil"
+            movie_text_search_query("Amber Circuit", None),
+            "Amber Circuit"
         );
         assert_eq!(movie_text_search_query("  ", Some(2026)), "");
     }

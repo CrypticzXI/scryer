@@ -279,17 +279,53 @@ async fn read_solver_health_body_bounded(
     Ok(body)
 }
 
+async fn send_solver_probe_request(
+    request: reqwest::RequestBuilder,
+    provider: scryer_domain::IndexerProxyProviderType,
+    deadline: tokio::time::Instant,
+) -> AppResult<reqwest::Response> {
+    tokio::time::timeout_at(
+        deadline,
+        scryer_outbound_http::send_reqwest_request_with_cooldown_budget(
+            request,
+            Some(std::time::Duration::ZERO),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::Repository(
+            crate::challenge_solver::solver_error_message(
+                provider,
+                crate::challenge_solver::SolverErrorKind::Timeout,
+            )
+            .into(),
+        )
+    })?
+    .map_err(|error| {
+        let kind = match error {
+            scryer_outbound_http::AsyncOutboundHttpError::Request(error) if error.is_timeout() => {
+                crate::challenge_solver::SolverErrorKind::Timeout
+            }
+            scryer_outbound_http::AsyncOutboundHttpError::Request(_) => {
+                crate::challenge_solver::SolverErrorKind::Unreachable
+            }
+            scryer_outbound_http::AsyncOutboundHttpError::CooldownBudgetExceeded { .. } => {
+                crate::challenge_solver::SolverErrorKind::Unavailable
+            }
+        };
+        AppError::Repository(crate::challenge_solver::solver_error_message(provider, kind).into())
+    })
+}
+
 async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppResult<String> {
     let provider_name = crate::challenge_solver::solver_provider_name(config.provider_type);
     let base_url = config.base_url.trim_end_matches('/');
     let health_url = format!("{base_url}/health");
-    scryer_outbound_http::install_default_rustls_provider();
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(u64::from(
-            config.request_timeout_seconds.saturating_add(5),
-        )))
-        .build()
-        .map_err(|_| {
+    let request_timeout = std::time::Duration::from_secs(u64::from(
+        config.request_timeout_seconds.saturating_add(5),
+    ));
+    let client =
+        scryer_outbound_http::indexer_proxy_health_reqwest_client(request_timeout).map_err(|_| {
             AppError::Repository(
                 crate::challenge_solver::solver_error_message(
                     config.provider_type,
@@ -298,16 +334,13 @@ async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppR
                 .into(),
             )
         })?;
-    let response = client.get(&health_url).send().await.map_err(|error| {
-        let kind = if error.is_timeout() {
-            crate::challenge_solver::SolverErrorKind::Timeout
-        } else {
-            crate::challenge_solver::SolverErrorKind::Unreachable
-        };
-        AppError::Repository(
-            crate::challenge_solver::solver_error_message(config.provider_type, kind).into(),
-        )
-    })?;
+    let health_deadline = tokio::time::Instant::now() + request_timeout;
+    let response = send_solver_probe_request(
+        client.get(&health_url),
+        config.provider_type,
+        health_deadline,
+    )
+    .await?;
     let status = response.status();
     if status.is_success() {
         return Ok(format!(
@@ -333,25 +366,17 @@ async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppR
     }
 
     let probe_url = crate::challenge_solver::solver_solve_endpoint(base_url);
-    let response = client
-        .post(&probe_url)
-        .json(&crate::challenge_solver::solver_solve_request(
+    let probe_deadline = tokio::time::Instant::now() + request_timeout;
+    let response = send_solver_probe_request(
+        client.post(&probe_url).json(&crate::challenge_solver::solver_solve_request(
             config.provider_type,
             "https://example.com/",
             config.request_timeout_seconds,
-        ))
-        .send()
-        .await
-        .map_err(|error| {
-            let kind = if error.is_timeout() {
-                crate::challenge_solver::SolverErrorKind::Timeout
-            } else {
-                crate::challenge_solver::SolverErrorKind::Unreachable
-            };
-            AppError::Repository(
-                crate::challenge_solver::solver_error_message(config.provider_type, kind).into(),
-            )
-        })?;
+        )),
+        config.provider_type,
+        probe_deadline,
+    )
+    .await?;
     let status = response.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -368,7 +393,20 @@ async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppR
             status.as_u16()
         )));
     }
-    let body = read_solver_health_body_bounded(response, config.provider_type).await?;
+    let body = tokio::time::timeout_at(
+        probe_deadline,
+        read_solver_health_body_bounded(response, config.provider_type),
+    )
+    .await
+    .map_err(|_| {
+        AppError::Repository(
+            crate::challenge_solver::solver_error_message(
+                config.provider_type,
+                crate::challenge_solver::SolverErrorKind::Timeout,
+            )
+            .into(),
+        )
+    })??;
     crate::challenge_solver::parse_solver_solution(&body)
         .map_err(|error| AppError::Repository(error.message(config.provider_type).into()))?;
     Ok(format!(
@@ -404,6 +442,16 @@ mod indexer_proxy_tests {
         }
     }
 
+    fn assert_browser_user_agent(request: &wiremock::Request) {
+        assert_eq!(
+            request
+                .headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some(scryer_outbound_http::INDEXER_PROXY_USER_AGENT)
+        );
+    }
+
     #[tokio::test]
     async fn trawl_health_endpoint_succeeds() {
         let server = MockServer::start().await;
@@ -421,6 +469,39 @@ mod indexer_proxy_tests {
         .expect("Trawl health probe should succeed");
 
         assert_eq!(result, "Trawl health probe returned HTTP 200");
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        assert_browser_user_agent(&requests[0]);
+    }
+
+    #[tokio::test]
+    async fn trawl_health_endpoint_preserves_redirect_behavior() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/ready"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ready"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let result = probe_solver_health(&test_config(
+            &server,
+            scryer_domain::IndexerProxyProviderType::Trawl,
+        ))
+        .await
+        .expect("redirected Trawl health probe should succeed");
+
+        assert_eq!(result, "Trawl health probe returned HTTP 200");
+        let requests = server.received_requests().await.expect("recorded requests");
+        let redirected = requests
+            .iter()
+            .find(|request| request.url.path() == "/ready")
+            .expect("redirect target request");
+        assert_browser_user_agent(redirected);
     }
 
     #[tokio::test]
@@ -517,6 +598,12 @@ mod indexer_proxy_tests {
         .expect("Trawl v1 fallback should succeed");
 
         assert_eq!(result, "Trawl v1 probe returned HTTP 200");
+        let requests = server.received_requests().await.expect("recorded requests");
+        let fallback = requests
+            .iter()
+            .find(|request| request.url.path() == "/v1")
+            .expect("v1 fallback request");
+        assert_browser_user_agent(fallback);
     }
 
     #[tokio::test]

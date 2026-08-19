@@ -6521,6 +6521,8 @@ pub struct ManualImportFilePreviewPayload {
     pub suggested_episode_id: Option<ID>,
     /// Label for the suggested episode, or null when no suggestion exists.
     pub suggested_episode_label: Option<String>,
+    /// Suggested series-movie link, or null when this is not a grabbed series movie.
+    pub suggested_series_movie_link_id: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]

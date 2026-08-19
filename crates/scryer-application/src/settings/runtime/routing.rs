@@ -524,7 +524,7 @@ impl AppUseCase {
             )
             .await?;
 
-        self.refresh_owned_download_client_categories_best_effort()
+        self.refresh_download_client_category_admission_best_effort()
             .await;
 
         self.emit_settings_saved(
@@ -581,7 +581,7 @@ impl AppUseCase {
         }
 
         if changed {
-            self.refresh_owned_download_client_categories_best_effort()
+            self.refresh_download_client_category_admission_best_effort()
                 .await;
         }
 

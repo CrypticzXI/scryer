@@ -5,7 +5,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import { TitleSearchDownloadClientNotice } from "@/components/common/title-search-download-client-notice";
 import { useTranslate } from "@/lib/context/translate-context";
+import type { InteractiveSearchIndexerProgress } from "@/lib/graphql/release-search";
 import type { Release } from "@/lib/types";
+import { deriveInteractiveSearchPresentation } from "@/lib/utils/interactive-search-presentation";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { selectorId } from "@/lib/utils/dom-ids";
 import type {
@@ -28,9 +30,11 @@ export type EpisodePanelContentProps = {
   clearingReleaseBlocklistEntryId?: string | null;
   episode: CollectionEpisode;
   episodeFiles: EpisodeMediaFile[];
+  episodeIndexerProgress: InteractiveSearchIndexerProgress[];
   episodeLoading: boolean;
   episodeResults: Release[];
   facet: string;
+  hasSearchResults: boolean;
   onClearReleaseBlocklistEntry?: (entryId: string) => Promise<void> | void;
   onDeleteFile?: (fileId: string) => void;
   onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
@@ -54,9 +58,11 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
   clearingReleaseBlocklistEntryId,
   episode,
   episodeFiles,
+  episodeIndexerProgress,
   episodeLoading,
   episodeResults,
   facet,
+  hasSearchResults,
   onClearReleaseBlocklistEntry,
   onDeleteFile,
   onMakePrimaryFile,
@@ -73,6 +79,45 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
   primaryMovieFileUpdatingId = null,
 }: EpisodePanelContentProps) {
   const t = useTranslate();
+  const searchPresentation = React.useMemo(
+    () =>
+      deriveInteractiveSearchPresentation({
+        hasSnapshot: hasSearchResults,
+        loading: episodeLoading,
+        resultCount: episodeResults.length,
+        indexers: episodeIndexerProgress,
+      }),
+    [episodeIndexerProgress, episodeLoading, episodeResults.length, hasSearchResults],
+  );
+  const searchDescription = React.useMemo(() => {
+    if (searchPresentation.showProgress) {
+      return t("title.contextReleaseSearchProgress", {
+        releaseCount: episodeResults.length,
+        done: searchPresentation.completedIndexerCount,
+        total: searchPresentation.totalIndexerCount,
+      });
+    }
+
+    // Report what the run did, not which sources happened to return
+    // results: an indexer that answered with nothing still searched, and one
+    // that failed or was skipped is called out on its own line below.
+    if (searchPresentation.totalIndexerCount > 0) {
+      return t("title.contextReleaseSearchSummaryDetailed", {
+        releaseCount: episodeResults.length,
+        searched: searchPresentation.searchedIndexerCount,
+        total: searchPresentation.totalIndexerCount,
+      });
+    }
+    const sourceCount = new Set(
+      episodeResults
+        .map((release) => release.source?.trim())
+        .filter((source): source is string => Boolean(source)),
+    ).size;
+    return t("title.contextReleaseSearchSummary", {
+      releaseCount: episodeResults.length,
+      indexerCount: sourceCount,
+    });
+  }, [episodeResults, searchPresentation, t]);
   const filteredBlocklistEntries = React.useMemo(() => {
     if (activeTab !== "blocklist") {
       return EMPTY_BLOCKLIST_ENTRIES;
@@ -128,44 +173,89 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
       </TabsContent>
       {showSearchTab ? (
         <TabsContent value="search">
-        {searchBlocked ? (
-          <TitleSearchDownloadClientNotice />
-        ) : (
-          <div className="mb-2 flex items-center justify-end">
-            <Button
-              id={selectorId("series-overview-episode-search-refresh", episode.id)}
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => onRunEpisodeSearch?.(episode)}
-              disabled={episodeLoading}
-              aria-label={t("label.search")}
-            >
-              <Search className="h-4 w-4" />
-              <span className="ml-1">
-                {episodeLoading ? t("label.searching") : t("label.refresh")}
-              </span>
-            </Button>
-          </div>
-        )}
-        {searchBlocked ? null : episodeLoading ? (
-          <div className="flex flex-col items-center justify-center gap-4 py-16">
-            <Loader2 className="h-10 w-10 animate-spin text-[var(--scry-accent-text)]" />
-            <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
-          </div>
-        ) : episodeResults.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t("nzb.noResultsYet")}</p>
-        ) : (
-          <SearchResultBuckets
-            results={episodeResults}
-            onQueue={(release) => onQueueFromEpisodeSearch?.(episode, release)}
-            onQueueAdditional={(release) => onQueueAdditionalFromEpisodeSearch?.(episode, release)}
-            canQueueAdditional={(release) =>
-              releaseSupportsAdditionalFileQueue(release, facet)
-            }
-            requireCandidateToken
-          />
-        )}
+          {searchBlocked ? (
+            <TitleSearchDownloadClientNotice />
+          ) : (
+            <div className="mb-2 flex items-start gap-4">
+              {searchPresentation.showProgress || searchPresentation.showFinalSummary ? (
+                <div className="min-w-0 flex-1">
+                  <p
+                    className="flex items-center gap-1.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+                    data-ui="episode-release-search-summary"
+                    data-search-state={searchPresentation.showProgress ? "searching" : "done"}
+                  >
+                    {searchPresentation.showProgress ? (
+                      <Loader2
+                        className="h-3 w-3 shrink-0 animate-spin"
+                        aria-label={t("label.searching")}
+                      />
+                    ) : null}
+                    <span className="truncate">{searchDescription}</span>
+                  </p>
+                  {searchPresentation.showFinalSummary &&
+                  searchPresentation.failedIndexerNames.length > 0 ? (
+                    <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-danger-text)]">
+                      {t("title.contextReleaseSearchIndexerFailures", {
+                        count: searchPresentation.failedIndexerNames.length,
+                        names: searchPresentation.failedIndexerNames.join(", "),
+                      })}
+                    </p>
+                  ) : null}
+                  {searchPresentation.showFinalSummary &&
+                  searchPresentation.skippedIndexers.length > 0 ? (
+                    <p
+                      className="mt-0.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+                      title={searchPresentation.skippedIndexers
+                        .map((indexer) =>
+                          indexer.reason ? `${indexer.name}: ${indexer.reason}` : indexer.name,
+                        )
+                        .join("\n")}
+                    >
+                      {t("title.contextReleaseSearchIndexerSkipped", {
+                        count: searchPresentation.skippedIndexers.length,
+                        names: searchPresentation.skippedIndexers
+                          .map((indexer) => indexer.name)
+                          .join(", "),
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              <Button
+                id={selectorId("series-overview-episode-search-refresh", episode.id)}
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                onClick={() => onRunEpisodeSearch?.(episode)}
+                disabled={episodeLoading}
+                aria-label={t("label.search")}
+              >
+                <Search className="h-4 w-4" />
+                <span className="ml-1">
+                  {episodeLoading ? t("label.searching") : t("label.refresh")}
+                </span>
+              </Button>
+            </div>
+          )}
+          {searchBlocked ? null : searchPresentation.showInitialLoader ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-16">
+              <Loader2 className="h-10 w-10 animate-spin text-[var(--scry-accent-text)]" />
+              <p className="text-lg text-muted-foreground">{t("label.searching")}</p>
+            </div>
+          ) : !searchPresentation.showResults ? (
+            <p className="text-sm text-muted-foreground">{t("nzb.noResultsYet")}</p>
+          ) : (
+            <SearchResultBuckets
+              results={episodeResults}
+              onQueue={(release) => onQueueFromEpisodeSearch?.(episode, release)}
+              onQueueAdditional={(release) => onQueueAdditionalFromEpisodeSearch?.(episode, release)}
+              canQueueAdditional={(release) =>
+                releaseSupportsAdditionalFileQueue(release, facet)
+              }
+              requireCandidateToken
+            />
+          )}
         </TabsContent>
       ) : null}
       <TabsContent value="blocklist">

@@ -159,17 +159,17 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                 MovieMetadata {
                     target_key: None,
                     tvdb_id: 131_963,
-                    name: "Mugen Train".into(),
-                    slug: "mugen-train".into(),
+                    name: "Iron Rail".into(),
+                    slug: "iron-rail".into(),
                     year: Some(2020),
                     content_status: "Released".into(),
                     overview: "A train mission.".into(),
-                    poster_url: "https://example.com/mugen-train.jpg".into(),
+                    poster_url: "https://example.com/iron-rail.jpg".into(),
                     background_url: None,
                     language: "eng".into(),
                     original_language: Some("jpn".into()),
                     runtime_minutes: 117,
-                    sort_title: "Mugen Train".into(),
+                    sort_title: "Iron Rail".into(),
                     imdb_id: "tt11032374".into(),
                     tmdb_id: None,
                     popularity: None,
@@ -245,7 +245,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
         EpisodeMetadata {
             tvdb_id: 2001,
             episode_number: 1,
-            name: "Mugen Train".into(),
+            name: "Iron Rail".into(),
             aired: "2020-10-10".into(),
             runtime_minutes: 117,
             is_filler: false,
@@ -287,15 +287,15 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
         movie_imdb_id: Some("tt11032374".into()),
         movie_mal_id: Some(40456),
         movie_anidb_id: None,
-        name: "Mugen Train".into(),
-        slug: "mugen-train".into(),
+        name: "Iron Rail".into(),
+        slug: "iron-rail".into(),
         year: Some(2020),
         content_status: "released".into(),
         overview: "Blade Summit: Ember Rail".into(),
         poster_url: "poster".into(),
         language: "eng".into(),
         runtime_minutes: 117,
-        sort_title: "Mugen Train".into(),
+        sort_title: "Iron Rail".into(),
         imdb_id: "tt11032374".into(),
         studio: "ufotable".into(),
         digital_release_date: Some("2020-10-16".into()),
@@ -323,7 +323,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
     assert!(
         collections
             .iter()
-            .all(|collection| collection.label.as_deref() != Some("Mugen Train"))
+            .all(|collection| collection.label.as_deref() != Some("Iron Rail"))
     );
     let links = app
         .list_series_movie_links(&user, &title.id)
@@ -331,7 +331,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
         .expect("list series movie links");
     assert_eq!(links.len(), 1);
     let link = &links[0];
-    assert_eq!(link.movie.title, "Mugen Train");
+    assert_eq!(link.movie.title, "Iron Rail");
     assert_eq!(link.movie.tvdb_id.as_deref(), Some("131963"));
     assert_eq!(link.movie.imdb_id.as_deref(), Some("tt11032374"));
     assert_eq!(link.continuity_status.as_deref(), Some("canon"));
@@ -346,7 +346,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
         .await
         .expect("list specials episodes");
     assert_eq!(specials_episodes.len(), 1);
-    assert_eq!(specials_episodes[0].title.as_deref(), Some("Mugen Train"));
+    assert_eq!(specials_episodes[0].title.as_deref(), Some("Iron Rail"));
     assert_eq!(
         link.linked_episode_id.as_deref(),
         Some(specials_episodes[0].id.as_str())
@@ -360,7 +360,7 @@ async fn series_season_zero_creates_canonical_specials_collection() {
         .add_title(
             &user,
             NewTitle {
-                name: "Arrested Development".into(),
+                name: "Halted Ambitions".into(),
                 facet: MediaFacet::Series,
                 monitored: true,
                 tags: vec![],
@@ -716,7 +716,7 @@ async fn anime_mapping_without_movie_link_does_not_create_series_movie_link() {
         EpisodeMetadata {
             tvdb_id: 3001,
             episode_number: 1,
-            name: "Boys in the Band".into(),
+            name: "Kids in the Chorus".into(),
             aired: "2019-07-12".into(),
             runtime_minutes: 23,
             is_filler: false,
@@ -792,7 +792,7 @@ async fn anime_hydration_persists_scoped_anibridge_ids_for_episode_and_full_seas
         .add_title(
             &user,
             NewTitle {
-                name: "The Apothecary Diaries".into(),
+                name: "The Apiary Almanac".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 external_ids: vec![ExternalId {
@@ -966,7 +966,7 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
         EpisodeMetadata {
             tvdb_id: 5001,
             episode_number: 1,
-            name: "To You, in 2000 Years".into(),
+            name: "To You, in 2000 Winters".into(),
             aired: "2013-04-07".into(),
             runtime_minutes: 24,
             is_filler: false,
@@ -979,7 +979,7 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
         EpisodeMetadata {
             tvdb_id: 6001,
             episode_number: 1,
-            name: "Beast Titan".into(),
+            name: "Iron Colossus".into(),
             aired: "2017-04-01".into(),
             runtime_minutes: 24,
             is_filler: false,
@@ -998,15 +998,15 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
             movie_imdb_id: Some("tt3865768".into()),
             movie_mal_id: Some(23775),
             movie_anidb_id: None,
-            name: "Stoneguard: Crimson Bow and Arrow".into(),
-            slug: "crimson-bow-and-arrow".into(),
+            name: "Stoneguard: Amber Bow and Quiver".into(),
+            slug: "amber-bow-and-quiver".into(),
             year: Some(2014),
             content_status: "released".into(),
             overview: "Recap of episodes 1-13.".into(),
-            poster_url: "poster-aot".into(),
+            poster_url: "poster-stoneguard".into(),
             language: "eng".into(),
             runtime_minutes: 120,
-            sort_title: "Crimson Bow and Arrow".into(),
+            sort_title: "Amber Bow and Quiver".into(),
             imdb_id: "tt3865768".into(),
             studio: "WIT Studio".into(),
             digital_release_date: Some("2014-11-22".into()),
@@ -1023,15 +1023,15 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
             movie_imdb_id: Some("tt11032374".into()),
             movie_mal_id: Some(40456),
             movie_anidb_id: None,
-            name: "Mugen Train".into(),
-            slug: "mugen-train".into(),
+            name: "Iron Rail".into(),
+            slug: "iron-rail".into(),
             year: Some(2020),
             content_status: "released".into(),
             overview: "Canon bridge movie".into(),
             poster_url: "poster-ds".into(),
             language: "eng".into(),
             runtime_minutes: 117,
-            sort_title: "Mugen Train".into(),
+            sort_title: "Iron Rail".into(),
             imdb_id: "tt11032374".into(),
             studio: "ufotable".into(),
             digital_release_date: Some("2020-10-16".into()),
@@ -1068,13 +1068,13 @@ async fn anime_movies_create_series_movie_links_without_collection_metadata() {
     assert_eq!(links.len(), 2);
     let recap = links
         .iter()
-        .find(|link| link.movie.title == "Stoneguard: Crimson Bow and Arrow")
+        .find(|link| link.movie.title == "Stoneguard: Amber Bow and Quiver")
         .expect("recap movie link");
     assert_eq!(recap.movie_form.as_deref(), Some("recap"));
     assert!(recap.linked_episode_id.is_none());
     let ordered = links
         .iter()
-        .find(|link| link.movie.title == "Mugen Train")
+        .find(|link| link.movie.title == "Iron Rail")
         .expect("ordered movie link");
     assert_eq!(ordered.continuity_status.as_deref(), Some("canon"));
     assert!(ordered.linked_episode_id.is_none());
@@ -1130,7 +1130,7 @@ async fn anime_series_movie_refresh_updates_localized_movie_entity_metadata() {
         EpisodeMetadata {
             tvdb_id: 2001,
             episode_number: 1,
-            name: "Two Heroes".into(),
+            name: "Twin Sentinels".into(),
             aired: "2018-08-03".into(),
             runtime_minutes: 96,
             is_filler: false,
@@ -1203,11 +1203,11 @@ async fn anime_series_movie_refresh_updates_localized_movie_entity_metadata() {
     .await;
 
     let english_movie = AnimeMovie {
-        name: "Vanguard Academy: Two Heroes".into(),
+        name: "Vanguard Academy: Twin Sentinels".into(),
         overview: "English overview".into(),
         poster_url: "poster-en".into(),
         language: "eng".into(),
-        sort_title: "Vanguard Academy: Two Heroes".into(),
+        sort_title: "Vanguard Academy: Twin Sentinels".into(),
         ..japanese_movie.clone()
     };
 
@@ -1227,7 +1227,10 @@ async fn anime_series_movie_refresh_updates_localized_movie_entity_metadata() {
     assert_eq!(links.len(), 1);
     let link = &links[0];
 
-    assert_eq!(link.movie.title.as_str(), "Vanguard Academy: Two Heroes");
+    assert_eq!(
+        link.movie.title.as_str(),
+        "Vanguard Academy: Twin Sentinels"
+    );
     assert_eq!(link.movie.overview.as_deref(), Some("English overview"));
     assert_eq!(link.movie.language.as_deref(), Some("eng"));
 }
@@ -1286,7 +1289,7 @@ async fn anime_specials_refresh_updates_localized_series_movie_metadata() {
         movie_mal_id: Some(23775),
         movie_anidb_id: None,
         name: "石衛 前編～紅蓮の弓矢～".into(),
-        slug: "crimson-bow-and-arrow".into(),
+        slug: "amber-bow-and-quiver".into(),
         year: Some(2014),
         content_status: "released".into(),
         overview: "日本語概要".into(),
@@ -1315,11 +1318,11 @@ async fn anime_specials_refresh_updates_localized_series_movie_metadata() {
     .await;
 
     let english_special = AnimeMovie {
-        name: "Stoneguard: Crimson Bow and Arrow".into(),
+        name: "Stoneguard: Amber Bow and Quiver".into(),
         overview: "English recap overview".into(),
         poster_url: "poster-en".into(),
         language: "eng".into(),
-        sort_title: "Stoneguard: Crimson Bow and Arrow".into(),
+        sort_title: "Stoneguard: Amber Bow and Quiver".into(),
         ..japanese_special.clone()
     };
 
@@ -1339,7 +1342,7 @@ async fn anime_specials_refresh_updates_localized_series_movie_metadata() {
     assert_eq!(links.len(), 1);
     let link = &links[0];
 
-    assert_eq!(link.movie.title, "Stoneguard: Crimson Bow and Arrow");
+    assert_eq!(link.movie.title, "Stoneguard: Amber Bow and Quiver");
     assert_eq!(
         link.movie.overview.as_deref(),
         Some("English recap overview")

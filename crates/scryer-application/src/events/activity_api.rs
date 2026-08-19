@@ -12,10 +12,10 @@ use scryer_domain::{
     AcquisitionCandidateRejectedEventData, AcquisitionSearchCompletedEventData, AppPermission,
     ConfigurationChangeAction, ConfigurationChangedEventData, DiscoverySearchCompletedEventData,
     DomainEventPayload, DownloadQueueCommandAction, DownloadQueueItemCommandIssuedEventData,
-    ImportRecoveryCompletedEventData, ImportRequestKind, ImportRequestedEventData,
-    LibraryPermission, MediaFacet, MetadataHydrationState, MetadataHydrationUpdatedEventData,
-    PostProcessingCompletedEventData, PostProcessingResult, SubtitleDownloadedEventData,
-    SubtitleSearchFailedEventData, TitleUpdatedEventData,
+    ImportRequestKind, ImportRequestedEventData, LibraryPermission, MediaFacet,
+    MetadataHydrationState, MetadataHydrationUpdatedEventData, PostProcessingCompletedEventData,
+    PostProcessingResult, SubtitleDownloadedEventData, SubtitleSearchFailedEventData,
+    TitleUpdatedEventData,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -904,25 +904,6 @@ impl AppUseCase {
 
         if let Err(error) = result {
             tracing::warn!(error = %error, client_type, source_ref, "failed to append import requested domain event");
-        }
-    }
-
-    pub(crate) async fn emit_import_recovery_completed_event(
-        &self,
-        actor: impl Into<DomainEventActor>,
-        recovered_count: i64,
-    ) {
-        let actor = actor.into();
-        if let Err(error) = self
-            .append_domain_event(new_global_domain_event(
-                actor,
-                DomainEventPayload::ImportRecoveryCompleted(ImportRecoveryCompletedEventData {
-                    recovered_count,
-                }),
-            ))
-            .await
-        {
-            tracing::warn!(error = %error, recovered_count, "failed to append import recovery domain event");
         }
     }
 

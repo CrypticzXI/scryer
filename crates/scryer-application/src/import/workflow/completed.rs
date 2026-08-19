@@ -77,26 +77,6 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
         &completed.download_client_item_id,
     )
 }
-async fn completed_import_purpose(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-) -> crate::DownloadSubmissionPurpose {
-    let identity = completed_download_identity(completed);
-    if let Ok(Some(submission)) = app
-        .services
-        .workflow
-        .download_submissions
-        .find_by_client_item_id(&identity)
-        .await
-    {
-        return submission.purpose;
-    }
-
-    extract_parameter(&completed.parameters, "*scryer_import_purpose")
-        .as_deref()
-        .map(crate::DownloadSubmissionPurpose::from_label)
-        .unwrap_or_default()
-}
 fn additional_import_dest_path(
     canonical_dest_path: &Path,
     parsed: &ParsedReleaseMetadata,
@@ -151,249 +131,71 @@ const SCRYER_TITLE_ID_PARAM: &str = "*scryer_title_id";
 const SCRYER_FACET_PARAM: &str = "*scryer_facet";
 const SCRYER_COLLECTION_ID_PARAM: &str = "*scryer_collection_id";
 const SCRYER_SERIES_MOVIE_LINK_ID_PARAM: &str = "*scryer_series_movie_link_id";
-const COMPLETED_ORIGIN_SCOPE_CONFLICT: &str = "origin_scope_conflict";
 
-#[derive(Clone, Debug)]
-enum CompletedDownloadOriginResolution {
-    Ready(CompletedDownload),
-    Conflict {
-        reason: &'static str,
-        detail: String,
-    },
-    NoScryerOrigin,
-}
-
-fn resolve_completed_download_origin(
+/// The pure "stamp" step of provenance resolution: a completed download whose
+/// live submission is a Scryer grab carries that grab's identity parameters
+/// (authoritative over whatever the client echoed) and its persisted indexer
+/// release title as `release_name`. A submission recorded without a release
+/// title must not blank a real client-reported name; the completed download
+/// keeps it.
+fn stamp_scryer_submission_origin(
     completed: &CompletedDownload,
-    resolution: &CompletedDownloadSubmissionResolution,
-) -> CompletedDownloadOriginResolution {
-    match resolution {
-        CompletedDownloadSubmissionResolution::Matched(matched)
-            if submission_has_scryer_origin(&matched.submission) =>
-        {
-            match reconciled_scryer_origin_parameters(
-                &completed.parameters,
-                &matched.submission,
-            ) {
-                Ok(parameters) => {
-                    let mut resolved = completed.clone();
-                    resolved.parameters = parameters;
-                    CompletedDownloadOriginResolution::Ready(resolved)
-                }
-                Err(detail) => CompletedDownloadOriginResolution::Conflict {
-                    reason: COMPLETED_ORIGIN_SCOPE_CONFLICT,
-                    detail,
-                },
-            }
-        }
-        _ if has_scryer_origin(&completed.parameters) => {
-            CompletedDownloadOriginResolution::Ready(completed.clone())
-        }
-        _ => CompletedDownloadOriginResolution::NoScryerOrigin,
-    }
+    submission: &DownloadSubmission,
+) -> CompletedDownload {
+    let mut resolved = completed.clone();
+    resolved.parameters =
+        authoritative_scryer_origin_parameters(&completed.parameters, submission);
+    resolved.release_name = submission_source_title(submission)
+        .or_else(|| completed_observed_release_name(completed));
+    resolved
 }
 
-fn reconciled_scryer_origin_parameters(
+fn authoritative_scryer_origin_parameters(
     parameters: &[(String, String)],
     submission: &DownloadSubmission,
-) -> Result<Vec<(String, String)>, String> {
-    let mut reconciled = parameters.to_vec();
-    fill_missing_or_compatible_parameter(
-        &mut reconciled,
-        SCRYER_TITLE_ID_PARAM,
-        &submission.title_id,
-        "title id",
-    )?;
-    fill_missing_or_compatible_parameter(
-        &mut reconciled,
-        SCRYER_FACET_PARAM,
-        &submission.facet,
-        "facet",
-    )?;
-    reconcile_submission_scope_parameters(&mut reconciled, &submission.scope)?;
-    Ok(reconciled)
-}
-
-fn reconcile_submission_scope_parameters(
-    parameters: &mut Vec<(String, String)>,
-    scope: &SubmissionScope,
-) -> Result<(), String> {
-    match scope {
-        SubmissionScope::Collection { collection_id } => {
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-                "series movie link id",
-                "collection",
-            )?;
-            fill_missing_or_compatible_parameter(
-                parameters,
-                SCRYER_COLLECTION_ID_PARAM,
-                collection_id,
-                "collection id",
+) -> Vec<(String, String)> {
+    let mut resolved = parameters
+        .iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                SCRYER_TITLE_ID_PARAM
+                    | SCRYER_FACET_PARAM
+                    | SCRYER_COLLECTION_ID_PARAM
+                    | SCRYER_SERIES_MOVIE_LINK_ID_PARAM
             )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !submission.title_id.trim().is_empty() {
+        resolved.push((
+            SCRYER_TITLE_ID_PARAM.to_string(),
+            submission.title_id.clone(),
+        ));
+    }
+    if !submission.facet.trim().is_empty() {
+        resolved.push((SCRYER_FACET_PARAM.to_string(), submission.facet.clone()));
+    }
+    match &submission.scope {
+        SubmissionScope::Collection { collection_id } => {
+            resolved.push((
+                SCRYER_COLLECTION_ID_PARAM.to_string(),
+                collection_id.clone(),
+            ));
         }
-        SubmissionScope::SeriesMovie {
-            series_movie_link_id,
-        } => fill_missing_or_compatible_parameter(
-            parameters,
-            SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-            series_movie_link_id,
-            "series movie link id",
-        ),
+        SubmissionScope::SeriesMovie { series_movie_link_id } => {
+            resolved.push((
+                SCRYER_SERIES_MOVIE_LINK_ID_PARAM.to_string(),
+                series_movie_link_id.clone(),
+            ));
+        }
         SubmissionScope::Episode { .. }
         | SubmissionScope::EpisodeSet { .. }
         | SubmissionScope::Title
-        | SubmissionScope::Orphan => {
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_COLLECTION_ID_PARAM,
-                "collection id",
-                "non-collection",
-            )?;
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-                "series movie link id",
-                "non-series-movie",
-            )
-        }
+        | SubmissionScope::Orphan => {}
     }
-}
-
-fn fill_missing_or_compatible_parameter(
-    parameters: &mut Vec<(String, String)>,
-    key: &str,
-    expected: &str,
-    label: &str,
-) -> Result<(), String> {
-    let expected = expected.trim();
-    if expected.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(existing) = non_empty_parameter_value(parameters, key)
-        && existing != expected
-    {
-        return Err(format!(
-            "completed download carried {label} {existing:?}, but matched submission expected {expected:?}"
-        ));
-    }
-
-    insert_missing_or_empty_parameter(parameters, key, expected.to_string());
-    Ok(())
-}
-
-fn reject_existing_scope_parameter(
-    parameters: &[(String, String)],
-    key: &str,
-    label: &str,
-    expected_scope: &str,
-) -> Result<(), String> {
-    if let Some(existing) = non_empty_parameter_value(parameters, key) {
-        return Err(format!(
-            "completed download carried {label} {existing:?}, but matched submission expected {expected_scope} scope"
-        ));
-    }
-    Ok(())
-}
-
-fn non_empty_parameter_value(parameters: &[(String, String)], key: &str) -> Option<String> {
-    parameters
-        .iter()
-        .find(|(candidate_key, _)| candidate_key == key)
-        .map(|(_, value)| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn insert_missing_or_empty_parameter(
-    parameters: &mut Vec<(String, String)>,
-    key: &str,
-    value: String,
-) {
-    if let Some((_, existing_value)) = parameters.iter_mut().find(|(name, _)| name == key) {
-        if existing_value.trim().is_empty() {
-            *existing_value = value;
-        }
-    } else {
-        parameters.push((key.to_string(), value));
-    }
-}
-async fn persist_completed_download_tracked_state(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-    resolution: &CompletedDownloadSubmissionResolution,
-    state: TrackedDownloadState,
-) {
-    if !state.is_terminal() {
-        return;
-    }
-    let state_identity = match resolution {
-        CompletedDownloadSubmissionResolution::Matched(matched) => {
-            submission_source_identity(&matched.submission)
-        }
-        _ => completed_download_identity(completed),
-    };
-
-    if let Err(error) = app
-        .services
-        .workflow
-        .download_submissions
-        .update_tracked_state(&state_identity, state.as_str())
-        .await
-    {
-        tracing::warn!(
-            error = %error,
-            client_id = completed.client_id.as_str(),
-            client_type = completed.client_type.as_str(),
-            download_client_item_id = completed.download_client_item_id.as_str(),
-            tracked_state_client_item_id = state_identity.item_id.as_str(),
-            state = state.as_str(),
-            "failed to persist completed download terminal state"
-        );
-    }
-
-    let observed_identity = completed_download_observed_identity(completed);
-    let download_identity = match resolution {
-        CompletedDownloadSubmissionResolution::Matched(matched) => matched
-            .identity
-            .clone()
-            .filter(|identity| !download_submission_identity_is_empty(identity))
-            .or_else(|| {
-                (!download_submission_identity_is_empty(&observed_identity))
-                    .then_some(observed_identity.clone())
-            }),
-        CompletedDownloadSubmissionResolution::MissingDownloadId { identity } => {
-            Some(identity.clone())
-        }
-        _ => (!download_submission_identity_is_empty(&observed_identity))
-            .then_some(observed_identity.clone()),
-    };
-
-    if let Some(download_identity) = download_identity
-        && let Err(error) = app
-            .services
-            .workflow
-            .download_submissions
-            .record_identity_tracked_state(
-                &download_identity,
-                Some(&completed_download_identity(completed)),
-                state.as_str(),
-                None,
-                None,
-            )
-            .await
-    {
-        tracing::warn!(
-            error = %error,
-            client_id = completed.client_id.as_str(),
-            client_type = completed.client_type.as_str(),
-            download_client_item_id = completed.download_client_item_id.as_str(),
-            state = state.as_str(),
-            "failed to persist durable completed download terminal state"
-        );
-    }
+    resolved
 }
 async fn terminal_download_item_is_still_visible(
     app: &AppUseCase,
@@ -461,26 +263,6 @@ async fn cleanup_routing_scope_for_title_id(
         Ok(None) | Err(_) => (None, None),
     }
 }
-pub(crate) async fn reconcile_terminal_download_cleanup_for_completed(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-    state: TrackedDownloadState,
-) -> TerminalDownloadCleanupOutcome {
-    let title_id = extract_parameter(&completed.parameters, "*scryer_title_id").unwrap_or_default();
-    let (library_id, resolved_facet) =
-        cleanup_routing_scope_for_title_id(app, Some(title_id.as_str())).await;
-    let facet = resolved_facet.or_else(|| facet_for_completed_download(completed));
-    reconcile_terminal_download_cleanup(
-        app,
-        &completed.client_id,
-        &completed.client_type,
-        &completed.download_client_item_id,
-        library_id.as_deref(),
-        facet.as_ref(),
-        state,
-    )
-    .await
-}
 pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     app: &AppUseCase,
     tracked: &crate::tracked_downloads::TrackedDownload,
@@ -503,9 +285,18 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
 fn media_file_score(file: &crate::TitleMediaFile) -> i32 {
     file.acquisition_score.unwrap_or(0)
 }
+/// Scryer's own transient markers on a *non-`Failed`* import result.
+///
+/// Execution-phase failures never come through here: they arrive as
+/// `ImportDecision::Failed` and are retried by the phase rule in
+/// `completed_import_result_is_retryable` regardless of the message (Sonarr's
+/// model — no error-string catalogue). This list only recognises the transient
+/// conditions Scryer itself reports as a `Skipped`/`Rejected` result: a source
+/// still being unpacked or changing under the importer, or an active-download
+/// marker.
 fn completed_import_error_message_is_retryable(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
-    [
+    const SCRYER_TRANSIENT_PHRASES: &[&str] = &[
         "active-download marker",
         "still being unpacked",
         "still_unpacking",
@@ -513,9 +304,10 @@ fn completed_import_error_message_is_retryable(message: &str) -> bool {
         "locked",
         "temporarily",
         "not found or inaccessible",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
+    ];
+    SCRYER_TRANSIENT_PHRASES
+        .iter()
+        .any(|needle| normalized.contains(needle))
 }
 async fn resolve_import_quality_profile(
     app: &AppUseCase,

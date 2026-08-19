@@ -407,6 +407,24 @@ async fn apply_single_migration(
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
 
+    if let Some(quarantined) = crate::migrations::known_bad::known_bad_migration(migration.version)
+    {
+        // See `migrations::known_bad`: recorded as applied with its original
+        // checksum, steps never executed; the replacement version does the
+        // safe work.
+        tracing::warn!(
+            version = migration.version,
+            replacement_version = quarantined.replacement_version,
+            reason = quarantined.reason,
+            "skipping quarantined migration; recording it as applied without executing its steps"
+        );
+        insert_applied_migration(&mut tx, migration, 0).await?;
+        tx.commit()
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        return Ok(());
+    }
+
     for step in &migration.steps {
         if !step.engine().applies_to(EngineScope::Postgres)
             || !step.scope().applies_to(install_kind)
@@ -482,6 +500,10 @@ async fn run_postgres_rust_hook(
         }
         "migrate_title_folder_ownership" => {
             crate::migrations::title_folder_ownership::migrate_title_folder_ownership_postgres(tx)
+                .await
+        }
+        "migrate_title_folder_ownership_safe" => {
+            crate::migrations::title_folder_ownership_safe::migrate_title_folder_ownership_safe_postgres(tx)
                 .await
         }
         "migrate_title_image_blobs" => {

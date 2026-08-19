@@ -254,7 +254,7 @@ fn synthesize_release_parse_context(raw: &str) -> ReleaseParseContext {
         .cloned()
         .collect::<Vec<_>>();
     // A name whose only title text lives in a leading bracket group is a
-    // bracket-styled title (`[Oshi no Ko].S02E01...`), not a group tag — a
+    // bracket-styled title (`[Nagi no Ko].S02E01...`), not a group tag — a
     // group tag is always followed by title text. Prefer the last such group
     // that carries non-metadata tokens (tags stack before the title).
     let bracket_styled_title = if title_tokens.is_empty() {

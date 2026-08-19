@@ -280,7 +280,7 @@ fn bounds_token_role_hypotheses_and_marks_pruning() {
 fn context_keeps_stacked_anime_aliases_as_title_variants() {
     let mut target = context(
         ContextFacetHint::Anime,
-        "Silver Horizon Beyond Journey's End",
+        "Silver Horizon Beyond Harbor's End",
     );
     target.aliases = vec![
         ContextAlias {
@@ -345,7 +345,7 @@ fn context_does_not_invent_absent_titles() {
 fn context_match_retains_pre_projection_span_for_identity_proof() {
     let mut target = context(
         ContextFacetHint::Series,
-        "The Fragrant Flower Blooms with Dignity",
+        "The Quiet Meadow Blooms with Splendor",
     );
     target.aliases = vec![ContextAlias {
         name: "BLOOM".to_string(),
@@ -440,14 +440,11 @@ fn movie_parser_extracts_year_and_source_from_compound_tokens() {
 
 #[test]
 fn daily_parser_projects_air_date_year_and_normalizes_web_source() {
-    let mut target = context(
-        ContextFacetHint::Series,
-        "The 11th Hour With Stephanie Ruhle",
-    );
+    let mut target = context(ContextFacetHint::Series, "The 9th Bell With Marlow Reed");
     target.known_years.push(2026);
 
     let analysis = analyze_release_for_target(
-        "The.11th.Hour.With.Stephanie.Ruhle.2026.04.21.720p.WEB.x264-NGP",
+        "The.9th.Bell.With.Marlow.Reed.2026.04.21.720p.WEB.x264-NGP",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -461,7 +458,7 @@ fn daily_parser_projects_air_date_year_and_normalizes_web_source() {
 }
 
 #[test]
-fn range_pack_parser_handles_bleach_batch_release() {
+fn range_pack_parser_handles_anime_batch_release() {
     let analysis = analyze_release_for_target(
         "Emberfall 1-366",
         &context(ContextFacetHint::Anime, "Emberfall"),
@@ -504,12 +501,12 @@ fn anime_context_prefers_season_pack_with_trailing_episode_range() {
 fn movie_context_avoids_daily_misparse_for_numeric_movie_title() {
     let mut target = context(
         ContextFacetHint::Movie,
-        "Apollo 10 1 2 A Space Age Childhood Apollo 10 1 2 Uzay Caginda Cocuk Olmak",
+        "Orbit 7 1 2 A Quiet Age Childhood Orbit 7 1 2 Sessiz Cagda Cocuk Olmak",
     );
     target.known_years.push(2022);
 
     let analysis = analyze_release_for_target(
-        "Apollo.10.1.2.A.Space.Age.Childhood-Apollo.10.1.2.Uzay.Caginda.Cocuk.Olmak.2022.Animasyon.1080p.NF.WEB-DL",
+        "Orbit.7.1.2.A.Quiet.Age.Childhood-Orbit.7.1.2.Sessiz.Cagda.Cocuk.Olmak.2022.Animasyon.1080p.NF.WEB-DL",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -520,11 +517,11 @@ fn movie_context_avoids_daily_misparse_for_numeric_movie_title() {
 
 #[test]
 fn series_context_supports_split_day_month_year_daily_release() {
-    let mut target = context(ContextFacetHint::Series, "Kiskanmak");
+    let mut target = context(ContextFacetHint::Series, "Yalimkan");
     target.known_years.push(2026);
 
     let analysis = analyze_release_for_target(
-        "Kiskanmak.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        "Yalimkan.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -535,11 +532,11 @@ fn series_context_supports_split_day_month_year_daily_release() {
 
 #[test]
 fn series_context_supports_hyphenated_day_month_year_daily_release() {
-    let mut target = context(ContextFacetHint::Series, "Kiskanmak");
+    let mut target = context(ContextFacetHint::Series, "Yalimkan");
     target.known_years.push(2026);
 
     let analysis = analyze_release_for_target(
-        "Kiskanmak.29.Blm.21-04-2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        "Yalimkan.29.Blm.21-04-2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -551,10 +548,10 @@ fn series_context_supports_hyphenated_day_month_year_daily_release() {
 #[test]
 fn split_season_episode_tokens_parse_as_standard_episode() {
     let analysis = analyze_release_for_target(
-        "[Erai-raws] Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e S4-07 [1080p]",
+        "[Erai-raws] Irasshai Tsukikage Nagisa Shuurei no Koushitsu e S4-07 [1080p]",
         &context(
             ContextFacetHint::Anime,
-            "Youkoso Jitsuryoku Shijou Shugi no Kyoushitsu e",
+            "Irasshai Tsukikage Nagisa Shuurei no Koushitsu e",
         ),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -568,8 +565,8 @@ fn split_season_episode_tokens_parse_as_standard_episode() {
 #[test]
 fn standard_episode_range_token_projects_multi_episode() {
     let analysis = analyze_release_for_target(
-        "Ergo.Proxy.S01E01-11.BDRemux.1080p",
-        &context(ContextFacetHint::Anime, "Ergo Proxy"),
+        "Umbra.Vector.S01E01-11.BDRemux.1080p",
+        &context(ContextFacetHint::Anime, "Umbra Vector"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -583,7 +580,7 @@ fn standard_episode_range_token_projects_multi_episode() {
 #[test]
 fn e_prefixed_episode_token_maps_to_season_one_episode() {
     let analysis = analyze_release_for_target(
-        "One.Piece.E1158.1080p.WEB.H264",
+        "Tide.Chart.E1158.1080p.WEB.H264",
         &context(ContextFacetHint::Series, "Tidebreaker"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -597,8 +594,8 @@ fn e_prefixed_episode_token_maps_to_season_one_episode() {
 #[test]
 fn season_pack_projection_preserves_single_season_number() {
     let analysis = analyze_release_for_target(
-        "Crossing.Swords.S02.1080p.WEB-DL",
-        &context(ContextFacetHint::Series, "Crossing Swords"),
+        "Clashing.Lanterns.S02.1080p.WEB-DL",
+        &context(ContextFacetHint::Series, "Clashing Lanterns"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -609,25 +606,28 @@ fn season_pack_projection_preserves_single_season_number() {
 
 #[test]
 fn movie_title_keeps_numeric_tokens_that_are_part_of_the_name() {
-    let mut target = context(ContextFacetHint::Movie, "Perc 30");
+    let mut target = context(ContextFacetHint::Movie, "Volt 30");
     target.known_years.push(2023);
 
-    let analysis = analyze_release_for_target("Perc.30.[2023].720p.WEBRip-LAMA", &target);
+    let analysis = analyze_release_for_target("Volt.30.[2023].720p.WEBRip-LAMA", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "PERC 30");
+    assert_eq!(candidate.projected.normalized_title, "VOLT 30");
 }
 
 #[test]
 fn movie_title_keeps_hyphenated_words_before_metadata_boundary() {
-    let mut target = context(ContextFacetHint::Movie, "Erbsunde Veil Of Sin");
+    let mut target = context(ContextFacetHint::Movie, "Wellensang Veil Of Dusk");
     target.known_years.push(2024);
 
     let analysis =
-        analyze_release_for_target("Erbsunde-Veil.Of.Sin.[2024].720p.WEBRip-LAMA", &target);
+        analyze_release_for_target("Wellensang-Veil.Of.Dusk.[2024].720p.WEBRip-LAMA", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "ERBSUNDE VEIL OF SIN");
+    assert_eq!(
+        candidate.projected.normalized_title,
+        "WELLENSANG VEIL OF DUSK"
+    );
 }
 
 #[test]
@@ -657,35 +657,37 @@ fn title_word_web_does_not_force_metadata_source_in_title_zone() {
 
 #[test]
 fn html_entity_and_ampersand_normalize_into_title_words() {
-    let mut target = context(ContextFacetHint::Movie, "Things Heard and Seen");
+    let mut target = context(ContextFacetHint::Movie, "Echoes Heard and Seen");
     target.known_years.push(2021);
 
     let analysis = analyze_release_for_target(
-        "Things.Heard.&amp;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
+        "Echoes.Heard.&amp;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
         candidate.projected.normalized_title,
-        "THINGS HEARD AND SEEN"
+        "ECHOES HEARD AND SEEN"
     );
 }
 
 #[test]
 fn connector_title_variants_split_aka_and_slash_titles() {
-    let mut target = context(ContextFacetHint::Movie, "Mon Cousin My Cousin");
+    let mut target = context(ContextFacetHint::Movie, "Mon Phare My Lighthouse");
     target.known_years.push(2020);
 
-    let analysis =
-        analyze_release_for_target("Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP", &target);
+    let analysis = analyze_release_for_target(
+        "Mon Phare / My Lighthouse 2020 1080p BluRay x264-GRP",
+        &target,
+    );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
     assert!(
         projected
             .normalized_title_variants
             .iter()
-            .any(|title| title == "MON COUSIN"),
+            .any(|title| title == "MON PHARE"),
         "{:?}",
         projected.normalized_title_variants
     );
@@ -693,15 +695,15 @@ fn connector_title_variants_split_aka_and_slash_titles() {
         projected
             .normalized_title_variants
             .iter()
-            .any(|title| title == "MY COUSIN"),
+            .any(|title| title == "MY LIGHTHOUSE"),
         "{:?}",
         projected.normalized_title_variants
     );
 
-    let mut aka_target = context(ContextFacetHint::Movie, "Sydney A K A Hard Eight");
+    let mut aka_target = context(ContextFacetHint::Movie, "Portmere A K A Hard Nine");
     aka_target.known_years.push(1996);
     let aka_analysis = analyze_release_for_target(
-        "Sydney.A.K.A.Hard.Eight.1996.1080p.WEB-DL.H.264",
+        "Portmere.A.K.A.Hard.Nine.1996.1080p.WEB-DL.H.264",
         &aka_target,
     );
     let aka_projected = &aka_analysis
@@ -709,63 +711,60 @@ fn connector_title_variants_split_aka_and_slash_titles() {
         .expect("best candidate")
         .projected;
 
-    assert_eq!(aka_projected.normalized_title, "SYDNEY AKA HARD EIGHT");
+    assert_eq!(aka_projected.normalized_title, "PORTMERE AKA HARD NINE");
     assert!(
         aka_projected
             .normalized_title_variants
             .iter()
-            .any(|title| title == "SYDNEY")
+            .any(|title| title == "PORTMERE")
     );
     assert!(
         aka_projected
             .normalized_title_variants
             .iter()
-            .any(|title| title == "HARD EIGHT")
+            .any(|title| title == "HARD NINE")
     );
 }
 
 #[test]
 fn double_encoded_html_entity_normalizes_into_title_words() {
-    let mut target = context(ContextFacetHint::Movie, "Things Heard and Seen");
+    let mut target = context(ContextFacetHint::Movie, "Echoes Heard and Seen");
     target.known_years.push(2021);
 
     let analysis = analyze_release_for_target(
-        "Things.Heard.&amp;amp;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
+        "Echoes.Heard.&amp;amp;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
         candidate.projected.normalized_title,
-        "THINGS HEARD AND SEEN"
+        "ECHOES HEARD AND SEEN"
     );
 }
 
 #[test]
 fn numeric_html_entity_normalizes_into_title_words() {
-    let mut target = context(ContextFacetHint::Movie, "Things Heard and Seen");
+    let mut target = context(ContextFacetHint::Movie, "Echoes Heard and Seen");
     target.known_years.push(2021);
 
     let analysis = analyze_release_for_target(
-        "Things.Heard.&#x26;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
+        "Echoes.Heard.&#x26;.Seen.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.H.265-playWEB",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
         candidate.projected.normalized_title,
-        "THINGS HEARD AND SEEN"
+        "ECHOES HEARD AND SEEN"
     );
 }
 
 #[test]
-fn colon_separated_re_zero_preserves_spaced_title_form() {
+fn colon_separated_prefix_preserves_spaced_title_form() {
     let analysis = analyze_release_for_target(
-        "[Judas] Re:Zero kara Hajimeru Isekai Seikatsu - S04E03 [1080p]",
-        &context(
-            ContextFacetHint::Anime,
-            "Re Zero kara Hajimeru Isekai Seikatsu",
-        ),
+        "[Judas] Ka:Nova kara Meguru Isekai Kikou - S04E03 [1080p]",
+        &context(ContextFacetHint::Anime, "Ka Nova kara Meguru Isekai Kikou"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -773,15 +772,15 @@ fn colon_separated_re_zero_preserves_spaced_title_form() {
         candidate
             .projected
             .normalized_title
-            .contains("RE ZERO KARA HAJIMERU ISEKAI SEIKATSU")
+            .contains("KA NOVA KARA MEGURU ISEKAI KIKOU")
     );
 }
 
 #[test]
 fn service_tagged_webrip_normalizes_to_webdl() {
     let analysis = analyze_release_for_target(
-        "WWE.NXT.2026.04.21.NF.iNT.720p.WEBRip.H.264-HEEL",
-        &context(ContextFacetHint::Series, "WWE NXT"),
+        "AWL.NXG.2026.04.21.NF.iNT.720p.WEBRip.H.264-HEEL",
+        &context(ContextFacetHint::Series, "AWL NXG"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -793,7 +792,7 @@ fn service_tagged_webrip_normalizes_to_webdl() {
 
 #[test]
 fn season_only_token_can_project_target_episode_from_required_context() {
-    let mut target = context(ContextFacetHint::Series, "Invincible");
+    let mut target = context(ContextFacetHint::Series, "Ironbound");
     target.known_years.push(2021);
     target.episodes = vec![ContextEpisode {
         season: Some(4),
@@ -802,7 +801,7 @@ fn season_only_token_can_project_target_episode_from_required_context() {
     }];
 
     let analysis = analyze_release_for_target(
-        "Invincible.2021.S04.1080p.AMZN.Webrip.AV1.10bit.EAC3.5.1-Goki.TAoE",
+        "Ironbound.2021.S04.1080p.AMZN.Webrip.AV1.10bit.EAC3.5.1-Goki.TAoE",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -836,21 +835,21 @@ fn parenthesized_cjk_alt_title_and_prefix_group_do_not_pollute_primary_title() {
 
 #[test]
 fn empty_movie_title_falls_back_to_required_context_match_before_metadata_boundary() {
-    let mut target = context(ContextFacetHint::Movie, "Ablam");
+    let mut target = context(ContextFacetHint::Movie, "Denizhan");
     target.known_years.push(2019);
 
     let analysis =
-        analyze_release_for_target("Ablam.2019.Yerli.1080p.WEB-DL.x264.AAC-TSRG", &target);
+        analyze_release_for_target("Denizhan.2019.Yerli.1080p.WEB-DL.x264.AAC-TSRG", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "ABLAM");
+    assert_eq!(candidate.projected.normalized_title, "DENIZHAN");
 }
 
 #[test]
 fn fused_standard_episode_quality_suffix_is_split_correctly() {
     let analysis = analyze_release_for_target(
-        "Oats.Studios.S01E101080p.NF.WEB-DL.DDP5.1.H.264-SPWEB",
-        &context(ContextFacetHint::Series, "Oats Studios"),
+        "Barley.Works.S01E101080p.NF.WEB-DL.DDP5.1.H.264-SPWEB",
+        &context(ContextFacetHint::Series, "Barley Works"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
@@ -861,39 +860,39 @@ fn fused_standard_episode_quality_suffix_is_split_correctly() {
 }
 
 #[test]
-fn merged_alias_pattern_can_project_canonical_re_zero_title() {
+fn merged_alias_pattern_can_project_canonical_split_title() {
     let mut target = context(
         ContextFacetHint::Anime,
-        "Re Zero Starting Life In Another World",
+        "Ka Nova Drifting Through A Distant World",
     );
     target.aliases = vec![
         ContextAlias {
-            name: "Re Zero".to_string(),
+            name: "Ka Nova".to_string(),
         },
         ContextAlias {
-            name: "ReZERO".to_string(),
+            name: "KaNOVA".to_string(),
         },
     ];
 
     let analysis = analyze_release_for_target(
-        "ReZERO.Starting.Life.in.Another.World.S04E03.1080p.AMZN.WEB-DL",
+        "KaNOVA.Drifting.Through.A.Distant.World.S04E03.1080p.AMZN.WEB-DL",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(
         candidate.projected.normalized_title,
-        "RE ZERO STARTING LIFE IN ANOTHER WORLD"
+        "KA NOVA DRIFTING THROUGH A DISTANT WORLD"
     );
 }
 
 #[test]
 fn enrichment_extracts_legacy_audio_and_hdr_fields_without_inventing_languages() {
-    let mut target = context(ContextFacetHint::Movie, "Things Heard and Seen");
+    let mut target = context(ContextFacetHint::Movie, "Echoes Heard and Seen");
     target.known_years.push(2021);
 
     let analysis = analyze_release_for_target(
-        "Things.Heard.And.Seen.2021.2160p.NF.WEB-DL.DDP5.1.Atmos.DV.HDR10+.DUAL-AUDIO.MULTISUB.10bit.x265",
+        "Echoes.Heard.And.Seen.2021.2160p.NF.WEB-DL.DDP5.1.Atmos.DV.HDR10+.DUAL-AUDIO.MULTISUB.10bit.x265",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -971,23 +970,26 @@ fn enrichment_extracts_split_eac3_without_matching_title_substrings() {
 
     assert_eq!(audio_label(projected.audio.as_ref()), Some("EAC3"));
 
-    let bleach = analyze_release_for_target(
+    let emberfall = analyze_release_for_target(
         "Emberfall 1-366",
         &context(ContextFacetHint::Anime, "Emberfall"),
     );
-    let bleach_projected = &bleach.best_candidate().expect("best candidate").projected;
+    let emberfall_projected = &emberfall
+        .best_candidate()
+        .expect("best candidate")
+        .projected;
 
-    assert_eq!(bleach_projected.normalized_title, "EMBERFALL");
-    assert_eq!(bleach_projected.audio, None);
+    assert_eq!(emberfall_projected.normalized_title, "EMBERFALL");
+    assert_eq!(emberfall_projected.audio, None);
 }
 
 #[test]
 fn enrichment_canonicalizes_french_language_codes_to_fra() {
-    let mut target = context(ContextFacetHint::Movie, "Esther Kahn");
+    let mut target = context(ContextFacetHint::Movie, "Colette Marin");
     target.known_years.push(2000);
 
     let analysis = analyze_release_for_target(
-        "Esther.Kahn.2000.REMASTERED.VOSTFR.1080p.FRA.BluRay.REMUX.AVC.DTS-HD.MA.5.1-MAD",
+        "Colette.Marin.2000.REMASTERED.VOSTFR.1080p.FRA.BluRay.REMUX.AVC.DTS-HD.MA.5.1-MAD",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1001,8 +1003,8 @@ fn enrichment_canonicalizes_french_language_codes_to_fra() {
 #[test]
 fn enrichment_extracts_affixed_language_before_video_anchor() {
     let analysis = analyze_release_for_target(
-        "Teenage.Mutant.Ninja.Turtles.S05E07.HebDub.XviD",
-        &context(ContextFacetHint::Series, "Teenage Mutant Ninja Turtles"),
+        "Rooftop.Neon.Shell.Squad.S05E07.HebDub.XviD",
+        &context(ContextFacetHint::Series, "Rooftop Neon Shell Squad"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let enrichment = enrich_candidate(&analysis.tokens, candidate, &analysis.raw_input);
@@ -1054,8 +1056,8 @@ fn enrichment_extracts_named_language_before_release_group_suffix() {
 #[test]
 fn enrichment_extracts_english_dub_gap_group_after_episode_identity() {
     let analysis = analyze_release_for_target(
-        "[Yameii] Go For It, Nakamura-kun!! - S01E05 [English Dub] [CR WEB-DL 1080p H264 AAC] [994F6EBD] (Ganbare! Nakamura-kun!!)",
-        &context(ContextFacetHint::Anime, "Go For It Nakamura-kun"),
+        "[Yameii] Hang In There, Matsuda-kun!! - S01E05 [English Dub] [CR WEB-DL 1080p H264 AAC] [994F6EBD] (Faito! Matsuda-kun!!)",
+        &context(ContextFacetHint::Anime, "Hang In There Matsuda-kun"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let enrichment = enrich_candidate(&analysis.tokens, candidate, &analysis.raw_input);
@@ -1068,8 +1070,8 @@ fn enrichment_extracts_english_dub_gap_group_after_episode_identity() {
 #[test]
 fn enrichment_extracts_release_flags_before_quality_anchor() {
     let analysis = analyze_release_for_target(
-        "O11CE.New.Generation.S01E17.DV.2160p.WEB.h265-EDITH",
-        &context(ContextFacetHint::Series, "O11CE New Generation"),
+        "V33LO.New.Horizon.S01E17.DV.2160p.WEB.h265-EDITH",
+        &context(ContextFacetHint::Series, "V33LO New Horizon"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let enrichment = enrich_candidate(&analysis.tokens, candidate, &analysis.raw_input);
@@ -1110,11 +1112,11 @@ fn remux_is_projected_as_structural_flag_not_edition() {
 
 #[test]
 fn remux_survives_when_proper_appears_first() {
-    let mut target = context(ContextFacetHint::Movie, "13 Sins");
+    let mut target = context(ContextFacetHint::Movie, "13 Bells");
     target.known_years.push(2014);
 
     let analysis = analyze_release_for_target(
-        "13.Sins.2014.PROPER.BluRay.1080p.DTS-HD.MA.5.1.AVC.HYBRID.REMUX-FraMeSToR",
+        "13.Bells.2014.PROPER.BluRay.1080p.DTS-HD.MA.5.1.AVC.HYBRID.REMUX-FraMeSToR",
         &target,
     );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
@@ -1138,7 +1140,7 @@ fn leading_bdmv_group_is_source_not_release_group() {
 #[test]
 fn split_dvd_rip_source_projects_as_dvd() {
     let analysis = analyze_release_for_target(
-        "[EDG] BLEACH EP 1-30 [DVD RIP X264 Hi10]",
+        "[EDG] EMBERFALL EP 1-30 [DVD RIP X264 Hi10]",
         &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1152,8 +1154,8 @@ fn split_dvd_rip_source_projects_as_dvd() {
 #[test]
 fn range_pack_projects_absolute_range_without_doubling_episode_numbers() {
     let analysis = analyze_release_for_target(
-        "[HorribleSubs] Tokyo Ghoul [01-12] [720p] [Batch]",
-        &context(ContextFacetHint::Anime, "Tokyo Ghoul"),
+        "[HorribleSubs] Harbor Wraith [01-12] [720p] [Batch]",
+        &context(ContextFacetHint::Anime, "Harbor Wraith"),
     );
     let episode = analysis
         .best_candidate()
@@ -1187,8 +1189,8 @@ fn numbered_ova_projects_special_absolute_episode_number() {
 #[test]
 fn season_pack_range_sets_multi_season_contract_flag() {
     let analysis = analyze_release_for_target(
-        "The.Great.S01-S03.NORDiC.1080p.MAX.WEB-DL.H.265-NORViNE",
-        &context(ContextFacetHint::Series, "The Great"),
+        "The.Regent.S01-S03.NORDiC.1080p.MAX.WEB-DL.H.265-NORViNE",
+        &context(ContextFacetHint::Series, "The Regent"),
     );
     let episode = analysis
         .best_candidate()
@@ -1207,7 +1209,7 @@ fn season_pack_range_sets_multi_season_contract_flag() {
 fn parenthetical_standard_identity_beats_prefixed_absolute_number() {
     let mut target = context(
         ContextFacetHint::Anime,
-        "Silver Horizon Beyond Journey's End",
+        "Silver Horizon Beyond Harbor's End",
     );
     target.aliases.push(ContextAlias {
         name: "Sora no Vale".to_string(),
@@ -1231,7 +1233,7 @@ fn parenthetical_standard_identity_beats_prefixed_absolute_number() {
 
 #[test]
 fn series_facet_with_episode_context_can_recover_absolute_episode() {
-    let mut target = context(ContextFacetHint::Series, "Kiskanmak");
+    let mut target = context(ContextFacetHint::Series, "Yalimkan");
     target.known_years.push(2026);
     target.episodes.push(ContextEpisode {
         season: None,
@@ -1243,7 +1245,7 @@ fn series_facet_with_episode_context_can_recover_absolute_episode() {
     });
 
     let analysis = analyze_release_for_target(
-        "Kiskanmak.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        "Yalimkan.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1259,7 +1261,7 @@ fn series_facet_with_episode_context_can_recover_absolute_episode() {
 
 #[test]
 fn movie_facet_with_episode_context_can_recover_absolute_episode() {
-    let mut target = context(ContextFacetHint::Movie, "Kiskanmak");
+    let mut target = context(ContextFacetHint::Movie, "Yalimkan");
     target.known_years.push(2026);
     target.episodes.push(ContextEpisode {
         season: None,
@@ -1271,7 +1273,7 @@ fn movie_facet_with_episode_context_can_recover_absolute_episode() {
     });
 
     let analysis = analyze_release_for_target(
-        "Kiskanmak.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
+        "Yalimkan.29.Blm.21.04.2026.1080p.DSNP.WEB-DL.TR.AAC2.0.H.264-TURG",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1434,30 +1436,30 @@ fn generic_external_ids_parse_beyond_imdb() {
 
 #[test]
 fn numeric_anime_title_uses_context_before_absolute_episode() {
-    let mut target = context(ContextFacetHint::Anime, "86");
+    let mut target = context(ContextFacetHint::Anime, "77");
     target.episodes.push(ContextEpisode {
         absolute_number: Some(11),
         ..Default::default()
     });
 
-    let analysis = analyze_release_for_target("86 - 11 [1080p]", &target);
+    let analysis = analyze_release_for_target("77 - 11 [1080p]", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
 
-    assert_eq!(candidate.projected.normalized_title, "86");
+    assert_eq!(candidate.projected.normalized_title, "77");
     assert_eq!(candidate.family, ParseFamily::AnimeAbsolute);
     assert_eq!(episode.absolute_episode_numbers, vec![11]);
 }
 
 #[test]
 fn short_service_alias_can_remain_a_title_word() {
-    let mut target = context(ContextFacetHint::Movie, "Max Headroom");
+    let mut target = context(ContextFacetHint::Movie, "Max Lantern");
     target.known_years.push(1985);
 
-    let analysis = analyze_release_for_target("Max.Headroom.1985.480p.DVD.MPEG2.MP3-GRP", &target);
+    let analysis = analyze_release_for_target("Max.Lantern.1985.480p.DVD.MPEG2.MP3-GRP", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "MAX HEADROOM");
+    assert_eq!(candidate.projected.normalized_title, "MAX LANTERN");
     assert_eq!(
         candidate.projected.video_codec.as_ref(),
         Some(&VideoCodec::Mpeg2)
@@ -1480,8 +1482,8 @@ fn release_group_preserves_dotted_and_hyphenated_suffixes() {
 #[test]
 fn leading_fansub_group_beats_trailing_batch_group() {
     let analysis = analyze_release_for_target(
-        "[HorribleSubs] Tokyo Ghoul [01-12] [720p] [Batch]",
-        &context(ContextFacetHint::Anime, "Tokyo Ghoul"),
+        "[HorribleSubs] Harbor Wraith [01-12] [720p] [Batch]",
+        &context(ContextFacetHint::Anime, "Harbor Wraith"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1494,8 +1496,8 @@ fn leading_fansub_group_beats_trailing_batch_group() {
 #[test]
 fn suffix_group_after_episode_subtitle_beats_earlier_hyphen_text() {
     let analysis = analyze_release_for_target(
-        "Homes.Under.the.Hammer.S28E75-One.Man.and.His.Dog.WEB-DL.H.264-W45Ps",
-        &context(ContextFacetHint::Series, "Homes Under the Hammer"),
+        "Barns.Beneath.the.Gavel.S28E75-One.Man.and.His.Cart.WEB-DL.H.264-W45Ps",
+        &context(ContextFacetHint::Series, "Barns Beneath the Gavel"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
@@ -1529,11 +1531,11 @@ fn suffix_group_does_not_capture_hyphenated_words_in_trailing_title() {
 
 #[test]
 fn release_group_skips_embedded_suffix_inside_large_metadata_bracket() {
-    let mut target = context(ContextFacetHint::Movie, "The Peasants");
+    let mut target = context(ContextFacetHint::Movie, "The Fieldhands");
     target.known_years.push(2023);
 
     let analysis = analyze_release_for_target(
-        "The.Peasants.[2023].[1080p.BluRay.x265.SDR.DDP.5.1.Dual-DarQ.HONE]",
+        "The.Fieldhands.[2023].[1080p.BluRay.x265.SDR.DDP.5.1.Dual-DarQ.HONE]",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1543,11 +1545,11 @@ fn release_group_skips_embedded_suffix_inside_large_metadata_bracket() {
 
 #[test]
 fn release_group_preserves_short_hyphenated_prefix() {
-    let mut target = context(ContextFacetHint::Movie, "Lechindi Mahila Lokam");
+    let mut target = context(ContextFacetHint::Movie, "Nilavu Maalai Ulagam");
     target.known_years.push(2026);
 
     let analysis = analyze_release_for_target(
-        "Lechindi.Mahila.Lokam.2026.Tamil.2160p.SNXT.WEB-DL.DDP5.1.H.265-PMi-XDMovies",
+        "Nilavu.Maalai.Ulagam.2026.Tamil.2160p.SNXT.WEB-DL.DDP5.1.H.265-PMi-XDMovies",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1560,11 +1562,11 @@ fn release_group_preserves_short_hyphenated_prefix() {
 
 #[test]
 fn release_group_uses_terminal_component_for_two_part_p2p_suffix() {
-    let mut target = context(ContextFacetHint::Series, "Invincible");
+    let mut target = context(ContextFacetHint::Series, "Ironbound");
     target.known_years.push(2021);
 
     let analysis = analyze_release_for_target(
-        "Invincible.2021.S04E07.DONT.DO.ANYTHING.RASH.1080p.AMZN.Webrip.AV1.10bit.EAC3.5.1-Goki-TAoE",
+        "Ironbound.2021.S04E07.DONT.DO.ANYTHING.RASH.1080p.AMZN.Webrip.AV1.10bit.EAC3.5.1-Goki-TAoE",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1587,12 +1589,12 @@ fn bracketed_short_hyphenated_release_group_preserves_both_parts() {
 fn terminal_language_adjacent_token_can_be_release_group() {
     let mut target = context(
         ContextFacetHint::Movie,
-        "Senden Geriye Kalan Reminders of Him",
+        "Yarindan Kalan Izler Echoes of Him",
     );
     target.known_years.push(2026);
 
     let analysis = analyze_release_for_target(
-        "Senden.Geriye.Kalan.Reminders.of.Him.2026.WEBDLRip.m1080p.X265.10bit.AAC.5.1.Turkce.TurkSeeD",
+        "Yarindan.Kalan.Izler.Echoes.of.Him.2026.WEBDLRip.m1080p.X265.10bit.AAC.5.1.Turkce.TurkSeeD",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1620,11 +1622,11 @@ fn compound_source_suffix_is_not_captured_as_release_group() {
 
 #[test]
 fn enrichment_fills_split_video_codec_and_audio_channels() {
-    let mut target = context(ContextFacetHint::Movie, "Tarzan of the Apes");
+    let mut target = context(ContextFacetHint::Movie, "Kestrel of the Reeds");
     target.known_years.push(1998);
 
     let analysis = analyze_release_for_target(
-        "Tarzan.of.the.Apes.1998.DVDRip.HebDub.AAC2.0.H.264-T00LBAR",
+        "Kestrel.of.the.Reeds.1998.DVDRip.HebDub.AAC2.0.H.264-T00LBAR",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1680,11 +1682,11 @@ fn parser_canonicalizes_h265_family_video_codec_tokens() {
 
 #[test]
 fn enrichment_extracts_split_dts_ma_audio() {
-    let mut target = context(ContextFacetHint::Movie, "The Wizard of Oz");
+    let mut target = context(ContextFacetHint::Movie, "The Warden of Ash");
     target.known_years.push(1939);
 
     let analysis = analyze_release_for_target(
-        "The.Wizard.of.Oz.1939.2160p.MA.WEB-DL.DTS-HD.MA.5.1.H.265-FLUX",
+        "The.Warden.of.Ash.1939.2160p.MA.WEB-DL.DTS-HD.MA.5.1.H.265-FLUX",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1698,11 +1700,11 @@ fn enrichment_extracts_split_dts_ma_audio() {
 
 #[test]
 fn enrichment_extracts_fused_dts_hd_audio() {
-    let mut target = context(ContextFacetHint::Movie, "Graveyard Shift");
+    let mut target = context(ContextFacetHint::Movie, "Boiler Shift");
     target.known_years.push(1990);
 
     let analysis = analyze_release_for_target(
-        "Graveyard.Shift.1990.REMASTERED.1080p.BluRay.REMUX.Dts-HDMa5.1.AVC-d3g",
+        "Boiler.Shift.1990.REMASTERED.1080p.BluRay.REMUX.Dts-HDMa5.1.AVC-d3g",
         &target,
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -1741,7 +1743,7 @@ fn standalone_channel_count_without_audio_codec_is_not_projected() {
 #[test]
 fn labeled_episode_range_stays_multi_episode() {
     let analysis = analyze_release_for_target(
-        "[EDG] BLEACH EP 1-30 [DVD R2 X264 Hi10]",
+        "[EDG] EMBERFALL EP 1-30 [DVD R2 X264 Hi10]",
         &context(ContextFacetHint::Anime, "Emberfall"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
@@ -2003,8 +2005,8 @@ fn hyphen_split_season_episode_still_parses() {
 #[test]
 fn dot_split_guard_keeps_true_season_packs_and_years() {
     let pack = analyze_release_for_target(
-        "Crossing.Swords.S02.1080p.WEB-DL",
-        &context(ContextFacetHint::Series, "Crossing Swords"),
+        "Clashing.Lanterns.S02.1080p.WEB-DL",
+        &context(ContextFacetHint::Series, "Clashing Lanterns"),
     );
     let pack_candidate = pack.best_candidate().expect("best candidate");
     assert_eq!(pack_candidate.family, ParseFamily::SeasonPack);
@@ -2056,13 +2058,13 @@ fn fused_season_token_parses_as_season_pack() {
 
 #[test]
 fn season_like_title_words_do_not_mint_seasons() {
-    let mut target = context(ContextFacetHint::Movie, "Four Seasons");
+    let mut target = context(ContextFacetHint::Movie, "Seven Seasons");
     target.known_years.push(2024);
-    let analysis = analyze_release_for_target("Four.Seasons.2024.1080p.WEB-DL.x264-GRP", &target);
+    let analysis = analyze_release_for_target("Seven.Seasons.2024.1080p.WEB-DL.x264-GRP", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
     assert_eq!(candidate.family, ParseFamily::Movie);
-    assert_eq!(candidate.projected.normalized_title, "FOUR SEASONS");
+    assert_eq!(candidate.projected.normalized_title, "SEVEN SEASONS");
 
     let fused_year = analyze_release_for_target(
         "Racing.League.Season2024.1080p.WEB-DL.x264-GRP",
@@ -2081,10 +2083,11 @@ fn season_like_title_words_do_not_mint_seasons() {
 
 #[test]
 fn month_name_daily_dates_parse_in_both_orders() {
-    let mut target = context(ContextFacetHint::Series, "Late Show");
+    let mut target = context(ContextFacetHint::Series, "Night Signal");
     target.known_years.push(2026);
 
-    let year_first = analyze_release_for_target("Late.Show.2026.Jan.05.720p.WEB.x264-GRP", &target);
+    let year_first =
+        analyze_release_for_target("Night.Signal.2026.Jan.05.720p.WEB.x264-GRP", &target);
     let year_first_episode = year_first
         .best_candidate()
         .expect("best candidate")
@@ -2097,7 +2100,8 @@ fn month_name_daily_dates_parse_in_both_orders() {
         Some(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
     );
 
-    let day_first = analyze_release_for_target("Late.Show.05.Jan.2026.720p.WEB.x264-GRP", &target);
+    let day_first =
+        analyze_release_for_target("Night.Signal.05.Jan.2026.720p.WEB.x264-GRP", &target);
     let day_first_episode = day_first
         .best_candidate()
         .expect("best candidate")
@@ -2348,13 +2352,13 @@ fn fully_hyphenated_dts_hd_ma_extracts_codec_and_channels() {
 #[test]
 fn accented_context_title_matches_ascii_release_without_aliases() {
     let analysis = analyze_release_for_target(
-        "Pokemon.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
-        &context(ContextFacetHint::Anime, "Pokémon"),
+        "Kelune.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
+        &context(ContextFacetHint::Anime, "Kelúne"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
     let episode = candidate.projected.episode.as_ref().expect("episode");
 
-    assert_eq!(candidate.projected.normalized_title, "POKEMON");
+    assert_eq!(candidate.projected.normalized_title, "KELUNE");
     assert_eq!(episode.season, Some(20));
     assert_eq!(episode.episode_numbers, vec![15]);
     assert!(
@@ -2370,12 +2374,12 @@ fn accented_context_title_matches_ascii_release_without_aliases() {
 #[test]
 fn accented_release_matches_ascii_context_title() {
     let analysis = analyze_release_for_target(
-        "Pokémon.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
-        &context(ContextFacetHint::Anime, "Pokemon"),
+        "Kelúne.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
+        &context(ContextFacetHint::Anime, "Kelune"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "POKEMON");
+    assert_eq!(candidate.projected.normalized_title, "KELUNE");
     assert!(
         candidate
             .context_evidence
@@ -2387,12 +2391,12 @@ fn accented_release_matches_ascii_context_title() {
 #[test]
 fn non_decomposable_letters_fold_for_matching() {
     let analysis = analyze_release_for_target(
-        "Brondby.Stories.2024.1080p.WEB-DL.x264-GRP",
-        &context(ContextFacetHint::Movie, "Brøndby Stories"),
+        "Vorndby.Stories.2024.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Movie, "Vørndby Stories"),
     );
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "BRONDBY STORIES");
+    assert_eq!(candidate.projected.normalized_title, "VORNDBY STORIES");
     assert!(
         candidate
             .context_evidence
@@ -2469,11 +2473,11 @@ fn fps_is_detected_in_dot_separated_names() {
 
 #[test]
 fn bare_fps_word_without_adjacent_rate_is_not_fps_metadata() {
-    let mut target = context(ContextFacetHint::Movie, "First Person Shooter");
+    let mut target = context(ContextFacetHint::Movie, "Silent Signal Shooter");
     target.known_years.push(1997);
 
     let analysis = analyze_release_for_target(
-        "First.Person.Shooter.1997.FPS.1080p.WEB-DL.x264-GRP",
+        "Silent.Signal.Shooter.1997.FPS.1080p.WEB-DL.x264-GRP",
         &target,
     );
     let projected = &analysis.best_candidate().expect("best candidate").projected;
@@ -2512,8 +2516,8 @@ fn episode_raw_uses_stable_renderings() {
     assert_eq!(daily_episode.raw.as_deref(), Some("2026-04-22"));
 
     let pack = analyze_release_for_target(
-        "Crossing.Swords.S02.1080p.WEB-DL",
-        &context(ContextFacetHint::Series, "Crossing Swords"),
+        "Clashing.Lanterns.S02.1080p.WEB-DL",
+        &context(ContextFacetHint::Series, "Clashing Lanterns"),
     );
     let pack_episode = pack
         .best_candidate()
@@ -2525,8 +2529,8 @@ fn episode_raw_uses_stable_renderings() {
     assert_eq!(pack_episode.raw.as_deref(), Some("S02"));
 
     let multi_pack = analyze_release_for_target(
-        "The.Great.S01-S03.NORDiC.1080p.MAX.WEB-DL.H.265-NORViNE",
-        &context(ContextFacetHint::Series, "The Great"),
+        "The.Regent.S01-S03.NORDiC.1080p.MAX.WEB-DL.H.265-NORViNE",
+        &context(ContextFacetHint::Series, "The Regent"),
     );
     let multi_pack_episode = multi_pack
         .best_candidate()

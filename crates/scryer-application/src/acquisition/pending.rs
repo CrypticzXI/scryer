@@ -1,5 +1,7 @@
 use super::*;
-use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
+use crate::acquisition_decision_helpers::{
+    blocklist_entry_data, is_download_submit_unavailable_error,
+};
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use chrono::{Duration, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
@@ -166,16 +168,17 @@ impl AppUseCase {
         }
 
         let now = Utc::now();
+        let canonical_source = candidate.canonical_download_source();
         let pending = PendingRelease {
             id: Id::new().0,
             wanted_item_id: wanted.id.clone(),
             title_id: title.id.clone(),
             release_title: candidate.title.clone(),
-            release_url: candidate
-                .download_url
-                .clone()
-                .or_else(|| candidate.link.clone()),
-            source_kind: candidate.source_kind,
+            release_url: canonical_source.as_ref().map(|(source, _)| source.clone()),
+            source_kind: canonical_source
+                .as_ref()
+                .map(|(_, kind)| *kind)
+                .or(candidate.source_kind),
             release_size_bytes: candidate.size_bytes,
             release_score,
             scoring_log_json,
@@ -618,9 +621,12 @@ impl AppUseCase {
         )
         .await?;
         // Dismissing a review row is a verdict, not a deferral: burn the release
-        // signature so the same ambiguous release cannot be re-offered and the
-        // scope converges on a different candidate (Pillar A3).
+        // so the same ambiguous release cannot be re-offered and the scope
+        // converges on a different candidate (Pillar A3). The per-title
+        // blocklist entry is what search-time exclusion consults (and what the
+        // operator can remove); the Failed attempt is the audit record.
         if pr.status == PendingReleaseStatus::NeedsReview {
+            let reason = "dismissed from review: ambiguous identity".to_string();
             let _ = self
                 .services
                 .workflow
@@ -630,10 +636,50 @@ impl AppUseCase {
                     pr.release_url.clone(),
                     Some(pr.release_title.clone()),
                     ReleaseDownloadAttemptOutcome::Failed,
-                    Some("dismissed from review: ambiguous identity".to_string()),
+                    Some(reason.clone()),
                     crate::normalize_release_password(pr.source_password.as_deref()),
                 )
                 .await;
+            let wanted = self
+                .services
+                .workflow
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(&pr.wanted_item_id)
+                .await
+                .ok()
+                .flatten();
+            let data = wanted
+                .as_ref()
+                .map(|wanted| {
+                    blocklist_entry_data(
+                        wanted.episode_id.as_slice(),
+                        wanted.collection_id.as_deref(),
+                        wanted.series_movie_link_id.as_deref(),
+                    )
+                })
+                .unwrap_or_default();
+            if let Err(error) = self
+                .services
+                .workflow
+                .blocklist_repo
+                .add(&NewBlocklistEntry {
+                    title_id: title.id.clone(),
+                    source_title: Some(pr.release_title.clone()),
+                    source_hint: pr.release_url.clone(),
+                    quality: None,
+                    download_id: None,
+                    reason: Some(reason),
+                    data,
+                })
+                .await
+            {
+                warn!(
+                    error = %error,
+                    title_id = title.id.as_str(),
+                    release = pr.release_title.as_str(),
+                    "failed to persist blocklist entry for dismissed review release"
+                );
+            }
         }
         self.services
             .workflow
@@ -655,20 +701,16 @@ impl AppUseCase {
             return Ok(PendingGrabOutcome::Rejected);
         };
 
-        // Check blocklist
-        let db_blocklist: std::collections::HashSet<String> = self
-            .services
-            .workflow
-            .release_attempts
-            .list_failed_release_signatures_for_title(&title.id, 200)
+        // Check the per-title blocklist (the single, removable exclusion source).
+        let db_blocklist = self
+            .load_title_release_blocklist_signatures(&title.id)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| e.source_title)
-            .map(|t| t.to_ascii_lowercase())
-            .collect();
+            .source_titles;
 
-        if db_blocklist.contains(&pr.release_title.to_ascii_lowercase()) {
+        if crate::app_usecase_discovery::is_release_title_blocklisted(
+            &pr.release_title,
+            &db_blocklist,
+        ) {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
@@ -996,8 +1038,8 @@ impl AppUseCase {
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
-                        source_hint,
-                        source_title,
+                        source_hint.clone(),
+                        source_title.clone(),
                         if defer {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
@@ -1009,10 +1051,40 @@ impl AppUseCase {
                     .await;
 
                 if defer {
-                    Ok(PendingGrabOutcome::Deferred)
-                } else {
-                    Ok(PendingGrabOutcome::Rejected)
+                    return Ok(PendingGrabOutcome::Deferred);
                 }
+
+                // A definitive submit failure burns the release for this title:
+                // the per-title blocklist entry is what search-time exclusion
+                // consults (and what the operator can remove); the Failed
+                // attempt above is the audit record.
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .blocklist_repo
+                    .add(&NewBlocklistEntry {
+                        title_id: title.id.clone(),
+                        source_title,
+                        source_hint,
+                        quality: None,
+                        download_id: None,
+                        reason: Some(format!("grab failed: {err}")),
+                        data: blocklist_entry_data(
+                            wanted.episode_id.as_slice(),
+                            wanted.collection_id.as_deref(),
+                            wanted.series_movie_link_id.as_deref(),
+                        ),
+                    })
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        title_id = title.id.as_str(),
+                        release = pr.release_title.as_str(),
+                        "failed to persist blocklist entry for failed pending release grab"
+                    );
+                }
+                Ok(PendingGrabOutcome::Rejected)
             }
         }
     }

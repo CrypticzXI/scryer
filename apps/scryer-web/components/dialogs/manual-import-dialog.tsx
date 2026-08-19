@@ -53,6 +53,7 @@ type FilePreview = {
   parsedEpisodes: number[];
   suggestedEpisodeId: string | null;
   suggestedEpisodeLabel: string | null;
+  suggestedSeriesMovieLinkId: string | null;
 };
 
 type AvailableEpisode = {
@@ -223,7 +224,9 @@ export function ManualImportDialog({
         for (const file of preview.files) {
           initial[file.candidateId] = file.suggestedEpisodeId
             ? episodeTargetValue(file.suggestedEpisodeId)
-            : UNASSIGNED;
+            : file.suggestedSeriesMovieLinkId
+              ? seriesMovieTargetValue(file.suggestedSeriesMovieLinkId)
+              : UNASSIGNED;
         }
         setMappings(initial);
       })

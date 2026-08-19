@@ -2264,7 +2264,10 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         episode_id: None,
         title_name: "Unknown GraphQL Import S01E01".to_string(),
         facet: None,
-        category: None,
+        // A downloader observation is only admitted (and therefore visible as
+        // import-blocked) when it sits in a category Scryer routes to; a
+        // blank/unknown category is held and hidden by design.
+        category: Some("series".to_string()),
         client_id: "graphql-weaver-client".to_string(),
         client_name: "GraphQL Weaver".to_string(),
         client_type: "weaver".to_string(),
@@ -2302,8 +2305,9 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         download_client_item_id: item_id.to_string(),
         download_id: Some(download_id.to_string()),
         name: item.title_name.clone(),
+        release_name: None,
         dest_dir: source_dir.path().to_string_lossy().into_owned(),
-        category: None,
+        category: Some("series".to_string()),
         size_bytes: item.size_bytes,
         completed_at: Some(Utc::now()),
         parameters: Vec::new(),
@@ -2540,6 +2544,10 @@ async fn graphql_delete_download_marks_import_item_delete_completed_after_poller
                 "History": [{
                     "NZBID": 123,
                     "Name": "Queued Delete Download",
+                    // Observations outside a category Scryer routes to are held
+                    // and hidden from import activity by design; the delete
+                    // status is only observable on an admitted item.
+                    "Category": "series",
                     "Status": "SUCCESS",
                     "HistoryTime": Utc::now().timestamp(),
                     "FileSizeMB": 10

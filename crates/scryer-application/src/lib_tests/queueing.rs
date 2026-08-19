@@ -678,6 +678,186 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
 }
 
 #[tokio::test]
+async fn queue_existing_title_download_definitive_submit_error_records_failed_and_blocklists() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "sabnzbd rejected the nzb: Duplicate NZB".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Rejected Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/manual-rejected.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Manual.Rejected.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("a rejected submit should return an error to the caller");
+    assert!(error.to_string().contains("Duplicate NZB"));
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].source_title.as_deref(),
+        Some("Manual.Rejected.Queue.2026.1080p.WEB-DL")
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "a definitive interactive submit failure must blocklist the release: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("Manual.Rejected.Queue.2026.1080p.WEB-DL")
+    );
+    assert_eq!(
+        blocklist[0].source_hint.as_deref(),
+        Some("https://example.invalid/releases/manual-rejected.nzb")
+    );
+    assert!(
+        blocklist[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Duplicate NZB")),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_whose_submission_tracking_fails_burns_the_release() {
+    // The client accepted the job but the download submission could not be
+    // persisted: Scryer can no longer track it, so the release is recorded
+    // Failed and blocklisted for this title (visible and removable) instead of
+    // being re-grabbed into an untracked duplicate.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    *download_submissions.record_submission_error.lock().await =
+        Some("download_submissions write failed".to_string());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Untracked Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/manual-untracked.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Manual.Untracked.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("a persistence failure should surface to the caller");
+    assert!(
+        error
+            .to_string()
+            .contains("download_submissions write failed")
+    );
+    assert_eq!(
+        download_client.submitted_release_titles.lock().await.len(),
+        1,
+        "the client did accept the job"
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(failed.len(), 1);
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "an untracked interactive grab must blocklist the release: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("Manual.Untracked.Queue.2026.1080p.WEB-DL")
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab accepted but download tracking could not be persisted:")
+                && reason.contains("download_submissions write failed")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_ignores_stale_matching_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -2300,7 +2480,7 @@ async fn queue_best_release_supports_series_movie_scope() {
 async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metadata() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Mugen.Train.2020.1080p.WEB-DL",
+        "Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -2308,7 +2488,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -2319,11 +2499,11 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         )
         .await
         .expect("create anime title");
-    title.aliases = vec!["Kimetsu no Yaiba".to_string()];
+    title.aliases = vec!["Kage no Kotoba".to_string()];
 
     let mut link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2346,7 +2526,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
 
     assert_eq!(
         search_title.name,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train"
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail"
     );
     assert_eq!(search_title.year, Some(2020));
     assert_eq!(search_title.imdb_id.as_deref(), Some("tt11032374"));
@@ -2354,7 +2534,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
     assert!(
         subject.queries[0]
             .to_ascii_lowercase()
-            .contains("mugen train"),
+            .contains("iron rail"),
         "unexpected queries: {:?}",
         subject.queries
     );
@@ -2363,13 +2543,13 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         search_title
             .aliases
             .iter()
-            .any(|alias| alias.to_ascii_lowercase().contains("mugen train"))
+            .any(|alias| alias.to_ascii_lowercase().contains("iron rail"))
     );
     assert!(
         search_title
             .tagged_aliases
             .iter()
-            .any(|alias| alias.name.contains("The Movie: Mugen Train"))
+            .any(|alias| alias.name.contains("The Movie: Iron Rail"))
     );
     assert_eq!(subject.category, "movie");
     assert_eq!(subject.owner_facet, MediaFacet::Anime);
@@ -2396,7 +2576,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
 async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missing() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+        "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -2404,7 +2584,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec!["anime-hd".to_string()],
@@ -2418,7 +2598,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
 
     let link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2527,7 +2707,7 @@ async fn resolve_release_search_subject_for_series_owned_movie_keeps_movie_searc
 async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_title_release() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let recording_client = Arc::new(RecordingCategoriesIndexerClient::new(
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+        "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) =
         bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
@@ -2548,7 +2728,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 ..Default::default()
@@ -2559,7 +2739,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
 
     let mut link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2586,10 +2766,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
         .expect("series movie search should succeed");
 
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].title,
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL"
-    );
+    assert_eq!(results[0].title, "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL");
 
     let calls = recording_client.calls.lock().await.clone();
     let facets = calls
@@ -2618,7 +2795,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
     assert!(
         calls
             .iter()
-            .any(|call| call.query.to_ascii_lowercase().contains("mugen train 2020"))
+            .any(|call| call.query.to_ascii_lowercase().contains("iron rail 2020"))
     );
 }
 
@@ -2720,7 +2897,7 @@ async fn convergence_test_title_and_subject(
         .add_title(
             user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec!["anime-hd".to_string()],
@@ -2737,7 +2914,7 @@ async fn convergence_test_title_and_subject(
         .shows
         .upsert_series_movie_link(test_series_movie_link(
             &title.id,
-            "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+            "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
             Some(2020),
             Some("tt11032374"),
             Some("12345"),
@@ -2918,7 +3095,7 @@ async fn every_scoped_search_records_coverage_including_interactive() {
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
     ];
     let indexer_client = Arc::new(
-        FixedReleaseIndexerClient::new("Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL")
+        FixedReleaseIndexerClient::new("Ember.Saga.Iron.Rail.2020.1080p.WEB-DL")
             .with_fired_indexers(["indexer-a", "indexer-b"]),
     );
     let (app, user) =
@@ -2968,7 +3145,7 @@ async fn empty_response_from_fired_indexer_counts_as_coverage() {
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
     ];
     let indexer_client = Arc::new(
-        FixedReleaseIndexerClient::new("Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL")
+        FixedReleaseIndexerClient::new("Ember.Saga.Iron.Rail.2020.1080p.WEB-DL")
             .with_fired_indexers(["indexer-a", "indexer-b"])
             .with_empty_response(),
     );
@@ -3151,4 +3328,130 @@ async fn coverage_records_only_indexers_that_fired() {
         !scope_is_converged(&app, &title, &subject).await,
         "a routed indexer that did not fire leaves the scope unconverged"
     );
+}
+
+// ── TYPE-001: catalog queueing decides retry-later by error type only ────────
+
+async fn assert_queue_existing_title_submit_decision(
+    submit_error: StubSubmitError,
+    expect_deferred: bool,
+) {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Typed Failover Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let source_title = "Typed.Failover.Queue.2026.1080p.WEB-DL";
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/typed-failover.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(source_title.to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("the submit failure surfaces to the caller");
+    assert_eq!(
+        error.is_retryable_download_submit_failure(),
+        expect_deferred
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let attempts = release_attempts.attempts.lock().await.clone();
+    let outcomes = attempts
+        .iter()
+        .filter(|attempt| attempt.source_title.as_deref() == Some(source_title))
+        .map(|attempt| attempt.outcome.clone())
+        .collect::<Vec<_>>();
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    if expect_deferred {
+        assert!(
+            !outcomes.is_empty()
+                && outcomes
+                    .iter()
+                    .all(|outcome| *outcome == ReleaseDownloadAttemptOutcome::Pending),
+            "typed failover exhaustion must record Pending only: {outcomes:?}"
+        );
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(blocklist.is_empty(), "{blocklist:?}");
+    } else {
+        assert!(
+            outcomes.contains(&ReleaseDownloadAttemptOutcome::Failed),
+            "{outcomes:?}"
+        );
+        assert!(
+            !failed.is_empty(),
+            "the legacy failover text is a definitive failure"
+        );
+        assert!(
+            blocklist
+                .iter()
+                .any(|entry| entry.source_title.as_deref() == Some(source_title)),
+            "{blocklist:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_defers_typed_failover_exhaustion() {
+    assert_queue_existing_title_submit_decision(
+        StubSubmitError::FailoverExhausted(
+            "all prioritized download clients failed to enqueue this release; last client error: client submit unavailable"
+                .to_string(),
+        ),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_treats_legacy_failover_text_as_definitive() {
+    assert_queue_existing_title_submit_decision(
+        StubSubmitError::Repository(LEGACY_FAILOVER_REPOSITORY_MESSAGE.to_string()),
+        false,
+    )
+    .await;
 }

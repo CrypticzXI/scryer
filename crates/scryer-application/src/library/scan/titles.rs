@@ -11,17 +11,43 @@ fn normalize_title_key(name: &str) -> String {
     crate::title_matching::canonical_lookup_key(name)
 }
 
+/// Every existing title (and alias) under one normalized name key. A name is
+/// not an identity — remakes and originals share it — so a lookup by name must
+/// see ALL same-name titles and pick by year; a single slot per key hid every
+/// title but the last inserted (#148: a remake's folder could only ever be
+/// compared with the original's title, or the other way round).
+pub(crate) type TitleNameIndex = HashMap<String, Vec<usize>>;
+
+fn index_title_name(existing_titles_by_name: &mut TitleNameIndex, name: &str, index: usize) {
+    let indexes = existing_titles_by_name
+        .entry(normalize_title_key(name))
+        .or_default();
+    if !indexes.contains(&index) {
+        indexes.push(index);
+    }
+}
+
+/// Whether a scanned/selected year is compatible with a catalog title's year:
+/// equal, or unknown on either side. Two known, different years are two
+/// different titles that merely share a name.
+pub(crate) fn title_year_compatible(title: &Title, year: Option<u32>) -> bool {
+    match (title.year, year) {
+        (Some(title_year), Some(year)) => title_year >= 0 && title_year as u32 == year,
+        _ => true,
+    }
+}
+
 fn index_movie_title(
     title: &Title,
     index: usize,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
 ) {
-    existing_titles_by_name.insert(normalize_title_key(&title.name), index);
+    index_title_name(existing_titles_by_name, &title.name, index);
     for alias in &title.aliases {
-        existing_titles_by_name.insert(normalize_title_key(alias), index);
+        index_title_name(existing_titles_by_name, alias, index);
     }
     for external_id in &title.external_ids {
         if external_id.source.eq_ignore_ascii_case("tvdb") {
@@ -39,12 +65,12 @@ fn index_movie_title(
 fn index_series_title(
     title: &Title,
     index: usize,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
 ) {
-    existing_titles_by_name.insert(normalize_title_key(&title.name), index);
+    index_title_name(existing_titles_by_name, &title.name, index);
     for external_id in &title.external_ids {
         if external_id.source.eq_ignore_ascii_case("tvdb") {
             existing_titles_by_tvdb_id.insert(external_id.value.clone(), index);
@@ -60,7 +86,7 @@ fn index_series_title(
 
 pub(crate) fn append_movie_title(
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -81,7 +107,7 @@ pub(crate) fn append_movie_title(
 
 pub(crate) fn append_series_title(
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -132,7 +158,7 @@ pub(crate) fn update_movie_probe_path_index(
 }
 
 pub(crate) type MovieTitleIndexes = (
-    HashMap<String, usize>,
+    TitleNameIndex,
     HashMap<String, usize>,
     HashMap<String, usize>,
     HashMap<String, usize>,
@@ -164,7 +190,7 @@ pub(crate) fn build_movie_title_indexes(existing_titles: &[Title]) -> MovieTitle
 }
 
 pub(crate) type SeriesTitleIndexes = (
-    HashMap<String, usize>,
+    TitleNameIndex,
     HashMap<String, usize>,
     HashMap<String, usize>,
     HashMap<String, usize>,
@@ -228,16 +254,32 @@ pub(crate) fn build_movie_probe_path_indexes(
     existing_titles_by_probe_path
 }
 
+/// The existing catalog title a metadata match refers to, if any: the same
+/// canonical (tvdb) id, else a same-name title whose year agrees with the
+/// match. A same-name title with a *different* year is a different film (the
+/// remake vs the original) and must not absorb the match — that misbinding is
+/// what left an original's folder refused as "already owns another folder"
+/// against the remake's title (#148).
 pub(crate) fn find_existing_title_index_for_metadata_match(
     selected: &MetadataSearchItem,
-    existing_titles_by_name: &HashMap<String, usize>,
+    existing_titles: &[Title],
+    existing_titles_by_name: &TitleNameIndex,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
 ) -> Option<usize> {
+    if let Some(&index) = existing_titles_by_tvdb_id.get(&selected.tvdb_id) {
+        return Some(index);
+    }
     let key = normalize_title_key(&selected.name);
-    existing_titles_by_tvdb_id
-        .get(&selected.tvdb_id)
+    let selected_year = selected.year.and_then(|year| u32::try_from(year).ok());
+    existing_titles_by_name
+        .get(&key)?
+        .iter()
         .copied()
-        .or_else(|| existing_titles_by_name.get(&key).copied())
+        .find(|index| {
+            existing_titles
+                .get(*index)
+                .is_some_and(|title| title_year_compatible(title, selected_year))
+        })
 }
 
 pub(crate) fn build_new_title_from_metadata_match(

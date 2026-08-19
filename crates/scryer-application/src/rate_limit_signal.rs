@@ -3,6 +3,14 @@ use std::time::Duration;
 use crate::{AppError, RateLimitCooldownAction};
 use scryer_outbound_http::OutboundHttpError;
 
+/// Where a rate-limit signal was recognised. This enum is the compatibility
+/// ledger for text-derived detection: the typed sources come first
+/// (`AppTemporaryUnavailable`, `OutboundHttpRateLimited`); every variant after
+/// them names one explicitly supported legacy phrase/format that
+/// `RateLimitSignal::from_error` still parses out of an error message. Add a
+/// text-derived source only by adding a variant here — and never for anything
+/// but rate limiting (download-failover exhaustion, for one, is typed:
+/// `AppError::DownloadSubmitFailoverExhausted`, and is not parsed from text).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RateLimitSignalSource {
     AppTemporaryUnavailable,

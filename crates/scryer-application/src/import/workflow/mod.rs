@@ -1,9 +1,11 @@
 use crate::helpers::parse_usable_release_title;
+#[cfg(test)]
+use crate::import_title_resolution::normalize_imdb_id;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery, AppError, AppResult,
     AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    ImportArtifact, ParsedEpisodeMetadata, ParsedReleaseMetadata, SubmissionScope,
+    ImportArtifact, ParsedReleaseMetadata, SubmissionScope,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     apply_remote_path_mappings_to_completed_download,
@@ -12,8 +14,7 @@ use crate::{
     },
     effective_title_folder_path,
     helpers::{has_usable_release_title_signal, normalize_release_title_signal},
-    import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
-    import_title_resolution::normalize_imdb_id,
+    import_parameters::{extract_parameter, submission_has_scryer_origin},
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
     parse_download_client_remote_path_mappings, parse_release_metadata,
     polling_worker::PollingWorker,
@@ -21,12 +22,12 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
-    DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
-    TrackedDownloadState, User, is_video_file,
+    Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem, Id,
+    ImportCompletedEventData, ImportDecision, ImportErrorCode, ImportRecord, ImportResult,
+    ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title, TrackedDownloadState, User,
+    is_video_file,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -61,7 +62,7 @@ fn should_persist_import_transfer_heartbeat(last_emit: Option<Instant>) -> bool 
     clippy::too_many_arguments,
     reason = "import progress wiring carries source, destination, library, and source validation context"
 )]
-async fn import_file_with_record_progress(
+pub(crate) async fn import_file_with_record_progress(
     app: &AppUseCase,
     import_id: &str,
     library_id: &str,

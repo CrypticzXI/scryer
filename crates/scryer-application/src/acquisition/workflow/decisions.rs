@@ -34,7 +34,7 @@ fn effective_auto_decision_code_for_route(
     failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
 ) -> ReleaseAutoDecisionCode {
-    if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
+    if crate::app_usecase_discovery::is_release_title_blocklisted(&candidate.title, db_blocklist) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
@@ -67,9 +67,8 @@ async fn record_release_decision(
         title_id: title.id.clone(),
         release_title: decision_candidate.title.clone(),
         release_url: decision_candidate
-            .download_url
-            .clone()
-            .or_else(|| decision_candidate.link.clone()),
+            .canonical_download_source()
+            .map(|(source, _)| source),
         release_size_bytes: decision_candidate.size_bytes,
         decision_code: decision_code.as_str().to_string(),
         candidate_score,

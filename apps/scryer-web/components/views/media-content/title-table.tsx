@@ -909,7 +909,7 @@ export const TitleTable = React.memo(function TitleTable({
   const titleTableHeader = (
     <TableHeader>
       <TableRow className={TITLE_TABLE_HEADER_ROW_CLASS}>
-        <TableHead className="w-12 text-center">
+        <TableHead className="w-12 bg-[var(--scry-surfD)] text-center">
           <Checkbox
             checked={selectAllState}
             onCheckedChange={(checked) => onToggleSelectAll(checked === true)}

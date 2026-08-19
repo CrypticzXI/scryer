@@ -722,7 +722,7 @@ mod tests {
     fn spa_index_is_served_for_catalog_routes() {
         assert!(should_serve_spa_index("/"));
         assert!(should_serve_spa_index("/anime"));
-        assert!(should_serve_spa_index("/titles/attack-on-titan"));
+        assert!(should_serve_spa_index("/titles/stoneguard"));
     }
 
     #[test]

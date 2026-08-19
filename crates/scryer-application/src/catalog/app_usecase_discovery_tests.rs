@@ -174,6 +174,61 @@ fn cross_indexer_release_dedup_prefers_higher_priority_source() {
 }
 
 #[test]
+fn release_blocklist_matches_magnet_and_legacy_http_aliases_without_changing_search_key() {
+    let mut result = make_search_result(
+        "Torrent Indexer",
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        "https://example.test/download/123",
+        DownloadSourceKind::TorrentFile,
+    );
+    let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+    result
+        .extra
+        .insert("magnet_uri".to_string(), serde_json::json!(magnet));
+
+    assert_eq!(
+        release_search_key(&result),
+        "https://example.test/download/123"
+    );
+    assert!(is_release_blocklisted(
+        &result,
+        &HashSet::from([magnet.to_string()]),
+        &HashSet::new(),
+    ));
+    assert!(is_release_blocklisted(
+        &result,
+        &HashSet::from(["https://example.test/download/123".to_string()]),
+        &HashSet::new(),
+    ));
+}
+
+#[test]
+fn release_title_blocklist_check_normalizes_case_and_whitespace_on_both_sides() {
+    // Blocklist source titles are stored with mixed casing (grab paths keep the
+    // indexer casing, failure paths lowercase); the read side must compare
+    // trimmed + lowercased on both sides.
+    let blocklisted = HashSet::from(["signal.run.s01e12.1080p.web-dl.x265-ntb".to_string()]);
+    assert!(is_release_title_blocklisted(
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        &blocklisted
+    ));
+    assert!(is_release_title_blocklisted(
+        "  signal.run.s01e12.1080p.web-dl.x265-ntb\n",
+        &blocklisted
+    ));
+    assert!(!is_release_title_blocklisted(
+        "Signal.Run.S01E13.1080p.WEB-DL.x265-NTb",
+        &blocklisted
+    ));
+    assert!(!is_release_title_blocklisted("", &blocklisted));
+    assert!(!is_release_title_blocklisted("   ", &blocklisted));
+    assert!(!is_release_title_blocklisted(
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        &HashSet::new()
+    ));
+}
+
+#[test]
 fn structured_dispatch_queries_collapse_equivalent_episode_variants() {
     let queries = vec![
         "Synthetic Atlas 035".to_string(),

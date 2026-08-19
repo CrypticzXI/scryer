@@ -1934,7 +1934,7 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
     );
     let mut owned_movie = test_title(
         "owned-matrix",
-        "The Matrix",
+        "The Meridian",
         MediaFacet::Movie,
         vec![("tmdb_movie", "603")],
     );
@@ -2990,7 +2990,21 @@ async fn discovery_sync_ack_failure_after_commit_schedules_retry() {
 #[tokio::test]
 async fn discovery_sync_existing_library_upgrade_schedules_first_snapshot_promptly() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
-    let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    // Every discovery wake time is jittered from the persisted scheduler seed,
+    // which the app mints as a fresh UUID on first use. Pin it so the exact
+    // times this test asserts are the same on every run instead of a lottery
+    // (CI 0.18.15: a random seed put the incremental-reload bucket 37 s after
+    // `now`, ahead of the first-snapshot window it should never pre-empt).
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            crate::jobs::jobs::SCHEDULER_INSTANCE_ID_KEY,
+            "stable-scheduler-seed",
+        )
+        .await;
+    let (app, _admin, titles) =
+        bootstrap_with_metadata_gateway_settings_and_titles(gateway.clone(), settings);
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let now = Utc.timestamp_opt(10_000, 0).unwrap();

@@ -154,19 +154,22 @@ async fn load_recent_failed_season_pack_seasons_for_title(
 ) -> HashSet<u32> {
     let cutoff = *now - Duration::minutes(FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES);
 
+    // Every hard failure writes a per-title blocklist entry, so the cooldown
+    // reads recent entries (newest first) rather than the failed-attempt log,
+    // which is history/audit only and never gates.
     match app
         .services
         .workflow
-        .release_attempts
-        .list_failed_release_signatures_for_title(title_id, 200)
+        .blocklist_repo
+        .list_for_title(title_id, 200)
         .await
     {
         Ok(entries) => entries
             .into_iter()
             .filter_map(|entry| {
                 let source_title = entry.source_title?;
-                let attempted_at = crate::quality_profile::parse_published_at(&entry.attempted_at)?;
-                (attempted_at >= cutoff)
+                let created_at = crate::quality_profile::parse_published_at(&entry.created_at)?;
+                (created_at >= cutoff)
                     .then(|| crate::parse_release_metadata(&source_title))
                     .and_then(|parsed| parsed_release_season_pack_season(&parsed))
             })
@@ -175,7 +178,7 @@ async fn load_recent_failed_season_pack_seasons_for_title(
             warn!(
                 title_id,
                 error = %err,
-                "failed to load recent failed season pack attempts"
+                "failed to load recent failed season pack blocklist entries"
             );
             HashSet::new()
         }

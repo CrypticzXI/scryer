@@ -327,6 +327,7 @@ impl DownloadMutations {
                         .collect(),
                     suggested_episode_id: file.suggested_episode_id.map(Into::into),
                     suggested_episode_label: file.suggested_episode_label,
+                    suggested_series_movie_link_id: file.suggested_series_movie_link_id,
                 })
                 .collect(),
             available_episodes: selection

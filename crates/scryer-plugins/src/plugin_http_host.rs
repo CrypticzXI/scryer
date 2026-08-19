@@ -107,8 +107,9 @@ impl PluginHttpRuntime {
             return Ok(client.clone());
         }
 
-        let client = scryer_outbound_http::blocking_plugin_host_client(&state.extra_ca_bundle_pem)
-            .map_err(|error| error.to_string())?;
+        let client =
+            scryer_outbound_http::blocking_indexer_proxy_reqwest_client(&state.extra_ca_bundle_pem)
+                .map_err(|error| error.to_string())?;
         state.cached_client = Some(client.clone());
         Ok(client)
     }
@@ -629,6 +630,7 @@ fn execute_challenge_solver_request(
     let provider_name = solver::solver_provider_name(provider);
     let endpoint = solver::solver_solve_endpoint(&policy.config.base_url);
     let solver_timeout = Duration::from_secs(policy.config.request_timeout_seconds as u64 + 5);
+    let solver_deadline = Instant::now() + solver_timeout;
     tracing::debug!(
         indexer_id = policy.indexer_id.as_str(),
         indexer_name = policy.indexer_name.as_str(),
@@ -638,23 +640,32 @@ fn execute_challenge_solver_request(
         "challenge solver request started"
     );
 
-    let response = proxy_client
-        .post(&endpoint)
-        .timeout(solver_timeout)
-        .json(&solver::solver_solve_request(
-            provider,
-            &request.url,
-            policy.config.request_timeout_seconds,
-        ))
-        .send()
-        .map_err(|error| {
-            if error.is_timeout() {
-                solver::solver_error_message(provider, solver::SolverErrorKind::Timeout).to_string()
-            } else {
-                solver::solver_error_message(provider, solver::SolverErrorKind::Unreachable)
-                    .to_string()
-            }
-        })?;
+    let response = scryer_outbound_http::send_blocking_reqwest_request_with_cooldown_budget_until(
+        proxy_client
+            .post(&endpoint)
+            .timeout(solver_timeout)
+            .json(&solver::solver_solve_request(
+                provider,
+                &request.url,
+                policy.config.request_timeout_seconds,
+            )),
+        Some(Duration::ZERO),
+        solver_deadline,
+    )
+    .map_err(|error| match error {
+        scryer_outbound_http::BlockingOutboundHttpError::Request(error) if error.is_timeout() => {
+            solver::solver_error_message(provider, solver::SolverErrorKind::Timeout).to_string()
+        }
+        scryer_outbound_http::BlockingOutboundHttpError::Request(_) => {
+            solver::solver_error_message(provider, solver::SolverErrorKind::Unreachable).to_string()
+        }
+        scryer_outbound_http::BlockingOutboundHttpError::CooldownBudgetExceeded { .. } => {
+            solver::solver_error_message(provider, solver::SolverErrorKind::Unavailable).to_string()
+        }
+        scryer_outbound_http::BlockingOutboundHttpError::DeadlineExceeded => {
+            solver::solver_error_message(provider, solver::SolverErrorKind::Timeout).to_string()
+        }
+    })?;
 
     let solver_status = response.status();
     if solver_status == StatusCode::TOO_MANY_REQUESTS || solver_status.is_server_error() {
@@ -1042,8 +1053,8 @@ mod tests {
         };
 
         let solved = tokio::task::spawn_blocking(move || {
-            let proxy_client =
-                scryer_outbound_http::blocking_plugin_host_client("").expect("proxy client");
+            let proxy_client = scryer_outbound_http::blocking_indexer_proxy_reqwest_client("")
+                .expect("proxy client");
             let request_client =
                 scryer_outbound_http::blocking_plugin_host_client("").expect("request client");
             execute_challenge_solver_request(
@@ -1064,6 +1075,15 @@ mod tests {
         assert_eq!(solved.status_code, 200);
         assert_eq!(solved.body, b"<html>Trawl</html>");
         assert!(solved.headers.is_empty());
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some(scryer_outbound_http::INDEXER_PROXY_USER_AGENT)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1131,8 +1151,8 @@ mod tests {
         };
 
         let solved = tokio::task::spawn_blocking(move || {
-            let proxy_client =
-                scryer_outbound_http::blocking_plugin_host_client("").expect("proxy client");
+            let proxy_client = scryer_outbound_http::blocking_indexer_proxy_reqwest_client("")
+                .expect("proxy client");
             let request_client =
                 scryer_outbound_http::blocking_plugin_host_client("").expect("request client");
             execute_challenge_solver_request(
@@ -1209,8 +1229,8 @@ mod tests {
         };
 
         let result = tokio::task::spawn_blocking(move || {
-            let proxy_client =
-                scryer_outbound_http::blocking_plugin_host_client("").expect("proxy client");
+            let proxy_client = scryer_outbound_http::blocking_indexer_proxy_reqwest_client("")
+                .expect("proxy client");
             let request_client =
                 scryer_outbound_http::blocking_plugin_host_client("").expect("request client");
             execute_challenge_solver_request(

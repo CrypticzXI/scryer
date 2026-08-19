@@ -16,9 +16,8 @@ use crate::domain_events::{
     new_global_domain_event, new_title_domain_event, title_context_snapshot,
 };
 use crate::import_workflow::{
-    ResolvedCompletedDownloadOriginForImport,
-    block_completed_download_origin_conflict_for_manual_review,
-    completed_import_result_is_retryable, import_completed_download,
+    ResolvedCompletedDownloadOriginForImport, completed_import_result_is_retryable,
+    import_completed_download, import_completed_download_with_release_evidence,
     resolve_completed_download_origin_for_import,
 };
 use crate::stored_paths::path_to_stored_string;
@@ -56,7 +55,6 @@ const PATH_BLOCKED_MESSAGE: &str = "Completed download path is still unavailable
 const PATH_BLOCKED_NZBDAV_SYMLINK_MESSAGE: &str = "Completed download path is still unavailable. Check remote path mappings, confirm the NZBDAV completed-symlinks mount is visible to Scryer, and make sure the rclone mount was started with --links before retrying manually.";
 const PATH_URL_UNSUPPORTED_MESSAGE: &str = "Completed download path is a URL, not a local filesystem path. Mount it locally or use remote path mappings before retrying.";
 const ID_ONLY_CONFLICT_MESSAGE: &str = "Download name conflicts with the current ID-only title match. Manual confirmation required before import.";
-const UNMANAGED_CATEGORY_BLOCKED_MESSAGE: &str = "Download wasn't grabbed by Scryer and is not in a Scryer download category. Manual confirmation required before import.";
 const NO_VIDEO_FIRST_RETRY_DELAY_SECS: i64 = 30;
 const NO_VIDEO_SECOND_RETRY_DELAY_SECS: i64 = 120;
 const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;

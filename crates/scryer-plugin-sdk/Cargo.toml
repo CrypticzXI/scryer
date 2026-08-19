@@ -2,9 +2,10 @@
 name = "scryer-plugin-sdk"
 version = "3.7.0"
 edition.workspace = true
-description = "SDK for building Scryer WebAssembly plugins"
+description = "Deprecated direct plugin SDK; use scryer-plugin-pdk for new Scryer plugins"
 license = "GPL-3.0-only"
 repository = "https://github.com/scryer-media/scryer"
+readme = "README.md"
 
 [features]
 default = []

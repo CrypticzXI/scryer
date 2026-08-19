@@ -305,7 +305,19 @@ fn apply_tracked_download_activity_projection(
             item.progress_percent = 100;
             item.remaining_seconds = Some(0);
             item.attention_required = true;
-            item.import_status = None;
+            // The block is authoritative over any *finished* import record
+            // (a stale Failed/Skipped/Completed must not repaint the row), but
+            // a manual import the operator just queued or that is copying
+            // right now is live state the row has to show: keeping it is what
+            // turns the display into `Importing`, greys the actions, and lets
+            // the transfer phase render. Dropping it left blocked rows fully
+            // interactive while a manual import was in flight.
+            if !matches!(
+                item.import_status,
+                Some(ImportStatus::Pending | ImportStatus::Running | ImportStatus::Processing)
+            ) {
+                item.import_status = None;
+            }
         }
         TrackedDownloadState::Downloading
         | TrackedDownloadState::FailedPending
@@ -667,7 +679,9 @@ impl AppUseCase {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some(title.name.clone()),
+            // Filled from the existing row by the assignment command: the
+            // grab-time indexer release name survives a reassignment.
+            source_title: None,
             request_signature: None,
             scope,
         };
@@ -716,8 +730,16 @@ async fn process_tracked_download_snapshot(
     let cycle_started_at = Instant::now();
 
     enrich_download_queue_items_from_submissions(app, &mut items).await;
-
     if let TrackedDownloadSnapshotProjection::Publish { source } = &projection {
+        // Poller items already carry import-record state (the poller loads
+        // them through `enrich_download_queue_items`). Bridged clients (Weaver)
+        // do not: their rows arrive straight from the subscription, so a manual
+        // import the operator queued against a blocked download stayed
+        // invisible and the row stayed fully interactive. Overlay the same
+        // import/delete state here so every source renders the same way.
+        if matches!(source, DownloadQueueProjectionSource::AuthoritativeBridge { .. }) {
+            enrich_queue_item_import_states(app, &mut items).await;
+        }
         publish_download_queue_source_projection(app, runtime, source.clone(), &items).await;
     }
 
@@ -1240,7 +1262,7 @@ pub(crate) async fn assign_tracked_download_title_command(
     tracked_work_in_flight: &HashSet<String>,
     requested_id: String,
     title: scryer_domain::Title,
-    submission: DownloadSubmission,
+    mut submission: DownloadSubmission,
     actor_snapshot: crate::DownloadSubmissionActorSnapshot,
 ) -> AppResult<()> {
     let id = resolve_tracked_command_id(tracker, &requested_id);
@@ -1255,7 +1277,27 @@ pub(crate) async fn assign_tracked_download_title_command(
         )));
     }
 
+    // An assignment is an operator's explicit identity for the download and is
+    // recorded like a grab (the store reads any titled row back as a Scryer
+    // submission anyway). It names the requested scope, and it must not throw
+    // away the grab-time indexer release name — that is still the best
+    // release evidence for parsing and scoring, whatever title it lands in.
     let source_identity = DownloadSourceIdentity::from_submission(&submission);
+    if submission
+        .source_title
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        && let Some(existing) = app
+            .services
+            .workflow
+            .download_submissions
+            .find_by_client_item_id(&source_identity)
+            .await?
+    {
+        submission.source_title = existing
+            .source_title
+            .filter(|value| !value.trim().is_empty());
+    }
     app.services
         .workflow
         .download_submissions
@@ -1302,7 +1344,7 @@ async fn handle_tracked_download_command(
         TrackedDownloadCommand::ReconcileManualImport {
             id,
             files_imported_this_pass,
-            expected_source_video_files,
+            expected_mapping_count,
             reply,
         } => {
             let requested_id = id;
@@ -1322,7 +1364,7 @@ async fn handle_tracked_download_command(
                     app,
                     &tracked,
                     files_imported_this_pass,
-                    expected_source_video_files,
+                    expected_mapping_count,
                 )
                 .await
                 {
@@ -1381,6 +1423,51 @@ async fn handle_tracked_download_command(
                     .await;
             }
             let _ = reply.send(result);
+        }
+        TrackedDownloadCommand::MarkImportedIfAwaitingImport {
+            source_identity,
+            record_completed_at,
+            reply,
+        } => {
+            use crate::tracked_downloads::{
+                ManualImportRecoveryOutcome, ManualImportRecoveryVerdict,
+                manual_import_recovery_verdict,
+            };
+
+            let Some(id) = tracker.cached_id_for_source_identity(&source_identity) else {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Untracked));
+                return;
+            };
+            if tracked_work_in_flight.contains(&id) {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Busy));
+                return;
+            }
+            let Some(tracked) = tracker.find_mut(&id) else {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Untracked));
+                return;
+            };
+            // A stale record must never terminalize a fresh download that
+            // merely reuses the item id (see `manual_import_recovery_verdict`),
+            // and an already-imported download is reported as unchanged so the
+            // caller does not keep acting on it every tick.
+            if manual_import_recovery_verdict(tracked, record_completed_at)
+                != ManualImportRecoveryVerdict::MarkImported
+            {
+                let _ = reply.send(Ok(ManualImportRecoveryOutcome::Unchanged));
+                return;
+            }
+
+            tracked.state = TrackedDownloadState::Imported;
+            tracked.status = TrackedDownloadStatus::Ok;
+            tracked.status_messages.clear();
+            let activity_item = Some(tracked_download_activity_queue_item(tracked));
+            tracker
+                .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
+                .await;
+            finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
+                .await;
+            publish_runtime_tracked_download_and_activity_item(app, tracker, activity_item).await;
+            let _ = reply.send(Ok(ManualImportRecoveryOutcome::Marked));
         }
         TrackedDownloadCommand::Ignore { id, reply } => {
             let requested_id = id;
@@ -1564,11 +1651,7 @@ fn prepare_tracked_download_background_work_dispatch(
             if td.waiting_for_completed_history {
                 return None;
             }
-            if td
-                .no_video_import_retry
-                .as_ref()
-                .is_some_and(|retry| retry.next_retry_at > chrono::Utc::now())
-            {
+            if td.import_retry_deferred(chrono::Utc::now()) {
                 return None;
             }
             crate::completed_download_handler::mark_importing(td);
@@ -1593,10 +1676,7 @@ fn trackable_import_work_completed_lookup_items(
         .filter_map(|id| {
             tracker.find(id).and_then(|td| {
                 if td.state == TrackedDownloadState::ImportPending
-                    && td
-                        .no_video_import_retry
-                        .as_ref()
-                        .is_none_or(|retry| retry.next_retry_at <= now)
+                    && !td.import_retry_deferred(now)
                 {
                     Some(td.client_item.clone())
                 } else {
@@ -1663,10 +1743,7 @@ fn tracked_download_ready_for_retry_dispatch(
         && td.state == TrackedDownloadState::ImportPending
         && !td.waiting_for_completed_history
         && !td.import_attempted
-        && td
-            .no_video_import_retry
-            .as_ref()
-            .is_none_or(|retry| retry.next_retry_at <= now)
+        && !td.import_retry_deferred(now)
 }
 
 struct TrackedDownloadHistoryRetryDrain {

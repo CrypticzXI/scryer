@@ -21,13 +21,49 @@ pub async fn retry_failed_import(
         )));
     }
 
-    let mut completed: CompletedDownload = serde_json::from_str(&record.payload_json)
+    let payload: StoredCompletedImportRequestPayload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
+    let (mut completed, persisted) = match payload {
+        StoredCompletedImportRequestPayload::Current(payload) => {
+            (payload.completed.clone(), Some(payload))
+        }
+        StoredCompletedImportRequestPayload::Legacy(completed) => (completed, None),
+    };
     remap_completed_download_for_client(app, &mut completed).await;
 
-    if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id")
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    // A live submission row is authoritative over what the failed attempt
+    // persisted (an operator may have reassigned the download since); the
+    // persisted evidence is the fallback for a lost row or a transient lookup
+    // failure only.
+    let ImportProvenance {
+        completed,
+        release_evidence,
+        target_title_id,
+        ..
+    } = resolve_import_provenance(
+        app,
+        completed,
+        ImportProvenanceRequest {
+            identity_policy: CompletedImportIdentityPolicy::RequireSubmission,
+            queue_item: None,
+            requested_target_title_id: None,
+            release_evidence_override: None,
+            persisted: persisted.as_ref(),
+            tolerate_lookup_failure: true,
+        },
+    )
+    .await?;
+
+    let authorization_title_id = release_evidence
+        .title_id()
+        .map(str::to_string)
+        .or_else(|| target_title_id.clone())
+        .or_else(|| {
+            extract_parameter(&completed.parameters, "*scryer_title_id")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(title_id) = authorization_title_id
     {
         let title = app
             .services
@@ -60,7 +96,18 @@ pub async fn retry_failed_import(
         .await?;
 
     let started_at = Utc::now();
-    match run_import(app, actor, import_id, &completed, started_at, password).await {
+    match run_import(
+        app,
+        actor,
+        import_id,
+        &completed,
+        &release_evidence,
+        target_title_id.as_deref(),
+        started_at,
+        password,
+    )
+    .await
+    {
         Ok(result) => Ok(result),
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
@@ -72,7 +119,12 @@ pub async fn retry_failed_import(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
-                ..base_completed_import_result(import_id, &completed, started_at)
+                ..base_completed_import_result(
+                    import_id,
+                    &completed,
+                    &release_evidence,
+                    started_at,
+                )
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)
@@ -176,13 +228,6 @@ async fn reconcile_terminal_download_cleanup(
         }
     }
 }
-fn terminal_tracked_state_for_import_result(result: &ImportResult) -> Option<TrackedDownloadState> {
-    match result.decision {
-        ImportDecision::Imported => Some(TrackedDownloadState::Imported),
-        ImportDecision::Failed => Some(TrackedDownloadState::Failed),
-        _ => None,
-    }
-}
 fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
     match code {
         "duplicate_file" => ImportSkipReason::AlreadyImported,
@@ -240,11 +285,31 @@ async fn finalize_import_source_cleanup(
 
     Ok(scryer_domain::ImportStrategy::Move)
 }
+/// Sonarr's phase rule, not an error-string catalogue: an import that was
+/// approved but failed while *executing* (`ImportDecision::Failed` — locked or
+/// still-growing files, IO, network shares, DB hiccups) is transient by
+/// construction and is re-attempted automatically at a capped cadence.
+/// Decision-phase outcomes (rejections, policy skips, unmatched identity) are
+/// permanent and stay blocked for review. Two exceptions in each direction:
+/// a password-protected archive can never succeed without operator input, and
+/// disk-full / permission-denied skips are environmental and clear on their own.
+/// The message allowlist remains as belt-and-braces for Scryer's own transient
+/// markers that surface on non-`Failed` decisions.
 pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(completed_import_error_message_is_retryable)
+    match result.decision {
+        ImportDecision::Failed => {
+            result.skip_reason != Some(ImportSkipReason::PasswordRequired)
+        }
+        _ => {
+            matches!(
+                result.skip_reason,
+                Some(ImportSkipReason::DiskFull | ImportSkipReason::PermissionDenied)
+            ) || result
+                .error_message
+                .as_deref()
+                .is_some_and(completed_import_error_message_is_retryable)
+        }
+    }
 }
 
 fn completed_import_status_for_result(

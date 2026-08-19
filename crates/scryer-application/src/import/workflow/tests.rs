@@ -1,13 +1,18 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPLETED_ORIGIN_SCOPE_CONFLICT, CompletedDownloadOriginResolution,
-        CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
+        CompletedDownloadSubmissionMatch,
+        CompletedDownloadSubmissionResolution, CompletedImportEvidenceInputs,
+        CompletedImportEvidenceSource, CompletedImportIdentityPolicy,
+        CompletedImportRequestPayload, ReleaseEvidence, SelectedCompletedImportEvidence,
+        StoredCompletedImportRequestPayload,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping,
         completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
-        resolve_completed_download_origin, resolved_episode_ids_are_within_expected,
-        sanitized_title_folder_component, should_persist_import_transfer_heartbeat,
-        skip_reason_for_import_check_code, terminal_tracked_state_for_import_result,
+        manual_episode_suggestion_for_grabbed_scope, resolved_episode_ids_are_within_expected,
+        stamp_scryer_submission_origin, submission_has_scryer_origin,
+        sanitized_title_folder_component, select_completed_import_evidence,
+        should_persist_import_transfer_heartbeat,
+        skip_reason_for_import_check_code,
         validate_manual_import_candidate_mapping_targets,
         validate_manual_import_source_under_trusted_root,
     };
@@ -18,10 +23,34 @@ mod tests {
     use chrono::Utc;
     use scryer_domain::{
         CompletedDownload, ImportDecision, ImportResult, ImportSkipReason, ImportStatus,
-        TrackedDownloadState,
     };
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
+
+    /// Test-side view of the stamp step: what the provenance resolver does with
+    /// a live submission lookup for a Scryer-origin row (stamped copy) versus
+    /// anything else (no Scryer origin).
+    #[derive(Clone, Debug)]
+    enum CompletedDownloadOriginResolution {
+        Ready(Box<CompletedDownload>),
+        NoScryerOrigin,
+    }
+
+    fn resolve_completed_download_origin(
+        completed: &CompletedDownload,
+        resolution: &CompletedDownloadSubmissionResolution,
+    ) -> CompletedDownloadOriginResolution {
+        match resolution {
+            CompletedDownloadSubmissionResolution::Matched(matched)
+                if submission_has_scryer_origin(&matched.submission) =>
+            {
+                CompletedDownloadOriginResolution::Ready(Box::new(
+                    stamp_scryer_submission_origin(completed, &matched.submission),
+                ))
+            }
+            _ => CompletedDownloadOriginResolution::NoScryerOrigin,
+        }
+    }
 
     #[test]
     fn title_folder_component_falls_back_when_sanitized_empty() {
@@ -53,6 +82,51 @@ mod tests {
         assert!(!resolved_episode_ids_are_within_expected(&[], &expected));
     }
 
+    #[test]
+    fn manual_preview_starts_from_single_grabbed_episode_only_without_a_file_parse() {
+        let grabbed = HashSet::from(["episode-3".to_string()]);
+
+        // The largest video with no episode parse of its own takes the single
+        // grabbed episode.
+        assert_eq!(
+            manual_episode_suggestion_for_grabbed_scope(None, &grabbed, true).as_deref(),
+            Some("episode-3")
+        );
+        // A file that parsed to an episode outside the grabbed scope never
+        // gets the grabbed episode substituted for its own parse.
+        assert_eq!(
+            manual_episode_suggestion_for_grabbed_scope(
+                Some("episode-4".to_string()),
+                &grabbed,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_preview_leaves_non_grabbed_ambiguous_files_unselected() {
+        let grabbed = HashSet::from(["episode-3".to_string(), "episode-4".to_string()]);
+
+        assert_eq!(
+            manual_episode_suggestion_for_grabbed_scope(
+                Some("episode-8".to_string()),
+                &grabbed,
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            manual_episode_suggestion_for_grabbed_scope(
+                Some("episode-4".to_string()),
+                &grabbed,
+                false,
+            )
+            .as_deref(),
+            Some("episode-4")
+        );
+    }
+
     fn completed_download_with_parameters(parameters: Vec<(&str, &str)>) -> CompletedDownload {
         CompletedDownload {
             client_type: "sabnzbd".to_string(),
@@ -60,6 +134,7 @@ mod tests {
             download_client_item_id: "item-1".to_string(),
             download_id: Some("download-1".to_string()),
             name: "Release".to_string(),
+            release_name: None,
             dest_dir: "/downloads/release".to_string(),
             category: Some("anime".to_string()),
             size_bytes: Some(1024),
@@ -69,6 +144,66 @@ mod tests {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn completed_import_request_round_trip_preserves_release_evidence() {
+        let completed = completed_download_with_parameters(Vec::new());
+        let payload = CompletedImportRequestPayload {
+            completed,
+            release_evidence: ReleaseEvidence::ScryerSubmission {
+                title_id: "title-1".to_string(),
+                facet: "series".to_string(),
+                source_title: Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
+                observed_release_name: None,
+                purpose: DownloadSubmissionPurpose::Standard,
+                scope: SubmissionScope::Episode {
+                    episode_id: "episode-3".to_string(),
+                },
+            },
+            target_title_id: Some("title-1".to_string()),
+        };
+
+        let encoded = serde_json::to_string(&payload).expect("serialize current import request");
+        let decoded: StoredCompletedImportRequestPayload =
+            serde_json::from_str(&encoded).expect("deserialize current import request");
+
+        let StoredCompletedImportRequestPayload::Current(decoded) = decoded else {
+            panic!("current import request must not deserialize as legacy");
+        };
+        assert_eq!(decoded.target_title_id.as_deref(), Some("title-1"));
+        let ReleaseEvidence::ScryerSubmission {
+            title_id,
+            source_title,
+            scope,
+            ..
+        } = decoded.release_evidence
+        else {
+            panic!("Scryer evidence must survive retry serialization");
+        };
+        assert_eq!(title_id, "title-1");
+        assert_eq!(
+            source_title.as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+        assert!(matches!(
+            scope,
+            SubmissionScope::Episode { episode_id } if episode_id == "episode-3"
+        ));
+    }
+
+    #[test]
+    fn completed_import_request_reads_legacy_completion_payload() {
+        let completed = completed_download_with_parameters(Vec::new());
+        let encoded = serde_json::to_string(&completed).expect("serialize legacy completion");
+        let decoded: StoredCompletedImportRequestPayload =
+            serde_json::from_str(&encoded).expect("deserialize legacy completion");
+
+        let StoredCompletedImportRequestPayload::Legacy(decoded) = decoded else {
+            panic!("legacy completion must remain readable");
+        };
+        assert_eq!(decoded.download_client_item_id, "item-1");
+        assert_eq!(decoded.release_name, None);
     }
 
     #[test]
@@ -108,6 +243,20 @@ mod tests {
         facet: &str,
         scope: SubmissionScope,
     ) -> CompletedDownloadSubmissionResolution {
+        matched_submission_with_source_title(
+            title_id,
+            facet,
+            scope,
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
+        )
+    }
+
+    fn matched_submission_with_source_title(
+        title_id: &str,
+        facet: &str,
+        scope: SubmissionScope,
+        source_title: Option<&str>,
+    ) -> CompletedDownloadSubmissionResolution {
         CompletedDownloadSubmissionResolution::Matched(Box::new(
             CompletedDownloadSubmissionMatch {
                 submission: DownloadSubmission {
@@ -120,7 +269,7 @@ mod tests {
                     source_provider_id: None,
                     source_provider_name: None,
                     source_kind: None,
-                    source_title: None,
+                    source_title: source_title.map(str::to_string),
                     request_signature: None,
                     purpose: DownloadSubmissionPurpose::Standard,
                     scope,
@@ -197,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_origin_resolution_preserves_legacy_collection_for_series_movie() {
+    fn completed_origin_resolution_replaces_stale_scope_parameters() {
         let completed = completed_download_with_parameters(vec![
             ("*scryer_title_id", "title-1"),
             ("*scryer_facet", "anime"),
@@ -219,7 +368,7 @@ mod tests {
 
         assert_eq!(
             parameter_value(&resolved.parameters, "*scryer_collection_id"),
-            Some("legacy-collection-1")
+            None
         );
         assert_eq!(
             parameter_value(&resolved.parameters, "*scryer_series_movie_link_id"),
@@ -228,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_origin_resolution_conflicts_on_title_facet_or_scope_mismatch() {
+    fn completed_origin_resolution_replaces_untrusted_title_facet_and_scope_parameters() {
         for (completed, resolution) in [
             (
                 completed_download_with_parameters(vec![("*scryer_title_id", "title-2")]),
@@ -256,18 +405,24 @@ mod tests {
                 ),
             ),
         ] {
-            let CompletedDownloadOriginResolution::Conflict { reason, detail } =
+            let CompletedDownloadOriginResolution::Ready(resolved) =
                 resolve_completed_download_origin(&completed, &resolution)
             else {
-                panic!("expected origin conflict");
+                panic!("expected durable submission to win");
             };
-            assert_eq!(reason, COMPLETED_ORIGIN_SCOPE_CONFLICT);
-            assert!(!detail.is_empty());
+            assert_eq!(
+                parameter_value(&resolved.parameters, "*scryer_title_id"),
+                Some("title-1")
+            );
+            assert_eq!(
+                parameter_value(&resolved.parameters, "*scryer_facet"),
+                Some("anime")
+            );
         }
     }
 
     #[test]
-    fn completed_origin_resolution_preserves_existing_params_for_stub_submission() {
+    fn completed_origin_resolution_treats_stub_submission_as_observation() {
         let completed = completed_download_with_parameters(vec![
             ("*scryer_title_id", "title-1"),
             ("*scryer_facet", "anime"),
@@ -280,13 +435,10 @@ mod tests {
             },
         );
 
-        let CompletedDownloadOriginResolution::Ready(resolved) =
-            resolve_completed_download_origin(&completed, &resolution)
-        else {
-            panic!("expected ready completed download");
-        };
-
-        assert_eq!(resolved.parameters, completed.parameters);
+        assert!(matches!(
+            resolve_completed_download_origin(&completed, &resolution),
+            CompletedDownloadOriginResolution::NoScryerOrigin
+        ));
     }
 
     #[test]
@@ -304,6 +456,604 @@ mod tests {
             resolve_completed_download_origin(&completed, &resolution),
             CompletedDownloadOriginResolution::NoScryerOrigin
         ));
+    }
+
+    #[test]
+    fn qbit_scryer_submission_uses_durable_release_not_display_label() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.client_type = "qbittorrent".to_string();
+        completed.name = "Tokan — S01E03 2160p WEB-DL".to_string();
+
+        let resolution = matched_submission("title-1", "series", SubmissionScope::Title);
+        let evidence = super::release_evidence_for_resolution(&completed, &resolution);
+
+        let title = series_title("title-1", "Tōkan", &["Tokan"], Some(2024));
+        let parsed = super::build_augmented_episode_import_metadata_for_title(
+            std::path::Path::new("/downloads/Tokan.S01E03.2160p.WEB-DL.mkv"),
+            &evidence,
+            &title,
+            false,
+        );
+        assert_eq!(
+            evidence.release_title(None).as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+        assert_eq!(parsed.quality.as_deref(), Some("1080p"));
+    }
+
+    fn series_title(id: &str, name: &str, aliases: &[&str], year: Option<i32>) -> scryer_domain::Title {
+        scryer_domain::Title {
+            id: id.to_string(),
+            name: name.to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
+            facet: MediaFacet::Series,
+            monitored: true,
+            tags: vec![],
+            canonical_tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: Utc::now(),
+            year,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: String::new(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            popularity: None,
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    // ── A1: a Scryer submission without a persisted release title stays importable ──
+
+    #[test]
+    fn scryer_submission_without_source_title_keeps_identity_and_uses_client_release_name() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.client_type = "nzbget".to_string();
+        completed.name = "Paper Lantern (display label)".to_string();
+        completed.release_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
+        let resolution =
+            matched_submission_with_source_title("title-1", "movie", SubmissionScope::Title, None);
+
+        let evidence = super::release_evidence_for_resolution(&completed, &resolution);
+
+        let ReleaseEvidence::ScryerSubmission {
+            title_id,
+            source_title,
+            observed_release_name,
+            ..
+        } = &evidence
+        else {
+            panic!("a Scryer submission without a release title must keep its identity");
+        };
+        assert_eq!(title_id, "title-1");
+        assert_eq!(source_title, &None);
+        assert_eq!(
+            observed_release_name.as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL")
+        );
+        assert_eq!(evidence.title_id(), Some("title-1"));
+        assert_eq!(evidence.facet(), Some("movie"));
+        assert_eq!(evidence.scope(), Some(&SubmissionScope::Title));
+        // The name degrades to the client-reported release name, never the label.
+        assert_eq!(
+            evidence.release_title(None).as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL")
+        );
+
+        // A blank persisted title is the same as none.
+        let blank = matched_submission_with_source_title(
+            "title-1",
+            "movie",
+            SubmissionScope::Title,
+            Some("   "),
+        );
+        let evidence = super::release_evidence_for_resolution(&completed, &blank);
+        assert_eq!(
+            evidence.release_title(None).as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL")
+        );
+
+        // A persisted title still wins over the client-reported name.
+        let persisted = matched_submission("title-1", "movie", SubmissionScope::Title);
+        let evidence = super::release_evidence_for_resolution(&completed, &persisted);
+        assert_eq!(
+            evidence.release_title(None).as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+    }
+
+    #[test]
+    fn scryer_submission_without_any_release_name_falls_back_to_source_video_stem() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.release_name = None;
+        let resolution =
+            matched_submission_with_source_title("title-1", "movie", SubmissionScope::Title, None);
+
+        let evidence = super::release_evidence_for_resolution(&completed, &resolution);
+
+        assert_eq!(evidence.title_id(), Some("title-1"));
+        assert_eq!(evidence.release_title(None), None);
+        assert_eq!(
+            evidence
+                .release_title(Some(std::path::Path::new(
+                    "/downloads/paper/Paper.Lantern.2012.1080p.WEB-DL.mkv"
+                )))
+                .as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL")
+        );
+    }
+
+    #[test]
+    fn legacy_scryer_submission_payload_with_string_source_title_still_deserializes() {
+        // Exactly the shape persisted before `source_title` became optional and
+        // `observed_release_name`/`target_title_id` existed.
+        let completed = completed_download_with_parameters(vec![]);
+        let legacy = serde_json::json!({
+            "completed": completed,
+            "release_evidence": {
+                "ScryerSubmission": {
+                    "title_id": "title-1",
+                    "facet": "series",
+                    "source_title": "Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
+                    "purpose": serde_json::to_value(DownloadSubmissionPurpose::Standard).unwrap(),
+                    "scope": serde_json::to_value(SubmissionScope::Episode {
+                        episode_id: "episode-3".to_string(),
+                    })
+                    .unwrap(),
+                }
+            },
+            "manual_title_id": "title-1",
+        })
+        .to_string();
+
+        let decoded: StoredCompletedImportRequestPayload =
+            serde_json::from_str(&legacy).expect("legacy payload must deserialize");
+        let StoredCompletedImportRequestPayload::Current(decoded) = decoded else {
+            panic!("legacy current payload must not fall through to the completion-only shape");
+        };
+        assert_eq!(decoded.target_title_id.as_deref(), Some("title-1"));
+        let ReleaseEvidence::ScryerSubmission {
+            source_title,
+            observed_release_name,
+            title_id,
+            ..
+        } = decoded.release_evidence
+        else {
+            panic!("legacy Scryer evidence must decode as a Scryer submission");
+        };
+        assert_eq!(title_id, "title-1");
+        assert_eq!(
+            source_title.as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+        assert_eq!(observed_release_name, None);
+
+        // The stand-alone evidence snapshot (manual import selections) decodes too.
+        let evidence: ReleaseEvidence = serde_json::from_value(serde_json::json!({
+            "ScryerSubmission": {
+                "title_id": "title-1",
+                "facet": "series",
+                "source_title": "Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
+                "purpose": serde_json::to_value(DownloadSubmissionPurpose::Standard).unwrap(),
+                "scope": serde_json::to_value(SubmissionScope::Title).unwrap(),
+            }
+        }))
+        .expect("legacy evidence snapshot must deserialize");
+        assert_eq!(
+            evidence.release_title(None).as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+    }
+
+    #[test]
+    fn completed_origin_resolution_keeps_client_release_name_when_submission_has_none() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.release_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
+
+        let without_title =
+            matched_submission_with_source_title("title-1", "movie", SubmissionScope::Title, None);
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &without_title)
+        else {
+            panic!("expected ready completed download");
+        };
+        assert_eq!(
+            resolved.release_name.as_deref(),
+            Some("Paper.Lantern.2012.1080p.WEB-DL"),
+            "a submission without a persisted title must not blank the client-reported name"
+        );
+
+        let with_title = matched_submission("title-1", "movie", SubmissionScope::Title);
+        let CompletedDownloadOriginResolution::Ready(resolved) =
+            resolve_completed_download_origin(&completed, &with_title)
+        else {
+            panic!("expected ready completed download");
+        };
+        assert_eq!(
+            resolved.release_name.as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
+            "the persisted indexer release title is THE name for a Scryer grab"
+        );
+    }
+
+    // ── A2/A3: evidence and target selection for an import attempt ──
+
+    fn scryer_evidence(title_id: &str, source_title: &str) -> ReleaseEvidence {
+        ReleaseEvidence::ScryerSubmission {
+            title_id: title_id.to_string(),
+            facet: "movie".to_string(),
+            source_title: Some(source_title.to_string()),
+            observed_release_name: None,
+            purpose: DownloadSubmissionPurpose::Standard,
+            scope: SubmissionScope::Title,
+        }
+    }
+
+    fn select(
+        identity_policy: CompletedImportIdentityPolicy,
+        fresh_resolution: Option<&CompletedDownloadSubmissionResolution>,
+        release_evidence_override: Option<&ReleaseEvidence>,
+        persisted_release_evidence: Option<&ReleaseEvidence>,
+        persisted_target_title_id: Option<&str>,
+        requested_target_title_id: Option<&str>,
+        completed: &CompletedDownload,
+    ) -> SelectedCompletedImportEvidence {
+        select_completed_import_evidence(CompletedImportEvidenceInputs {
+            identity_policy,
+            fresh_resolution,
+            release_evidence_override,
+            persisted_release_evidence,
+            persisted_target_title_id,
+            requested_target_title_id,
+            completed,
+        })
+    }
+
+    #[test]
+    fn live_scryer_submission_row_beats_persisted_evidence_and_stale_target() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.release_name = Some("Client.Release.Name".to_string());
+        let fresh = matched_submission("title-fresh", "movie", SubmissionScope::Title);
+        let persisted = scryer_evidence("title-stale", "Stale.Release");
+
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&fresh),
+            None,
+            Some(&persisted),
+            Some("title-stale"),
+            None,
+            &completed,
+        );
+
+        assert_eq!(selected.source, CompletedImportEvidenceSource::FreshRow);
+        assert_eq!(selected.release_evidence.title_id(), Some("title-fresh"));
+        assert_eq!(
+            selected.release_evidence.release_title(None).as_deref(),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+        );
+        assert_eq!(selected.target_title_id, None, "the submission is the target");
+    }
+
+    #[test]
+    fn live_titled_row_without_scryer_origin_beats_persisted_scryer_submission_and_target() {
+        // A live titled row that carries no Scryer origin (defensive: the store
+        // reads titled rows back with a real scope, so this only occurs before
+        // a round trip) still names the operator's choice; a retry must land
+        // there, not in the old title the persisted evidence remembers.
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.release_name = Some("Client.Release.Name".to_string());
+        let reassigned =
+            matched_submission_with_source_title("title-b", "movie", SubmissionScope::Orphan, None);
+        let persisted = scryer_evidence("title-a", "Old.Grab.Release");
+
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&reassigned),
+            None,
+            Some(&persisted),
+            Some("title-a"),
+            None,
+            &completed,
+        );
+
+        assert_eq!(selected.source, CompletedImportEvidenceSource::FreshRow);
+        assert!(matches!(
+            selected.release_evidence,
+            ReleaseEvidence::DownloaderObservation { ref release_name }
+                if release_name.as_deref() == Some("Client.Release.Name")
+        ));
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-b"));
+    }
+
+    #[test]
+    fn persisted_scryer_submission_is_used_only_when_the_row_is_gone() {
+        let mut completed = completed_download_with_parameters(vec![]);
+        completed.release_name = Some("Client.Release.Name".to_string());
+        let persisted = scryer_evidence("title-a", "Old.Grab.Release");
+        let no_row = CompletedDownloadSubmissionResolution::DownloaderObservation;
+
+        // Row lost: the persisted evidence and target still drive the import.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            Some(&persisted),
+            Some("title-a"),
+            None,
+            &completed,
+        );
+        assert_eq!(selected.source, CompletedImportEvidenceSource::Persisted);
+        assert_eq!(selected.release_evidence.title_id(), Some("title-a"));
+        assert_eq!(selected.target_title_id, None);
+
+        // Transient lookup failure: same fallback.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            None,
+            None,
+            Some(&persisted),
+            None,
+            None,
+            &completed,
+        );
+        assert_eq!(selected.source, CompletedImportEvidenceSource::Persisted);
+        assert_eq!(selected.release_evidence.title_id(), Some("title-a"));
+
+        // Nothing persisted and no row: the client-reported observation.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            Some("title-b"),
+            None,
+            &completed,
+        );
+        assert_eq!(selected.source, CompletedImportEvidenceSource::FreshObservation);
+        assert!(matches!(
+            selected.release_evidence,
+            ReleaseEvidence::DownloaderObservation { ref release_name }
+                if release_name.as_deref() == Some("Client.Release.Name")
+        ));
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-b"));
+    }
+
+    #[test]
+    fn requested_target_is_the_import_target_for_observation_evidence() {
+        let completed = completed_download_with_parameters(vec![]);
+        let stub_row =
+            matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
+
+        // The tracked download's validated title outranks a persisted target.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&stub_row),
+            None,
+            None,
+            Some("title-persisted"),
+            Some("title-tracked"),
+            &completed,
+        );
+        assert_eq!(selected.release_evidence.title_id(), None);
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-tracked"));
+
+        // A stub orphan row (no title) names nothing, so the persisted target
+        // is still honored on retry.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&stub_row),
+            None,
+            None,
+            Some("title-persisted"),
+            None,
+            &completed,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-persisted"));
+
+        // Blank requested/persisted targets are no targets.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&stub_row),
+            None,
+            None,
+            Some("  "),
+            Some(""),
+            &completed,
+        );
+        assert_eq!(selected.target_title_id, None);
+    }
+
+    #[test]
+    fn scryer_title_id_parameter_is_the_last_resort_target_for_observation_evidence() {
+        // Both the submission row and the tracked state are gone; only Scryer's
+        // own add-time stamp names the title.
+        let stamped = completed_download_with_parameters(vec![
+            ("*scryer_title_id", "  title-param  "),
+            ("*scryer_facet", "movie"),
+        ]);
+        let no_row = CompletedDownloadSubmissionResolution::DownloaderObservation;
+
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            None,
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.release_evidence.title_id(), None);
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-param"));
+
+        // Every earlier source still outranks it: the requested target …
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            None,
+            Some("title-tracked"),
+            &stamped,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-tracked"));
+
+        // … a live titled row without Scryer origin …
+        let reassigned =
+            matched_submission_with_source_title("title-b", "movie", SubmissionScope::Orphan, None);
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&reassigned),
+            None,
+            None,
+            None,
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-b"));
+
+        // … and the persisted target.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            Some("title-persisted"),
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-persisted"));
+
+        // A stub orphan row names nothing, so the stamp still applies.
+        let stub_row =
+            matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&stub_row),
+            None,
+            None,
+            None,
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-param"));
+
+        // It never overrides a Scryer submission title, whether the row is
+        // live or the persisted evidence is what is being replayed.
+        let fresh = matched_submission("title-submission", "movie", SubmissionScope::Title);
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&fresh),
+            None,
+            None,
+            None,
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.release_evidence.title_id(), Some("title-submission"));
+        assert_eq!(selected.target_title_id, None);
+        let persisted = scryer_evidence("title-a", "Old.Grab.Release");
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            Some(&persisted),
+            None,
+            None,
+            &stamped,
+        );
+        assert_eq!(selected.release_evidence.title_id(), Some("title-a"));
+        assert_eq!(selected.target_title_id, None);
+
+        // A blank or absent stamp is no target.
+        let blank = completed_download_with_parameters(vec![("*scryer_title_id", "  ")]);
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            None,
+            None,
+            &blank,
+        );
+        assert_eq!(selected.target_title_id, None);
+        let unstamped = completed_download_with_parameters(vec![]);
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&no_row),
+            None,
+            None,
+            None,
+            None,
+            &unstamped,
+        );
+        assert_eq!(selected.target_title_id, None);
+    }
+
+    #[test]
+    fn scryer_submission_settles_a_disagreeing_target_by_policy() {
+        let completed = completed_download_with_parameters(vec![]);
+        let fresh = matched_submission("title-submission", "movie", SubmissionScope::Title);
+
+        // Automatic import: the submission wins; the tracked title is dropped.
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&fresh),
+            None,
+            None,
+            None,
+            Some("title-tracked"),
+            &completed,
+        );
+        assert_eq!(selected.release_evidence.title_id(), Some("title-submission"));
+        assert_eq!(selected.target_title_id, None);
+
+        // Manual review: the operator's choice is passed through so the
+        // import's own guard can reject a title outside the submission.
+        let selected = select(
+            CompletedImportIdentityPolicy::AllowUnresolved,
+            Some(&fresh),
+            None,
+            None,
+            None,
+            Some("title-operator"),
+            &completed,
+        );
+        assert_eq!(selected.target_title_id.as_deref(), Some("title-operator"));
+
+        // A caller-resolved override is used as-is.
+        let override_evidence = scryer_evidence("title-override", "Override.Release");
+        let selected = select(
+            CompletedImportIdentityPolicy::RequireSubmission,
+            Some(&fresh),
+            Some(&override_evidence),
+            None,
+            Some("title-persisted"),
+            None,
+            &completed,
+        );
+        assert_eq!(selected.source, CompletedImportEvidenceSource::Override);
+        assert_eq!(selected.release_evidence.title_id(), Some("title-override"));
+        assert_eq!(selected.target_title_id, None);
     }
 
     #[test]
@@ -377,45 +1127,90 @@ mod tests {
             completed_import_status_for_result(&result, ImportStatus::Failed),
             ImportStatus::Pending
         );
-    }
 
-    #[test]
-    fn rejected_and_skipped_import_results_are_not_terminal_cleanup_candidates() {
-        let mut result = ImportResult {
-            import_id: "import-1".to_string(),
-            decision: ImportDecision::Imported,
-            skip_reason: None,
-            title_id: Some("title-1".to_string()),
-            source_system: Some("nzbget".to_string()),
-            source_ref: Some("item-1".to_string()),
-            source_title: Some("Release".to_string()),
-            source_path: "/downloads/Release".to_string(),
-            dest_path: None,
-            quality: None,
-            episode_ids: Vec::new(),
-            file_size_bytes: None,
-            link_type: None,
-            error_message: None,
-            started_at: Utc::now(),
-            completed_at: Utc::now(),
-        };
+        // Scryer's own transient markers are the only message-based hint.
+        for transient in [
+            "source is still being unpacked by the client",
+            "active-download marker present",
+            "destination temporarily unavailable",
+        ] {
+            result.error_message = Some(transient.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Pending,
+                "{transient}"
+            );
+        }
 
+        // Decision-phase skips stay terminal whatever the text — there is no OS
+        // error catalogue any more; execution failures are retried by phase.
+        for permanent in [
+            "failed to move file: Invalid argument (os error 22)",
+            "failed to move file: Is a directory (os error 21)",
+            "failed to move file: Device or resource busy (os error 16)",
+            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)",
+            "archive requires a password",
+        ] {
+            result.error_message = Some(permanent.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Failed,
+                "{permanent}"
+            );
+        }
+
+        // Sonarr's phase rule: an approved import that failed to *execute* is
+        // retried regardless of the error text — no catalogue can be complete.
+        result.decision = ImportDecision::Failed;
+        result.skip_reason = None;
+        for execution_failure in [
+            "failed to move file: Invalid argument (os error 22)",
+            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)",
+            "0 imported, 0 skipped, 0 rejected, 1 failed. Last error: something novel",
+            "database is locked",
+        ] {
+            result.error_message = Some(execution_failure.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Pending,
+                "{execution_failure}"
+            );
+        }
+        result.error_message = None;
         assert_eq!(
-            terminal_tracked_state_for_import_result(&result),
-            Some(TrackedDownloadState::Imported)
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Pending
         );
 
-        result.decision = ImportDecision::Rejected;
-        result.skip_reason = Some(ImportSkipReason::AlreadyImported);
-        assert_eq!(terminal_tracked_state_for_import_result(&result), None);
-
-        result.decision = ImportDecision::Skipped;
-        assert_eq!(terminal_tracked_state_for_import_result(&result), None);
-
-        result.decision = ImportDecision::Failed;
+        // ...except a password-protected archive, which cannot succeed without
+        // operator input.
+        result.skip_reason = Some(ImportSkipReason::PasswordRequired);
+        result.error_message = Some("archive requires a password".to_string());
         assert_eq!(
-            terminal_tracked_state_for_import_result(&result),
-            Some(TrackedDownloadState::Failed)
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
+        );
+
+        // Environmental skips clear on their own and are retried.
+        result.decision = ImportDecision::Skipped;
+        result.error_message = Some("not enough room".to_string());
+        for environmental in [ImportSkipReason::DiskFull, ImportSkipReason::PermissionDenied] {
+            result.skip_reason = Some(environmental);
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Skipped),
+                ImportStatus::Pending,
+                "{}",
+                result.skip_reason.as_ref().map(ImportSkipReason::as_str).unwrap_or("none")
+            );
+        }
+
+        // Rejections are decision-phase and stay terminal.
+        result.decision = ImportDecision::Rejected;
+        result.skip_reason = Some(ImportSkipReason::PolicyMismatch);
+        result.error_message = Some("existing file is equal or better".to_string());
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
         );
     }
 

@@ -102,7 +102,7 @@ mod tests {
             );
             INSERT INTO titles (id, name, metadata_language)
             VALUES
-                ('title-a', 'The Matrix', 'eng'),
+                ('title-a', 'The Meridian', 'eng'),
                 ('title-b', '鋼の錬金術師', 'jpn');
             ",
         )
@@ -123,7 +123,7 @@ mod tests {
         let key_a: String = rows[0].try_get("catalog_sort_key").expect("key a");
         let key_b: String = rows[1].try_get("catalog_sort_key").expect("key b");
 
-        assert_eq!(key_a, title_catalog_sort_key("The Matrix", Some("eng")));
+        assert_eq!(key_a, title_catalog_sort_key("The Meridian", Some("eng")));
         assert_eq!(key_b, title_catalog_sort_key("鋼の錬金術師", Some("jpn")));
         assert!(!key_a.is_empty());
         assert!(!key_b.is_empty());

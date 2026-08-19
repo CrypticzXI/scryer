@@ -302,7 +302,10 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadFeedbackTimeout(message) => {
             coded_gql_error(message, "DOWNLOAD_FEEDBACK_TIMEOUT")
         }
-        AppError::DownloadSubmitUnavailable(message) => {
+        // Failover exhaustion is a distinct internal kind for diagnostics but
+        // the same external contract: the submission is retryable later.
+        AppError::DownloadSubmitUnavailable(message)
+        | AppError::DownloadSubmitFailoverExhausted(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
         AppError::ArchiveExtractionPluginRequired {
@@ -393,6 +396,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::DownloadSubmitFailoverExhausted(_) => "DownloadSubmitFailoverExhausted",
         AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
@@ -638,6 +642,14 @@ mod tests {
             (
                 AppError::DownloadSubmitUnavailable("download submitter unavailable".into()),
                 "download submitter unavailable",
+                "DOWNLOAD_SUBMIT_UNAVAILABLE",
+            ),
+            // A distinct internal kind, the same external contract.
+            (
+                AppError::download_submit_failover_exhausted(
+                    "all prioritized download clients failed to enqueue this release",
+                ),
+                "all prioritized download clients failed to enqueue this release",
                 "DOWNLOAD_SUBMIT_UNAVAILABLE",
             ),
             (

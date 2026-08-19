@@ -62,6 +62,11 @@ pub struct TrackedDownload {
     pub path_missing_since: Option<DateTime<Utc>>,
     /// Runtime-only retry state for completed imports that temporarily contain no videos.
     pub no_video_import_retry: Option<NoVideoImportRetryState>,
+    /// Runtime-only backoff for an approved import whose *execution* failed
+    /// (transfer/IO/permissions/root missing). Sonarr treats every such
+    /// failure as `Skipped` and re-attempts on its refresh cadence; this state
+    /// gives Scryer's faster poller a capped backoff instead of a hot loop.
+    pub import_execution_retry: Option<ImportExecutionRetryState>,
     /// Runtime-only reason this completed download is held back and hidden.
     /// Never persisted as a tracked-download outcome.
     pub import_hold: Option<ImportHold>,
@@ -81,54 +86,11 @@ pub struct TrackedDownload {
     pub snapshot_missing_since: Option<DateTime<Utc>>,
 }
 
-/// Why a completed download is held out of automatic import and hidden from
-/// user-facing download activity.
-///
-/// TWO INDEPENDENT AXES, deliberately kept apart. The predecessor type
-/// (`ForeignDownloadClassification`) put both in one flat enum, so a payload
-/// with no video was reported through a field whose name asserted whose
-/// download it was. Readers — several, repeatedly — took `NoImportableVideo`
-/// to mean "another application owns this" and reasoned about ownership from
-/// it. Nesting makes the misreading unrepresentable: you cannot reach a
-/// provenance verdict without going through `Unmanaged`.
+/// Content-only reason a completed download is temporarily held from import.
+/// This is never an ownership or provenance classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportHold {
-    /// PROVENANCE. Scryer did not submit this download.
-    ///
-    /// Says nothing about whether the payload is importable.
-    Unmanaged(UnmanagedDownloadReason),
-    /// CONTENT. The payload holds nothing importable.
-    ///
-    /// Says nothing about who submitted it — Scryer's own grabs land here too.
     NoImportableVideo,
-}
-
-/// Why Scryer believes it did not submit a download.
-///
-/// "Unmanaged" rather than "foreign" because these downloads are usually ones
-/// Scryer SHOULD adopt once a user resolves them — a user-uploaded NZB, or one
-/// the download client's own RSS grabbed, is not another application's
-/// property; it simply was not submitted by Scryer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnmanagedDownloadReason {
-    /// The category is not one Scryer configured for any client.
-    ///
-    /// Weak evidence, and an ABSENCE of a signal rather than a positive one: it
-    /// cannot distinguish a user upload from the download client's own RSS
-    /// grab, because no client payload is read for a source/feed marker today
-    /// (NZBGet exposes `URL`/`Kind` but Scryer does not read them; SABnzbd has
-    /// no submitter channel; qBittorrent has none). Those two origins are
-    /// indistinguishable and both land here.
-    ///
-    /// Because it is configuration-derived, this verdict is re-evaluated on
-    /// later passes rather than trusted from cache.
-    UnknownCategory,
-    /// Another download manager submitted it.
-    ///
-    /// A POSITIVE identification, unlike `UnknownCategory` — but only of one
-    /// specific marker: the `drone` parameter Sonarr/Radarr stamp on the item.
-    /// A manager that does not stamp it will not be detected here, so treat
-    /// this as "a known external manager" rather than "any external manager".
     ExternalManager,
 }
 
@@ -137,6 +99,27 @@ pub struct NoVideoImportRetryState {
     pub signature: NoVideoImportSourceSignature,
     pub attempts: u8,
     pub next_retry_at: DateTime<Utc>,
+}
+
+/// Backoff for an approved import whose execution failed (Sonarr's `Skipped`).
+/// Attempts are never capped: like Sonarr, the retry continues until the
+/// import succeeds or the operator removes/ignores/marks the download failed;
+/// only the delay between attempts grows (see `import_execution_retry_delay`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportExecutionRetryState {
+    pub attempts: u32,
+    pub next_retry_at: DateTime<Utc>,
+}
+
+/// Delay before the next automatic re-attempt of an import whose execution
+/// failed: 30 s, then 2 min, then 5 min, then 15 min for every later attempt.
+pub fn import_execution_retry_delay(attempts: u32) -> chrono::Duration {
+    match attempts {
+        0 | 1 => chrono::Duration::seconds(30),
+        2 => chrono::Duration::minutes(2),
+        3 => chrono::Duration::minutes(5),
+        _ => chrono::Duration::minutes(15),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +194,7 @@ impl TrackedDownload {
         self.waiting_for_completed_history = finished.waiting_for_completed_history;
         self.path_missing_since = finished.path_missing_since;
         self.no_video_import_retry = finished.no_video_import_retry;
+        self.import_execution_retry = finished.import_execution_retry;
         self.import_hold = finished.import_hold;
         self.completed_source = finished.completed_source;
     }
@@ -223,8 +207,49 @@ impl TrackedDownload {
         self.waiting_for_completed_history = false;
         self.path_missing_since = None;
         self.no_video_import_retry = None;
+        self.import_execution_retry = None;
         self.import_hold = None;
         self.skip_reacquire_on_failure = false;
+    }
+
+    /// Whether an automatic import re-attempt is still inside its backoff
+    /// window (either the no-video probe or an execution-failure retry).
+    pub(crate) fn import_retry_deferred(&self, now: DateTime<Utc>) -> bool {
+        self.no_video_import_retry
+            .as_ref()
+            .is_some_and(|retry| retry.next_retry_at > now)
+            || self
+                .import_execution_retry
+                .as_ref()
+                .is_some_and(|retry| retry.next_retry_at > now)
+    }
+
+    /// Schedules the next automatic re-attempt after an approved import failed
+    /// to execute; returns the attempt number just recorded.
+    pub(crate) fn schedule_import_execution_retry(
+        &mut self,
+        now: DateTime<Utc>,
+        message: impl FnOnce(u32, DateTime<Utc>) -> String,
+    ) -> u32 {
+        let attempts = self
+            .import_execution_retry
+            .as_ref()
+            .map(|retry| retry.attempts.saturating_add(1))
+            .unwrap_or(1);
+        let next_retry_at = now + import_execution_retry_delay(attempts);
+        self.import_execution_retry = Some(ImportExecutionRetryState {
+            attempts,
+            next_retry_at,
+        });
+        self.state = TrackedDownloadState::ImportPending;
+        self.waiting_for_completed_history = false;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message(attempts, next_retry_at)];
+        attempts
+    }
+
+    pub(crate) fn clear_import_execution_retry(&mut self) {
+        self.import_execution_retry = None;
     }
 
     pub(crate) fn schedule_no_video_import_retry(
@@ -336,6 +361,7 @@ impl TrackedDownloadService {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -389,6 +415,20 @@ impl TrackedDownloadService {
                 ) == *identity
             })
             .and_then(|tracked| tracked.completed_source.clone())
+    }
+
+    pub fn cached_id_for_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> Option<String> {
+        self.cache.iter().find_map(|(id, tracked)| {
+            (DownloadSourceIdentity::new(
+                Some(tracked.client_id.as_str()),
+                tracked.client_type.as_str(),
+                tracked.client_item.download_client_item_id.as_str(),
+            ) == *identity)
+                .then(|| id.clone())
+        })
     }
 
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
@@ -625,7 +665,41 @@ impl TrackedDownloadService {
             }
         }
 
-        // 3. Parse-based monitored title resolution for foreign downloads.
+        // Persist an observation row before accepting a provisional parse match.
+        // It carries durable tracked state without claiming Scryer provenance.
+        let category_admission = app.download_client_category_admission_snapshot().await;
+        if existing_submission.is_none()
+            && crate::services::download_observation_is_admitted(
+                false,
+                td.client_item.category.as_deref(),
+                category_admission.as_deref(),
+            )
+            && let Err(error) = app
+                .services
+                .workflow
+                .download_submissions
+                .record_submission(DownloadSubmission {
+                    title_id: String::new(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                    facet: td.facet.clone().unwrap_or_default(),
+                    download_client_id: Some(td.client_id.clone())
+                        .filter(|value| !value.is_empty()),
+                    download_client_type: td.client_type.clone(),
+                    download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    source_hint: None,
+                    source_provider_id: None,
+                    source_provider_name: None,
+                    source_kind: None,
+                    source_title: None,
+                    request_signature: None,
+                    scope: SubmissionScope::Orphan,
+                })
+                .await
+        {
+            tracing::warn!(error = %error, id = %td.id, "failed to record tracked download stub submission");
+        }
+
+        // 3. Parse-based monitored title resolution for downloader observations.
         let release_title = td
             .source_title
             .as_deref()
@@ -649,40 +723,11 @@ impl TrackedDownloadService {
                     td.source_title = Some(release_title.to_string());
                 }
                 td.match_type = resolved.match_type;
-                return;
             }
         }
 
         // 4. No trustworthy title match found — completed handler will block
         // auto-import until the user assigns the title manually.
-        //
-        // Insert a stub download_submissions row for foreign downloads so they
-        // get a tracked_state column for restart reconstruction.
-        if existing_submission.is_none()
-            && let Err(error) = app
-                .services
-                .workflow
-                .download_submissions
-                .record_submission(DownloadSubmission {
-                    title_id: String::new(),
-                    purpose: crate::DownloadSubmissionPurpose::Standard,
-                    facet: td.facet.clone().unwrap_or_default(),
-                    download_client_id: Some(td.client_id.clone())
-                        .filter(|value| !value.is_empty()),
-                    download_client_type: td.client_type.clone(),
-                    download_client_item_id: td.client_item.download_client_item_id.clone(),
-                    source_hint: None,
-                    source_provider_id: None,
-                    source_provider_name: None,
-                    source_kind: None,
-                    source_title: Some(td.client_item.title_name.clone()),
-                    request_signature: None,
-                    scope: SubmissionScope::Orphan,
-                })
-                .await
-        {
-            tracing::warn!(error = %error, id = %td.id, "failed to record tracked download stub submission");
-        }
     }
 
     /// Reconstruct state from persistent storage after restart.
@@ -1030,17 +1075,98 @@ pub(crate) async fn assign_title_to_tracked_download(
 
 // ── Command Channel ──────────────────────────────────────────────────────────
 
+/// Result of a manual-import recovery attempt against a tracked download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualImportRecoveryOutcome {
+    /// The tracked download was transitioned to `Imported`.
+    Marked,
+    /// The source is tracked but must be left alone: still downloading,
+    /// already terminal (including already `Imported`), or not yet reported
+    /// complete by the client. This is a final decision for the record; the
+    /// caller must not treat it as success and need not retry.
+    Unchanged,
+    /// The source is not in the tracked-download cache (not observed since
+    /// boot, or evicted). No decision was made; retry on a later tick.
+    Untracked,
+    /// The tracked download is mid background work; retry on a later tick.
+    Busy,
+}
+
+/// What a completed manual-import record is allowed to do to the tracked
+/// download that shares its (client, item id) identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualImportRecoveryVerdict {
+    /// Client-complete and waiting on import: the record may terminalize it.
+    MarkImported,
+    /// Leave the tracked download alone.
+    Leave,
+}
+
+/// Decide whether a completed manual-import record (completed at
+/// `record_completed_at`) may mark `tracked` as `Imported`.
+///
+/// The record is keyed only by (client id, client type, item id), and item ids
+/// are reused: qBittorrent ids are info-hashes (a re-grab or cross-seed of the
+/// same release shares one), NZBGet ids restart after a queue-database reset.
+/// A record from a previous life of that identity must therefore never touch a
+/// download that is still `Downloading` or awaiting failure handling — that
+/// download has not been imported and would silently never be. Only a download
+/// the client has finished (`completed_source` retained) and that is waiting
+/// on import (`ImportPending`, `Importing`, `ImportBlocked`) is eligible; a
+/// terminal download (including one already `Imported`) is left as is.
+///
+/// The record can also only vouch for the download it was produced from: one
+/// the client finished *before* the record completed. A same-id re-grab that
+/// finished after the record (delete + re-grab inside the recovery window,
+/// now sitting in `ImportBlocked`) is a different download and is left alone.
+/// When the client reported no completion time the check cannot run and the
+/// state rules alone decide.
+pub fn manual_import_recovery_verdict(
+    tracked: &TrackedDownload,
+    record_completed_at: DateTime<Utc>,
+) -> ManualImportRecoveryVerdict {
+    let awaiting_import = matches!(
+        tracked.state,
+        TrackedDownloadState::ImportPending
+            | TrackedDownloadState::Importing
+            | TrackedDownloadState::ImportBlocked
+    );
+    let Some(completed_source) = tracked.completed_source.as_ref() else {
+        return ManualImportRecoveryVerdict::Leave;
+    };
+    if !awaiting_import {
+        return ManualImportRecoveryVerdict::Leave;
+    }
+    if completed_source
+        .completed_at
+        .is_some_and(|client_completed_at| client_completed_at > record_completed_at)
+    {
+        return ManualImportRecoveryVerdict::Leave;
+    }
+    ManualImportRecoveryVerdict::MarkImported
+}
+
 /// Commands sent from GraphQL mutations to the poller's TrackedDownloadService.
 pub enum TrackedDownloadCommand {
     ReconcileManualImport {
         id: String,
         files_imported_this_pass: usize,
-        expected_source_video_files: Option<usize>,
+        expected_mapping_count: Option<usize>,
         reply: oneshot::Sender<AppResult<bool>>,
     },
     MarkImported {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
+    },
+    /// Recovery for a manual-import record that reached `Completed` (at
+    /// `record_completed_at`) without terminalizing its tracked download
+    /// (crash, dropped reply, restart). Only a download the client finished
+    /// before that time and that is waiting on import may be marked; see
+    /// [`manual_import_recovery_verdict`].
+    MarkImportedIfAwaitingImport {
+        source_identity: DownloadSourceIdentity,
+        record_completed_at: DateTime<Utc>,
+        reply: oneshot::Sender<AppResult<ManualImportRecoveryOutcome>>,
     },
     Ignore {
         id: String,
@@ -1213,18 +1339,39 @@ impl TrackedDownloadHandle {
         })?
     }
 
+    pub async fn mark_imported_if_awaiting_import(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        record_completed_at: DateTime<Utc>,
+    ) -> AppResult<ManualImportRecoveryOutcome> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::MarkImportedIfAwaitingImport {
+                source_identity,
+                record_completed_at,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })?
+    }
+
     pub async fn reconcile_manual_import(
         &self,
         id: String,
         files_imported_this_pass: usize,
-        expected_source_video_files: Option<usize>,
+        expected_mapping_count: Option<usize>,
     ) -> AppResult<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::ReconcileManualImport {
                 id,
                 files_imported_this_pass,
-                expected_source_video_files,
+                expected_mapping_count,
                 reply: reply_tx,
             })
             .await
@@ -2634,6 +2781,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -2670,6 +2818,11 @@ mod tests {
         finished.import_attempted = true;
         finished.path_missing_since = Some(Utc::now());
         finished.no_video_import_retry = Some(retry.clone());
+        let execution_retry = ImportExecutionRetryState {
+            attempts: 3,
+            next_retry_at: Utc::now() + Duration::minutes(5),
+        };
+        finished.import_execution_retry = Some(execution_retry.clone());
 
         tracked.merge_background_work_state_from(finished);
 
@@ -2681,6 +2834,7 @@ mod tests {
         assert!(tracked.import_attempted);
         assert!(tracked.path_missing_since.is_some());
         assert_eq!(tracked.no_video_import_retry, Some(retry));
+        assert_eq!(tracked.import_execution_retry, Some(execution_retry));
     }
 
     #[test]
@@ -2693,6 +2847,10 @@ mod tests {
         tracked.path_missing_since = Some(Utc::now());
         tracked.no_video_import_retry =
             Some(no_video_retry_state(1, Utc::now() + Duration::seconds(30)));
+        tracked.import_execution_retry = Some(ImportExecutionRetryState {
+            attempts: 2,
+            next_retry_at: Utc::now() + Duration::minutes(2),
+        });
         tracked.skip_reacquire_on_failure = true;
 
         tracked.reset_for_import_retry();
@@ -2703,7 +2861,60 @@ mod tests {
         assert!(!tracked.import_attempted);
         assert!(tracked.path_missing_since.is_none());
         assert!(tracked.no_video_import_retry.is_none());
+        assert!(tracked.import_execution_retry.is_none());
         assert!(!tracked.skip_reacquire_on_failure);
+    }
+
+    #[test]
+    fn import_execution_retry_defers_dispatch_until_next_retry_at_and_backs_off() {
+        let mut tracked = build_tracked_download("dl-1");
+        let now = Utc::now();
+        assert!(!tracked.import_retry_deferred(now));
+
+        let attempts = tracked.schedule_import_execution_retry(now, |attempts, next_retry_at| {
+            format!(
+                "boom (attempt {attempts}) at {}",
+                next_retry_at.to_rfc3339()
+            )
+        });
+        assert_eq!(attempts, 1);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert!(!tracked.waiting_for_completed_history);
+        assert!(tracked.status_messages[0].starts_with("boom (attempt 1) at "));
+        let first = tracked
+            .import_execution_retry
+            .clone()
+            .expect("retry scheduled");
+        assert_eq!(first.next_retry_at, now + Duration::seconds(30));
+        assert!(tracked.import_retry_deferred(now));
+        assert!(tracked.import_retry_deferred(now + Duration::seconds(29)));
+        assert!(!tracked.import_retry_deferred(now + Duration::seconds(30)));
+
+        for (attempt, expected_delay) in [
+            (2u32, Duration::minutes(2)),
+            (3, Duration::minutes(5)),
+            (4, Duration::minutes(15)),
+            (5, Duration::minutes(15)),
+        ] {
+            let attempts = tracked.schedule_import_execution_retry(now, |_, _| String::new());
+            assert_eq!(attempts, attempt);
+            assert_eq!(
+                tracked
+                    .import_execution_retry
+                    .as_ref()
+                    .map(|retry| retry.next_retry_at),
+                Some(now + expected_delay),
+                "attempt {attempt}"
+            );
+        }
+
+        // Either retry family defers dispatch on its own.
+        tracked.clear_import_execution_retry();
+        assert!(!tracked.import_retry_deferred(now));
+        tracked.no_video_import_retry = Some(no_video_retry_state(1, now + Duration::seconds(30)));
+        assert!(tracked.import_retry_deferred(now));
+        assert!(!tracked.import_retry_deferred(now + Duration::seconds(30)));
     }
 
     #[test]
@@ -2964,6 +3175,7 @@ mod tests {
             download_client_item_id: item_id.to_string(),
             download_id: None,
             name: name.to_string(),
+            release_name: None,
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
             size_bytes: None,
@@ -3407,7 +3619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assigning_title_to_completed_blocked_download_keeps_manual_import_actionable() {
+    async fn assigning_title_to_completed_observation_keeps_manual_import_actionable() {
         let title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
@@ -3450,22 +3662,22 @@ mod tests {
             .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
-        assert!(tracked.title_id.is_none());
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
 
         let tracked = tracker
             .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         assign_title_to_tracked_download(&app, tracked, &title).await;
 
-        // Movie assignment records the operator's target but remains blocked
-        // until the operator explicitly queues the manual import.
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        // Movie assignment records the operator's target while keeping the
+        // observation actionable for an explicit manual import.
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::Submission);
 
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
     }
 
     #[tokio::test]
@@ -3566,6 +3778,7 @@ mod tests {
         initial.download_client_item_id = "job-unmatched-repeat".to_string();
         initial.title_name = "Paper Lantern".to_string();
         initial.facet = Some("movie".to_string());
+        initial.category = Some("movie".to_string());
         initial.is_scryer_origin = false;
 
         tracker.track(&app, initial.clone()).await;
@@ -3768,6 +3981,7 @@ mod tests {
                     waiting_for_completed_history: false,
                     path_missing_since: None,
                     no_video_import_retry: None,
+                    import_execution_retry: None,
                     import_hold: None,
                     skip_reacquire_on_failure: false,
                     snapshot_missing_since: None,
@@ -3822,6 +4036,27 @@ mod tests {
                 .completed_source_for_identity(&blocked_identity)
                 .is_none(),
             "terminal cleanup must dispose of the retained source"
+        );
+    }
+
+    #[test]
+    fn cached_id_for_source_identity_keeps_client_type_distinct() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut nzbget = build_tracked_download("nzbget-entry");
+        nzbget.client_item.download_client_item_id = "same-item".to_string();
+        let mut qbittorrent = build_tracked_download("qbittorrent-entry");
+        qbittorrent.client_type = "qbittorrent".to_string();
+        qbittorrent.client_item.client_type = "qbittorrent".to_string();
+        qbittorrent.client_item.download_client_item_id = "same-item".to_string();
+
+        tracker.insert_for_tests(nzbget);
+        tracker.insert_for_tests(qbittorrent);
+
+        let qbittorrent_identity =
+            DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "same-item");
+        assert_eq!(
+            tracker.cached_id_for_source_identity(&qbittorrent_identity),
+            Some("qbittorrent-entry".to_string())
         );
     }
 
@@ -4069,6 +4304,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4081,13 +4317,13 @@ mod tests {
     }
 
     #[test]
-    fn failed_download_check_skips_parse_matched_foreign_download() {
+    fn failed_download_check_skips_parse_matched_downloader_observation() {
         let mut client_item = build_client_item();
         client_item.state = DownloadQueueState::Failed;
         client_item.attention_reason = Some("health below critical".to_string());
         client_item.is_scryer_origin = false;
         let mut tracked = TrackedDownload {
-            id: "client-1:failed-foreign".to_string(),
+            id: "client-1:failed-observation".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item,
@@ -4097,7 +4333,7 @@ mod tests {
             status_messages: Vec::new(),
             title_id: Some("title-1".to_string()),
             facet: Some("series".to_string()),
-            source_title: Some("Foreign.Show.S01E01.1080p.WEB-DL".to_string()),
+            source_title: Some("Observed.Show.S01E01.1080p.WEB-DL".to_string()),
             indexer: None,
             added_at: None,
             notified_manual_interaction: false,
@@ -4107,6 +4343,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4134,6 +4371,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let imports = Arc::new(TestImportRepo {
@@ -4187,6 +4425,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4215,6 +4454,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {
@@ -4310,6 +4550,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {
@@ -4394,6 +4635,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4409,6 +4651,162 @@ mod tests {
                 .1
                 .as_deref()
                 .is_some_and(|json| json.contains("\"import_id\":\"import-match\""))
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_marks_only_client_complete_downloads_awaiting_import() {
+        for state in [
+            TrackedDownloadState::ImportPending,
+            TrackedDownloadState::Importing,
+            TrackedDownloadState::ImportBlocked,
+        ] {
+            let mut tracked = build_tracked_download("awaiting-import");
+            tracked.state = state;
+            tracked.completed_source = Some(build_completed_download(
+                "nzbget",
+                "awaiting-import",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::MarkImported,
+                "{state:?} with a completed source"
+            );
+
+            // Without the client's completion the download has not finished.
+            tracked.completed_source = None;
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?} without a completed source"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_fresh_downloads_that_reuse_an_item_id() {
+        // A re-grab or cross-seed of the same release shares the old item id
+        // (qBittorrent info-hash; NZBGet ids restart after a queue reset). A
+        // completed manual-import record from the previous life of that id
+        // must not terminalize the new download.
+        for state in [
+            TrackedDownloadState::Downloading,
+            TrackedDownloadState::FailedPending,
+        ] {
+            let mut tracked = build_tracked_download("reused-item-id");
+            tracked.state = state;
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?}"
+            );
+            tracked.completed_source = Some(build_completed_download(
+                "qbittorrent",
+                "reused-item-id",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?} even with a retained completed source"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_terminal_downloads_including_already_imported() {
+        for state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::Failed,
+            TrackedDownloadState::Ignored,
+        ] {
+            let mut tracked = build_tracked_download("terminal");
+            tracked.state = state;
+            tracked.completed_source = Some(build_completed_download(
+                "nzbget",
+                "terminal",
+                "Release",
+                "/downloads/release",
+                Some("movies"),
+            ));
+            assert_eq!(
+                manual_import_recovery_verdict(&tracked, Utc::now()),
+                ManualImportRecoveryVerdict::Leave,
+                "{state:?}"
+            );
+        }
+    }
+
+    fn awaiting_import_with_client_completion(
+        completed_at: Option<chrono::DateTime<Utc>>,
+    ) -> TrackedDownload {
+        let mut tracked = build_tracked_download("same-info-hash");
+        tracked.state = TrackedDownloadState::ImportBlocked;
+        let mut completed = build_completed_download(
+            "qbittorrent",
+            "same-info-hash",
+            "Release",
+            "/downloads/release",
+            Some("movies"),
+        );
+        completed.completed_at = completed_at;
+        tracked.completed_source = Some(completed);
+        tracked
+    }
+
+    #[test]
+    fn manual_import_recovery_marks_a_download_the_client_finished_before_the_record() {
+        let record_completed_at = Utc::now();
+        let tracked =
+            awaiting_import_with_client_completion(Some(record_completed_at - Duration::hours(1)));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+
+        // Completion at the very same instant still predates the record.
+        let tracked = awaiting_import_with_client_completion(Some(record_completed_at));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_leaves_a_same_id_download_that_finished_after_the_record() {
+        // Import completed at 10:00; the user deleted and re-grabbed the same
+        // release (same info-hash); the re-grab completed at 11:30 and sits in
+        // ImportBlocked inside the recovery window. The old record must not
+        // mark it Imported.
+        let record_completed_at = Utc::now() - Duration::hours(2);
+        let tracked = awaiting_import_with_client_completion(Some(
+            record_completed_at + Duration::minutes(90),
+        ));
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::Leave
+        );
+    }
+
+    #[test]
+    fn manual_import_recovery_without_a_client_completion_time_uses_the_state_rules_alone() {
+        let record_completed_at = Utc::now() - Duration::hours(2);
+        let tracked = awaiting_import_with_client_completion(None);
+        assert_eq!(
+            manual_import_recovery_verdict(&tracked, record_completed_at),
+            ManualImportRecoveryVerdict::MarkImported
+        );
+
+        let mut downloading = awaiting_import_with_client_completion(None);
+        downloading.state = TrackedDownloadState::Downloading;
+        assert_eq!(
+            manual_import_recovery_verdict(&downloading, record_completed_at),
+            ManualImportRecoveryVerdict::Leave
         );
     }
 }

@@ -243,6 +243,19 @@ impl BlocklistRepository for MockBlocklistRepo {
     }
 }
 
+/// The title's per-title release blocklist entries as the app sees them.
+pub(super) async fn title_blocklist_entries(
+    app: &AppUseCase,
+    title_id: &str,
+) -> Vec<BlocklistEntry> {
+    app.services
+        .workflow
+        .blocklist_repo
+        .list_for_title(title_id, 50)
+        .await
+        .expect("list title blocklist entries")
+}
+
 #[derive(Default, Clone)]
 pub(super) struct TrackingDownloadSubmissionRepo {
     pub(super) store: Arc<Mutex<Vec<DownloadSubmission>>>,
@@ -1318,15 +1331,29 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
 #[derive(Clone)]
 pub(super) enum StubSubmitError {
     SubmitUnavailable(String),
+    /// The router exhausted every prioritized client (typed).
+    FailoverExhausted(String),
+    /// A plain repository error — including the exact text the router used to
+    /// emit before failover exhaustion was typed. Never failover evidence.
+    Repository(String),
     Validation(String),
     Rejected(String),
     Ambiguous(String),
 }
 
+/// The exact message the router produced before `DownloadSubmitFailoverExhausted`
+/// existed; paths must treat it as a definitive failure now.
+pub(super) const LEGACY_FAILOVER_REPOSITORY_MESSAGE: &str =
+    "all prioritized download clients failed to enqueue this release";
+
 impl StubSubmitError {
     pub(super) fn into_app_error(self) -> AppError {
         match self {
             Self::SubmitUnavailable(message) => AppError::download_submit_unavailable(message),
+            Self::FailoverExhausted(message) => {
+                AppError::download_submit_failover_exhausted(message)
+            }
+            Self::Repository(message) => AppError::Repository(message),
             Self::Validation(message) => AppError::Validation(message),
             Self::Rejected(message) => AppError::DownloadSubmitRejected(message),
             Self::Ambiguous(message) => AppError::DownloadSubmitAmbiguous(message),

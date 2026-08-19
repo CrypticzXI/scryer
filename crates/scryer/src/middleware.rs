@@ -2110,7 +2110,7 @@ fn is_local_network_ip(ip: IpAddr) -> bool {
 }
 
 pub(crate) async fn health_handler() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok"}))
+    Json(serde_json::json!({"status": "ok", "ready": true}))
 }
 
 pub(crate) async fn rate_limit_http_api(
@@ -2192,7 +2192,8 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitRejected(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }
-        AppError::DownloadSubmitUnavailable(message) => {
+        AppError::DownloadSubmitUnavailable(message)
+        | AppError::DownloadSubmitFailoverExhausted(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
         AppError::ArchiveExtractionPluginRequired { message, .. } => {

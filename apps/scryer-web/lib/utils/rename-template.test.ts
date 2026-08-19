@@ -11,7 +11,7 @@ import {
 const VALID_TOKENS = new Set(["title", "season_order", "edition", "ext"]);
 const VALID_FOLDER_TOKENS = new Set(["title", "season"]);
 const SAMPLE_VALUES = {
-  title: "The Dark Knight",
+  title: "The Grey Harbor",
   edition: "IMAX",
   ext: "mkv",
 };
@@ -91,7 +91,7 @@ test("applyRenameTemplatePreview applies truncate before later filters", () => {
       VALID_TOKENS,
       SAMPLE_VALUES,
     ),
-    "The_Dark.mkv",
+    "The_Grey.mkv",
   );
 });
 
@@ -109,7 +109,7 @@ test("applyRenameTemplatePreview renders literal brace escapes", () => {
 test("applyRenameTemplatePreview renders missing sample values as empty strings", () => {
   assert.equal(
     applyRenameTemplatePreview("{title} - {season_order}.{ext}", VALID_TOKENS, SAMPLE_VALUES),
-    "The Dark Knight - .mkv",
+    "The Grey Harbor - .mkv",
   );
 });
 

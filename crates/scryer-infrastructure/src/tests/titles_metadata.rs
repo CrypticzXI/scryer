@@ -549,12 +549,12 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
     let catalog = title_store(&services);
 
     let mut title = make_test_title("title-catalog-sort-key", None);
-    title.name = "The Matrix".to_string();
+    title.name = "The Meridian".to_string();
     title.metadata_language = Some("eng".to_string());
     let created = TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
-    let expected_created_key = scryer_domain::title_catalog_sort_key("The Matrix", Some("eng"));
+    let expected_created_key = scryer_domain::title_catalog_sort_key("The Meridian", Some("eng"));
     assert_eq!(created.catalog_sort_key, expected_created_key);
     assert_eq!(
         stored_catalog_sort_key(&services, &title.id).await,
