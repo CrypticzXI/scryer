@@ -240,28 +240,66 @@ pub(crate) fn to_hex(value: &[u8]) -> String {
     output
 }
 
+/// Total and available bytes of the filesystem backing a path.
+///
+/// `available_bytes` is the space an unprivileged writer can use (the
+/// `f_bavail` figure), so `total - available` counts root-reserved blocks as
+/// used, matching what an operator expects a usage percentage to mean.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FilesystemSpace {
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+}
+
 /// Widen a `statvfs` counter to `u64`.
 ///
 /// The block-count fields are `u32` on some unix targets and `u64` on others,
 /// so callers cannot write `u64::from(..)` without tripping
 /// `clippy::useless_conversion` on whichever platform already matches.
-#[cfg(unix)]
-pub(crate) fn statvfs_field_to_u64<T: Into<u64>>(value: T) -> u64 {
+#[cfg(all(unix, not(target_os = "macos")))]
+fn statvfs_field_to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
-#[cfg(unix)]
-pub(crate) fn statvfs_path(path: &str) -> Option<libc::statvfs> {
-    use std::ffi::CString;
-    let c_path = CString::new(path).ok()?;
+/// `statfs`, not `statvfs`: Darwin's `statvfs` interface carries 32-bit block
+/// counts (`fsblkcnt_t` is `unsigned int`), so any volume larger than
+/// `2^32 * f_frsize` bytes wraps — a 23 TB SMB share reads back as ~1 TB.
+/// Darwin's `statfs` carries 64-bit counts sized in `f_bsize` units.
+#[cfg(target_os = "macos")]
+pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<FilesystemSpace> {
+    unsafe {
+        let mut buf: libc::statfs = std::mem::zeroed();
+        if libc::statfs(c_path.as_ptr(), &mut buf) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let bsize = u64::from(buf.f_bsize);
+        Ok(FilesystemSpace {
+            total_bytes: buf.f_blocks.saturating_mul(bsize),
+            available_bytes: buf.f_bavail.saturating_mul(bsize),
+        })
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn filesystem_space_raw(c_path: &std::ffi::CStr) -> std::io::Result<FilesystemSpace> {
     unsafe {
         let mut buf: libc::statvfs = std::mem::zeroed();
-        if libc::statvfs(c_path.as_ptr(), &mut buf) == 0 {
-            Some(buf)
-        } else {
-            None
+        if libc::statvfs(c_path.as_ptr(), &mut buf) != 0 {
+            return Err(std::io::Error::last_os_error());
         }
+        let frsize = statvfs_field_to_u64(buf.f_frsize);
+        Ok(FilesystemSpace {
+            total_bytes: statvfs_field_to_u64(buf.f_blocks).saturating_mul(frsize),
+            available_bytes: statvfs_field_to_u64(buf.f_bavail).saturating_mul(frsize),
+        })
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn filesystem_space(path: &str) -> Option<FilesystemSpace> {
+    let c_path = std::ffi::CString::new(path).ok()?;
+    filesystem_space_raw(&c_path).ok()
 }
 
 fn normalize_tag(raw: String) -> String {

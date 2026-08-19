@@ -369,7 +369,7 @@ pub(crate) use helpers::{
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 #[cfg(unix)]
-pub(crate) use helpers::{statvfs_field_to_u64, statvfs_path};
+pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
@@ -561,13 +561,13 @@ pub use types::{
     ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
-    TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary, TitleExternalRating, TitleImageBlob,
-    TitleImageKind, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantRecord,
-    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMetadataUpdate,
-    TitleMovieMediaSummary, TitleQualitySummary, TitleRatingSummary, TitleReleaseBlocklistEntry,
-    TotpCredentialRecord, TotpEnrollmentChallengeRecord, TotpEnrollmentComplete,
-    TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord, TotpStatus,
-    UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
+    TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary, TitleExternalRating,
+    TitleImageBlob, TitleImageKind, TitleImageSourceResult, TitleImageSyncTask,
+    TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMetadataUpdate, TitleMovieMediaSummary, TitleQualitySummary, TitleRatingSummary,
+    TitleReleaseBlocklistEntry, TotpCredentialRecord, TotpEnrollmentChallengeRecord,
+    TotpEnrollmentComplete, TotpEnrollmentStart, TotpFailedAttemptRecord, TotpRecoveryCodeRecord,
+    TotpStatus, UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings, UiSettingsFacet,
     UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode, UiTheme,
     UpdateRecycleBinSettings, UserAuthFactorStatus, WantedKind, WantedStatusCount,
     WebauthnChallengeRecord, WebauthnChallengeStart, WebauthnChallengeType,

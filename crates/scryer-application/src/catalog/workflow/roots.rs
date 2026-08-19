@@ -266,18 +266,17 @@ impl AppUseCase {
 }
 
 /// Used and total bytes for the filesystem backing `path`, or `None` when it
-/// cannot be inspected. Mirrors the disk-space health check's arithmetic:
-/// total is `f_blocks * f_frsize` and available is `f_bavail * f_frsize`. It is
-/// the *available* figure that excludes the blocks reserved for root, so the
-/// used figure reported here (total minus available) includes them.
+/// cannot be inspected. It is the *available* figure that excludes the blocks
+/// reserved for root, so the used figure reported here (total minus available)
+/// includes them.
 #[cfg(unix)]
 fn library_root_filesystem_usage(path: &str) -> Option<(i64, i64)> {
-    let stat = crate::statvfs_path(path)?;
-    let frsize = crate::statvfs_field_to_u64(stat.f_frsize);
-    let total = crate::statvfs_field_to_u64(stat.f_blocks).saturating_mul(frsize);
-    let available = crate::statvfs_field_to_u64(stat.f_bavail).saturating_mul(frsize);
-    let used = total.saturating_sub(available);
-    Some((i64::try_from(used).ok()?, i64::try_from(total).ok()?))
+    let space = crate::filesystem_space(path)?;
+    let used = space.total_bytes.saturating_sub(space.available_bytes);
+    Some((
+        i64::try_from(used).ok()?,
+        i64::try_from(space.total_bytes).ok()?,
+    ))
 }
 
 #[cfg(not(unix))]

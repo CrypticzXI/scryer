@@ -367,9 +367,8 @@ impl AppUseCase {
                 }
                 let label = health_library_root_label(&root);
 
-                if let Some(stat) = statvfs_path(&root.path) {
-                    let free =
-                        statvfs_field_to_u64(stat.f_bavail) * statvfs_field_to_u64(stat.f_frsize);
+                if let Some(space) = filesystem_space(&root.path) {
+                    let free = space.available_bytes;
                     let mb_100 = 100 * 1024 * 1024;
                     let mb_500 = 500 * 1024 * 1024;
 

@@ -33,11 +33,6 @@ pub struct ImportCheckContext<'a> {
     pub existing_files: &'a [TitleMediaFile],
 }
 
-#[cfg(unix)]
-fn to_u64<T: Into<u64>>(value: T) -> u64 {
-    value.into()
-}
-
 const DISK_SPACE_RESERVE_BYTES: u64 = 500 * 1024 * 1024;
 
 fn disk_space_verdict(available: u64, source_size: u64) -> ImportVerdict {
@@ -87,12 +82,7 @@ fn available_disk_space(path: &Path) -> std::io::Result<u64> {
             format!("disk-space path contains an interior NUL: {error}"),
         )
     })?;
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let result = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if result != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(to_u64(stat.f_bavail).saturating_mul(to_u64(stat.f_frsize)))
+    Ok(crate::filesystem_space_raw(&c_path)?.available_bytes)
 }
 
 #[cfg(windows)]
