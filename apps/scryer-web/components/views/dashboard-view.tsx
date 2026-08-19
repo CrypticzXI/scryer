@@ -84,6 +84,14 @@ const PREVIEW_PANE_CLASS = "max-h-[172px] overflow-y-auto";
 const QUEUE_PREVIEW_LIMIT = 5;
 /** Provider tables show about five rows before scrolling. */
 const TABLE_PANE_CLASS = "max-h-[218px] overflow-y-auto overflow-x-auto";
+/**
+ * Header stays put while rows scroll, the same way the title tables do it:
+ * `sticky` on the header row plus an opaque background on the cells, since a
+ * bare `<tr>` background does not paint under sticky in every engine.
+ */
+const TABLE_HEADER_ROW_CLASS = "sticky top-0 z-10 bg-card";
+const TABLE_HEAD_CLASS = "h-8 bg-card px-3 text-[10px] uppercase";
+const TABLE_HEAD_RIGHT_CLASS = "h-8 bg-card px-3 text-right text-[10px] uppercase";
 
 export type DashboardViewProps = {
   loading: boolean;
@@ -870,23 +878,23 @@ function IndexersPanel({ overview }: { overview: DashboardOverview | null }) {
       ) : (
         <Table density="dense" className="min-w-[440px]">
           <TableHeader>
-            <TableRow>
-              <TableHead className="h-8 px-3 text-[10px] uppercase">
+            <TableRow className={TABLE_HEADER_ROW_CLASS}>
+              <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnIndexer")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-right text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_RIGHT_CLASS}>
                 {t("dashboard.columnSearch")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-right text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_RIGHT_CLASS}>
                 {t("dashboard.columnGrab")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-right text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_RIGHT_CLASS}>
                 {t("dashboard.columnFail")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnQuota")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnStatus")}
               </TableHead>
             </TableRow>
@@ -1098,17 +1106,17 @@ function DownloadClientsPanel({
       ) : (
         <Table density="dense" className="min-w-[420px]">
           <TableHeader>
-            <TableRow>
-              <TableHead className="h-8 px-3 text-[10px] uppercase">
+            <TableRow className={TABLE_HEADER_ROW_CLASS}>
+              <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnClient")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-right text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_RIGHT_CLASS}>
                 {t("dashboard.columnActive")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-right text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_RIGHT_CLASS}>
                 {t("dashboard.columnQueue")}
               </TableHead>
-              <TableHead className="h-8 px-3 text-[10px] uppercase">
+              <TableHead className={TABLE_HEAD_CLASS}>
                 {t("dashboard.columnStatus")}
               </TableHead>
             </TableRow>
