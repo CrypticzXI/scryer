@@ -1,3 +1,4 @@
+import { ArrowDown } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import {
@@ -75,36 +76,38 @@ export function BulkRenamePreviewSummary({
               {t("rename.noRenamableFiles")}
             </p>
           ) : (
-            <div className="max-h-72 space-y-3 overflow-auto rounded-lg border border-border p-2">
+            <div className="max-h-96 space-y-3 overflow-auto rounded-lg border border-border p-2">
               {entries.map(({ title, items }) => {
                 return (
                   <div key={title.id} className="space-y-1">
                     <div className="text-xs font-semibold text-card-foreground">
                       {title.name}
                     </div>
-                    <table className="min-w-full text-xs">
-                      <tbody>
-                        {items.map((item, index) => (
-                          <tr
-                            key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
-                            className="border-t border-border/60 first:border-t-0"
+                    <ul className="text-xs">
+                      {items.map((item, index) => (
+                        <li
+                          key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
+                          className="border-t border-border/60 px-2 py-2 first:border-t-0"
+                        >
+                          <div
+                            data-ui="bulk-rename-plan-current-path"
+                            className="break-all font-[var(--font-code)] text-muted-foreground"
                           >
-                            <td
-                              data-ui="bulk-rename-plan-current-path"
-                              className="px-2 py-1 align-top font-[var(--font-code)] text-muted-foreground"
-                            >
-                              {item.currentPath || "—"}
-                            </td>
-                            <td
-                              data-ui="bulk-rename-plan-proposed-path"
-                              className="px-2 py-1 align-top font-[var(--font-code)] text-muted-foreground"
-                            >
-                              {item.proposedPath ?? "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            {item.currentPath || "—"}
+                          </div>
+                          <ArrowDown
+                            aria-hidden
+                            className="my-1 h-3.5 w-3.5 text-[var(--scry-accent-text)]"
+                          />
+                          <div
+                            data-ui="bulk-rename-plan-proposed-path"
+                            className="break-all font-[var(--font-code)] text-card-foreground"
+                          >
+                            {item.proposedPath ?? "—"}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 );
               })}

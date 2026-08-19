@@ -5474,6 +5474,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         })}
         confirmLabel={t("rename.applyButton")}
         cancelLabel={t("label.cancel")}
+        contentClassName="max-w-4xl"
         confirmButtonVariant="primary"
         confirmButtonId="bulk-rename-apply"
         isBusy={bulkActionBusy}
