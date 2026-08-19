@@ -9,12 +9,13 @@ use scryer_application::{
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateBackupSettings as AppUpdateBackupSettings,
     UpdateGeneralSettings as AppUpdateGeneralSettings,
+    UpdatePluginAutoUpdateSettings as AppUpdatePluginAutoUpdateSettings,
     UpdateRecycleBinSettings as AppUpdateRecycleBinSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
-use super::{from_ui_settings, ui_settings_update_from_input};
+use super::{from_plugin_auto_update_settings, from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
     mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx, persist_session_or_default,
@@ -848,6 +849,33 @@ impl SettingsMutations {
             .map_err(to_gql_error)?;
 
         Ok(from_recycle_bin_settings(settings))
+    }
+
+    /// Saves the automatic official-plugin patch update setting after checking the system-settings permission.
+    async fn update_plugin_auto_update_settings(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Whether the scheduled plugin catalog refresh installs official patch updates automatically."
+        )]
+        input: UpdatePluginAutoUpdateSettingsInput,
+    ) -> GqlResult<PluginAutoUpdateSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+
+        let settings = app
+            .update_plugin_auto_update_settings(
+                &actor,
+                AppUpdatePluginAutoUpdateSettings {
+                    enabled: input.enabled,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_plugin_auto_update_settings(settings))
     }
 
     /// Saves auto-backup scheduling and key changes after checking the system-settings permission.
