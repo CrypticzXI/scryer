@@ -1,19 +1,19 @@
 use async_trait::async_trait;
 use scryer_application::{AppError, AppResult, SeedingProfileRepository};
-use scryer_domain::{SeasonPackSeedMode, SeedGoalMetAction, SeedingProfile};
+use scryer_domain::{PostImportTracking, SeasonPackSeedMode, SeedGoalMetAction, SeedingProfile};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
 const SEEDING_PROFILE_COLUMNS: &str = "id, name, ratio, seed_time_minutes, season_pack_mode,
     season_pack_ratio, season_pack_seed_time_minutes, honor_tracker_minimums, goal_met_action,
-    never_remove, created_at, updated_at";
+    never_remove, post_import_tracking, created_at, updated_at";
 
 const SEEDING_PROFILE_INSERT_SQL: &str = "INSERT INTO seeding_profiles (
     id, name, ratio, seed_time_minutes, season_pack_mode, season_pack_ratio,
     season_pack_seed_time_minutes, honor_tracker_minimums, goal_met_action, never_remove,
-    created_at, updated_at
+    post_import_tracking, created_at, updated_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 const SEEDING_PROFILE_NAME_CONFLICT_SQL: &str =
@@ -77,6 +77,7 @@ impl SeedingProfileRepository for SeedingProfileStore {
             SqlArg::Bool(profile.honor_tracker_minimums),
             SqlArg::Text(profile.goal_met_action.as_str().to_string()),
             SqlArg::Bool(profile.never_remove),
+            SqlArg::Text(profile.post_import_tracking.as_str().to_string()),
             SqlArg::Timestamp(profile.updated_at),
             SqlArg::Text(profile.id.clone()),
         ];
@@ -91,7 +92,7 @@ impl SeedingProfileRepository for SeedingProfileStore {
                             name = {}, ratio = {}, seed_time_minutes = {}, season_pack_mode = {},
                             season_pack_ratio = {}, season_pack_seed_time_minutes = {},
                             honor_tracker_minimums = {}, goal_met_action = {}, never_remove = {},
-                            updated_at = {}
+                            post_import_tracking = {}, updated_at = {}
                          WHERE id = {}",
                     &args,
                 )
@@ -158,6 +159,7 @@ fn seeding_profile_insert_args(profile: &SeedingProfile) -> Vec<SqlArg> {
         SqlArg::Bool(profile.honor_tracker_minimums),
         SqlArg::Text(profile.goal_met_action.as_str().to_string()),
         SqlArg::Bool(profile.never_remove),
+        SqlArg::Text(profile.post_import_tracking.as_str().to_string()),
         SqlArg::Timestamp(profile.created_at),
         SqlArg::Timestamp(profile.updated_at),
     ]
@@ -206,6 +208,13 @@ fn row_to_seeding_profile(row: &SqlRow) -> AppResult<SeedingProfile> {
             AppError::Repository(format!("unknown seed goal met action '{goal_met_action}'"))
         })?,
         never_remove: row.bool("never_remove")?,
+        // NULL only for a row that predates migration 0164; `Park` is the
+        // shipped default and the direction that keeps managing the torrent.
+        post_import_tracking: row
+            .opt_text("post_import_tracking")?
+            .as_deref()
+            .and_then(PostImportTracking::parse)
+            .unwrap_or_default(),
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
     })
@@ -238,6 +247,20 @@ mod tests {
                 .await
                 .expect("seeding profile schema should apply");
         }
+        // 0164 also touches `download_submissions`, which this fixture does not
+        // create; apply only its seeding-profile statement.
+        for statement in include_str!(
+            "../../../scryer/src/db/migrations/0164_seeding_profile_post_import_tracking.sql"
+        )
+        .split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty() && statement.contains("seeding_profiles"))
+        {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("post-import tracking schema should apply");
+        }
         SeedingProfileStore::new(StoreDatastore::Sqlite {
             pool,
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -257,6 +280,7 @@ mod tests {
             honor_tracker_minimums: true,
             goal_met_action: SeedGoalMetAction::RemoveEntry,
             never_remove: false,
+            post_import_tracking: PostImportTracking::Park,
             created_at: now,
             updated_at: now,
         }
@@ -282,6 +306,9 @@ mod tests {
         assert!(loaded.honor_tracker_minimums);
         assert_eq!(loaded.goal_met_action, SeedGoalMetAction::RemoveEntry);
         assert!(!loaded.never_remove);
+        // The shipped column default: a profile that says nothing keeps Scryer
+        // managing the torrent after import.
+        assert_eq!(loaded.post_import_tracking, PostImportTracking::Park);
 
         let mut updated = loaded;
         updated.ratio = None;
@@ -289,6 +316,7 @@ mod tests {
         updated.season_pack_ratio = Some(2.0);
         updated.goal_met_action = SeedGoalMetAction::StopSeeding;
         updated.never_remove = true;
+        updated.post_import_tracking = PostImportTracking::HandOff;
         updated.updated_at = Utc::now();
         store.update(updated).await.expect("profile should update");
 
@@ -302,6 +330,7 @@ mod tests {
         assert_eq!(reloaded.season_pack_ratio, Some(2.0));
         assert_eq!(reloaded.goal_met_action, SeedGoalMetAction::StopSeeding);
         assert!(reloaded.never_remove);
+        assert_eq!(reloaded.post_import_tracking, PostImportTracking::HandOff);
 
         assert_eq!(store.list().await.expect("list should load").len(), 1);
         store.delete("profile-1").await.expect("profile deletes");

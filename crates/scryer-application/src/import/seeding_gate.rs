@@ -20,6 +20,12 @@
 //!    `crates/scryer-plugin-sdk/src/lib.rs` for the contract and the P3
 //!    plugin audit for what each client can actually observe.
 //!
+//! The one deliberate opt-out is the profile's `post_import_tracking`. A
+//! profile set to `HandOff` settles the download after import without touching
+//! the client entry and stops tracking it — Sonarr's post-import category, made
+//! explicit. It bypasses the rails above because none of them are about
+//! tracking: they exist to prevent a *removal*, and a handoff never removes.
+//!
 //! ## Why the plugin's `can_remove: Some(true)` is not always enough
 //!
 //! On several clients `Some(true)` only means "the client stopped the torrent"
@@ -84,6 +90,7 @@ pub(crate) mod reason {
     pub const CLIENT_OBLIGATION_MET: &str = "client_reports_seeding_obligation_met";
     pub const CLIENT_LIMIT_UNMET: &str = "client_reports_unmet_seed_limit";
     pub const CLIENT_VERDICT_UNKNOWN: &str = "no_resolved_goals_and_client_verdict_unknown";
+    pub const POST_IMPORT_HANDOFF: &str = "post_import_handoff";
 }
 
 /// Client type whose "remove" is a filesystem delete, not a session command.
@@ -351,6 +358,14 @@ pub(crate) enum SeedingGateOutcome {
     Vanished,
     /// The obligation is discharged; act on `action`.
     Released { action: SeedGoalMetAction },
+    /// The profile's post-import tracking is `HandOff`: settle the download
+    /// without touching the client entry and stop managing this torrent.
+    ///
+    /// Distinct from `Released { Keep }` because the two say different things:
+    /// `Keep` is "the obligation is discharged and the profile keeps the
+    /// entry", while `HandedOff` is "the operator opted out of management, so
+    /// whatever the obligation is, it is no longer Scryer's to track".
+    HandedOff,
     /// Still seeding, or the obligation cannot be proven discharged. Hold the
     /// entry and re-evaluate on the next poll.
     Hold,
@@ -400,7 +415,48 @@ impl SeedingGateDecision {
 
 /// The pure decision. Every rule the operator locked lives here and nowhere
 /// else; `evaluate_seeding_gate_for` only gathers the inputs.
+///
+/// Two layers: the seeding **obligation** (below) decides what would happen to
+/// the client entry, and the profile's **post-import tracking** then decides
+/// whether Scryer is still the one deciding.
 pub(crate) fn evaluate_seeding_gate(input: &SeedingGateInput) -> SeedingGateDecision {
+    let decision = evaluate_seeding_obligation(input);
+
+    // Post-import handoff (Sonarr's post-import category, made explicit).
+    //
+    // It overrides the *disposition* of any decision that would otherwise hold
+    // or release the entry, regardless of goals, `never_remove` or the private
+    // rail: those rails exist to prevent a **removal**, and a handoff never
+    // removes anything. The operator asked Scryer to stop managing this
+    // torrent, so it settles and leaves the queue with the entry untouched.
+    //
+    // `move_allowed` is deliberately carried over from the obligation decision
+    // rather than recomputed. Handing off changes what happens to *tracking*,
+    // never what is safe to do to the payload: a torrent that is still seeding
+    // is still imported by hardlink-or-copy.
+    let hands_off = input
+        .goals
+        .as_ref()
+        .is_some_and(|goals| goals.post_import_tracking.is_hand_off());
+    if hands_off
+        && matches!(
+            decision.outcome,
+            SeedingGateOutcome::Hold | SeedingGateOutcome::Released { .. }
+        )
+    {
+        return SeedingGateDecision::new(
+            SeedingGateOutcome::HandedOff,
+            reason::POST_IMPORT_HANDOFF,
+            decision.move_allowed,
+        );
+    }
+
+    decision
+}
+
+/// Whether this torrent's seeding obligation is discharged, and what the
+/// profile wants done with the entry when it is.
+fn evaluate_seeding_obligation(input: &SeedingGateInput) -> SeedingGateDecision {
     if !input.is_torrent {
         return SeedingGateDecision::not_applicable();
     }
@@ -708,8 +764,16 @@ mod tests {
             seed_goal_seconds: seconds,
             never_remove: false,
             goal_met_action: Some(SeedGoalMetAction::RemoveEntry),
+            post_import_tracking: scryer_domain::PostImportTracking::Park,
             resolution_source: crate::SeedGoalResolutionSource::Indexer,
             info_hash: None,
+        }
+    }
+
+    fn handoff_goals(ratio: Option<f64>, seconds: Option<i64>) -> PersistedSeedGoals {
+        PersistedSeedGoals {
+            post_import_tracking: scryer_domain::PostImportTracking::HandOff,
+            ..goals(ratio, seconds)
         }
     }
 
@@ -1025,6 +1089,152 @@ mod tests {
             decision.import_mode(ImportMode::HardlinkOrCopy),
             ImportMode::HardlinkOrCopy
         );
+    }
+
+    // ── post-import handoff ───────────────────────────────────────────────
+
+    #[test]
+    fn a_handoff_profile_settles_a_torrent_that_would_otherwise_be_held() {
+        // The baseline hold (no client verdict, no met goal) is exactly the
+        // state a handoff has to settle: nothing is proven, and the operator
+        // said Scryer should stop asking.
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(handoff_goals(Some(2.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_remove: None,
+                seed_ratio: Some(0.1),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::HandedOff);
+        assert_eq!(decision.reason, "post_import_handoff");
+    }
+
+    #[test]
+    fn a_handoff_never_removes_so_the_removal_rails_do_not_apply() {
+        // `never_remove` and the private rail both exist to stop a removal.
+        // A handoff removes nothing, so neither of them can block it.
+        for goals in [
+            PersistedSeedGoals {
+                never_remove: true,
+                ..handoff_goals(Some(1.0), None)
+            },
+            handoff_goals(None, None),
+        ] {
+            let decision = evaluate_seeding_gate(&SeedingGateInput {
+                goals: Some(goals),
+                observation: Some(TorrentSeedingObservation {
+                    can_remove: None,
+                    is_private: Some(true),
+                    seed_ratio: Some(0.0),
+                    ..TorrentSeedingObservation::default()
+                }),
+                ..SeedingGateInput::default()
+            });
+            assert_eq!(decision.outcome, SeedingGateOutcome::HandedOff);
+        }
+    }
+
+    #[test]
+    fn a_handoff_makes_the_goal_met_action_moot() {
+        // Whatever the profile would have done to the entry once the goal was
+        // met, a handoff does nothing to it at all.
+        for action in [
+            SeedGoalMetAction::RemoveEntry,
+            SeedGoalMetAction::StopSeeding,
+            SeedGoalMetAction::Keep,
+        ] {
+            let decision = evaluate_seeding_gate(&SeedingGateInput {
+                goals: Some(PersistedSeedGoals {
+                    goal_met_action: Some(action),
+                    ..handoff_goals(Some(1.0), None)
+                }),
+                observation: Some(TorrentSeedingObservation {
+                    can_remove: Some(true),
+                    seed_ratio: Some(5.0),
+                    ..TorrentSeedingObservation::default()
+                }),
+                ..SeedingGateInput::default()
+            });
+            assert_eq!(decision.outcome, SeedingGateOutcome::HandedOff);
+        }
+    }
+
+    #[test]
+    fn a_handoff_does_not_make_a_seeding_payload_safe_to_move() {
+        // The invariant: handoff changes what happens to *tracking*, never the
+        // import mode. A torrent whose obligation is unproven is still copied.
+        let seeding = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(handoff_goals(Some(2.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_move_files: Some(true),
+                seed_ratio: Some(0.1),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(seeding.outcome, SeedingGateOutcome::HandedOff);
+        assert_eq!(
+            seeding.import_mode(ImportMode::Move),
+            ImportMode::HardlinkOrCopy
+        );
+
+        // ...and one that is provably discharged still moves, exactly as it
+        // would without the handoff.
+        let discharged = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(handoff_goals(Some(2.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                can_move_files: Some(true),
+                seed_ratio: Some(2.5),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(discharged.outcome, SeedingGateOutcome::HandedOff);
+        assert_eq!(discharged.import_mode(ImportMode::Move), ImportMode::Move);
+    }
+
+    #[test]
+    fn a_download_with_no_profile_still_parks_under_the_universal_gate() {
+        // The fail-closed rail: handoff is opt-in per profile, so an install
+        // with no profiles keeps holding.
+        let no_profile = evaluate_seeding_gate(&input(TorrentSeedingObservation::default()));
+        assert_eq!(no_profile.outcome, SeedingGateOutcome::Hold);
+
+        let parking_profile = evaluate_seeding_gate(&SeedingGateInput {
+            goals: Some(goals(Some(2.0), None)),
+            observation: Some(TorrentSeedingObservation {
+                seed_ratio: Some(0.1),
+                ..TorrentSeedingObservation::default()
+            }),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(parking_profile.outcome, SeedingGateOutcome::Hold);
+    }
+
+    #[test]
+    fn a_vanished_torrent_is_not_reported_as_handed_off() {
+        // There is nothing left to hand off; `AlreadyGone` is the honest
+        // outcome and the one that settles without a client call.
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            present_in_client: false,
+            goals: Some(handoff_goals(None, None)),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::Vanished);
+        assert_eq!(decision.reason, "torrent_no_longer_in_client");
+    }
+
+    #[test]
+    fn usenet_is_never_handed_off() {
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            is_torrent: false,
+            client_type: "sabnzbd".to_string(),
+            goals: Some(handoff_goals(None, None)),
+            ..SeedingGateInput::default()
+        });
+        assert_eq!(decision.outcome, SeedingGateOutcome::NotApplicable);
     }
 
     #[test]

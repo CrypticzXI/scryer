@@ -964,6 +964,23 @@ file = "postgres/migrations/0163_pending_release_seed_minimums.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 164
+description = "post-import tracking mode for seeding profiles"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0164_seeding_profile_post_import_tracking.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0164_seeding_profile_post_import_tracking.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

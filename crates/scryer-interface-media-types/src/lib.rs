@@ -3767,6 +3767,16 @@ pub enum SeedGoalMetActionValue {
     Keep,
 }
 
+/// Whether Scryer keeps managing a torrent after it has been imported.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum PostImportTrackingValue {
+    /// Keep managing the torrent: hold the entry while it seeds, then apply the goal-met action.
+    Park,
+    /// Stop managing the torrent after import; the entry stays untouched and leaves the queue.
+    HandOff,
+}
+
 #[derive(SimpleObject, Clone)]
 /// Named torrent seeding policy assignable to indexers, routing entries, or the global default.
 pub struct SeedingProfilePayload {
@@ -3790,6 +3800,8 @@ pub struct SeedingProfilePayload {
     pub goal_met_action: SeedGoalMetActionValue,
     /// Whether torrents grabbed under this profile are never auto-removed.
     pub never_remove: bool,
+    /// Whether Scryer keeps managing torrents grabbed under this profile after import.
+    pub post_import_tracking: PostImportTrackingValue,
     /// UTC creation time.
     pub created_at: DateTime<Utc>,
     /// UTC last-update time.
@@ -6146,6 +6158,8 @@ pub struct CreateSeedingProfileInput {
     pub goal_met_action: Option<SeedGoalMetActionValue>,
     /// Whether torrents grabbed under this profile are never auto-removed; defaults to false.
     pub never_remove: Option<bool>,
+    /// Whether Scryer keeps managing torrents after import; defaults to parking them.
+    pub post_import_tracking: Option<PostImportTrackingValue>,
 }
 
 #[derive(InputObject)]
@@ -6171,6 +6185,8 @@ pub struct UpdateSeedingProfileInput {
     pub goal_met_action: Option<SeedGoalMetActionValue>,
     /// Replacement never-remove flag; omission preserves it.
     pub never_remove: Option<bool>,
+    /// Replacement post-import tracking mode; omission preserves it.
+    pub post_import_tracking: Option<PostImportTrackingValue>,
 }
 
 #[derive(SimpleObject, Clone)]

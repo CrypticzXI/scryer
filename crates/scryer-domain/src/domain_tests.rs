@@ -581,6 +581,17 @@ fn seeding_profile_enums_round_trip() {
     );
     assert_eq!(SeedGoalMetAction::parse("pause"), None);
     assert_eq!(SeedGoalMetAction::default(), SeedGoalMetAction::RemoveEntry);
+
+    assert_eq!(PostImportTracking::Park.as_str(), "park");
+    assert_eq!(PostImportTracking::HandOff.as_str(), "hand_off");
+    for mode in [PostImportTracking::Park, PostImportTracking::HandOff] {
+        assert_eq!(PostImportTracking::parse(mode.as_str()), Some(mode));
+    }
+    assert_eq!(PostImportTracking::parse("handoff"), None);
+    // Park is the fail-closed default: Scryer keeps managing the torrent.
+    assert_eq!(PostImportTracking::default(), PostImportTracking::Park);
+    assert!(PostImportTracking::HandOff.is_hand_off());
+    assert!(!PostImportTracking::Park.is_hand_off());
 }
 
 #[test]
@@ -597,6 +608,7 @@ fn seeding_profile_normalizes_and_validates_goals() {
         honor_tracker_minimums: true,
         goal_met_action: SeedGoalMetAction::RemoveEntry,
         never_remove: false,
+        post_import_tracking: PostImportTracking::Park,
         created_at: now,
         updated_at: now,
     };

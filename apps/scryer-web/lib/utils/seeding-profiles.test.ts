@@ -7,6 +7,8 @@ import {
   buildSeedingProfileTemplate,
   extractSeedingProfileErrorMessage,
   formatSeasonPackSummary,
+  handsOffAfterImport,
+  POST_IMPORT_TRACKING_MODES,
   formatSeedingProfileRatio,
   formatSeedingProfileSeedTime,
   SEEDING_PROFILE_INHERIT_VALUE,
@@ -31,6 +33,23 @@ test("template opts in to nothing but the safe defaults", () => {
   assert.equal(template.honorTrackerMinimums, true);
   assert.equal(template.goalMetAction, "REMOVE_ENTRY");
   assert.equal(template.neverRemove, false);
+  // Parking is the fail-closed default: Scryer keeps managing the torrent.
+  assert.equal(template.postImportTracking, "PARK");
+});
+
+test("post-import tracking round-trips and drives the moot-field helper", () => {
+  assert.deepEqual([...POST_IMPORT_TRACKING_MODES], ["PARK", "HAND_OFF"]);
+  assert.equal(handsOffAfterImport("HAND_OFF"), true);
+  assert.equal(handsOffAfterImport("PARK"), false);
+
+  const input = toCreateSeedingProfileInput(
+    draft({ postImportTracking: "HAND_OFF" }),
+  );
+  assert.equal(input.postImportTracking, "HAND_OFF");
+  assert.equal(
+    toCreateSeedingProfileInput(draft()).postImportTracking,
+    "PARK",
+  );
 });
 
 test("a stored profile round-trips through the draft", () => {
@@ -45,6 +64,7 @@ test("a stored profile round-trips through the draft", () => {
     honorTrackerMinimums: false,
     goalMetAction: "STOP_SEEDING" as const,
     neverRemove: true,
+    postImportTracking: "HAND_OFF" as const,
   };
 
   const asDraft = seedingProfileToDraft(record);
@@ -62,6 +82,7 @@ test("a stored profile round-trips through the draft", () => {
     honorTrackerMinimums: false,
     goalMetAction: "STOP_SEEDING",
     neverRemove: true,
+    postImportTracking: "HAND_OFF",
   });
 });
 
@@ -245,6 +266,12 @@ test("every seeding-profile string the UI renders has an English entry", () => {
     "settings.seedingProfileNeverRemoveLabel",
     "settings.seedingProfileNeverRemoveHelp",
     "settings.seedingProfileNeverRemoveBadge",
+    "settings.seedingProfilePostImportTrackingLabel",
+    "settings.seedingProfilePostImportTrackingHelp",
+    "settings.seedingProfilePostImportTrackingPark",
+    "settings.seedingProfilePostImportTrackingHandOff",
+    "settings.seedingProfilePostImportTrackingHandOffBadge",
+    "settings.seedingProfilePostImportTrackingHandOffHelp",
     "settings.seedingProfileDefaultTitle",
     "settings.seedingProfileDefaultLabel",
     "settings.seedingProfileDefaultHelp",

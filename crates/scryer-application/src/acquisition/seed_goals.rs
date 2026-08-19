@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use scryer_domain::{SeedGoalMetAction, SeedingProfile};
+use scryer_domain::{PostImportTracking, SeedGoalMetAction, SeedingProfile};
 use serde_json::Value;
 
 use crate::{
@@ -107,6 +107,9 @@ pub struct ResolvedSeedGoals {
     pub seed_goal_seconds: Option<i64>,
     pub never_remove: bool,
     pub goal_met_action: Option<SeedGoalMetAction>,
+    /// Whether Scryer keeps managing the torrent after import. Frozen with the
+    /// goals, so a torrent keeps the tracking mode it was grabbed under.
+    pub post_import_tracking: PostImportTracking,
     pub resolution_source: SeedGoalResolutionSource,
 }
 
@@ -253,6 +256,7 @@ fn apply_profile(
             .and_then(|minutes| minutes.checked_mul(60)),
         never_remove: profile.never_remove,
         goal_met_action: Some(profile.goal_met_action),
+        post_import_tracking: profile.post_import_tracking,
         resolution_source: source,
     }
 }
@@ -591,6 +595,7 @@ mod tests {
             honor_tracker_minimums: true,
             goal_met_action: SeedGoalMetAction::RemoveEntry,
             never_remove: false,
+            post_import_tracking: PostImportTracking::Park,
             created_at: now,
             updated_at: now,
         }
@@ -748,6 +753,9 @@ mod tests {
         assert_eq!(resolved.seed_goal_seconds, None);
         assert_eq!(resolved.goal_met_action, None);
         assert!(!resolved.never_remove);
+        // No profile means Scryer keeps managing the torrent — the fail-closed
+        // direction, and what every install did before this feature existed.
+        assert_eq!(resolved.post_import_tracking, PostImportTracking::Park);
     }
 
     #[tokio::test]
@@ -883,6 +891,7 @@ mod tests {
         let mut kept = profile("p", None, None);
         kept.never_remove = true;
         kept.goal_met_action = SeedGoalMetAction::StopSeeding;
+        kept.post_import_tracking = PostImportTracking::HandOff;
         let resolver = resolver(vec![kept], vec![indexer("idx-1", Some("p"))], None);
 
         let resolved = resolver
@@ -897,6 +906,9 @@ mod tests {
             resolved.goal_met_action,
             Some(SeedGoalMetAction::StopSeeding)
         );
+        // Frozen with the goals: a torrent keeps the tracking mode it was
+        // grabbed under even if the profile is later edited.
+        assert_eq!(resolved.post_import_tracking, PostImportTracking::HandOff);
     }
 
     #[test]

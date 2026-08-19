@@ -1,4 +1,5 @@
 import type {
+  PostImportTracking,
   SeasonPackSeedMode,
   SeedGoalMetAction,
   SeedingProfileDraft,
@@ -27,6 +28,11 @@ export const SEED_GOAL_MET_ACTIONS: readonly SeedGoalMetAction[] = [
   "KEEP",
 ];
 
+export const POST_IMPORT_TRACKING_MODES: readonly PostImportTracking[] = [
+  "PARK",
+  "HAND_OFF",
+];
+
 export function buildSeedingProfileTemplate(): SeedingProfileDraft {
   return {
     id: "",
@@ -39,6 +45,9 @@ export function buildSeedingProfileTemplate(): SeedingProfileDraft {
     honorTrackerMinimums: true,
     goalMetAction: "REMOVE_ENTRY",
     neverRemove: false,
+    // Parking keeps Scryer managing the torrent, which is what every install
+    // did before handoff existed.
+    postImportTracking: "PARK",
   };
 }
 
@@ -62,6 +71,7 @@ export function seedingProfileToDraft(
     honorTrackerMinimums: profile.honorTrackerMinimums,
     goalMetAction: profile.goalMetAction,
     neverRemove: profile.neverRemove,
+    postImportTracking: profile.postImportTracking,
   };
 }
 
@@ -134,6 +144,7 @@ type SeedingProfileGoalInput = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  postImportTracking: PostImportTracking;
 };
 
 /**
@@ -163,6 +174,7 @@ export function seedingProfileDraftToInput(
     honorTrackerMinimums: draft.honorTrackerMinimums,
     goalMetAction: draft.goalMetAction,
     neverRemove: draft.neverRemove,
+    postImportTracking: draft.postImportTracking,
   };
 }
 
@@ -231,6 +243,17 @@ export function formatSeasonPackSummary(
       : `${profile.seasonPackSeedTimeMinutes}m`,
   ].filter((part): part is string => part !== null);
   return parts.length === 0 ? EM_DASH : parts.join(" / ");
+}
+
+/**
+ * Whether a profile stops Scryer managing its torrents after import. Handoff
+ * makes the goal-met action and the never-remove flag moot, so the editor and
+ * the table both dim them rather than implying they still apply.
+ */
+export function handsOffAfterImport(
+  postImportTracking: PostImportTracking,
+): boolean {
+  return postImportTracking === "HAND_OFF";
 }
 
 /** Resolves a stored assignment id to a select value, tolerating stale ids. */

@@ -686,8 +686,17 @@ fn persisted_goals(never_remove: bool) -> PersistedSeedGoals {
         seed_goal_seconds: None,
         never_remove,
         goal_met_action: Some(scryer_domain::SeedGoalMetAction::RemoveEntry),
+        post_import_tracking: scryer_domain::PostImportTracking::Park,
         resolution_source: crate::SeedGoalResolutionSource::Indexer,
         info_hash: None,
+    }
+}
+
+/// The same grab, but under a profile whose post-import tracking is `HandOff`.
+fn handed_off_goals() -> PersistedSeedGoals {
+    PersistedSeedGoals {
+        post_import_tracking: scryer_domain::PostImportTracking::HandOff,
+        ..persisted_goals(false)
     }
 }
 
@@ -1906,4 +1915,179 @@ async fn usenet_imports_record_no_seeding_history() {
     .await;
 
     assert!(seeding_history_events(&app).await.is_empty());
+}
+
+// ── post-import handoff ───────────────────────────────────────────────────
+
+/// The whole point of the feature: an imported torrent under a handoff profile
+/// settles immediately, with nothing removed and nothing paused, and stops
+/// being tracked.
+#[tokio::test]
+async fn a_handoff_profile_settles_an_imported_torrent_without_touching_the_client() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Hand Off").await;
+    let mut app = app;
+    app.services.workflow.download_submissions =
+        goals_repo("torrent-handoff-1", handed_off_goals());
+
+    let tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-handoff-1",
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+
+    assert!(
+        tracker.find(&id).is_none(),
+        "a handed-off torrent stops being tracked and leaves the queue"
+    );
+    assert!(
+        download_client.deleted_requests.lock().await.is_empty(),
+        "a handoff never removes the client entry"
+    );
+    assert!(
+        download_client.paused_requests.lock().await.is_empty(),
+        "a handoff never touches the torrent at all"
+    );
+
+    let events = seeding_history_events(&app).await;
+    assert_eq!(events.len(), 1, "one handoff, one event");
+    let scryer_domain::DomainEventPayload::SeedingCompleted(data) = &events[0].payload else {
+        panic!(
+            "expected a seeding_completed event, got {:?}",
+            events[0].payload
+        );
+    };
+    assert_eq!(data.action, "handed_off");
+    assert_eq!(data.reason, "post_import_handoff");
+    assert_eq!(data.download_client_item_id, "torrent-handoff-1");
+    assert_eq!(events[0].title_id.as_deref(), Some(title.id.as_str()));
+}
+
+/// A handed-off entry stays in the client, so the poller re-creates and
+/// re-offers its row on every tick. The one-shot history must not become a
+/// per-tick history.
+#[tokio::test]
+async fn a_re_offered_handed_off_row_settles_again_without_recording_another_event() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (mut app, tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Hand Off Again",
+        "torrent-handoff-2",
+        Some(handed_off_goals()),
+    )
+    .await;
+    let _ = &mut app;
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked.clone());
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+    )
+    .await;
+    assert_eq!(seeding_history_events(&app).await.len(), 1);
+
+    // The next poll rebuilds the row from the client listing and the reconcile
+    // tick re-offers it.
+    tracker.insert_for_tests(tracked);
+    crate::app_usecase_integration::finalize_tracked_terminal_state_with(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Imported,
+        crate::app_usecase_integration::TerminalSettleTrigger::Reconcile,
+        None,
+    )
+    .await;
+
+    assert!(tracker.find(&id).is_none());
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    assert_eq!(
+        seeding_history_events(&app).await.len(),
+        1,
+        "re-offering a settled handed-off row must not record the handoff again"
+    );
+}
+
+/// The handoff outcome overrides the removal rails, not the import mode: a
+/// torrent that may still be seeding is still imported by hardlink-or-copy.
+#[tokio::test]
+async fn a_configured_move_is_still_downgraded_for_a_handed_off_torrent() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client);
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    let title = movie_title(&app, &user, "Hand Off Move").await;
+    let mut app = app;
+    app.services.workflow.download_submissions =
+        goals_repo("torrent-handoff-3", handed_off_goals());
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        UpdateMediaSettings {
+            import_mode: Some(ImportMode::Move),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("configure move import mode");
+
+    let effective = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        &app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(&completed_for(
+            &config.id,
+            "qbittorrent",
+            "torrent-handoff-3",
+        )),
+    )
+    .await
+    .expect("resolve seeding-safe import mode");
+
+    assert_eq!(effective, ImportMode::HardlinkOrCopy);
+}
+
+/// The fail-closed rail stays: handoff is opt-in per profile, so a download
+/// with no profile (and one under a parking profile) still parks.
+#[tokio::test]
+async fn a_download_without_a_handoff_profile_still_parks() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Still Parks",
+        "torrent-handoff-4",
+        Some(persisted_goals(false)),
+    )
+    .await;
+
+    let cleanup = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+        None,
+    )
+    .await;
+
+    assert_eq!(cleanup, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
 }

@@ -2088,6 +2088,7 @@ impl PrioritizedDownloadClientRouter {
                 seed_goal_seconds: seed_goals.seed_goal_seconds,
                 never_remove: seed_goals.never_remove,
                 goal_met_action: seed_goals.goal_met_action,
+                post_import_tracking: seed_goals.post_import_tracking,
                 resolution_source: seed_goals.resolution_source,
                 info_hash: grab
                     .info_hash
@@ -6940,6 +6941,7 @@ mod tests {
             honor_tracker_minimums: true,
             goal_met_action: scryer_domain::SeedGoalMetAction::RemoveEntry,
             never_remove: false,
+            post_import_tracking: scryer_domain::PostImportTracking::Park,
             created_at: now,
             updated_at: now,
         }

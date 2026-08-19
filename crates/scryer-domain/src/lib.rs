@@ -1222,6 +1222,46 @@ impl SeedGoalMetAction {
     }
 }
 
+/// Whether Scryer keeps managing a torrent after it has been imported.
+///
+/// Sonarr's equivalent is the post-import category: recategorizing drops the
+/// torrent out of Sonarr's category-filtered listing, so tracking ends and
+/// Sonarr forfeits all further management of it. Scryer lists every torrent and
+/// classifies core-side, so the same intent has to be an explicit flag rather
+/// than a category trick.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PostImportTracking {
+    /// Keep managing the torrent after import: park it while it seeds and act
+    /// on the profile's goal-met action once the obligation is discharged.
+    #[default]
+    Park,
+    /// Stop managing the torrent after import. The client entry stays exactly
+    /// as it is, is never auto-removed, and leaves Scryer's queue.
+    HandOff,
+}
+
+impl PostImportTracking {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Park => "park",
+            Self::HandOff => "hand_off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "park" => Some(Self::Park),
+            "hand_off" => Some(Self::HandOff),
+            _ => None,
+        }
+    }
+
+    pub fn is_hand_off(self) -> bool {
+        self == Self::HandOff
+    }
+}
+
 /// Named torrent seeding policy assignable to indexers, download-client
 /// routing entries, or the global default.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1241,6 +1281,9 @@ pub struct SeedingProfile {
     pub goal_met_action: SeedGoalMetAction,
     /// Never auto-remove torrents grabbed under this profile.
     pub never_remove: bool,
+    /// Whether Scryer keeps managing torrents grabbed under this profile once
+    /// they have been imported.
+    pub post_import_tracking: PostImportTracking,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

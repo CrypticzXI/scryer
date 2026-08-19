@@ -24,8 +24,9 @@ use scryer_application::{
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
     DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, IndexerProxyConfig, Library,
-    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SeasonPackSeedMode,
-    SeedGoalMetAction, SeedingProfile, SubtitleProviderConfig, Title, TitleHistoryRecord, User,
+    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, PostImportTracking, RuleSet,
+    SeasonPackSeedMode, SeedGoalMetAction, SeedingProfile, SubtitleProviderConfig, Title,
+    TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
@@ -454,6 +455,20 @@ pub fn seed_goal_met_action_from_value(value: SeedGoalMetActionValue) -> SeedGoa
     }
 }
 
+pub fn post_import_tracking_value(mode: PostImportTracking) -> PostImportTrackingValue {
+    match mode {
+        PostImportTracking::Park => PostImportTrackingValue::Park,
+        PostImportTracking::HandOff => PostImportTrackingValue::HandOff,
+    }
+}
+
+pub fn post_import_tracking_from_value(value: PostImportTrackingValue) -> PostImportTracking {
+    match value {
+        PostImportTrackingValue::Park => PostImportTracking::Park,
+        PostImportTrackingValue::HandOff => PostImportTracking::HandOff,
+    }
+}
+
 pub fn from_seeding_profile(profile: SeedingProfile) -> SeedingProfilePayload {
     SeedingProfilePayload {
         id: profile.id.into(),
@@ -466,6 +481,7 @@ pub fn from_seeding_profile(profile: SeedingProfile) -> SeedingProfilePayload {
         honor_tracker_minimums: profile.honor_tracker_minimums,
         goal_met_action: seed_goal_met_action_value(profile.goal_met_action),
         never_remove: profile.never_remove,
+        post_import_tracking: post_import_tracking_value(profile.post_import_tracking),
         created_at: profile.created_at,
         updated_at: profile.updated_at,
     }

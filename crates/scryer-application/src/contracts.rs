@@ -203,6 +203,10 @@ pub struct PersistedSeedGoals {
     pub seed_goal_seconds: Option<i64>,
     pub never_remove: bool,
     pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
+    /// Whether Scryer keeps managing this torrent after import. Defaults to
+    /// `Park`, so a grab with no profile — and any row written before the
+    /// column existed — keeps the fail-closed behaviour.
+    pub post_import_tracking: scryer_domain::PostImportTracking,
     pub resolution_source: SeedGoalResolutionSource,
     /// Info hash the client accepted, lowercased. Lets the Tier-B evaluator
     /// look a goal up straight off an observed torrent.
@@ -416,6 +420,7 @@ pub struct NewSeedingProfile {
     pub honor_tracker_minimums: bool,
     pub goal_met_action: scryer_domain::SeedGoalMetAction,
     pub never_remove: bool,
+    pub post_import_tracking: scryer_domain::PostImportTracking,
 }
 
 /// Patch for a stored seeding profile. Nullable goals use the
@@ -432,6 +437,7 @@ pub struct SeedingProfileUpdate {
     pub honor_tracker_minimums: Option<bool>,
     pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
     pub never_remove: Option<bool>,
+    pub post_import_tracking: Option<scryer_domain::PostImportTracking>,
 }
 
 impl SeedingProfileUpdate {
@@ -445,6 +451,7 @@ impl SeedingProfileUpdate {
             || self.honor_tracker_minimums.is_some()
             || self.goal_met_action.is_some()
             || self.never_remove.is_some()
+            || self.post_import_tracking.is_some()
     }
 }
 

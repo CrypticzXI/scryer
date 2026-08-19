@@ -751,14 +751,15 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                          (id, title_id, facet, download_client_id, download_client_type,
                           download_client_item_id, purpose, seeding_profile_id, seed_goal_ratio,
                           seed_goal_seconds, seed_never_remove, seed_goal_met_action,
-                          seed_goal_source, seed_info_hash)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                          seed_post_import_tracking, seed_goal_source, seed_info_hash)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                          ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
                          SET seeding_profile_id = excluded.seeding_profile_id,
                              seed_goal_ratio = excluded.seed_goal_ratio,
                              seed_goal_seconds = excluded.seed_goal_seconds,
                              seed_never_remove = excluded.seed_never_remove,
                              seed_goal_met_action = excluded.seed_goal_met_action,
+                             seed_post_import_tracking = excluded.seed_post_import_tracking,
                              seed_goal_source = excluded.seed_goal_source,
                              seed_info_hash = excluded.seed_info_hash",
                         &[
@@ -781,6 +782,9 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                                     .goal_met_action
                                     .map(|action| action.as_str().to_string()),
                             ),
+                            SqlArg::OptText(Some(
+                                record.goals.post_import_tracking.as_str().to_string(),
+                            )),
                             SqlArg::OptText(Some(
                                 record.goals.resolution_source.as_str().to_string(),
                             )),
@@ -901,7 +905,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 }
 
 const SEED_GOAL_COLUMNS: &str = "seeding_profile_id, seed_goal_ratio, seed_goal_seconds, \
-     seed_never_remove, seed_goal_met_action, seed_goal_source, seed_info_hash";
+     seed_never_remove, seed_goal_met_action, seed_post_import_tracking, seed_goal_source, \
+     seed_info_hash";
 
 /// Info hashes are compared case-insensitively across clients; store and look
 /// them up in one canonical form.
@@ -935,6 +940,14 @@ fn seed_goals_from_row(row: &SqlRow) -> AppResult<Option<PersistedSeedGoals>> {
             .opt_text("seed_goal_met_action")?
             .as_deref()
             .and_then(scryer_domain::SeedGoalMetAction::parse),
+        // Absent (rows written before migration 0164) or unparseable reads as
+        // `Park`: Scryer keeps managing the torrent, which is the direction
+        // that cannot lose a seeding obligation.
+        post_import_tracking: row
+            .opt_text("seed_post_import_tracking")?
+            .as_deref()
+            .and_then(scryer_domain::PostImportTracking::parse)
+            .unwrap_or_default(),
         resolution_source: source,
         info_hash: row.opt_text("seed_info_hash")?,
     }))
@@ -1010,6 +1023,20 @@ mod seed_goal_tests {
                 .await
                 .expect("seed goal migration should apply");
         }
+        // 0164 also touches `seeding_profiles`, which this fixture does not
+        // create; apply only its download-submission statements.
+        for statement in include_str!(
+            "../../../../scryer/src/db/migrations/0164_seeding_profile_post_import_tracking.sql"
+        )
+        .split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty() && statement.contains("download_submissions"))
+        {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("post-import tracking migration should apply");
+        }
         DownloadSubmissionStore::new(StoreDatastore::Sqlite {
             pool,
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -1034,6 +1061,7 @@ mod seed_goal_tests {
                 seed_goal_seconds: Some(7200),
                 never_remove: true,
                 goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+                post_import_tracking: scryer_domain::PostImportTracking::HandOff,
                 resolution_source: SeedGoalResolutionSource::Indexer,
                 info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
             },
@@ -1101,6 +1129,10 @@ mod seed_goal_tests {
             loaded.goal_met_action,
             Some(scryer_domain::SeedGoalMetAction::StopSeeding)
         );
+        assert_eq!(
+            loaded.post_import_tracking,
+            scryer_domain::PostImportTracking::HandOff
+        );
         assert_eq!(loaded.resolution_source, SeedGoalResolutionSource::Indexer);
         // Stored lowercased so an observed hash from any client matches.
         assert_eq!(
@@ -1151,6 +1183,42 @@ mod seed_goal_tests {
                 .await
                 .expect("read should succeed"),
             None
+        );
+    }
+
+    /// Rows frozen before migration 0164 carry a NULL tracking mode. They must
+    /// read back as `Park` — Scryer keeps managing them — because the other
+    /// direction would silently stop tracking torrents that were grabbed under
+    /// a profile that never offered the choice.
+    #[tokio::test]
+    async fn a_row_written_before_the_tracking_column_reads_back_as_park() {
+        let store = store().await;
+        store
+            .record_seed_goals(record())
+            .await
+            .expect("seed goals should persist");
+        SqlRuntime::run_in_transaction(&store.datastore, "clear_post_import_tracking", |tx| {
+            Box::pin(async move {
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE download_submissions SET seed_post_import_tracking = NULL",
+                    &[],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .expect("column should clear");
+
+        let loaded = store
+            .get_seed_goals(&identity())
+            .await
+            .expect("read should succeed")
+            .expect("goals should be present");
+        assert_eq!(
+            loaded.post_import_tracking,
+            scryer_domain::PostImportTracking::Park
         );
     }
 

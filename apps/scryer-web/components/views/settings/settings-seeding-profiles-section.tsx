@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
+  PostImportTracking,
   SeasonPackSeedMode,
   SeedGoalMetAction,
   SeedingProfileDraft,
@@ -35,6 +36,8 @@ import {
   formatSeasonPackSummary,
   formatSeedingProfileRatio,
   formatSeedingProfileSeedTime,
+  handsOffAfterImport,
+  POST_IMPORT_TRACKING_MODES,
   SEASON_PACK_SEED_MODES,
   SEED_GOAL_MET_ACTIONS,
   SEEDING_PROFILE_INHERIT_VALUE,
@@ -84,6 +87,11 @@ const GOAL_MET_ACTION_LABEL_KEY: Record<SeedGoalMetAction, string> = {
   KEEP: "settings.seedingProfileGoalMetKeep",
 };
 
+const POST_IMPORT_TRACKING_LABEL_KEY: Record<PostImportTracking, string> = {
+  PARK: "settings.seedingProfilePostImportTrackingPark",
+  HAND_OFF: "settings.seedingProfilePostImportTrackingHandOff",
+};
+
 export function SettingsSeedingProfilesSection({
   loading,
   saving,
@@ -106,6 +114,9 @@ export function SettingsSeedingProfilesSection({
 
   const isEditing = editorMode === "edit";
   const isSeasonPackOverride = draft.seasonPackMode === "OVERRIDE";
+  // Handing a torrent off after import means Scryer never acts on the goal,
+  // so the goal-met action and the never-remove flag stop applying.
+  const isHandOff = handsOffAfterImport(draft.postImportTracking);
 
   function updateField<K extends keyof SeedingProfileDraft>(
     field: K,
@@ -251,6 +262,9 @@ export function SettingsSeedingProfilesSection({
                     <TableHead className={`w-36 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
                       {t("settings.seedingProfileGoalMetActionLabel")}
                     </TableHead>
+                    <TableHead className={`w-36 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
+                      {t("settings.seedingProfilePostImportTrackingLabel")}
+                    </TableHead>
                     <TableHead className={`w-32 ${SEEDING_TABLE_HEADER_CELL_CLASS}`}>
                       {t("settings.seedingProfileHonorTrackerMinimumsLabel")}
                     </TableHead>
@@ -290,7 +304,24 @@ export function SettingsSeedingProfilesSection({
                         )}
                       </TableCell>
                       <TableCell className="text-center text-[var(--scry-ink2)]">
-                        {t(GOAL_MET_ACTION_LABEL_KEY[profile.goalMetAction])}
+                        {handsOffAfterImport(profile.postImportTracking)
+                          ? "—"
+                          : t(GOAL_MET_ACTION_LABEL_KEY[profile.goalMetAction])}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {handsOffAfterImport(profile.postImportTracking) ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-info-text)]">
+                            {t("settings.seedingProfilePostImportTrackingHandOffBadge")}
+                          </span>
+                        ) : (
+                          <span className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
+                            {t(
+                              POST_IMPORT_TRACKING_LABEL_KEY[
+                                profile.postImportTracking
+                              ],
+                            )}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-center">
                         <RenderBooleanIcon
@@ -426,6 +457,54 @@ export function SettingsSeedingProfilesSection({
                   </div>
                 </div>
 
+                {/* Post-import tracking */}
+                <div className="space-y-1.5">
+                  <Label
+                    className="text-[var(--scry-ink2)]"
+                    htmlFor="settings-seeding-profile-post-import-tracking"
+                  >
+                    {t("settings.seedingProfilePostImportTrackingLabel")}
+                  </Label>
+                  <Select
+                    value={draft.postImportTracking}
+                    onValueChange={(value) =>
+                      updateField(
+                        "postImportTracking",
+                        value as PostImportTracking,
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      id="settings-seeding-profile-post-import-tracking"
+                      className="w-full max-w-[320px]"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {POST_IMPORT_TRACKING_MODES.map((mode) => (
+                        <SelectItem
+                          key={mode}
+                          id={selectorId(
+                            "settings-seeding-profile-post-import-tracking-option",
+                            mode,
+                          )}
+                          value={mode}
+                        >
+                          {t(POST_IMPORT_TRACKING_LABEL_KEY[mode])}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className={`text-xs ${SEEDING_MUTED_TEXT_CLASS}`}>
+                    {t("settings.seedingProfilePostImportTrackingHelp")}
+                  </p>
+                  {isHandOff ? (
+                    <p className="text-xs text-[var(--scry-warning-text)]">
+                      {t("settings.seedingProfilePostImportTrackingHandOffHelp")}
+                    </p>
+                  ) : null}
+                </div>
+
                 {/* Goal-met action */}
                 <div className="space-y-1.5">
                   <Label
@@ -436,6 +515,7 @@ export function SettingsSeedingProfilesSection({
                   </Label>
                   <Select
                     value={draft.goalMetAction}
+                    disabled={isHandOff}
                     onValueChange={(value) =>
                       updateField("goalMetAction", value as SeedGoalMetAction)
                     }
@@ -484,6 +564,7 @@ export function SettingsSeedingProfilesSection({
                 <CheckboxField
                   id="settings-seeding-profile-never-remove"
                   checked={draft.neverRemove}
+                  disabled={isHandOff}
                   onCheckedChange={(checked) =>
                     updateField("neverRemove", checked === true)
                   }

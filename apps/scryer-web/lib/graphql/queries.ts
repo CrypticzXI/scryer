@@ -2611,7 +2611,8 @@ export const SEEDING_PROFILE_FIELDS = `
     seasonPackSeedTimeMinutes
     honorTrackerMinimums
     goalMetAction
-    neverRemove`;
+    neverRemove
+    postImportTracking`;
 
 export const seedingProfilesQuery = `query SeedingProfiles {
   seedingProfiles {${SEEDING_PROFILE_FIELDS}

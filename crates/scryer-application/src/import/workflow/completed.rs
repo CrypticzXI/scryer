@@ -247,6 +247,12 @@ pub(crate) enum TerminalDownloadCleanupOutcome {
     /// own nature, as with `torrent-blackhole`) says the entry stays. Nothing
     /// further to reconcile.
     SeedingEntryKept,
+    /// The profile's post-import tracking is `HandOff`: the download settles
+    /// with the client entry untouched and Scryer stops managing the torrent.
+    /// Kept distinct from `SeedingEntryKept` so logs, tests and the history
+    /// event can tell "the goal was met and the profile keeps the entry" from
+    /// "the operator opted out of management".
+    HandedOff,
 }
 /// What the gate actually did with a client entry it released.
 ///
@@ -260,6 +266,9 @@ pub(crate) enum SeedingReleaseAction {
     Kept,
     /// The entry was already gone from the client when the gate looked.
     Vanished,
+    /// The entry was left exactly as it is and Scryer stopped managing the
+    /// torrent, per the profile's post-import tracking.
+    HandedOff,
 }
 
 impl SeedingReleaseAction {
@@ -269,6 +278,7 @@ impl SeedingReleaseAction {
             Self::Paused => "paused",
             Self::Kept => "kept",
             Self::Vanished => "vanished",
+            Self::HandedOff => "handed_off",
         }
     }
 }
@@ -330,6 +340,7 @@ pub(crate) fn terminal_download_cleanup_is_complete(
             | TerminalDownloadCleanupOutcome::Removed
             | TerminalDownloadCleanupOutcome::AlreadyGone
             | TerminalDownloadCleanupOutcome::SeedingEntryKept
+            | TerminalDownloadCleanupOutcome::HandedOff
     )
 }
 async fn cleanup_routing_scope_for_title_id(

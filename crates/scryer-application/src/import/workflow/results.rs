@@ -231,6 +231,20 @@ async fn reconcile_terminal_download_cleanup(
                     report(decision.reason, Some(SeedingReleaseAction::Vanished)),
                 );
             }
+            crate::seeding_gate::SeedingGateOutcome::HandedOff => {
+                tracing::info!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    reason = decision.reason,
+                    "post-import handoff: leaving the client entry untouched and no longer managing this torrent"
+                );
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::HandedOff,
+                    report(decision.reason, Some(SeedingReleaseAction::HandedOff)),
+                );
+            }
             crate::seeding_gate::SeedingGateOutcome::Hold => {
                 tracing::debug!(
                     client_id,

@@ -4,6 +4,9 @@ export type SeasonPackSeedMode = "INHERIT" | "OVERRIDE";
 /** What happens to a torrent once its seeding goal is met. */
 export type SeedGoalMetAction = "REMOVE_ENTRY" | "STOP_SEEDING" | "KEEP";
 
+/** Whether Scryer keeps managing a torrent after it has been imported. */
+export type PostImportTracking = "PARK" | "HAND_OFF";
+
 /** A stored seeding profile as returned by `seedingProfiles`. */
 export type SeedingProfileRecord = {
   id: string;
@@ -18,6 +21,7 @@ export type SeedingProfileRecord = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  postImportTracking: PostImportTracking;
 };
 
 /**
@@ -36,6 +40,7 @@ export type SeedingProfileDraft = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  postImportTracking: PostImportTracking;
 };
 
 /** Minimal shape the assignment dropdowns need. */

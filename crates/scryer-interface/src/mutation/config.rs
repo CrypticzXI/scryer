@@ -13,8 +13,8 @@ use crate::mappers::{
     from_download_client_config_with_fields, from_indexer_config_sync_result,
     from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_proxy_test_result,
     from_rss_sync_report, from_seeding_profile, from_subtitle_provider_config,
-    provider_config_values_to_json, season_pack_seed_mode_from_value,
-    seed_goal_met_action_from_value,
+    post_import_tracking_from_value, provider_config_values_to_json,
+    season_pack_seed_mode_from_value, seed_goal_met_action_from_value,
 };
 use crate::types::*;
 
@@ -309,6 +309,10 @@ impl ConfigMutations {
                         .map(seed_goal_met_action_from_value)
                         .unwrap_or_default(),
                     never_remove: input.never_remove.unwrap_or(false),
+                    post_import_tracking: input
+                        .post_import_tracking
+                        .map(post_import_tracking_from_value)
+                        .unwrap_or_default(),
                 },
             )
             .await
@@ -343,6 +347,9 @@ impl ConfigMutations {
                     honor_tracker_minimums: input.honor_tracker_minimums,
                     goal_met_action: input.goal_met_action.map(seed_goal_met_action_from_value),
                     never_remove: input.never_remove,
+                    post_import_tracking: input
+                        .post_import_tracking
+                        .map(post_import_tracking_from_value),
                 },
             )
             .await

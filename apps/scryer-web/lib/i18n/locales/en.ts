@@ -655,6 +655,14 @@ const en: LocaleDictionary = {
   "settings.seedingProfileHonorTrackerMinimumsLabel": "Honor tracker minimums",
   "settings.seedingProfileHonorTrackerMinimumsHelp":
     "Raise the resolved goals to the minimum ratio and seed time a release declares, so private trackers do not record a hit and run.",
+  "settings.seedingProfilePostImportTrackingLabel": "After import",
+  "settings.seedingProfilePostImportTrackingHelp":
+    "Whether Scryer keeps managing the torrent once the files have been imported.",
+  "settings.seedingProfilePostImportTrackingPark": "Keep managing (park while seeding)",
+  "settings.seedingProfilePostImportTrackingHandOff": "Hand off to the download client",
+  "settings.seedingProfilePostImportTrackingHandOffBadge": "Handed off",
+  "settings.seedingProfilePostImportTrackingHandOffHelp":
+    "After import, Scryer stops managing this torrent: the entry stays in the client, is never auto-removed, and leaves the queue. Seed goals and the goal-met action no longer apply — your client's own limits take over. Files are still imported by hardlink or copy while the torrent is seeding.",
   "settings.seedingProfileGoalMetActionLabel": "When the goal is met",
   "settings.seedingProfileGoalMetActionHelp":
     "What happens to the torrent once its seed goal is reached.",

@@ -1708,6 +1708,10 @@ input CreateSeedingProfileInput {
 	Whether torrents grabbed under this profile are never auto-removed; defaults to false.
 	"""
 	neverRemove: Boolean
+	"""
+	Whether Scryer keeps managing torrents after import; defaults to parking them.
+	"""
+	postImportTracking: PostImportTrackingValue
 }
 
 """
@@ -11908,6 +11912,20 @@ type PluginInstallationPayload {
 }
 
 """
+Whether Scryer keeps managing a torrent after it has been imported.
+"""
+enum PostImportTrackingValue {
+	"""
+	Keep managing the torrent: hold the entry while it seeds, then apply the goal-met action.
+	"""
+	PARK
+	"""
+	Stop managing the torrent after import; the entry stays untouched and leaves the queue.
+	"""
+	HAND_OFF
+}
+
+"""
 Configured post-processing script and execution policy.
 """
 type PostProcessingScriptPayload {
@@ -15005,6 +15023,10 @@ type SeedingProfilePayload {
 	Whether torrents grabbed under this profile are never auto-removed.
 	"""
 	neverRemove: Boolean!
+	"""
+	Whether Scryer keeps managing torrents grabbed under this profile after import.
+	"""
+	postImportTracking: PostImportTrackingValue!
 	"""
 	UTC creation time.
 	"""
@@ -18408,6 +18430,10 @@ input UpdateSeedingProfileInput {
 	Replacement never-remove flag; omission preserves it.
 	"""
 	neverRemove: Boolean
+	"""
+	Replacement post-import tracking mode; omission preserves it.
+	"""
+	postImportTracking: PostImportTrackingValue
 }
 
 """

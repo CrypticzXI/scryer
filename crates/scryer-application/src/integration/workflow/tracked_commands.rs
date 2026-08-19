@@ -2327,13 +2327,37 @@ async fn handle_tracked_download_background_work_result(
 
     publish_runtime_tracked_download_and_activity_item(app, tracker, Some(activity_item)).await;
 }
+/// Why a terminal settle is running.
+///
+/// A settled row that is still present in the client is re-created and
+/// re-offered to the gate on **every** poll — that re-offering is what
+/// eventually releases a parked torrent, but it also means an unguarded
+/// lifecycle event would be recorded once per tick forever. Lifecycle history
+/// therefore belongs to the transition, not to the re-offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalSettleTrigger {
+    /// The row just reached this terminal state (an import finished, or an
+    /// operator marked/ignored it).
+    Transition,
+    /// The reconcile tick re-offering an already-settled row.
+    Reconcile,
+}
+
 pub(crate) async fn finalize_tracked_terminal_state(
     app: &AppUseCase,
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     id: &str,
     state: TrackedDownloadState,
 ) {
-    finalize_tracked_terminal_state_with(app, tracker, id, state, None).await;
+    finalize_tracked_terminal_state_with(
+        app,
+        tracker,
+        id,
+        state,
+        TerminalSettleTrigger::Transition,
+        None,
+    )
+    .await;
 }
 
 /// As `finalize_tracked_terminal_state`, reusing the reconcile tick's shared
@@ -2344,6 +2368,7 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     id: &str,
     state: TrackedDownloadState,
+    trigger: TerminalSettleTrigger,
     cache: Option<&crate::import::import::TerminalCleanupTickCache>,
 ) {
     let Some(td) = tracker.find(id) else {
@@ -2370,16 +2395,25 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
     }
 
     if crate::import::import::terminal_download_cleanup_is_complete(cleanup.outcome) {
+        // Closes the retention window this row's `seeding_started` opened. A
+        // torrent that was never held has no window to close, so it gets no
+        // seeding history — with one exception: a post-import handoff is a
+        // one-shot fact ("Scryer stopped managing this torrent") that has to be
+        // recorded even though nothing was ever retained. It is recorded only
+        // on the transition, because a handed-off entry stays in the client and
+        // is re-offered to the gate on every subsequent poll.
+        let records_seeding_history = state == TrackedDownloadState::ImportedSeeding
+            || (cleanup.outcome == crate::import::import::TerminalDownloadCleanupOutcome::HandedOff
+                && trigger == TerminalSettleTrigger::Transition);
+        if records_seeding_history
+            && let Some(td) = tracker.find(id)
+        {
+            record_seeding_completed_event(app, td, cleanup.seeding).await;
+        }
         // A held torrent that has now discharged its obligation graduates to
         // the real terminal state before it stops being tracked, so restart
         // recovery reads `imported`, not `imported_seeding`.
         if state == TrackedDownloadState::ImportedSeeding {
-            // Closes the retention window this row's `seeding_started` opened.
-            // A torrent that was never held has no window to close, so it gets
-            // no seeding history at all.
-            if let Some(td) = tracker.find(id) {
-                record_seeding_completed_event(app, td, cleanup.seeding).await;
-            }
             promote_imported_seeding_to_imported(app, tracker, id).await;
         }
         tracker.stop_tracking(id);
@@ -2575,7 +2609,15 @@ async fn reconcile_terminal_tracked_downloads(
         crate::import::import::TerminalCleanupTickCache::prefetch(app, &identities).await;
 
     for (id, state) in terminal_ids {
-        finalize_tracked_terminal_state_with(app, tracker, &id, state, Some(&cache)).await;
+        finalize_tracked_terminal_state_with(
+            app,
+            tracker,
+            &id,
+            state,
+            TerminalSettleTrigger::Reconcile,
+            Some(&cache),
+        )
+        .await;
     }
 }
 

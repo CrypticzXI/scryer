@@ -45,6 +45,7 @@ impl AppUseCase {
             honor_tracker_minimums: input.honor_tracker_minimums,
             goal_met_action: input.goal_met_action,
             never_remove: input.never_remove,
+            post_import_tracking: input.post_import_tracking,
             created_at: now,
             updated_at: now,
         }
@@ -114,6 +115,9 @@ impl AppUseCase {
         }
         if let Some(never_remove) = update.never_remove {
             profile.never_remove = never_remove;
+        }
+        if let Some(post_import_tracking) = update.post_import_tracking {
+            profile.post_import_tracking = post_import_tracking;
         }
         profile.updated_at = Utc::now();
         let profile = profile.normalized();
