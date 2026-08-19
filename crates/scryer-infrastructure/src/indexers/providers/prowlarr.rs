@@ -231,8 +231,12 @@ struct ProwlarrIndexerResource {
     priority: i64,
     #[serde(default, rename = "downloadClientId")]
     download_client_id: i64,
-    /// Prowlarr keeps per-indexer settings in a flat name/value list; the seed
-    /// criteria the operator configured there arrive as `seedCriteria.*`.
+    /// Prowlarr keeps per-indexer settings in a flat name/value list. Nested
+    /// settings objects are prefixed with their camelCased property name
+    /// (`SchemaBuilder.GetFieldMapping`), so `IndexerTorrentBaseSettings`
+    /// arrives as `torrentBaseSettings.*`. Note this is NOT the `seedCriteria.*`
+    /// spelling — that is the Sonarr-side field name Prowlarr writes *into*
+    /// when it syncs an app.
     #[serde(default)]
     fields: Vec<ProwlarrIndexerField>,
 }
@@ -1033,11 +1037,11 @@ fn build_managed_child_plan(
         // read even if Prowlarr happens to carry them.
         seed_ratio: is_torrent.then(|| prowlarr_seed_ratio(&indexer.fields)).flatten(),
         seed_time_minutes: is_torrent
-            .then(|| prowlarr_seed_minutes(&indexer.fields, "seedCriteria.seedTime"))
+            .then(|| prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.seedTime"))
             .flatten(),
         season_pack_seed_time_minutes: is_torrent
             .then(|| {
-                prowlarr_seed_minutes(&indexer.fields, "seedCriteria.seasonPackSeedTime")
+                prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.packSeedTime")
             })
             .flatten(),
     })
@@ -1073,7 +1077,7 @@ fn prowlarr_field_value<'a>(
 }
 
 fn prowlarr_seed_ratio(fields: &[ProwlarrIndexerField]) -> Option<f64> {
-    let value = prowlarr_field_value(fields, "seedCriteria.seedRatio")?;
+    let value = prowlarr_field_value(fields, "torrentBaseSettings.seedRatio")?;
     let ratio = value
         .as_f64()
         .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))?;
@@ -1575,9 +1579,9 @@ mod tests {
         let metadata = child_metadata(indexer_with_fields(
             "torrent",
             vec![
-                seed_field("seedCriteria.seedRatio", serde_json::json!(1.5)),
-                seed_field("seedCriteria.seedTime", serde_json::json!(4320)),
-                seed_field("seedCriteria.seasonPackSeedTime", serde_json::json!(10080)),
+                seed_field("torrentBaseSettings.seedRatio", serde_json::json!(1.5)),
+                seed_field("torrentBaseSettings.seedTime", serde_json::json!(4320)),
+                seed_field("torrentBaseSettings.packSeedTime", serde_json::json!(10080)),
             ],
         ));
         assert_eq!(metadata.seed_ratio, Some(1.5));
@@ -1591,8 +1595,8 @@ mod tests {
         let stringified = child_metadata(indexer_with_fields(
             "torrent",
             vec![
-                seed_field("seedCriteria.seedRatio", serde_json::json!("2.0")),
-                seed_field("seedCriteria.seedTime", serde_json::json!("60")),
+                seed_field("torrentBaseSettings.seedRatio", serde_json::json!("2.0")),
+                seed_field("torrentBaseSettings.seedTime", serde_json::json!("60")),
             ],
         ));
         assert_eq!(stringified.seed_ratio, Some(2.0));
@@ -1602,8 +1606,8 @@ mod tests {
         let blank = child_metadata(indexer_with_fields(
             "torrent",
             vec![
-                seed_field("seedCriteria.seedRatio", serde_json::Value::Null),
-                seed_field("seedCriteria.seedTime", serde_json::json!(0)),
+                seed_field("torrentBaseSettings.seedRatio", serde_json::Value::Null),
+                seed_field("torrentBaseSettings.seedTime", serde_json::json!(0)),
             ],
         ));
         assert_eq!(blank.seed_ratio, None);
@@ -1615,7 +1619,7 @@ mod tests {
     fn usenet_children_carry_no_seed_criteria() {
         let metadata = child_metadata(indexer_with_fields(
             "usenet",
-            vec![seed_field("seedCriteria.seedRatio", serde_json::json!(1.5))],
+            vec![seed_field("torrentBaseSettings.seedRatio", serde_json::json!(1.5))],
         ));
         assert_eq!(metadata.seed_ratio, None);
         assert_eq!(metadata.seed_time_minutes, None);
