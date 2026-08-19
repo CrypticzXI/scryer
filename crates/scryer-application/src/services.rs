@@ -3389,6 +3389,28 @@ impl AppUseCase {
         Ok(self.services.integrations.indexer_stats.all_stats())
     }
 
+    /// Count one release grabbed through `indexer_id` toward that indexer's
+    /// trailing-24h grab total.
+    ///
+    /// Call this only after a download client has *accepted* the submission;
+    /// failed submissions are not grabs. A submission with no indexer identity
+    /// (a manual push, or a release whose provider Scryer never recorded) is
+    /// skipped rather than bucketed under a placeholder, so the dashboard's
+    /// per-indexer column stays attributable.
+    pub(crate) fn record_indexer_grab(&self, indexer_id: Option<&str>, indexer_name: Option<&str>) {
+        let Some(indexer_id) = indexer_id.map(str::trim).filter(|id| !id.is_empty()) else {
+            return;
+        };
+        let indexer_name = indexer_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(indexer_id);
+        self.services
+            .integrations
+            .indexer_stats
+            .record_grab(indexer_id, indexer_name);
+    }
+
     pub async fn cached_health_check_results(
         &self,
         actor: &User,

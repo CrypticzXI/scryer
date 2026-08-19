@@ -5,7 +5,7 @@ use scryer_application::{
     MetadataFieldUpdate, PendingImportStatus, PendingTitleHydration, SortDirection,
     TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
-    TitleCatalogTagFilterOption, TitleDeletePreviewInfo, TitleExternalIdLookup,
+    TitleCatalogTagFilterOption, TitleCredit, TitleDeletePreviewInfo, TitleExternalIdLookup,
     TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleOptionsPatch, TitleRatingSummary,
     TitleRepository,
     persisted_records::{
@@ -23,6 +23,7 @@ use crate::media::canonical_tags::{
     attach_metadata_tags_to_titles, load_title_metadata_ratings, load_title_metadata_tags,
     replace_title_metadata_ratings_tx, replace_title_metadata_tags_tx,
 };
+use crate::media::title_credits::{load_title_credits, replace_title_credits_tx};
 use crate::queries::{
     common::parse_utc_datetime,
     sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err},
@@ -782,6 +783,12 @@ impl TitleRepository for TitleStore {
         load_title_ratings_batch(&self.datastore, title_ids).await
     }
 
+    async fn get_title_credits(&self, title_id: &str) -> AppResult<Vec<TitleCredit>> {
+        let mut credits =
+            load_title_credits(self.datastore.read_exec(), &[title_id.to_string()]).await?;
+        Ok(credits.remove(title_id).unwrap_or_default())
+    }
+
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -1414,6 +1421,7 @@ impl TitleRepository for TitleStore {
                 let metadata = metadata.clone();
                 Box::pin(async move {
                     let ratings = metadata.ratings.clone();
+                    let credits = metadata.credits.clone();
                     let canonical_tags = metadata.canonical_tags.clone();
                     let mut title = load_title_canonical_tx_or_not_found(tx, &id, true).await?;
                     apply_title_metadata_update(&mut title, metadata)?;
@@ -1434,6 +1442,12 @@ impl TitleRepository for TitleStore {
                     // that are not updating ratings and must preserve existing rows.
                     if let Some(ratings) = ratings {
                         replace_title_metadata_ratings_tx(tx, &title.id, &ratings).await?;
+                    }
+                    // Same Some/None contract as ratings: SMG hydration replaces the
+                    // whole credit set (including an empty one), other callers pass
+                    // None and keep the cached rows.
+                    if let Some(credits) = credits {
+                        replace_title_credits_tx(tx, &title.id, &credits).await?;
                     }
                     load_title_tx_or_not_found(tx, &id, true).await
                 })
@@ -1498,6 +1512,7 @@ impl TitleRepository for TitleStore {
                 replace_title_metadata_tags_tx(tx, &title.id, &[]).await?;
                 replace_title_metadata_ratings_tx(tx, &title.id, &TitleRatingSummary::default())
                     .await?;
+                replace_title_credits_tx(tx, &title.id, &[]).await?;
                 load_title_tx_or_not_found(tx, &id, true).await
             })
         })

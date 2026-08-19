@@ -1874,6 +1874,9 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
         .flatten();
 
     let mut results = Vec::new();
+    // Total bytes across every file this manual import brought in; stays `None`
+    // until at least one file reports a size.
+    let mut imported_size_bytes: Option<i64> = None;
 
     for (mapping_index, mapping) in files.iter().enumerate() {
         let source = stored_path_to_path_buf(&mapping.file_path);
@@ -2114,6 +2117,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                 dest_path,
                 imported_media_file_id,
                 reason_code,
+                size_bytes,
                 ..
             }) => {
                 if let Some(completed) = completed {
@@ -2130,6 +2134,10 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                         std::slice::from_ref(&episode),
                     )
                     .await;
+                }
+                if let Some(size_bytes) = size_bytes {
+                    imported_size_bytes =
+                        Some(imported_size_bytes.unwrap_or(0).saturating_add(size_bytes));
                 }
                 results.push(manual_import_file_result(
                     mapping,
@@ -2247,6 +2255,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     .and_then(|result| result.dest_path.clone()),
                 quality: None,
                 episode_ids,
+                size_bytes: imported_size_bytes,
             }),
         ))
         .await?;

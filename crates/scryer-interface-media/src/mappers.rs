@@ -3,11 +3,12 @@ use async_graphql::ID;
 use chrono::{DateTime, Utc};
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, AppUseCase, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
-    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
-    DiscoveryFacetRecord, DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery,
-    DiscoveryHomeResult, DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
-    DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    ActivityEvent, ActivityWindowCounts, AppUseCase, BackupInfo, CatalogDiscoveryGroup,
+    CatalogDiscoveryGroupKind, CatalogDiscoveryQuery, CatalogDiscoveryResult,
+    CatalogDiscoverySurface, DashboardActivityStats, DeletePreview, DiscoveryFacetRecord,
+    DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery, DiscoveryHomeResult,
+    DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult,
+    DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
     DownloadClientRoutingSettingsEntry, EpisodeMediaAvailability, EpisodeMediaAvailabilityState,
     FacetScoringPersonaSelection, IgnorePendingImportResult, ImageProxyKind,
     IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
@@ -18,8 +19,8 @@ use scryer_application::{
     QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
     RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
     ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
-    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, StorageRootUsage, SubmissionScope,
+    SystemHealth, TitleCredit, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1405,6 +1406,42 @@ pub fn from_title_rating_summary(ratings: TitleRatingSummary) -> TitleRatingPayl
     }
 }
 
+/// Map one cached credit onto its GraphQL payload.
+///
+/// The provider's portrait URL is never handed to clients directly: it goes
+/// through the same opaque `/images/media/{token}/{variant}` route posters use,
+/// registered against the owning title. `w185` is the only sized portrait the
+/// proxy serves (`original` is the other), so it is the card default; clients
+/// re-variant with `selectMediaImageVariantUrl`. A credit with no upstream image
+/// resolves to null rather than a token that could only 404.
+pub fn from_title_credit(
+    app: &AppUseCase,
+    title_id: &str,
+    credit: TitleCredit,
+) -> TitleCreditPayload {
+    let person_image_url = Some(credit.person_image_url.trim())
+        .filter(|url| !url.is_empty())
+        .and_then(|url| {
+            app.media_image_url(
+                Some(url),
+                Some("title"),
+                Some(title_id),
+                ImageProxyKind::Person,
+                "w185",
+            )
+        });
+    TitleCreditPayload {
+        kind: credit.kind,
+        person_name: credit.person_name,
+        person_original_name: credit.person_original_name,
+        person_image_url,
+        character: credit.character_name,
+        language: credit.language,
+        billing_order: credit.billing_order,
+        episode_count: credit.episode_count,
+    }
+}
+
 pub fn from_media_request(app: &AppUseCase, request: MediaRequest) -> MediaRequestPayload {
     let owner_id = request.id.to_string();
     let poster_url = app.media_image_url(
@@ -1504,6 +1541,36 @@ pub fn from_pending_import_counts(counts: PendingImportCounts) -> PendingImportC
     }
 }
 
+fn from_activity_window_counts(counts: ActivityWindowCounts) -> ActivityWindowCountsPayload {
+    ActivityWindowCountsPayload {
+        grabbed: counts.grabbed as i32,
+        upgraded: counts.upgraded as i32,
+        imported: counts.imported as i32,
+        import_failed: counts.import_failed as i32,
+        download_failed: counts.download_failed as i32,
+    }
+}
+
+pub fn from_dashboard_activity_stats(
+    stats: DashboardActivityStats,
+) -> DashboardActivityStatsPayload {
+    DashboardActivityStatsPayload {
+        current: from_activity_window_counts(stats.current),
+        previous: from_activity_window_counts(stats.previous),
+    }
+}
+
+pub fn from_storage_root_usage(usage: StorageRootUsage) -> StorageRootUsagePayload {
+    StorageRootUsagePayload {
+        path: usage.path,
+        library_id: usage.library_id.into(),
+        library_name: usage.library_name,
+        facet: MediaFacetValue::from_domain(usage.facet),
+        used_bytes: usage.used_bytes.map(Long::from),
+        total_bytes: usage.total_bytes.map(Long::from),
+    }
+}
+
 pub fn from_media_request_counts(counts: MediaRequestCounts) -> MediaRequestCountsPayload {
     MediaRequestCountsPayload {
         movie: counts.movie as i32,
@@ -1523,8 +1590,15 @@ fn from_pending_import_search_attempt(
     }
 }
 
-pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPayload {
-    PendingImportItemPayload {
+/// Map one pending import onto its payload.
+///
+/// Fallible for the same reason [`from_title_history_record`] is: `created_at`
+/// is stored as text, and an unparseable timestamp is surfaced as a validation
+/// error rather than papered over with a sentinel date.
+pub fn from_pending_import_item(
+    item: PendingImportItem,
+) -> scryer_application::AppResult<PendingImportItemPayload> {
+    Ok(PendingImportItemPayload {
         id: item.id.into(),
         library_id: item.library_id.into(),
         facet: MediaFacetValue::from_domain(item.facet),
@@ -1538,29 +1612,33 @@ pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPay
         query: item.query,
         year_hint: item.year_hint,
         reason: item.reason,
+        reason_class: PendingImportReasonClassValue::from_application(item.reason_class),
         search_attempts: item
             .search_attempts
             .into_iter()
             .map(from_pending_import_search_attempt)
             .collect(),
-    }
+        size_bytes: item.size_bytes.map(Long::from),
+        created_at: parse_datetime(&item.created_at, "pending import created_at")
+            .map_err(scryer_application::AppError::Validation)?,
+    })
 }
 
 pub fn from_pending_import_connection(
     connection: PendingImportConnection,
     offset: i64,
-) -> PendingImportConnectionPayload {
-    let items: Vec<_> = connection
+) -> scryer_application::AppResult<PendingImportConnectionPayload> {
+    let items = connection
         .items
         .into_iter()
         .map(from_pending_import_item)
-        .collect();
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
     let has_more = offset.saturating_add(items.len() as i64) < connection.total;
-    PendingImportConnectionPayload {
+    Ok(PendingImportConnectionPayload {
         items,
         total_count: connection.total as i32,
         has_more,
-    }
+    })
 }
 
 pub fn from_resolve_pending_import_result(
@@ -3135,6 +3213,7 @@ pub fn from_system_health(health: SystemHealth) -> SystemHealthPayload {
                 queries_last_24h: s.queries_last_24h as i32,
                 successful_last_24h: s.successful_last_24h as i32,
                 failed_last_24h: s.failed_last_24h as i32,
+                grabs_last_24h: s.grabs_last_24h as i32,
                 last_query_at: parse_optional_datetime(
                     s.last_query_at,
                     "indexer stats last_query_at",
@@ -3583,7 +3662,10 @@ pub fn from_title_history_record(
         id: record.id.into(),
         title_id: record.title_id.into(),
         title_name: record.title_name,
+        poster_url: record.poster_url,
+        library_id: record.library_id.map(Into::into),
         facet: record.facet.map(MediaFacetValue::from_domain),
+        size_bytes: record.size_bytes.map(Long::from),
         episode_id: record.episode_id.map(Into::into),
         episode_ids: record.episode_ids.into_iter().map(Into::into).collect(),
         collection_id: record.collection_id.map(Into::into),
@@ -3757,7 +3839,10 @@ mod tests {
             id: "history-1".to_string(),
             title_id: "title-1".to_string(),
             title_name: Some("Example".to_string()),
+            poster_url: None,
+            library_id: None,
             facet: None,
+            size_bytes: None,
             episode_id: None,
             episode_ids: Vec::new(),
             collection_id: None,

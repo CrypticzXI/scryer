@@ -20,6 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { TitleDownloadActivityPill } from "@/components/common/title-download-activity";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
@@ -123,6 +124,8 @@ type CompactTitleTableProps = {
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
   scanLibraryNotice?: string | null;
+  /** Titles with live, pending download work — shown as a pulsing row pill. */
+  activeDownloadTitleIds?: ReadonlySet<string>;
 };
 
 export const CompactTitleTable = React.memo(function CompactTitleTable({
@@ -163,6 +166,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
   scanLibraryLoading: scanLibraryLoadingProp,
   scanLibraryDisabled: scanLibraryDisabledProp,
   scanLibraryNotice,
+  activeDownloadTitleIds,
 }: CompactTitleTableProps) {
   const catalogHasMoreTitles = catalogHasMoreTitlesProp ?? false;
   const catalogLoadingMoreTitles = catalogLoadingMoreTitlesProp ?? false;
@@ -640,6 +644,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
     const isSelected = selectedTitleId === item.id;
     const isRowHighlighted =
       isSelected || (selectionMode && selectedTitleIds.has(item.id));
+    const downloadActive = activeDownloadTitleIds?.has(item.id) ?? false;
     const addedLabel =
       formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
@@ -675,54 +680,59 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
           className={cn("h-[70px]", TITLE_TABLE_ROW_CLASS)}
         >
           <TableCell className="align-middle overflow-hidden py-2 pl-4 pr-2">
-            <button
-              id={titleOverviewOpenButtonId(item.id)}
-              type="button"
-              onClick={() => handleActivateTitle(item)}
-              data-ui="title-name"
-              aria-current={isSelected ? "true" : undefined}
-              aria-controls={selectedContextPanelControlsId}
-              tabIndex={selectedPaneMode ? -1 : undefined}
-              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left hover:text-foreground"
-            >
-              <span className="relative h-[50px] w-[34px] shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]">
-                <TitlePosterSlot
-                  src={posterUrl}
-                  metadataFetchedAt={item.metadataFetchedAt}
-                  createdAt={item.createdAt}
-                  alt={t("media.posterAlt", { name: item.name })}
-                  className="h-full w-full object-cover"
-                  placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[8px] text-muted-foreground"
-                  emptyLabel={t("label.noArt")}
-                  loading="lazy"
-                  decoding="async"
-                />
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent from-45% to-black/80"
-                />
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-[13.5px] font-semibold text-[var(--scry-ink3)]">
-                  {item.name}
-                </span>
-                <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-[var(--scry-faint)]">
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                id={titleOverviewOpenButtonId(item.id)}
+                type="button"
+                onClick={() => handleActivateTitle(item)}
+                data-ui="title-name"
+                aria-current={isSelected ? "true" : undefined}
+                aria-controls={selectedContextPanelControlsId}
+                tabIndex={selectedPaneMode ? -1 : undefined}
+                className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden text-left hover:text-foreground"
+              >
+                <span className="relative h-[50px] w-[34px] shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]">
+                  <TitlePosterSlot
+                    src={posterUrl}
+                    metadataFetchedAt={item.metadataFetchedAt}
+                    createdAt={item.createdAt}
+                    alt={t("media.posterAlt", { name: item.name })}
+                    className="h-full w-full object-cover"
+                    placeholderClassName="flex h-full w-full items-center justify-center px-1 text-center text-[8px] text-muted-foreground"
+                    emptyLabel={t("label.noArt")}
+                    loading="lazy"
+                    decoding="async"
+                  />
                   <span
                     aria-hidden="true"
-                    className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)]"
+                    className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent from-45% to-black/80"
                   />
-                  {libraryLabel ? (
-                    <span className="min-w-0 truncate">{libraryLabel}</span>
-                  ) : null}
-                  {libraryLabel && subline ? (
-                    <span className="shrink-0">·</span>
-                  ) : null}
-                  {subline ? (
-                    <span className="min-w-0 truncate">{subline}</span>
-                  ) : null}
                 </span>
-              </span>
-            </button>
+                <span className="min-w-0">
+                  <span className="block truncate text-[13.5px] font-semibold text-[var(--scry-ink3)]">
+                    {item.name}
+                  </span>
+                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] text-[var(--scry-faint)]">
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 shrink-0 rounded-full bg-[var(--scry-accent)]"
+                    />
+                    {libraryLabel ? (
+                      <span className="min-w-0 truncate">{libraryLabel}</span>
+                    ) : null}
+                    {libraryLabel && subline ? (
+                      <span className="shrink-0">·</span>
+                    ) : null}
+                    {subline ? (
+                      <span className="min-w-0 truncate">{subline}</span>
+                    ) : null}
+                  </span>
+                </span>
+              </button>
+              {downloadActive ? (
+                <TitleDownloadActivityPill />
+              ) : null}
+            </div>
           </TableCell>
           <TableCell className="text-center align-middle">
             <ActionTooltip
@@ -783,18 +793,23 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
             />
           </TableCell>
           <TableCell className="align-middle overflow-hidden py-1.5">
-            <button
-              id={titleOverviewOpenButtonId(item.id)}
-              type="button"
-              onClick={() => handleActivateTitle(item)}
-              data-ui="title-name"
-              aria-current={isSelected ? "true" : undefined}
-              aria-controls={selectedContextPanelControlsId}
-              tabIndex={selectedPaneMode ? -1 : undefined}
-              className="block w-full overflow-hidden text-left text-[13px] font-medium text-[var(--scry-ink3)] hover:text-foreground"
-            >
-              <span className="block truncate">{item.name}</span>
-            </button>
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                id={titleOverviewOpenButtonId(item.id)}
+                type="button"
+                onClick={() => handleActivateTitle(item)}
+                data-ui="title-name"
+                aria-current={isSelected ? "true" : undefined}
+                aria-controls={selectedContextPanelControlsId}
+                tabIndex={selectedPaneMode ? -1 : undefined}
+                className="block min-w-0 flex-1 overflow-hidden text-left text-[13px] font-medium text-[var(--scry-ink3)] hover:text-foreground"
+              >
+                <span className="block truncate">{item.name}</span>
+              </button>
+              {downloadActive ? (
+                <TitleDownloadActivityPill />
+              ) : null}
+            </div>
           </TableCell>
           {showYearColumn ? (
             <TableCell className="whitespace-nowrap py-1.5 text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">

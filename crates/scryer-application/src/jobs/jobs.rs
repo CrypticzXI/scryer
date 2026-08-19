@@ -374,6 +374,53 @@ struct CountSummary {
     count: u32,
 }
 
+const PLUGIN_CATALOG_REFRESHED_MESSAGE: &str = "Plugin catalog refreshed";
+
+/// Outcome for the plugin catalog refresh job. The message and summary stay
+/// exactly as they were whenever automatic plugin updates did nothing, so the
+/// default (opt-out) configuration is indistinguishable from before.
+fn plugin_registry_refresh_outcome(
+    report: crate::plugins::runtime::PluginAutoUpdateReport,
+) -> JobExecutionOutcome {
+    if !report.did_work() {
+        return JobExecutionOutcome::new(Some(PLUGIN_CATALOG_REFRESHED_MESSAGE.to_string()), None);
+    }
+
+    let failed_count = report.failed.len() + report.errors.len();
+    let mut message = format!(
+        "{PLUGIN_CATALOG_REFRESHED_MESSAGE}; auto-updated {} plugin(s)",
+        report.updated.len()
+    );
+    if !report.skipped_in_progress.is_empty() {
+        message.push_str(&format!(
+            "; {} skipped while an install was in progress",
+            report.skipped_in_progress.len()
+        ));
+    }
+    if failed_count > 0 {
+        message.push_str(&format!("; {failed_count} failed"));
+    }
+
+    let summary_json = serde_json::to_string(&json!({
+        "consideredCount": report.considered,
+        "updatedCount": report.updated.len(),
+        "skippedInProgressCount": report.skipped_in_progress.len(),
+        "failedCount": failed_count,
+        "updated": report.updated,
+        "skippedInProgress": report.skipped_in_progress,
+        "failures": report.failed,
+        "rollbackFailures": report.rollback_failures,
+        "errors": report.errors,
+    }))
+    .ok();
+
+    if report.has_failures() {
+        JobExecutionOutcome::warning(Some(message), summary_json)
+    } else {
+        JobExecutionOutcome::new(Some(message), summary_json)
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 struct LibraryScanRunSummary {
     scanned: usize,
@@ -1433,9 +1480,8 @@ impl AppUseCase {
             )),
             JobKey::PluginRegistryRefresh => {
                 self.refresh_plugin_catalog_internal().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some("Plugin catalog refreshed".to_string()),
-                    None,
+                Ok(plugin_registry_refresh_outcome(
+                    self.run_scheduled_plugin_auto_update().await,
                 ))
             }
             JobKey::Housekeeping => {
@@ -3286,7 +3332,84 @@ fn summary_text_from_library_scan(summary: &LibraryScanSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::runtime::{
+        PluginAutoUpdateFailure, PluginAutoUpdateReport, PluginAutoUpdateRollbackFailure,
+        PluginAutoUpdateUpgrade,
+    };
     use chrono::TimeZone;
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_is_unchanged_when_automation_does_nothing() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport::default());
+
+        assert_eq!(
+            outcome.summary_text.as_deref(),
+            Some("Plugin catalog refreshed")
+        );
+        assert!(outcome.summary_json.is_none());
+        assert!(outcome.status_override.is_none());
+    }
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_reports_applied_updates() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
+            enabled: true,
+            considered: 2,
+            updated: vec![PluginAutoUpdateUpgrade {
+                plugin_id: "alpha".to_string(),
+                from_version: "1.2.3".to_string(),
+                to_version: "1.2.4".to_string(),
+            }],
+            skipped_in_progress: vec!["beta".to_string()],
+            ..Default::default()
+        });
+
+        assert!(outcome.status_override.is_none());
+        let summary_text = outcome.summary_text.expect("summary text");
+        assert!(summary_text.starts_with("Plugin catalog refreshed; auto-updated 1 plugin(s)"));
+        assert!(summary_text.contains("1 skipped while an install was in progress"));
+        let summary: serde_json::Value =
+            serde_json::from_str(&outcome.summary_json.expect("summary json"))
+                .expect("summary json parses");
+        assert_eq!(summary["consideredCount"], 2);
+        assert_eq!(summary["updatedCount"], 1);
+        assert_eq!(summary["failedCount"], 0);
+        assert_eq!(summary["updated"][0]["plugin_id"], "alpha");
+        assert_eq!(summary["skippedInProgress"][0], "beta");
+    }
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_warns_on_failures() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
+            enabled: true,
+            considered: 1,
+            failed: vec![PluginAutoUpdateFailure {
+                plugin_id: "alpha".to_string(),
+                error: "validation: boom".to_string(),
+                rolled_back: true,
+            }],
+            rollback_failures: vec![PluginAutoUpdateRollbackFailure {
+                plugin_id: "alpha".to_string(),
+                error: "restore failed".to_string(),
+            }],
+            ..Default::default()
+        });
+
+        assert_eq!(outcome.status_override, Some(JobRunStatus::Warning));
+        assert!(
+            outcome
+                .summary_text
+                .expect("summary text")
+                .contains("1 failed")
+        );
+        let summary: serde_json::Value =
+            serde_json::from_str(&outcome.summary_json.expect("summary json"))
+                .expect("summary json parses");
+        assert_eq!(summary["failedCount"], 1);
+        assert_eq!(summary["failures"][0]["error"], "validation: boom");
+        assert_eq!(summary["failures"][0]["rolled_back"], true);
+        assert_eq!(summary["rollbackFailures"][0]["error"], "restore failed");
+    }
 
     #[test]
     fn discovery_next_run_ignores_the_incremental_bucket_before_the_first_snapshot() {

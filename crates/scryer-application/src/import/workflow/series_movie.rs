@@ -906,6 +906,8 @@ async fn import_additional_movie_download(
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
                 episode_ids: linked_episode_ids,
+                // Single-file import, so the file's size is also the total.
+                size_bytes: Some(file_result.size_bytes as i64),
             }),
         ))
         .await;
@@ -1564,6 +1566,8 @@ async fn import_movie_download(
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: prepared.parsed.quality.clone(),
                 episode_ids: Vec::new(),
+                // Single-file import, so the file's size is also the total.
+                size_bytes: Some(file_result.size_bytes as i64),
             }),
         ))
         .await;
@@ -2397,6 +2401,8 @@ async fn import_series_movie_download(
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
             episode_ids: linked_episode_ids.clone(),
+            // Single-file import, so the file's size is also the total.
+            size_bytes: Some(file_result.size_bytes as i64),
         }),
     ))
     .await?;

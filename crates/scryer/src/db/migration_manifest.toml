@@ -915,6 +915,40 @@ scope = "all"
 
 [[migration]]
 version = 161
+description = "title credits hydrated cache"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0161_title_credits_cache.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0161_title_credits_cache.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 162
+description = "library scan unmatched size bytes"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0162_library_scan_unmatched_size_bytes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0162_library_scan_unmatched_size_bytes.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 163
 description = "torrent seeding profiles"
 checksum_algo = "blake3"
 
@@ -931,7 +965,7 @@ engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 162
+version = 164
 description = "persist resolved seeding goals on download submissions"
 checksum_algo = "blake3"
 
@@ -948,7 +982,7 @@ engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 163
+version = 165
 description = "persist tracker seeding minimums on pending releases"
 checksum_algo = "blake3"
 
@@ -965,7 +999,7 @@ engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 164
+version = 166
 description = "post-import tracking mode for seeding profiles"
 checksum_algo = "blake3"
 

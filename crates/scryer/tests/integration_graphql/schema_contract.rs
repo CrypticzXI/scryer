@@ -479,6 +479,24 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Restore the operator-selected replacement mutation: mutation 170->171.
     // Provider-level indexer/download-client compatibility adds one object so
     // unsaved indexer drafts can use the same server-derived routing contract.
+    // Cached title credits add one payload object behind the new `Title.credits`
+    // resolver; the field hangs off an existing type, so root counts are
+    // unchanged: OBJECT 291->292, public types 560->561.
+    // Plugin auto-update settings add one query root, one mutation root, one
+    // payload object, and one input object: query 119->120, mutation 175->176,
+    // OBJECT 292->293, INPUT_OBJECT 158->159, public types 561->563.
+    // The season-scoped panel's `Collection.episodeRecordsTotal` hangs off an
+    // existing type, so no census counts change.
+    // Dashboard landing page adds the dashboardActivityStats and storageRoots
+    // query roots plus their three payload objects
+    // (DashboardActivityStatsPayload, ActivityWindowCountsPayload,
+    // StorageRootUsagePayload): query 120->122, OBJECT 293->296,
+    // public types 563->566.
+    // Manual-imports dashboard panel adds PendingImportReasonClassValue beside
+    // the free-text reason (plus createdAt/sizeBytes on the existing item
+    // payload, which add no types), and recently-imported enrichment adds
+    // libraryId/sizeBytes to TitleHistoryEventPayload: ENUM 99->100,
+    // public types 566->567. Root-field counts unchanged.
     // Torrent seeding profiles add two query roots, five mutation roots, three
     // payload objects, four inputs, and two enums: query 119->121, mutation
     // 175->180, OBJECT 291->294, INPUT_OBJECT 158->162, ENUM 99->101, public
@@ -491,19 +509,21 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // payload and both of its inputs: ENUM 102->103, public types 570->571.
     // Root-field, OBJECT and INPUT_OBJECT counts are unchanged — the fields are
     // additive on existing types.
+    // (Merged with release-0.18.17: both branches' additions above are
+    // additive from the shared 119/175/291/158/99/560 base.)
     assert_eq!(
-        query_field_count, 121,
+        query_field_count, 124,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 180,
+        mutation_field_count, 181,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 571);
-    assert_eq!(kind_count("OBJECT"), 294);
-    assert_eq!(kind_count("INPUT_OBJECT"), 162);
-    assert_eq!(kind_count("ENUM"), 103);
+    assert_eq!(public_types.len(), 578);
+    assert_eq!(kind_count("OBJECT"), 299);
+    assert_eq!(kind_count("INPUT_OBJECT"), 163);
+    assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -520,6 +540,12 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!query_field_names.contains(&"episodeMediaFiles"));
     assert!(query_field_names.contains(&"runtimeInfo"));
     assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
+    assert!(query_field_names.contains(&"dashboardActivityStats"));
+    assert!(query_field_names.contains(&"storageRoots"));
+    assert!(public_type_names.contains(&"DashboardActivityStatsPayload"));
+    assert!(public_type_names.contains(&"ActivityWindowCountsPayload"));
+    assert!(public_type_names.contains(&"StorageRootUsagePayload"));
+    assert!(public_type_names.contains(&"PendingImportReasonClassValue"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"setIndexerDownloadClientMapping"));

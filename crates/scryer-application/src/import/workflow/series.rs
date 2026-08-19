@@ -100,6 +100,10 @@ async fn import_series_download(
     let mut last_skipped_message: Option<String> = None;
     let mut last_skipped_skip_reason: Option<ImportSkipReason> = None;
     let mut imported_updates: Vec<NotificationMediaUpdate> = Vec::new();
+    // Total bytes across every file this import brought in. Stays `None` until
+    // at least one file reports a size, so a legacy-shaped import that knows no
+    // sizes reports null rather than a misleading zero.
+    let mut imported_size_bytes: Option<i64> = None;
     let mut imported_episode_ids: Vec<String> = Vec::new();
     let mut attributed_episode_ids: Vec<String> = Vec::new();
     let mut imported_link_type: Option<scryer_domain::ImportStrategy> = None;
@@ -134,9 +138,14 @@ async fn import_series_download(
                 dest_path,
                 episode_ids,
                 link_type,
+                size_bytes,
                 ..
             }) => {
                 imported_count += 1;
+                if let Some(size_bytes) = size_bytes {
+                    imported_size_bytes =
+                        Some(imported_size_bytes.unwrap_or(0).saturating_add(size_bytes));
+                }
                 imported_updates.push(NotificationMediaUpdate::created(dest_path));
                 append_unique_episode_ids(&mut imported_episode_ids, &episode_ids);
                 append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
@@ -267,6 +276,7 @@ async fn import_series_download(
                 dest_path: None,
                 quality: None,
                 episode_ids: imported_episode_ids,
+                size_bytes: imported_size_bytes,
             }),
         ))
         .await?;
@@ -281,6 +291,9 @@ enum EpisodeImportOutcome {
         imported_media_file_id: Option<String>,
         reason_code: Option<String>,
         link_type: Option<scryer_domain::ImportStrategy>,
+        /// Bytes written for this file, so multi-file imports can report a
+        /// total without re-stating the destination paths.
+        size_bytes: Option<i64>,
     },
     Skipped {
         message: String,

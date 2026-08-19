@@ -789,6 +789,11 @@ pub(crate) fn title_history_record_from_domain_event(
         id: event.event_id.clone(),
         title_id,
         title_name,
+        // Resolved from the titles lookup during projection hydration; the
+        // event payload itself does not carry the owning library, and the
+        // poster comes from the live title row rather than the event snapshot.
+        poster_url: None,
+        library_id: None,
         facet,
         episode_id: None,
         episode_ids,
@@ -813,10 +818,24 @@ pub(crate) fn title_history_record_from_domain_event(
         blocklist_reason,
         source_path,
         dest_path,
+        size_bytes: title_history_size_bytes(&event.payload),
         data_json,
         occurred_at: event.occurred_at.to_rfc3339(),
         created_at: event.occurred_at.to_rfc3339(),
     })
+}
+
+/// Bytes to report for a history row.
+///
+/// Only import and upgrade events carry a size: an import reports the total
+/// bytes it brought in, an upgrade reports the new file's size. Events written
+/// before the payloads carried a size read back as `None`.
+fn title_history_size_bytes(payload: &DomainEventPayload) -> Option<i64> {
+    match payload {
+        DomainEventPayload::ImportCompleted(data) => data.size_bytes,
+        DomainEventPayload::MediaFileUpgraded(data) => data.size_bytes,
+        _ => None,
+    }
 }
 
 pub(crate) fn history_event_from_domain_event(event: &DomainEvent) -> Option<HistoryEvent> {
@@ -1443,6 +1462,7 @@ mod tests {
                     current_file_id: Some("new-file".to_string()),
                     old_score: Some(10),
                     new_score: Some(20),
+                    size_bytes: Some(2_048),
                 }),
             ),
             event(
@@ -1565,6 +1585,7 @@ mod tests {
                     dest_path: Some("/data/old.mkv".to_string()),
                     quality: Some("1080p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
+                    size_bytes: Some(1_024),
                 }),
             ),
             event(
@@ -1585,6 +1606,7 @@ mod tests {
                     dest_path: Some("/data/new.mkv".to_string()),
                     quality: Some("2160p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
+                    size_bytes: Some(4_096),
                 }),
             ),
         ];

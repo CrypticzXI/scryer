@@ -357,3 +357,108 @@ async fn enrichment_size_summary_is_batched_across_titles_with_loaders() {
         "loader-absent fallback must issue one media-size summary call per title"
     );
 }
+
+/// The countable trio (`episodesOwned`/`episodesMonitored`/`episodesTotal`)
+/// excludes placeholder episodes (unnamed/TBA/undated) while
+/// `episodeRecordsTotal` counts every stored row, so the season-scoped panel
+/// can tell "no episodes at all" apart from "only placeholder episodes"
+/// without hydrating the rows. Both resolution paths must agree.
+#[tokio::test]
+async fn collection_counts_split_countable_and_record_totals() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Record Count Show",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let season = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("3".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create season collection");
+
+    // Three episode rows: two countable (named + dated, first one owned) and a
+    // third left undated so it stays a placeholder record.
+    for index in 1..=3usize {
+        let episode = create_series_scan_episode(
+            &ctx,
+            &title,
+            &season,
+            "1",
+            &index.to_string(),
+            &format!("S01E0{index}"),
+        )
+        .await;
+        if index <= 2 {
+            ctx.shows
+                .update_episode(
+                    &episode.id,
+                    EpisodeUpdate {
+                        air_date: Some(format!("2024-02-0{index}")),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("set episode air date");
+        }
+        if index == 1 {
+            let file_id = ctx
+                .media_files
+                .insert_media_file(&InsertMediaFileInput {
+                    title_id: title.id.clone(),
+                    file_path: "/record-count-fixtures/S01E01.mkv".to_string(),
+                    size_bytes: 4_096,
+                    ..Default::default()
+                })
+                .await
+                .expect("insert media file");
+            ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
+                .await
+                .expect("link media file to episode");
+        }
+    }
+
+    let query = format!(
+        "{{ title(id: \"{}\") {{ collections {{ id episodesOwned episodesMonitored episodesTotal episodeRecordsTotal }} }} }}",
+        title.id
+    );
+
+    // HTTP path: no request loaders, so this exercises the fallback resolvers.
+    let body = gql(&ctx, &query, json!({})).await;
+    assert_ok(&body);
+    let collection = body["data"]["title"]["collections"][0].clone();
+    assert_eq!(collection["episodesOwned"].as_i64(), Some(1), "{body}");
+    assert_eq!(collection["episodesMonitored"].as_i64(), Some(2), "{body}");
+    assert_eq!(collection["episodesTotal"].as_i64(), Some(2), "{body}");
+    assert_eq!(
+        collection["episodeRecordsTotal"].as_i64(),
+        Some(3),
+        "{body}"
+    );
+
+    // Loader-backed path must produce the identical counts.
+    let user = authorized_default_user(&ctx).await;
+    let loaded_body = exec_with_request_loaders(&ctx, &query, user).await;
+    assert_ok(&loaded_body);
+    assert_eq!(
+        loaded_body["data"]["title"]["collections"][0], collection,
+        "loader-backed collection counts diverged from fallback"
+    );
+}

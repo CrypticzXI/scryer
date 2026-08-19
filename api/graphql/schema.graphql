@@ -273,6 +273,32 @@ enum ActivitySeverityValue {
 }
 
 """
+Title-history event counts for one dashboard activity window.
+"""
+type ActivityWindowCountsPayload {
+	"""
+	Releases grabbed during the window.
+	"""
+	grabbed: Int!
+	"""
+	Existing files replaced by a better release during the window.
+	"""
+	upgraded: Int!
+	"""
+	Imports that completed during the window.
+	"""
+	imported: Int!
+	"""
+	Imports rejected as failed during the window; skipped imports are excluded.
+	"""
+	importFailed: Int!
+	"""
+	Downloads that failed during the window.
+	"""
+	downloadFailed: Int!
+}
+
+"""
 Actor origin attached to an event.
 """
 enum ActorKindValue {
@@ -1181,6 +1207,10 @@ type CollectionPayload {
 	"""
 	episodesTotal: Int
 	"""
+	Total episode records in this collection including uncountable placeholders (TBA/undated), populated when requested.
+	"""
+	episodeRecordsTotal: Int
+	"""
 	Parent title for this collection, or null if the title is no longer available to the caller.
 	"""
 	title: TitlePayload
@@ -1844,6 +1874,21 @@ type CutoffUnmetTitlesPagePayload {
 	Whether more matching targets exist after this page.
 	"""
 	hasMore: Boolean!
+}
+
+"""
+A trailing activity window together with the window immediately before it,
+so callers can render each count with its period-over-period delta.
+"""
+type DashboardActivityStatsPayload {
+	"""
+	Counts for the trailing window ending at the time of the request.
+	"""
+	current: ActivityWindowCountsPayload!
+	"""
+	Counts for the equally long window immediately before the current one.
+	"""
+	previous: ActivityWindowCountsPayload!
 }
 
 """
@@ -6535,6 +6580,10 @@ type IndexerQueryStatsPayload {
 	"""
 	failedLast24H: Int!
 	"""
+	Releases grabbed through this indexer during the trailing 24 hours, counted by Scryer rather than reported by the provider.
+	"""
+	grabsLast24H: Int!
+	"""
 	UTC time of the most recent query, or null when never queried.
 	"""
 	lastQueryAt: DateTime
@@ -8348,6 +8397,14 @@ input MediaRenamePreviewInput {
 	Whether to calculate changes without applying them; omission uses the resolver default.
 	"""
 	dryRun: Boolean
+	"""
+	Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+	"""
+	renamableOnly: Boolean
+	"""
+	Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
+	"""
+	maxItems: Int
 }
 
 """
@@ -9766,6 +9823,15 @@ type MutationRoot {
 		"""
 		input: UpdateRecycleBinSettingsInput!
 	): RecycleBinSettingsPayload!
+	"""
+	Saves the automatic official-plugin patch update setting after checking the system-settings permission.
+	"""
+	updatePluginAutoUpdateSettings(
+		"""
+		Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+		"""
+		input: UpdatePluginAutoUpdateSettingsInput!
+	): PluginAutoUpdateSettingsPayload!
 	"""
 	Saves auto-backup scheduling and key changes after checking the system-settings permission.
 	"""
@@ -11360,9 +11426,47 @@ type PendingImportItemPayload {
 	"""
 	reason: String!
 	"""
+	Coarse bucket for `reason`, stable across scanner reason-code changes.
+	"""
+	reasonClass: PendingImportReasonClassValue!
+	"""
 	Metadata search attempts made for this item.
 	"""
 	searchAttempts: [PendingImportSearchAttemptPayload!]!
+	"""
+	Size of the pending file; null for folder items and unreadable files.
+	"""
+	sizeBytes: Long
+	"""
+	When the scanner first recorded this item.
+	"""
+	createdAt: DateTime!
+}
+
+"""
+Coarse bucket for why a pending import is awaiting resolution.
+
+The free-text `reason` field remains the authoritative scanner code; this
+enum is the stable grouping the dashboard filters on, so a new scanner code
+surfaces as `OTHER` instead of breaking clients.
+"""
+enum PendingImportReasonClassValue {
+	"""
+	Metadata lookup returned no candidates to choose from.
+	"""
+	UNMATCHED
+	"""
+	Metadata lookup returned candidates but none could be accepted automatically.
+	"""
+	AMBIGUOUS
+	"""
+	The file's media metadata could not be read, so its quality is unknown.
+	"""
+	QUALITY_UNKNOWN
+	"""
+	Any other scanner reason, including parse and folder-ownership problems.
+	"""
+	OTHER
 }
 
 """
@@ -11567,6 +11671,16 @@ type PlexServerDiscoveryPayload {
 	Discovered server name.
 	"""
 	name: String!
+}
+
+"""
+Automatic official-plugin patch update setting.
+"""
+type PluginAutoUpdateSettingsPayload {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
 }
 
 """
@@ -12588,6 +12702,10 @@ type QueryRoot {
 		permission: LibraryPermissionValue
 	): [LibraryPayload!]!
 	"""
+	List root folders of libraries the caller can view, with the disk usage of each backing filesystem.
+	"""
+	storageRoots: [StorageRootUsagePayload!]!
+	"""
 	List media requests visible to the caller, optionally filtered by facet, libraries, and status.
 	"""
 	mediaRequests(
@@ -12794,6 +12912,15 @@ type QueryRoot {
 		"""
 		limit: Int
 	): [TitleReleaseBlocklistEntryPayload!]!
+	"""
+	Return grab, upgrade, import, and failure counts for a trailing window and the window before it.
+	"""
+	dashboardActivityStats(
+		"""
+		Length of each window in hours; defaults to 24 and is clamped to 1 through 168.
+		"""
+		windowHours: Int! = 24
+	): DashboardActivityStatsPayload!
 	"""
 	List recent activity events with zero-based offset pagination.
 	"""
@@ -13146,6 +13273,10 @@ type QueryRoot {
 	Returns whether the recycle bin is enabled for the authenticated actor.
 	"""
 	recycleBinSettings: RecycleBinSettingsPayload!
+	"""
+	Returns whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	pluginAutoUpdateSettings: PluginAutoUpdateSettingsPayload!
 	"""
 	Returns auto-backup scheduling metadata without exposing the backup key.
 	"""
@@ -15519,6 +15650,36 @@ input StartExternalImportProwlarrWarmupInput {
 }
 
 """
+Filesystem usage of the volume backing one library root folder.
+"""
+type StorageRootUsagePayload {
+	"""
+	Configured root-folder path as stored on the library.
+	"""
+	path: String!
+	"""
+	ID of the library that owns this root folder.
+	"""
+	libraryId: ID!
+	"""
+	Name of the library that owns this root folder.
+	"""
+	libraryName: String!
+	"""
+	Media facet of the library that owns this root folder.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Bytes in use on the backing filesystem; null when it cannot be inspected.
+	"""
+	usedBytes: Long
+	"""
+	Total bytes on the backing filesystem; null when it cannot be inspected.
+	"""
+	totalBytes: Long
+}
+
+"""
 Stream identifier scope for event subscriptions.
 """
 enum StreamKindValue {
@@ -16328,6 +16489,46 @@ enum TitleCatalogSortKeyValue {
 }
 
 """
+One cast or crew credit cached from the title's last metadata hydration.
+"""
+type TitleCreditPayload {
+	"""
+	Credit kind exactly as the metadata provider spelled it, e.g. `actor`,
+	`voice_actor`, `director`, `writer`, `creator`, `composer`. Kept as a
+	string so a new provider kind reaches clients without a schema break.
+	"""
+	kind: String!
+	"""
+	Person's display name in the hydration language.
+	"""
+	personName: String!
+	"""
+	Person's name in their original language, or empty when the provider has none.
+	"""
+	personOriginalName: String!
+	"""
+	Proxied portrait for this person, or null when the provider has no image.
+	"""
+	personImageUrl: String
+	"""
+	Character played, or empty for crew credits.
+	"""
+	character: String!
+	"""
+	Language tag this credit was hydrated in, or empty when the provider has none.
+	"""
+	language: String!
+	"""
+	Provider billing rank; lower sorts closer to top billing.
+	"""
+	billingOrder: Int!
+	"""
+	Episodes this person appears in, or null for titles the provider does not count.
+	"""
+	episodeCount: Int
+}
+
+"""
 One external rating source and its normalized score.
 """
 type TitleExternalRatingPayload {
@@ -16374,9 +16575,21 @@ type TitleHistoryEventPayload {
 	"""
 	titleName: String
 	"""
+	Poster URL of the title, or null when the title is gone or has no poster.
+	"""
+	posterUrl: String
+	"""
+	Library owning the title, or null when the event cannot be attributed.
+	"""
+	libraryId: ID
+	"""
 	Media facet, or null when the event is not facet-specific.
 	"""
 	facet: MediaFacetValue
+	"""
+	Bytes imported or upgraded; null for other event types and for events recorded before sizes were captured.
+	"""
+	sizeBytes: Long
 	"""
 	Episode ID, or null when not episode-specific.
 	"""
@@ -17071,6 +17284,20 @@ type TitlePayload {
 	Aggregated title ratings; the rating is null and source lists are empty when no rating exists.
 	"""
 	ratings: TitleRatingPayload!
+	"""
+	Cast and crew cached from this title's last metadata hydration, ordered
+	by billing rank. Reads the local cache only; hydration refills it.
+	"""
+	credits(
+		"""
+		Credit kinds to include, e.g. ["actor", "voice_actor"] for cast. Omit or leave empty for every cached kind.
+		"""
+		kinds: [String!],
+		"""
+		Maximum credits to return; defaults to 15 and clamps to 0 through 50.
+		"""
+		limit: Int! = 15
+	): [TitleCreditPayload!]!
 	"""
 	Discovery items related to this title, limited to the requested count.
 	"""
@@ -18250,6 +18477,16 @@ input UpdateNotificationSubscriptionInput {
 	Replacement enabled state, or null to leave it unchanged.
 	"""
 	isEnabled: Boolean
+}
+
+"""
+Automatic official-plugin patch update setting.
+"""
+input UpdatePluginAutoUpdateSettingsInput {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
 }
 
 """

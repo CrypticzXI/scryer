@@ -32,6 +32,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
             result_count: 0,
             top_results: Vec::new(),
         }],
+        size_bytes: Some(1_234_567_890),
         created_at: created_at.clone(),
         updated_at: updated_at.clone(),
     };
@@ -65,7 +66,10 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed[0].search_attempts.len(), 1);
     assert_eq!(listed[0].search_attempts[0].query, "Unknown Movie");
     assert_eq!(listed[0].created_at, created_at);
+    assert_eq!(listed[0].size_bytes, Some(1_234_567_890));
 
+    // The rescan reports no size (as a folder-shaped or unreadable candidate
+    // would); the upsert must keep the size the earlier scan recorded.
     let updated = LibraryScanUnmatchedItem {
         scan_session_id: "session-2".to_string(),
         reason_code: "no_acceptable_metadata_match".to_string(),
@@ -77,6 +81,7 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
                 "Known Movie 2 (2020)".to_string(),
             ],
         }],
+        size_bytes: None,
         created_at: "2026-04-08T00:00:00Z".to_string(),
         updated_at: "2026-04-08T01:00:00Z".to_string(),
         ..item.clone()
@@ -106,6 +111,11 @@ async fn library_scan_unmatched_items_round_trip_and_preserve_created_at() {
     assert_eq!(listed_after_update[0].created_at, item.created_at);
     assert_eq!(listed_after_update[0].updated_at, updated.updated_at);
     assert_eq!(listed_after_update[0].search_attempts[0].result_count, 2);
+    assert_eq!(
+        listed_after_update[0].size_bytes,
+        Some(1_234_567_890),
+        "a sizeless rescan must not erase a previously recorded size"
+    );
 
     library_scan_unmatched
         .delete_library_scan_unmatched_item(&item.library_id, MediaFacet::Movie, &item.item_path)
@@ -167,6 +177,7 @@ async fn library_scan_unmatched_upsert_heals_legacy_id_on_library_path_conflict(
         reason_code: "legacy_row".to_string(),
         error_message: None,
         search_attempts: Vec::new(),
+        size_bytes: None,
         created_at: created_at.clone(),
         updated_at: created_at.clone(),
     };
@@ -195,6 +206,7 @@ async fn library_scan_unmatched_upsert_heals_legacy_id_on_library_path_conflict(
             result_count: 1,
             top_results: vec!["Harbor Pals".to_string()],
         }],
+        size_bytes: None,
         created_at: "2026-04-08T00:00:00Z".to_string(),
         updated_at: "2026-04-08T01:00:00Z".to_string(),
     };
@@ -259,6 +271,7 @@ async fn library_scan_unmatched_upsert_preserves_ignored_status_for_scan_refresh
         reason_code: "no_metadata_search_results".to_string(),
         error_message: None,
         search_attempts: vec![],
+        size_bytes: None,
         created_at: "2026-04-07T00:00:00Z".to_string(),
         updated_at: "2026-04-07T00:00:00Z".to_string(),
     };

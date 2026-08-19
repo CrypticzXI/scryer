@@ -2,11 +2,6 @@ use super::*;
 use std::collections::HashSet;
 use tracing::warn;
 
-#[cfg(unix)]
-fn to_u64<T: Into<u64>>(value: T) -> u64 {
-    value.into()
-}
-
 fn health_root_label(facet: &MediaFacet) -> &'static str {
     match facet {
         MediaFacet::Movie => "Movies",
@@ -355,13 +350,6 @@ impl AppUseCase {
             }
         };
 
-        #[cfg(not(unix))]
-        {
-            let _ = root_folders;
-            Vec::new()
-        }
-
-        #[cfg(unix)]
         {
             let mut seen = HashSet::new();
             let mut results = Vec::new();
@@ -372,8 +360,8 @@ impl AppUseCase {
                 }
                 let label = health_library_root_label(&root);
 
-                if let Some(stat) = statvfs_path(&root.path) {
-                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                if let Some(space) = filesystem_space(&root.path) {
+                    let free = space.available_bytes;
                     let mb_100 = 100 * 1024 * 1024;
                     let mb_500 = 500 * 1024 * 1024;
 

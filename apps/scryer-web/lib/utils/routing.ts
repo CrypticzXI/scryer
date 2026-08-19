@@ -200,6 +200,12 @@ export type ParsedAppRoute = {
 export type AppRouteResolution =
   | { kind: "canonical"; route: ParsedAppRoute }
   | { kind: "redirect"; to: string }
+  // `/` cannot be resolved by path alone: admins land on the dashboard and
+  // everyone else on the catalog, and permissions only exist once the auth
+  // bootstrap has run inside the shell. Parsing stays pure by naming the
+  // undecided case; the shell picks the destination the same way it already
+  // picks one for a route the user may not access.
+  | { kind: "landing" }
   | { kind: "not-found" };
 
 const MEDIA_SETTINGS_SECTIONS = new Set<ContentSettingsSection>([
@@ -391,7 +397,19 @@ export function resolveAppRoute(
   const root = normalizedSegments[0] ?? "";
 
   if (!root) {
-    return redirectTo("/movies", search, hash);
+    return { kind: "landing" };
+  }
+
+  if (root === "dashboard") {
+    if (rawSegments.length !== 1) {
+      return { kind: "not-found" };
+    }
+    return canonicalOrRedirect(
+      currentPath,
+      parsedRoute("/dashboard", "dashboard"),
+      search,
+      hash,
+    );
   }
 
   if (isMediaView(root)) {

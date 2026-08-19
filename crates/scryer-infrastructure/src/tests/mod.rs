@@ -13,7 +13,7 @@ use scryer_application::{
     ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository,
     ShowRepository, SortDirection, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
-    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
+    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleCredit, TitleExternalIdLookup,
     TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
     TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRatingSummary,
     TitleRepository, UserRepository,

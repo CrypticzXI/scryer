@@ -237,6 +237,40 @@ const TITLE_RATING_SUMMARY_FIELDS = `
         url
       }`;
 
+/**
+ * Credit kinds the metadata provider uses for on-screen performers. Crew kinds
+ * (`director`, `writer`, `creator`, `composer`) are cached server-side but have
+ * no UI yet, so the overview asks for exactly these.
+ */
+export const TITLE_CAST_CREDIT_KINDS = ["actor", "voice_actor"] as const;
+
+/**
+ * Credits fetched per title — the server's clamp. The overview splits these
+ * into an original-cast rail and a dub rail (anime carries a Japanese and an
+ * English voice actor per character), so fetching only one rail's worth would
+ * starve whichever cast sorted second.
+ */
+export const TITLE_CAST_CREDIT_LIMIT = 50;
+
+/**
+ * Cast for the overview rails. The server does the kind filtering and
+ * billing-order sort; the language split and per-rail cap happen client-side in
+ * lib/utils/title-cast.
+ */
+const TITLE_CAST_CREDIT_FIELDS = `
+      kind
+      personName
+      personOriginalName
+      personImageUrl
+      character
+      language
+      billingOrder
+      episodeCount`;
+
+const TITLE_CAST_CREDIT_SELECTION = `
+    credits(kinds: [${TITLE_CAST_CREDIT_KINDS.map((kind) => `"${kind}"`).join(", ")}], limit: ${TITLE_CAST_CREDIT_LIMIT}) {${TITLE_CAST_CREDIT_FIELDS}
+    }`;
+
 export const PROVIDER_CONFIG_VALUE_FIELDS = `
     key
     label
@@ -250,10 +284,10 @@ export const PROVIDER_CONFIG_VALUE_FIELDS = `
     helpText
     value {
       __typename
-      ... on StringConfigValuePayload { value }
-      ... on BoolConfigValuePayload { value }
-      ... on IntConfigValuePayload { value }
-      ... on FloatConfigValuePayload { value }
+      ... on StringConfigValuePayload { stringValue: value }
+      ... on BoolConfigValuePayload { boolValue: value }
+      ... on IntConfigValuePayload { intValue: value }
+      ... on FloatConfigValuePayload { floatValue: value }
       ... on SecretConfigValuePayload { stored }
     }`;
 
@@ -328,9 +362,8 @@ const SERIES_SIDE_PANEL_COLLECTION_FIELDS = `
       episodesOwned
       episodesMonitored
       episodesTotal
-      createdAt
-      episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
-      }`;
+      episodeRecordsTotal
+      createdAt`;
 
 const TITLE_MEDIA_FILE_FIELDS = `
       id
@@ -531,7 +564,7 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
       }
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }
+    }${TITLE_CAST_CREDIT_SELECTION}
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
@@ -570,7 +603,7 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }`;
+    }${TITLE_CAST_CREDIT_SELECTION}`;
 
 export const TITLE_MUTATION_RESULT_FIELDS = `
     id
@@ -919,6 +952,21 @@ export const seriesSidePanelOverviewQuery = `query SeriesSidePanelOverview($id: 
   }
   setupStatus {
     hasDownloadClients
+  }
+}`;
+
+export const seriesCollectionEpisodesQuery = `query SeriesCollectionEpisodes($id: ID!) {
+  collectionById(id: $id) {
+    id
+    episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
+    }
+  }
+}`;
+
+export const episodeCollectionRefQuery = `query EpisodeCollectionRef($titleId: ID!, $episodeId: ID!) {
+  episode(titleId: $titleId, episodeId: $episodeId) {
+    id
+    collectionId
   }
 }`;
 
@@ -1773,7 +1821,7 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
   }
 }`;
 
-export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
+export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Long, $afterSequence: Long, $limit: Int) {
   auditLog(
     eventTypes: $eventTypes
     titleId: $titleId
@@ -3072,6 +3120,12 @@ export const recycleBinSettingsQuery = `query RecycleBinSettings {
   }
 }`;
 
+export const pluginAutoUpdateSettingsQuery = `query PluginAutoUpdateSettings {
+  pluginAutoUpdateSettings {
+    enabled
+  }
+}`;
+
 export const recycledItemsQuery = `query RecycledItems($libraryIds: [ID!]) {
   recycledItems(libraryIds: $libraryIds) {
     items {
@@ -3580,6 +3634,126 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
     createdByUserId
     createdAt
     updatedAt
+  }
+}`;
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+// Split by refresh cadence rather than by panel: the overview is the slow
+// half-page of counters and provider health, while requests, imports and the
+// import history each refetch on their own when the operator acts on them.
+
+export const dashboardOverviewQuery = `query DashboardOverview($activityWindowHours: Int!) {
+  me {
+    id
+    username
+  }
+  navigationBadgeCounts {
+    activityImportCount
+    pendingMediaRequestCounts {
+      movie
+      series
+      anime
+    }
+  }
+  systemHealth {
+    titlesMovie
+    titlesSeries
+    titlesAnime
+    indexerStats {
+      indexerId
+      indexerName
+      queriesLast24H
+      failedLast24H
+      grabsLast24H
+      apiCurrent
+      apiMax
+    }
+  }
+  dashboardActivityStats(windowHours: $activityWindowHours) {
+    current {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+    previous {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+  }
+  indexers {
+    id
+    name
+    providerType
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+  }
+  downloadClientConfigs {
+    id
+    name
+    clientType
+    isEnabled
+    status
+    lastError
+    lastSeenAt
+  }
+  storageRoots {
+    path
+    libraryId
+    libraryName
+    facet
+    usedBytes
+    totalBytes
+  }
+}`;
+
+export const dashboardPendingRequestsQuery = `query DashboardPendingRequests {
+  mediaRequests(status: PENDING) {
+    id
+    libraryId
+    facet
+    title
+    year
+    posterUrl
+    requestedQualityProfileId
+    requestedMonitorType
+    createdAt
+    requesters {
+      userId
+      username
+      avatarUrl
+    }
+  }
+  libraries(permission: MANAGE_TITLES) {
+    id
+    name
+    facet
+    qualityProfileId
+    requestQualityProfileDefaultId
+  }
+}`;
+
+export const dashboardRecentImportsQuery = `query DashboardRecentImports($limit: Int!) {
+  titleHistory(
+    filter: { eventTypes: [IMPORTED, FILE_UPGRADED], limit: $limit }
+  ) {
+    totalCount
+    items {
+      id
+      titleId
+      titleName
+      posterUrl
+      facet
+      libraryId
+      eventType
+      quality
+      sizeBytes
+      occurredAt
+    }
   }
 }`;
 

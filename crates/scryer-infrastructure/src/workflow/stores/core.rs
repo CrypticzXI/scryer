@@ -944,6 +944,69 @@ pub(crate) fn build_title_history_filter_sql(
     (format!(" WHERE {}", clauses.join(" AND ")), args)
 }
 
+/// Domain event types counted by the dashboard activity aggregate, in the
+/// order their placeholders are bound.
+pub(crate) const DASHBOARD_ACTIVITY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
+    DomainEventType::ReleaseGrabbed,
+    DomainEventType::MediaFileUpgraded,
+    DomainEventType::ImportCompleted,
+    DomainEventType::ImportRejected,
+    DomainEventType::DownloadFailed,
+];
+
+/// Build the grouped `COUNT(*)` that powers the dashboard activity tiles.
+///
+/// One statement covers both windows: the `window_key` projection buckets each
+/// row into `current` (`>= current_start`) or `previous`, and the grouping keys
+/// are the event type plus the import status extracted from the payload, which
+/// is what separates a failed import from a skipped one. Library scoping is a
+/// join onto `titles` rather than an `IN` list of title ids, so the bind count
+/// stays proportional to the number of libraries instead of the catalog size.
+///
+/// Callers must reject an empty `library_ids` before calling: an empty `IN ()`
+/// list is not valid SQL on either dialect.
+pub(crate) fn build_dashboard_activity_stats_sql(
+    datastore: &StoreDatastore,
+    library_ids: &[String],
+    previous_start: DateTime<Utc>,
+    current_start: DateTime<Utc>,
+    current_end: DateTime<Utc>,
+) -> (String, Vec<SqlArg>) {
+    let import_status = json_extract(datastore, "domain_events.payload_json", "data", "status");
+    let mut args = vec![SqlArg::Timestamp(current_start)];
+    args.push(SqlArg::Timestamp(previous_start));
+    args.push(SqlArg::Timestamp(current_end));
+    args.extend(
+        DASHBOARD_ACTIVITY_DOMAIN_EVENT_TYPES
+            .iter()
+            .map(|event_type| SqlArg::Text(event_type.as_str().to_string())),
+    );
+    args.push(SqlArg::Text(
+        DomainEventType::ImportRejected.as_str().into(),
+    ));
+    args.push(SqlArg::Text(ImportStatus::Failed.as_str().into()));
+    args.extend(library_ids.iter().cloned().map(SqlArg::Text));
+
+    let sql = format!(
+        "SELECT
+             CASE WHEN domain_events.occurred_at >= {{}} THEN 'current' ELSE 'previous' END AS window_key,
+             domain_events.event_type AS event_type,
+             {import_status} AS import_status,
+             COUNT(*) AS event_count
+           FROM domain_events
+           JOIN titles ON titles.id = domain_events.title_id
+          WHERE domain_events.occurred_at >= {{}}
+            AND domain_events.occurred_at < {{}}
+            AND domain_events.event_type IN ({event_type_placeholders})
+            AND (domain_events.event_type <> {{}} OR {import_status} = {{}})
+            AND titles.library_id IN ({library_placeholders})
+          GROUP BY window_key, event_type, import_status",
+        event_type_placeholders = placeholders(DASHBOARD_ACTIVITY_DOMAIN_EVENT_TYPES.len()),
+        library_placeholders = placeholders(library_ids.len()),
+    );
+    (sql, args)
+}
+
 pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::TitleRematched,
     DomainEventType::ReleaseGrabbed,

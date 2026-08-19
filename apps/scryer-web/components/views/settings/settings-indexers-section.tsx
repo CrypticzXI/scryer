@@ -977,7 +977,7 @@ export function SettingsIndexersSection({
             </TableHeader>
             <TableBody>
               {indexerProxyConfigs.map((proxy) => (
-                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)}>
+                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)} data-ui="settings-table-row">
                   <TableCell className="font-medium">{proxy.name}</TableCell>
                   <TableCell>
                     {proxy.providerType === "trawl" ? "Trawl" : "Byparr"}
@@ -1242,6 +1242,7 @@ export function SettingsIndexersSection({
                   : null;
                 return (
                 <TableRow
+                  data-ui="settings-table-row"
                   key={indexer.id}
                   id={selectorId("settings-indexer-row", indexer.name)}
                   className={indexer.isManaged ? "bg-muted/25" : undefined}

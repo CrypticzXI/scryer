@@ -1,4 +1,5 @@
 export type ViewId =
+  | "dashboard"
   | "movies"
   | "series"
   | "anime"

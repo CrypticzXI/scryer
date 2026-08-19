@@ -15,10 +15,29 @@ const QUOTA_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 struct IndexerEntry {
     indexer_name: String,
     queries: Vec<(DateTime<Utc>, bool)>,
+    /// Timestamps of releases Scryer grabbed through this indexer. Shares the
+    /// rolling 24-hour window and in-memory-only lifetime of `queries`; unlike
+    /// `grab_current` below, this is Scryer's own count rather than a
+    /// provider-reported quota reading, so it is never persisted.
+    grabs: Vec<DateTime<Utc>>,
     api_current: Option<u32>,
     api_max: Option<u32>,
     grab_current: Option<u32>,
     grab_max: Option<u32>,
+}
+
+impl IndexerEntry {
+    fn new(indexer_name: &str) -> Self {
+        Self {
+            indexer_name: indexer_name.to_string(),
+            queries: Vec::new(),
+            grabs: Vec::new(),
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -91,6 +110,7 @@ impl InMemoryIndexerStatsTracker {
     fn prune_old(entry: &mut IndexerEntry) {
         let cutoff = Utc::now() - chrono::Duration::hours(24);
         entry.queries.retain(|(ts, _)| *ts > cutoff);
+        entry.grabs.retain(|ts| *ts > cutoff);
     }
 
     fn schedule_quota_flush(&self) {
@@ -167,16 +187,19 @@ impl IndexerStatsTracker for InMemoryIndexerStatsTracker {
         let mut entries = self.entries.lock().unwrap();
         let entry = entries
             .entry(indexer_id.to_string())
-            .or_insert_with(|| IndexerEntry {
-                indexer_name: indexer_name.to_string(),
-                queries: Vec::new(),
-                api_current: None,
-                api_max: None,
-                grab_current: None,
-                grab_max: None,
-            });
+            .or_insert_with(|| IndexerEntry::new(indexer_name));
         entry.indexer_name = indexer_name.to_string();
         entry.queries.push((Utc::now(), success));
+        Self::prune_old(entry);
+    }
+
+    fn record_grab(&self, indexer_id: &str, indexer_name: &str) {
+        let mut entries = self.entries.lock().unwrap();
+        let entry = entries
+            .entry(indexer_id.to_string())
+            .or_insert_with(|| IndexerEntry::new(indexer_name));
+        entry.indexer_name = indexer_name.to_string();
+        entry.grabs.push(Utc::now());
         Self::prune_old(entry);
     }
 
@@ -225,6 +248,7 @@ impl IndexerStatsTracker for InMemoryIndexerStatsTracker {
             .iter_mut()
             .map(|(id, entry)| {
                 entry.queries.retain(|(ts, _)| *ts > cutoff);
+                entry.grabs.retain(|ts| *ts > cutoff);
                 let successful = entry.queries.iter().filter(|(_, s)| *s).count() as u32;
                 let total = entry.queries.len() as u32;
                 let last_query_at = entry.queries.last().map(|(ts, _)| ts.to_rfc3339());
@@ -234,6 +258,7 @@ impl IndexerStatsTracker for InMemoryIndexerStatsTracker {
                     queries_last_24h: total,
                     successful_last_24h: successful,
                     failed_last_24h: total - successful,
+                    grabs_last_24h: entry.grabs.len() as u32,
                     last_query_at,
                     api_current: entry.api_current,
                     api_max: entry.api_max,
@@ -256,6 +281,123 @@ mod tests {
         writer_gate: Arc<tokio::sync::Mutex<()>>,
     ) -> InMemoryIndexerStatsTracker {
         InMemoryIndexerStatsTracker::new(Some(StoreDatastore::sqlite(pool.clone(), writer_gate)))
+    }
+
+    /// Backdate every recorded grab for one indexer, standing in for time
+    /// passing without making the test sleep.
+    fn backdate_grabs(
+        tracker: &InMemoryIndexerStatsTracker,
+        indexer_id: &str,
+        age: chrono::Duration,
+    ) {
+        let mut entries = tracker.entries.lock().unwrap();
+        let entry = entries.get_mut(indexer_id).expect("indexer entry");
+        for grab in entry.grabs.iter_mut() {
+            *grab -= age;
+        }
+    }
+
+    fn grabs_for(tracker: &InMemoryIndexerStatsTracker, indexer_id: &str) -> u32 {
+        tracker
+            .all_stats()
+            .into_iter()
+            .find(|stats| stats.indexer_id == indexer_id)
+            .map(|stats| stats.grabs_last_24h)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn record_grab_increments_the_rolling_24h_count() {
+        let tracker = InMemoryIndexerStatsTracker::default();
+        assert_eq!(grabs_for(&tracker, "idx-grab"), 0);
+
+        tracker.record_grab("idx-grab", "Grabby Indexer");
+        tracker.record_grab("idx-grab", "Grabby Indexer");
+
+        assert_eq!(grabs_for(&tracker, "idx-grab"), 2);
+        let stats = tracker.all_stats();
+        let entry = stats
+            .iter()
+            .find(|stats| stats.indexer_id == "idx-grab")
+            .expect("grab-only indexer should appear in stats");
+        assert_eq!(entry.indexer_name, "Grabby Indexer");
+        // Grabs must not be confused with queries or with provider quota counters.
+        assert_eq!(entry.queries_last_24h, 0);
+        assert_eq!(entry.grab_current, None);
+        assert_eq!(entry.grab_max, None);
+    }
+
+    #[test]
+    fn grabs_older_than_the_window_are_pruned() {
+        let tracker = InMemoryIndexerStatsTracker::default();
+        tracker.record_grab("idx-prune", "Pruned Indexer");
+        assert_eq!(grabs_for(&tracker, "idx-prune"), 1);
+
+        backdate_grabs(&tracker, "idx-prune", chrono::Duration::hours(25));
+        assert_eq!(
+            grabs_for(&tracker, "idx-prune"),
+            0,
+            "a grab older than 24 hours must leave the window"
+        );
+
+        // A fresh grab after pruning still counts, and recording prunes too.
+        tracker.record_grab("idx-prune", "Pruned Indexer");
+        assert_eq!(grabs_for(&tracker, "idx-prune"), 1);
+    }
+
+    #[test]
+    fn recording_a_grab_prunes_expired_grabs_for_that_indexer() {
+        let tracker = InMemoryIndexerStatsTracker::default();
+        tracker.record_grab("idx-prune-on-write", "Indexer");
+        backdate_grabs(&tracker, "idx-prune-on-write", chrono::Duration::hours(25));
+
+        tracker.record_grab("idx-prune-on-write", "Indexer");
+
+        let entries = tracker.entries.lock().unwrap();
+        assert_eq!(
+            entries
+                .get("idx-prune-on-write")
+                .expect("indexer entry")
+                .grabs
+                .len(),
+            1,
+            "record_grab should drop expired grabs like record_query does"
+        );
+    }
+
+    #[test]
+    fn grabs_do_not_bleed_between_indexers() {
+        let tracker = InMemoryIndexerStatsTracker::default();
+        tracker.record_grab("idx-a", "Indexer A");
+        tracker.record_grab("idx-a", "Indexer A");
+        tracker.record_grab("idx-b", "Indexer B");
+        tracker.record_query("idx-c", "Indexer C", true);
+
+        assert_eq!(grabs_for(&tracker, "idx-a"), 2);
+        assert_eq!(grabs_for(&tracker, "idx-b"), 1);
+        assert_eq!(
+            grabs_for(&tracker, "idx-c"),
+            0,
+            "an indexer that was only queried has no grabs"
+        );
+    }
+
+    #[test]
+    fn grabs_and_queries_share_an_entry_without_overwriting_each_other() {
+        let tracker = InMemoryIndexerStatsTracker::default();
+        tracker.record_query("idx-mixed", "Mixed Indexer", true);
+        tracker.record_grab("idx-mixed", "Mixed Indexer");
+        tracker.record_query("idx-mixed", "Mixed Indexer", false);
+
+        let stats = tracker.all_stats();
+        let entry = stats
+            .iter()
+            .find(|stats| stats.indexer_id == "idx-mixed")
+            .expect("mixed indexer stats");
+        assert_eq!(entry.queries_last_24h, 2);
+        assert_eq!(entry.successful_last_24h, 1);
+        assert_eq!(entry.failed_last_24h, 1);
+        assert_eq!(entry.grabs_last_24h, 1);
     }
 
     #[test]

@@ -178,6 +178,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                     studio: "ufotable".into(),
                     tmdb_release_date: Some("2020-10-16".into()),
                     ratings: Default::default(),
+                    credits: Vec::new(),
                 },
             )]),
         }))

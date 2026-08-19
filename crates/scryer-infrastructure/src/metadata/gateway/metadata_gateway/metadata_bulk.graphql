@@ -58,6 +58,19 @@ fragment MovieFields on TvdbMovie {
     votes
     url
   }
+  credits {
+    kind
+    person_id
+    person_name
+    person_original_name
+    person_image_url
+    person_source
+    person_external_id
+    character_name
+    language
+    billing_order
+    episode_count
+  }
   artworks {
     kind
     url
@@ -97,6 +110,19 @@ fragment SeriesFields on TvdbSeries {
     normalized
     votes
     url
+  }
+  credits {
+    kind
+    person_id
+    person_name
+    person_original_name
+    person_image_url
+    person_source
+    person_external_id
+    character_name
+    language
+    billing_order
+    episode_count
   }
   aliases
   tagged_aliases {

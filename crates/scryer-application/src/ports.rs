@@ -1117,6 +1117,11 @@ pub trait TitleRepository: Send + Sync {
         }
         Ok(ratings)
     }
+    /// Title-local cache of the credits SMG returned for the title's last successful
+    /// hydration, in SMG's order.
+    async fn get_title_credits(&self, _title_id: &str) -> AppResult<Vec<TitleCredit>> {
+        Ok(Vec::new())
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -2653,6 +2658,17 @@ pub trait DomainEventRepository: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> AppResult<Vec<DomainEvent>>;
+    /// Aggregate dashboard activity counts for two adjacent time windows in one
+    /// grouped SQL query. Events are restricted to titles in `library_ids`, the
+    /// current window is `[current_start, current_end)`, and the previous window
+    /// is `[previous_start, current_start)`. An empty `library_ids` counts nothing.
+    async fn count_dashboard_activity_events(
+        &self,
+        library_ids: &[String],
+        previous_start: chrono::DateTime<chrono::Utc>,
+        current_start: chrono::DateTime<chrono::Utc>,
+        current_end: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<DashboardActivityStats>;
     async fn list_after_sequence(
         &self,
         after_sequence: i64,
@@ -2967,6 +2983,12 @@ pub trait HousekeepingRepository: Send + Sync {
 
 pub trait IndexerStatsTracker: Send + Sync {
     fn record_query(&self, indexer_id: &str, indexer_name: &str, success: bool);
+    /// Record one release grabbed through this indexer and accepted by a
+    /// download client.
+    ///
+    /// Shares the in-memory rolling 24-hour window that backs `record_query`,
+    /// with the same lifetime: it is not persisted and resets on restart.
+    fn record_grab(&self, indexer_id: &str, indexer_name: &str);
     fn record_api_limits(
         &self,
         indexer_id: &str,

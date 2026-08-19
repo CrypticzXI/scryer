@@ -7,9 +7,10 @@ use scryer_application::{
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, ImageProxyKind, JwtSessionScope, MediaRequestCounts,
-    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
-    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
-    TitleHistoryFilter, is_supported_title_history_event_type, supported_title_history_event_types,
+    OAuthAuthorizationSource, PendingImportCounts, RenameWriteAction, RuntimePathStyle,
+    SCRYER_VERSION, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort,
+    TitleCatalogSortKey, TitleHistoryFilter, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -27,16 +28,16 @@ use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
     discovery_items_query_from_input, from_activity_event, from_backup_info,
-    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
-    from_discovery_home, from_discovery_home_cards, from_discovery_home_filter_options,
-    from_discovery_item, from_discovery_items_result, from_domain_event, from_download_queue_item,
-    from_episode, from_external_import_monitor_warmup_progress, from_job_definition, from_job_run,
-    from_library, from_library_scan_session, from_library_settings, from_linked_account,
-    from_media_rename_plan, from_media_request, from_media_request_counts,
-    from_pending_import_connection, from_pending_import_counts, from_pending_release,
-    from_provider_type, from_runtime_path_style, from_smg_scryer_update_notice,
-    from_smg_version_compatibility_notice, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page,
+    from_catalog_discovery, from_collection, from_dashboard_activity_stats, from_delete_preview,
+    from_delete_titles_preview, from_discovery_home, from_discovery_home_cards,
+    from_discovery_home_filter_options, from_discovery_item, from_discovery_items_result,
+    from_domain_event, from_download_queue_item, from_episode,
+    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
+    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
+    from_media_request, from_media_request_counts, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
+    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_storage_root_usage,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
@@ -814,6 +815,14 @@ impl CatalogQueries {
         Ok(libraries.into_iter().map(from_library).collect())
     }
 
+    /// List root folders of libraries the caller can view, with the disk usage of each backing filesystem.
+    async fn storage_roots(&self, ctx: &Context<'_>) -> GqlResult<Vec<StorageRootUsagePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let roots = app.storage_root_usage(&actor).await.map_err(to_gql_error)?;
+        Ok(roots.into_iter().map(from_storage_root_usage).collect())
+    }
+
     /// List media requests visible to the caller, optionally filtered by facet, libraries, and status.
     async fn media_requests(
         &self,
@@ -1017,7 +1026,7 @@ impl CatalogQueries {
         let actor = actor_from_ctx(ctx)?;
         let _ = input.dry_run;
         let facet = input.facet.into_domain();
-        let plan = if let Some(title_id) = input.title_id {
+        let mut plan = if let Some(title_id) = input.title_id {
             let title_id = title_id.to_string();
             app.preview_rename_for_title(&actor, &title_id, facet)
                 .await
@@ -1027,6 +1036,16 @@ impl CatalogQueries {
                 .await
                 .map_err(to_gql_error)?
         };
+
+        // Counts and the fingerprint stay derived from the whole plan so apply
+        // still validates against every file, not just the returned sample.
+        if input.renamable_only.unwrap_or(false) {
+            plan.items
+                .retain(|item| matches!(item.write_action, RenameWriteAction::Move));
+        }
+        if let Some(max_items) = input.max_items {
+            plan.items.truncate(max_items.max(0) as usize);
+        }
 
         Ok(from_media_rename_plan(plan))
     }
@@ -1277,6 +1296,25 @@ impl CatalogQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl ActivityQueries {
+    /// Return grab, upgrade, import, and failure counts for a trailing window and the window before it.
+    async fn dashboard_activity_stats(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            default = 24,
+            desc = "Length of each window in hours; defaults to 24 and is clamped to 1 through 168."
+        )]
+        window_hours: i64,
+    ) -> GqlResult<DashboardActivityStatsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let stats = app
+            .dashboard_activity_stats(&actor, window_hours)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_dashboard_activity_stats(stats))
+    }
+
     /// List recent activity events with zero-based offset pagination.
     async fn activity_events(
         &self,
@@ -1586,7 +1624,7 @@ impl ActivityQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_pending_import_connection(connection, offset))
+        Ok(from_pending_import_connection(connection, offset).map_err(to_gql_error)?)
     }
 
     /// Search metadata candidates for one pending import.

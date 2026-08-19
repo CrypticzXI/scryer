@@ -1,3 +1,4 @@
+import { ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
 
@@ -58,36 +59,38 @@ export function MediaRenamePlanPanel({
           errors: plan.errors,
         })}
       </div>
-      <div className="max-h-72 overflow-auto rounded-lg border border-border">
-        <table className="min-w-full text-sm">
-          <thead className="bg-card/70 text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left font-medium">{t("rename.currentPath")}</th>
-              <th className="px-3 py-2 text-left font-medium">{t("rename.proposedPath")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {plan.items.map((item, index) => (
-              <tr
-                key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
-                className="border-t border-border"
-              >
-                <td
+      <div className="max-h-96 overflow-auto rounded-lg border border-border">
+        <ul className="text-sm">
+          {plan.items.map((item, index) => (
+            <li
+              key={`${item.collectionId ?? "none"}-${item.currentPath ?? ""}-${index}`}
+              className="border-t border-border px-3 py-2 first:border-t-0"
+            >
+              {/* Shrink-wrapping the pair keeps the arrow centered on the
+                  paths themselves, not the whole row. */}
+              <div className="flex w-fit max-w-full flex-col items-start">
+                <span className="sr-only">{t("rename.currentPath")}</span>
+                <div
                   data-ui="media-rename-plan-current-path"
-                  className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground"
+                  className="break-all font-[var(--font-code)] text-xs text-muted-foreground"
                 >
                   {item.currentPath || "—"}
-                </td>
-                <td
+                </div>
+                <ArrowDown
+                  aria-hidden
+                  className="my-1 h-3.5 w-3.5 self-center text-[var(--scry-accent-text)]"
+                />
+                <span className="sr-only">{t("rename.proposedPath")}</span>
+                <div
                   data-ui="media-rename-plan-proposed-path"
-                  className="px-3 py-2 align-top font-[var(--font-code)] text-xs text-muted-foreground"
+                  className="break-all font-[var(--font-code)] text-xs text-card-foreground"
                 >
                   {item.proposedPath ?? "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
       </div>
       <div className="flex justify-end">
         <Button id={applyButtonId} size="sm" type="button" onClick={onApply} disabled={applyDisabled}>

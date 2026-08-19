@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
+import { TitleDownloadActivityPill } from "@/components/common/title-download-activity";
 import { releaseSupportsAdditionalFileQueue } from "@/lib/utils/release-queue-scope";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ActionTooltip, TooltipProvider } from "@/components/ui/tooltip";
@@ -122,6 +123,8 @@ type TitleTableProps = {
   scanLibraryLoading?: boolean;
   scanLibraryDisabled?: boolean;
   scanLibraryNotice?: string | null;
+  /** Titles with live, pending download work — shown as a pulsing row pill. */
+  activeDownloadTitleIds?: ReadonlySet<string>;
 };
 
 export const TitleTable = React.memo(function TitleTable({
@@ -161,6 +164,7 @@ export const TitleTable = React.memo(function TitleTable({
   scanLibraryLoading: scanLibraryLoadingProp,
   scanLibraryDisabled: scanLibraryDisabledProp,
   scanLibraryNotice,
+  activeDownloadTitleIds,
 }: TitleTableProps) {
   const catalogHasMoreTitles = catalogHasMoreTitlesProp ?? false;
   const catalogLoadingMoreTitles = catalogLoadingMoreTitlesProp ?? false;
@@ -586,6 +590,7 @@ export const TitleTable = React.memo(function TitleTable({
     const selectedContextPanelControlsId = isSelected
       ? contextPanelControlsId
       : undefined;
+    const downloadActive = activeDownloadTitleIds?.has(item.id) ?? false;
     const addedLabel =
       formatTitleDate(item.createdAt, dateTimeFormat) ?? t("label.unknown");
 
@@ -622,37 +627,42 @@ export const TitleTable = React.memo(function TitleTable({
             />
           </TableCell>
           <TableCell className="align-middle overflow-hidden">
-            <button
-              id={titleOverviewOpenButtonId(item.id)}
-              type="button"
-              onClick={() => handleActivateTitle(item)}
-              data-ui="title-name"
-              aria-current={isSelected ? "true" : undefined}
-              aria-controls={selectedContextPanelControlsId}
-              tabIndex={onSelectTitle ? -1 : undefined}
-              className="flex w-full min-w-0 items-center gap-3 overflow-hidden text-left text-[14px] font-semibold leading-5 text-[var(--scry-ink3)] hover:text-foreground"
-            >
-              <span
-                data-ui="poster-thumb"
-                className="relative h-[71px] w-12 shrink-0 overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                id={titleOverviewOpenButtonId(item.id)}
+                type="button"
+                onClick={() => handleActivateTitle(item)}
+                data-ui="title-name"
+                aria-current={isSelected ? "true" : undefined}
+                aria-controls={selectedContextPanelControlsId}
+                tabIndex={onSelectTitle ? -1 : undefined}
+                className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden text-left text-[14px] font-semibold leading-5 text-[var(--scry-ink3)] hover:text-foreground"
               >
-                <TitlePosterSlot
-                  src={posterThumbUrl}
-                  metadataFetchedAt={item.metadataFetchedAt}
-                  createdAt={item.createdAt}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
-                  emptyLabel={t("label.noArt")}
-                  loading="lazy"
-                />
                 <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(4,6,12,0.55))]"
-                />
-              </span>
-              <span className="block min-w-0 truncate">{item.name}</span>
-            </button>
+                  data-ui="poster-thumb"
+                  className="relative h-[71px] w-12 shrink-0 overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-soft)]"
+                >
+                  <TitlePosterSlot
+                    src={posterThumbUrl}
+                    metadataFetchedAt={item.metadataFetchedAt}
+                    createdAt={item.createdAt}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    placeholderClassName="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground"
+                    emptyLabel={t("label.noArt")}
+                    loading="lazy"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent_60%,rgba(4,6,12,0.55))]"
+                  />
+                </span>
+                <span className="block min-w-0 truncate">{item.name}</span>
+              </button>
+              {downloadActive ? (
+                <TitleDownloadActivityPill />
+              ) : null}
+            </div>
           </TableCell>
           {showYearColumn ? (
             <TableCell className="whitespace-nowrap text-center align-middle font-[var(--font-code)] text-[12.5px] tabular-nums text-[var(--scry-text4)]">

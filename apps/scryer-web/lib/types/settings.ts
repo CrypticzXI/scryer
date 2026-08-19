@@ -252,6 +252,10 @@ export type BackupSettings = {
   effectiveBackupPath: string;
 };
 
+export type PluginAutoUpdateSettings = {
+  enabled: boolean;
+};
+
 export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;

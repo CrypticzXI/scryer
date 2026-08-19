@@ -1031,6 +1031,8 @@ async fn handle_candidate_job_event(
                     year_hint: None,
                     reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
                     error_message: Some(error.to_string()),
+                    // Evidence failed before any file metadata was gathered.
+                    size_bytes: None,
                 },
             )
             .await

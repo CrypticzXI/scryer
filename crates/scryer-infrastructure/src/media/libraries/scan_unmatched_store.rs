@@ -11,7 +11,7 @@ use crate::storage::sql::json::{canonical_json_arg, json_text_or};
 
 const UNMATCHED_COLUMNS: &str = "id, library_id, facet, title_id, scan_session_id, scan_root,
     item_path, display_name, query, year_hint, reason_code, error_message,
-    search_attempts_json, status, created_at, updated_at";
+    search_attempts_json, status, size_bytes, created_at, updated_at";
 
 #[derive(Clone)]
 pub struct LibraryScanUnmatchedStore {
@@ -45,6 +45,7 @@ impl LibraryScanUnmatchedItemRepository for LibraryScanUnmatchedStore {
             SqlArg::OptText(item.error_message.clone()),
             canonical_json_arg(&item.search_attempts)?,
             SqlArg::Text(item.status.as_str().to_string()),
+            SqlArg::OptI64(item.size_bytes),
             timestamp_arg_for_datastore(&self.datastore, &item.created_at)?,
             timestamp_arg_for_datastore(&self.datastore, &item.updated_at)?,
         ];
@@ -55,8 +56,8 @@ impl LibraryScanUnmatchedItemRepository for LibraryScanUnmatchedStore {
             "INSERT INTO library_scan_unmatched_items
              (id, library_id, facet, title_id, scan_session_id, scan_root, item_path, display_name,
               query, year_hint, reason_code, error_message, search_attempts_json, status,
-              created_at, updated_at)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+              size_bytes, created_at, updated_at)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
              ON CONFLICT(library_id, item_path) DO UPDATE SET
                 id = excluded.id,
                 library_id = excluded.library_id,
@@ -71,6 +72,9 @@ impl LibraryScanUnmatchedItemRepository for LibraryScanUnmatchedStore {
                 reason_code = excluded.reason_code,
                 error_message = excluded.error_message,
                 search_attempts_json = excluded.search_attempts_json,
+                -- A rescan that cannot determine a size (folder-shaped items,
+                -- unreadable files) must not erase a size an earlier scan knew.
+                size_bytes = COALESCE(excluded.size_bytes, library_scan_unmatched_items.size_bytes),
                 status = CASE
                     WHEN library_scan_unmatched_items.status = 'ignored' AND excluded.status = 'pending'
                         THEN library_scan_unmatched_items.status
@@ -274,6 +278,7 @@ fn row_to_library_scan_unmatched_item(row: &SqlRow) -> AppResult<LibraryScanUnma
         reason_code: row.text("reason_code")?,
         error_message: row.opt_text("error_message")?,
         search_attempts,
+        size_bytes: row.opt_i64("size_bytes")?,
         created_at: timestamp_text(row, "created_at")?,
         updated_at: timestamp_text(row, "updated_at")?,
     })

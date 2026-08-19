@@ -31,6 +31,7 @@ pub const IMAGE_CACHE_MAX_SIZE_MB_KEY: &str = "images.cache.max_size_mb";
 pub const DEFAULT_IMAGE_CACHE_MAX_SIZE_MB: i32 = 256;
 pub const IMAGE_CACHE_MAX_BYTES_ENV: &str = "SCRYER_IMAGE_CACHE_MAX_BYTES";
 pub const PLUGIN_HTTP_CA_BUNDLE_PEM_KEY: &str = "plugins.http.ca_bundle_pem";
+pub const PLUGIN_AUTO_UPDATE_ENABLED_KEY: &str = "plugins.auto_update.enabled";
 pub const AUTO_BACKUP_ENABLED_KEY: &str = "backup.auto.enabled";
 pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local";
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";

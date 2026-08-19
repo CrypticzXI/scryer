@@ -11,6 +11,7 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  FolderPen,
   LayoutGrid,
   LayoutList,
   Loader2,
@@ -38,6 +39,7 @@ import {
 } from "@/components/common/external-media-links";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { useActiveDownloadTitleIds } from "@/lib/hooks/use-active-download-title-ids";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -75,6 +77,9 @@ import {
 import { HorizontalRail } from "@/components/common/horizontal-scroll-fade";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
+import { TitleCastStrip } from "@/components/views/title-cast-strip";
+import { TitleDubCastStrip } from "@/components/views/title-dub-cast-strip";
+import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type {
   ContentSettingsSection,
@@ -1640,6 +1645,13 @@ function TitleContextPanel({
             onAction={onDiscoveryAction}
           />
 
+          <TitleCastStrip
+            credits={titleCastOriginalCredits(title.credits)}
+            variant="workspace"
+          />
+
+          <TitleDubCastStrip credits={title.credits} variant="workspace" />
+
           {blocklistEntries.length === 0 ? (
             <section className="flex min-h-[3.25rem] items-center gap-2.5 rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-4">
               <ChevronRight className="h-4 w-4 shrink-0 text-[var(--scry-faint)]" />
@@ -2087,6 +2099,7 @@ export function MediaContentView({
     bulkMonitorTitles: (monitored: boolean) => Promise<void> | void;
     openBulkTitleEdit: () => void;
     openBulkTitleDelete: () => void;
+    openBulkTitleRename: () => void;
   };
 }) {
   const t = useTranslate();
@@ -2202,6 +2215,7 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
+    canManageTitle,
     canManageCatalogDiscovery,
     canRequestCatalogDiscovery,
     manageableDiscoveryFacets,
@@ -2285,6 +2299,7 @@ export function MediaContentView({
     bulkMonitorTitles,
     openBulkTitleEdit,
     openBulkTitleDelete,
+    openBulkTitleRename,
   } = state;
   const [titleFilterInputValue, setTitleFilterInputValue] =
     React.useState(titleFilter);
@@ -2655,6 +2670,13 @@ export function MediaContentView({
 
   const isTitleCatalogView =
     view === "movies" || view === "series" || view === "anime";
+  // One catalog-wide subscription to the live download queue (import activity
+  // included) feeds the pulsing "Downloading" pill in every display mode. It
+  // deliberately sits outside the catalog's own paging/sorting/title queries so
+  // it can't perturb them.
+  const activeDownloadTitleIds = useActiveDownloadTitleIds({
+    enabled: isTitleCatalogView && canManageTitle,
+  });
   const selectedTitleCompactDrawerActive =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const selectedTitleTableInlineActive =
@@ -3303,6 +3325,15 @@ export function MediaContentView({
                     <Pencil className="h-4 w-4" />
                   </TitleTableActionButton>
                   <TitleTableActionButton
+                    tone="accent"
+                    label={t("title.renameAction")}
+                    onClick={openBulkTitleRename}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <FolderPen className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
                     tone="delete"
                     label={t("label.delete")}
                     onClick={openBulkTitleDelete}
@@ -3715,6 +3746,7 @@ export function MediaContentView({
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
                       scrollContainer={!selectedTitleLayoutActive}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else if (collectionViewMode === "compact") {
@@ -3762,6 +3794,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else {
@@ -3810,6 +3843,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 }
@@ -3907,6 +3941,15 @@ export function MediaContentView({
                         >
                           <Pencil className="h-4 w-4" />
                           {t("label.edit")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={openBulkTitleRename}
+                          disabled={bulkActionBusy}
+                          className="justify-center gap-2"
+                        >
+                          <FolderPen className="h-4 w-4" />
+                          {t("title.renameAction")}
                         </Button>
                         <Button
                           variant="destructive"

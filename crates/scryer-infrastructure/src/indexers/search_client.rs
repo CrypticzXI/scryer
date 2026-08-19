@@ -4390,6 +4390,8 @@ mod tests {
     impl IndexerStatsTracker for MockIndexerStatsTracker {
         fn record_query(&self, _indexer_id: &str, _indexer_name: &str, _success: bool) {}
 
+        fn record_grab(&self, _indexer_id: &str, _indexer_name: &str) {}
+
         fn record_api_limits(
             &self,
             _indexer_id: &str,
@@ -4414,6 +4416,8 @@ mod tests {
         fn record_query(&self, _indexer_id: &str, _indexer_name: &str, success: bool) {
             self.queries.lock().expect("stats log mutex").push(success);
         }
+
+        fn record_grab(&self, _indexer_id: &str, _indexer_name: &str) {}
 
         fn record_api_limits(
             &self,

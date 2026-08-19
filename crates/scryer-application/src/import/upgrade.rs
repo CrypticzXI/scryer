@@ -27,6 +27,9 @@ pub struct UpgradeOutcome {
     pub old_score: i32,
     pub new_score: i32,
     pub new_file_id: String,
+    /// Size of the replacement file, so callers can report imported bytes
+    /// without re-reading the media file row.
+    pub new_size_bytes: i64,
     pub recycle_entry_committed: bool,
 }
 
@@ -198,6 +201,7 @@ pub(crate) async fn execute_upgrade(
         existing_file,
         UpgradeEventDetails {
             new_file_id: &replacement.new_file_id,
+            new_size_bytes: replacement.new_size_bytes,
             dest_path_string: &replacement.final_path_string,
             old_score,
             final_score,
@@ -225,12 +229,16 @@ pub(crate) async fn execute_upgrade(
         old_score,
         new_score: final_score,
         new_file_id: replacement.new_file_id,
+        new_size_bytes: replacement.new_size_bytes,
         recycle_entry_committed,
     }))
 }
 
 struct PreparedUpgradeReplacement {
     new_file_id: String,
+    /// Size of the replacement file, captured from the import result so the
+    /// upgrade event can report it without a second stat or media-file read.
+    new_size_bytes: i64,
     import_path: PathBuf,
     final_path_string: String,
     same_final_path: bool,
@@ -1064,6 +1072,7 @@ async fn prepare_replacement_before_old_removal(
 
     Ok(PreparedUpgradeReplacement {
         new_file_id,
+        new_size_bytes: file_result.size_bytes as i64,
         import_path: import_path.to_path_buf(),
         final_path_string,
         same_final_path,
@@ -1846,6 +1855,7 @@ async fn remove_upgrade_import_source_after_verified_commit(
 
 struct UpgradeEventDetails<'a> {
     new_file_id: &'a str,
+    new_size_bytes: i64,
     dest_path_string: &'a str,
     old_score: i32,
     final_score: i32,
@@ -1886,6 +1896,7 @@ async fn append_upgrade_event(
             current_file_id: Some(details.new_file_id.to_string()),
             old_score: Some(details.old_score),
             new_score: Some(details.final_score),
+            size_bytes: Some(details.new_size_bytes),
         }),
     ))
     .await

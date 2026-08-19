@@ -8,7 +8,7 @@ import {
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_MUTATION_RESULT_FIELDS,
-} from "./queries";
+} from "./queries.ts";
 
 const AUTH_USER_FIELDS = `
       id
@@ -1866,6 +1866,12 @@ export const emptyRecycleBinMutation = `mutation EmptyRecycleBin($libraryIds: [I
 
 export const updateRecycleBinSettingsMutation = `mutation UpdateRecycleBinSettings($input: UpdateRecycleBinSettingsInput!) {
   updateRecycleBinSettings(input: $input) {
+    enabled
+  }
+}`;
+
+export const updatePluginAutoUpdateSettingsMutation = `mutation UpdatePluginAutoUpdateSettings($input: UpdatePluginAutoUpdateSettingsInput!) {
+  updatePluginAutoUpdateSettings(input: $input) {
     enabled
   }
 }`;

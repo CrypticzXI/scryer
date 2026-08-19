@@ -729,6 +729,42 @@ mod tests {
     }
 
     #[test]
+    fn migration_0162_adds_unmatched_size_bytes_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 162"));
+        assert!(manifest.contains("migrations/0162_library_scan_unmatched_size_bytes.sql"));
+        assert!(
+            manifest.contains("postgres/migrations/0162_library_scan_unmatched_size_bytes.sql")
+        );
+
+        let sqlite_sql = fs::read_to_string(
+            db_root.join("migrations/0162_library_scan_unmatched_size_bytes.sql"),
+        )
+        .expect("SQLite 0162 migration should be readable");
+        assert!(sqlite_sql.contains("ALTER TABLE library_scan_unmatched_items"));
+        assert!(sqlite_sql.contains("ADD COLUMN size_bytes INTEGER"));
+        // The column must stay nullable: rows recorded before this migration
+        // have no size, and readers fall back to a filesystem stat.
+        assert!(!sqlite_sql.contains("NOT NULL"));
+
+        let postgres_sql = fs::read_to_string(
+            db_root.join("postgres/migrations/0162_library_scan_unmatched_size_bytes.sql"),
+        )
+        .expect("PostgreSQL 0162 migration should be readable");
+        assert!(postgres_sql.contains("ALTER TABLE library_scan_unmatched_items"));
+        assert!(postgres_sql.contains("ADD COLUMN size_bytes bigint"));
+        assert!(!postgres_sql.contains("NOT NULL"));
+
+        let bundle = compile_source_bundle(&db_root).expect("compile source migration bundle");
+        assert!(
+            bundle.catalog.find_migration(161).is_some(),
+            "migration 0161 must be registered in migration_manifest.toml"
+        );
+    }
+
+    #[test]
     fn postgres_0140_baseline_keeps_title_aware_unmatched_items_schema() {
         let sql = source_postgres_0140_baseline_sql();
         assert!(

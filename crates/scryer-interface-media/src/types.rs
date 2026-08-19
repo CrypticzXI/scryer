@@ -112,6 +112,29 @@ pub struct TitleRatingPayload {
     pub external_ratings: Vec<TitleExternalRatingPayload>,
 }
 
+#[derive(SimpleObject, Clone)]
+/// One cast or crew credit cached from the title's last metadata hydration.
+pub struct TitleCreditPayload {
+    /// Credit kind exactly as the metadata provider spelled it, e.g. `actor`,
+    /// `voice_actor`, `director`, `writer`, `creator`, `composer`. Kept as a
+    /// string so a new provider kind reaches clients without a schema break.
+    pub kind: String,
+    /// Person's display name in the hydration language.
+    pub person_name: String,
+    /// Person's name in their original language, or empty when the provider has none.
+    pub person_original_name: String,
+    /// Proxied portrait for this person, or null when the provider has no image.
+    pub person_image_url: Option<String>,
+    /// Character played, or empty for crew credits.
+    pub character: String,
+    /// Language tag this credit was hydrated in, or empty when the provider has none.
+    pub language: String,
+    /// Provider billing rank; lower sorts closer to top billing.
+    pub billing_order: i32,
+    /// Episodes this person appears in, or null for titles the provider does not count.
+    pub episode_count: Option<i32>,
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 /// Fields supported when sorting the title catalog.

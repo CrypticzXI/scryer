@@ -2186,6 +2186,8 @@ pub struct IndexerQueryStatsPayload {
     pub successful_last_24h: i32,
     /// Failed queries during the trailing 24 hours.
     pub failed_last_24h: i32,
+    /// Releases grabbed through this indexer during the trailing 24 hours, counted by Scryer rather than reported by the provider.
+    pub grabs_last_24h: i32,
     /// UTC time of the most recent query, or null when never queried.
     pub last_query_at: Option<DateTime<Utc>>,
     /// Current API request count, or null when not reported.
@@ -4017,6 +4019,48 @@ pub struct PendingImportCountsPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+/// Title-history event counts for one dashboard activity window.
+pub struct ActivityWindowCountsPayload {
+    /// Releases grabbed during the window.
+    pub grabbed: i32,
+    /// Existing files replaced by a better release during the window.
+    pub upgraded: i32,
+    /// Imports that completed during the window.
+    pub imported: i32,
+    /// Imports rejected as failed during the window; skipped imports are excluded.
+    pub import_failed: i32,
+    /// Downloads that failed during the window.
+    pub download_failed: i32,
+}
+
+#[derive(SimpleObject, Clone)]
+/// A trailing activity window together with the window immediately before it,
+/// so callers can render each count with its period-over-period delta.
+pub struct DashboardActivityStatsPayload {
+    /// Counts for the trailing window ending at the time of the request.
+    pub current: ActivityWindowCountsPayload,
+    /// Counts for the equally long window immediately before the current one.
+    pub previous: ActivityWindowCountsPayload,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Filesystem usage of the volume backing one library root folder.
+pub struct StorageRootUsagePayload {
+    /// Configured root-folder path as stored on the library.
+    pub path: String,
+    /// ID of the library that owns this root folder.
+    pub library_id: ID,
+    /// Name of the library that owns this root folder.
+    pub library_name: String,
+    /// Media facet of the library that owns this root folder.
+    pub facet: MediaFacetValue,
+    /// Bytes in use on the backing filesystem; null when it cannot be inspected.
+    pub used_bytes: Option<Long>,
+    /// Total bytes on the backing filesystem; null when it cannot be inspected.
+    pub total_bytes: Option<Long>,
+}
+
+#[derive(SimpleObject, Clone)]
 /// Media-request counts grouped by media facet.
 pub struct MediaRequestCountsPayload {
     /// Movie request count.
@@ -4053,6 +4097,23 @@ pub struct PendingImportSearchAttemptPayload {
     pub summary: String,
 }
 
+/// Coarse bucket for why a pending import is awaiting resolution.
+///
+/// The free-text `reason` field remains the authoritative scanner code; this
+/// enum is the stable grouping the dashboard filters on, so a new scanner code
+/// surfaces as `OTHER` instead of breaking clients.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+pub enum PendingImportReasonClassValue {
+    /// Metadata lookup returned no candidates to choose from.
+    Unmatched,
+    /// Metadata lookup returned candidates but none could be accepted automatically.
+    Ambiguous,
+    /// The file's media metadata could not be read, so its quality is unknown.
+    QualityUnknown,
+    /// Any other scanner reason, including parse and folder-ownership problems.
+    Other,
+}
+
 #[derive(SimpleObject, Clone)]
 /// One unmatched library item awaiting import resolution.
 pub struct PendingImportItemPayload {
@@ -4082,8 +4143,14 @@ pub struct PendingImportItemPayload {
     pub year_hint: Option<i32>,
     /// Explanation for the pending state.
     pub reason: String,
+    /// Coarse bucket for `reason`, stable across scanner reason-code changes.
+    pub reason_class: PendingImportReasonClassValue,
     /// Metadata search attempts made for this item.
     pub search_attempts: Vec<PendingImportSearchAttemptPayload>,
+    /// Size of the pending file; null for folder items and unreadable files.
+    pub size_bytes: Option<Long>,
+    /// When the scanner first recorded this item.
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -4359,6 +4426,13 @@ pub struct SubtitleSettingsPayload {
 /// Recycle-bin enablement setting.
 pub struct RecycleBinSettingsPayload {
     /// Whether deleted media is moved to the recycle bin.
+    pub enabled: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Automatic official-plugin patch update setting.
+pub struct PluginAutoUpdateSettingsPayload {
+    /// Whether the scheduled plugin catalog refresh installs official patch updates automatically.
     pub enabled: bool,
 }
 
@@ -5225,6 +5299,10 @@ pub struct MediaRenamePreviewInput {
     pub title_id: Option<ID>,
     /// Whether to calculate changes without applying them; omission uses the resolver default.
     pub dry_run: Option<bool>,
+    /// Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+    pub renamable_only: Option<bool>,
+    /// Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
+    pub max_items: Option<i32>,
 }
 
 #[derive(InputObject, Clone)]
@@ -5850,6 +5928,13 @@ pub struct UpdateSubtitleSettingsInput {
 /// Recycle-bin enablement setting.
 pub struct UpdateRecycleBinSettingsInput {
     /// Whether deleted media is retained in the recycle bin.
+    pub enabled: bool,
+}
+
+#[derive(InputObject, Clone)]
+/// Automatic official-plugin patch update setting.
+pub struct UpdatePluginAutoUpdateSettingsInput {
+    /// Whether the scheduled plugin catalog refresh installs official patch updates automatically.
     pub enabled: bool,
 }
 
@@ -8951,8 +9036,14 @@ pub struct TitleHistoryEventPayload {
     pub title_id: ID,
     /// Title name, or null when no name was available.
     pub title_name: Option<String>,
+    /// Poster URL of the title, or null when the title is gone or has no poster.
+    pub poster_url: Option<String>,
+    /// Library owning the title, or null when the event cannot be attributed.
+    pub library_id: Option<ID>,
     /// Media facet, or null when the event is not facet-specific.
     pub facet: Option<MediaFacetValue>,
+    /// Bytes imported or upgraded; null for other event types and for events recorded before sizes were captured.
+    pub size_bytes: Option<Long>,
     /// Episode ID, or null when not episode-specific.
     pub episode_id: Option<ID>,
     /// Episode IDs affected by the event.

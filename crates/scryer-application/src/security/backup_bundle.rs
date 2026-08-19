@@ -523,6 +523,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "title_credits",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "discovery_title_metadata_tags",
         classification: BackupTableClassification::ResetOnRestore,
     },
@@ -1892,6 +1896,7 @@ mod tests {
             "title_metadata_rating_summaries",
             "title_metadata_rating_sources",
             "title_metadata_external_ratings",
+            "title_credits",
         ] {
             let classification = BACKUP_TABLE_CATALOG
                 .iter()

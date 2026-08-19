@@ -165,6 +165,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0008_title_credits_rehydration_018::TITLE_CREDITS_REHYDRATION_018_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: IMPORT_MODE_KEY,
             data_type: "string",
             default_value_json: "\"hardlink_or_copy\"",
@@ -232,6 +240,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
             data_type: "string",
             default_value_json: "\"\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -1974,6 +1990,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn service_setting_definitions_allow_title_credits_rehydration_state_to_persist() {
+        const KEY: &str =
+            crate::startup_migrations::_0008_title_credits_rehydration_018::TITLE_CREDITS_REHYDRATION_018_STATE_KEY;
+
+        let seed = service_setting_seeds()
+            .iter()
+            .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == KEY)
+            .expect("title credits rehydration state definition should exist");
+        assert_eq!(seed.category, SETTINGS_CATEGORY_MEDIA);
+        assert_eq!(seed.data_type, "string");
+        assert_eq!(seed.default_value_json, "\"none\"");
+        assert!(!seed.is_sensitive);
+
+        let (_temp, store) = bootstrap_settings_store().await;
+        SettingsRepository::upsert_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            KEY,
+            None,
+            "\"pending\"".to_string(),
+            "system",
+            None,
+        )
+        .await
+        .expect("title credits rehydration state should persist");
+    }
+
+    #[tokio::test]
     async fn service_setting_definitions_allow_scheduler_instance_id_to_persist() {
         let (_temp, store) = bootstrap_settings_store().await;
 
@@ -2047,6 +2091,13 @@ mod tests {
                 && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+                && !seed.is_sensitive
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_SYSTEM

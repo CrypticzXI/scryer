@@ -20,6 +20,11 @@ export type TitleCardCornerBadge = {
   tone?: "accent" | "neutral";
   /** Optional native title/tooltip text. */
   title?: string;
+  /**
+   * Pulse the badge to signal live, in-flight work (e.g. an active download).
+   * Honours `prefers-reduced-motion`.
+   */
+  pulse?: boolean;
 };
 
 const FACET_BADGE_CLASS: Record<Facet, string> = {
@@ -289,6 +294,7 @@ function TitleCardImpl({
                 cornerBadge.tone === "neutral"
                   ? "border border-white/15 bg-[rgba(4,6,12,0.78)] text-[var(--scry-text2)]"
                   : "border border-[rgba(var(--scry-accent-rgb),0.42)] bg-[rgba(var(--scry-accent-rgb),0.24)] text-[#dfe3ff]",
+                cornerBadge.pulse && "animate-pulse motion-reduce:animate-none",
               )}
             >
               {cornerBadge.icon ? (

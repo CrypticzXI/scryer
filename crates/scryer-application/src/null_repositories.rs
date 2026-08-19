@@ -1483,6 +1483,7 @@ pub struct NullIndexerStatsTracker;
 
 impl IndexerStatsTracker for NullIndexerStatsTracker {
     fn record_query(&self, _indexer_id: &str, _indexer_name: &str, _success: bool) {}
+    fn record_grab(&self, _indexer_id: &str, _indexer_name: &str) {}
     fn record_api_limits(
         &self,
         _indexer_id: &str,
@@ -1703,6 +1704,16 @@ impl DomainEventRepository for NullDomainEventRepository {
         _: Option<&str>,
     ) -> AppResult<i64> {
         Ok(0)
+    }
+
+    async fn count_dashboard_activity_events(
+        &self,
+        _: &[String],
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<crate::DashboardActivityStats> {
+        Ok(crate::DashboardActivityStats::default())
     }
 
     async fn list_title_history_page_events(

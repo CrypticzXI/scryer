@@ -82,6 +82,9 @@ pub struct TestContext {
     pub library_probe: LibraryProbeStore,
     pub library_state: TestLibraryStateStore,
     pub library_scan_unmatched: LibraryScanUnmatchedStore,
+    /// The same tracker the app writes grabs and queries into, so tests can
+    /// seed stats and read them back through the API.
+    pub indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker>,
     pub media_files: MediaFileStore,
     pub db: SqliteServices,
     pub settings_store: Arc<SettingsStore>,
@@ -827,7 +830,7 @@ impl TestContext {
         .with_system_info(settings_store.clone())
         .with_metadata_gateway(Arc::new(metadata_gateway))
         .with_library_scanner(Arc::new(FileSystemLibraryScanner::new()))
-        .with_indexer_stats(indexer_stats)
+        .with_indexer_stats(indexer_stats.clone())
         .with_plugin_provider(plugin_provider)
         .with_staged_nzb_store(staged_nzb_store.clone())
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
@@ -889,6 +892,7 @@ impl TestContext {
             library_probe: library_probe_store,
             library_state: library_state_store,
             library_scan_unmatched: library_scan_unmatched_store,
+            indexer_stats,
             media_files: media_file_store,
             db,
             settings_store,

@@ -66,6 +66,14 @@ fn from_recycle_bin_settings(
     }
 }
 
+fn from_plugin_auto_update_settings(
+    settings: scryer_application::PluginAutoUpdateSettings,
+) -> PluginAutoUpdateSettingsPayload {
+    PluginAutoUpdateSettingsPayload {
+        enabled: settings.enabled,
+    }
+}
+
 fn from_oauth_connected_app(
     app: scryer_application::OAuthConnectedAppSummary,
 ) -> OAuthConnectedAppPayload {
@@ -562,6 +570,20 @@ impl SettingsQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_recycle_bin_settings(settings))
+    }
+
+    /// Returns whether the scheduled plugin catalog refresh installs official patch updates automatically.
+    async fn plugin_auto_update_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<PluginAutoUpdateSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_plugin_auto_update_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_auto_update_settings(settings))
     }
 
     /// Returns auto-backup scheduling metadata without exposing the backup key.

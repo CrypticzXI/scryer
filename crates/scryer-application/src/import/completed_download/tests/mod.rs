@@ -1268,6 +1268,16 @@ impl DomainEventRepository for TestDomainEventRepo {
             .collect())
     }
 
+    async fn count_dashboard_activity_events(
+        &self,
+        _: &[String],
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<crate::DashboardActivityStats> {
+        Ok(crate::DashboardActivityStats::default())
+    }
+
     async fn count_title_history_page_events(
         &self,
         event_types: Option<&[TitleHistoryEventType]>,

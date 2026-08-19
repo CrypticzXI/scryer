@@ -2319,6 +2319,14 @@ pub struct TitleHistoryRecord {
     pub title_id: String,
     #[serde(default)]
     pub title_name: Option<String>,
+    /// Poster of the title, resolved during projection hydration like
+    /// `library_id`. `None` when the title row is gone or has no poster.
+    #[serde(default)]
+    pub poster_url: Option<String>,
+    /// Library owning the title, resolved during projection hydration. `None`
+    /// when the title row is gone and the event cannot be attributed.
+    #[serde(default)]
+    pub library_id: Option<String>,
     #[serde(default)]
     pub facet: Option<MediaFacet>,
     pub episode_id: Option<String>,
@@ -2357,6 +2365,11 @@ pub struct TitleHistoryRecord {
     pub source_path: Option<String>,
     #[serde(default)]
     pub dest_path: Option<String>,
+    /// Bytes involved in the event: the imported total for `Imported` rows and
+    /// the new file's size for `FileUpgraded` rows. `None` for other event
+    /// types and for events persisted before the payload carried a size.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
     pub data_json: Option<String>,
     pub occurred_at: String,
     pub created_at: String,
@@ -2828,6 +2841,11 @@ pub struct ImportCompletedEventData {
     pub quality: Option<String>,
     #[serde(default)]
     pub episode_ids: Vec<String>,
+    /// Total bytes imported by this event. `#[serde(default)]` keeps events
+    /// persisted before this field existed deserializable; they read back as
+    /// `None`.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2919,6 +2937,11 @@ pub struct MediaFileUpgradedEventData {
     pub current_file_id: Option<String>,
     pub old_score: Option<i32>,
     pub new_score: Option<i32>,
+    /// Size of the NEW (current) file. `#[serde(default)]` keeps events
+    /// persisted before this field existed deserializable; they read back as
+    /// `None`.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -6,11 +6,6 @@ const DEFAULT_ADMIN_USERNAME: &str = "admin";
 const RECOVERY_ADMIN_USERNAME: &str = "recovery-admin";
 const ANONYMOUS_AUDIT_USERNAME: &str = "anonymous";
 
-#[cfg(unix)]
-fn to_u64<T: Into<u64>>(value: T) -> u64 {
-    value.into()
-}
-
 impl AppUseCase {
     fn required_startup_admin_app_permissions() -> scryer_domain::AppPermissionMask {
         scryer_domain::UserAuthorization::full_admin().app
@@ -139,10 +134,7 @@ impl AppUseCase {
             .await?;
 
         let mut seen_paths = std::collections::HashSet::new();
-        #[cfg(unix)]
         let mut results = Vec::new();
-        #[cfg(not(unix))]
-        let results = Vec::new();
 
         for library in libraries {
             for root in library.roots {
@@ -151,10 +143,9 @@ impl AppUseCase {
                     continue;
                 }
 
-                #[cfg(unix)]
-                if let Some(stat) = statvfs_path(&path) {
-                    let total = to_u64(stat.f_blocks) * to_u64(stat.f_frsize);
-                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                if let Some(space) = filesystem_space(&path) {
+                    let total = space.total_bytes;
+                    let free = space.available_bytes;
                     let used = total.saturating_sub(free);
                     results.push(DiskSpaceInfo {
                         path,
@@ -165,14 +156,6 @@ impl AppUseCase {
                     });
                 } else {
                     tracing::warn!(path = path.as_str(), "failed to query disk space");
-                }
-                #[cfg(not(unix))]
-                {
-                    tracing::debug!(
-                        path = path.as_str(),
-                        "disk space reporting not available on this platform"
-                    );
-                    let _ = path;
                 }
             }
         }

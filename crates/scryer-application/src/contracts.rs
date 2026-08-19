@@ -871,6 +871,36 @@ pub struct TitleHistoryPage {
     pub total_count: i64,
 }
 
+/// Title-history event counts for one trailing time window, aggregated in SQL.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActivityWindowCounts {
+    pub grabbed: i64,
+    pub upgraded: i64,
+    pub imported: i64,
+    pub import_failed: i64,
+    pub download_failed: i64,
+}
+
+/// A trailing activity window paired with the window immediately before it, so
+/// callers can render a count and its period-over-period delta.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DashboardActivityStats {
+    pub current: ActivityWindowCounts,
+    pub previous: ActivityWindowCounts,
+}
+
+/// One library root folder together with the filesystem usage of the volume
+/// backing it. Usage is `None` when the filesystem could not be inspected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageRootUsage {
+    pub path: String,
+    pub library_id: String,
+    pub library_name: String,
+    pub facet: MediaFacet,
+    pub used_bytes: Option<i64>,
+    pub total_bytes: Option<i64>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewBlocklistEntry {
     pub title_id: String,

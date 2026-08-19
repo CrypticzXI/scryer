@@ -789,19 +789,23 @@ impl MediaFileRepository for MediaFileStore {
 
         let dialect = dialect_for_datastore(&self.datastore);
         let placeholders = placeholders(title_ids.len());
+        // Countable episodes exclude unnamed/TBA/undated placeholder records; the
+        // record total intentionally counts every episode row so callers can tell
+        // "no episodes at all" apart from "only placeholder episodes".
+        let countable = "(trim(COALESCE(e.title, '')) <> ''
+               AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
+               AND trim(COALESCE(e.air_date, '')) <> '')";
         let sql = format!(
             "SELECT e.collection_id,
-                    COUNT(DISTINCT e.id) AS total_episodes,
-                    COUNT(DISTINCT CASE WHEN {} THEN e.id END) AS monitored_episodes,
-                    COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
+                    COUNT(DISTINCT e.id) AS episode_records_total,
+                    COUNT(DISTINCT CASE WHEN {countable} THEN e.id END) AS total_episodes,
+                    COUNT(DISTINCT CASE WHEN {countable} AND {} THEN e.id END) AS monitored_episodes,
+                    COUNT(DISTINCT CASE WHEN {countable} AND mf.id IS NOT NULL THEN e.id END) AS owned_episodes
              FROM episodes e
              LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
              LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND fem.role = 'primary'
              WHERE e.title_id IN ({placeholders})
                AND e.collection_id IS NOT NULL
-               AND trim(COALESCE(e.title, '')) <> ''
-               AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
-               AND trim(COALESCE(e.air_date, '')) <> ''
              GROUP BY e.collection_id",
             bool_column_is_true(dialect, "e.monitored"),
             live_media_file_predicate(dialect, "mf")
@@ -820,6 +824,7 @@ impl MediaFileRepository for MediaFileStore {
                     owned_episodes: row.i64("owned_episodes")?,
                     monitored_episodes: row.i64("monitored_episodes")?,
                     total_episodes: row.i64("total_episodes")?,
+                    episode_records_total: row.i64("episode_records_total")?,
                 })
             })
             .collect()

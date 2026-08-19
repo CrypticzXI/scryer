@@ -1,8 +1,8 @@
 use super::*;
 
 use async_trait::async_trait;
-use chrono::Utc;
-use scryer_application::{AppError, AppResult, DomainEventRepository};
+use chrono::{DateTime, Utc};
+use scryer_application::{AppError, AppResult, DashboardActivityStats, DomainEventRepository};
 use scryer_domain::{
     DomainEvent, DomainEventFilter, DomainEventType, NewDomainEvent, TitleHistoryEventType,
 };
@@ -78,6 +78,50 @@ impl DomainEventRepository for DomainEventStore {
             &args,
         )
         .await
+    }
+
+    async fn count_dashboard_activity_events(
+        &self,
+        library_ids: &[String],
+        previous_start: DateTime<Utc>,
+        current_start: DateTime<Utc>,
+        current_end: DateTime<Utc>,
+    ) -> AppResult<DashboardActivityStats> {
+        if library_ids.is_empty() {
+            return Ok(DashboardActivityStats::default());
+        }
+
+        let (sql, args) = build_dashboard_activity_stats_sql(
+            &self.datastore,
+            library_ids,
+            previous_start,
+            current_start,
+            current_end,
+        );
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+
+        let mut stats = DashboardActivityStats::default();
+        for row in rows {
+            let window_key = row.text("window_key")?;
+            let event_type = row.text("event_type")?;
+            let count = row.i64("event_count")?;
+            let window = if window_key == "current" {
+                &mut stats.current
+            } else {
+                &mut stats.previous
+            };
+            // `import_rejected` reaches this point only with a failed status:
+            // the aggregate already filtered skipped rejections out.
+            match DomainEventType::parse(&event_type) {
+                Some(DomainEventType::ReleaseGrabbed) => window.grabbed += count,
+                Some(DomainEventType::MediaFileUpgraded) => window.upgraded += count,
+                Some(DomainEventType::ImportCompleted) => window.imported += count,
+                Some(DomainEventType::ImportRejected) => window.import_failed += count,
+                Some(DomainEventType::DownloadFailed) => window.download_failed += count,
+                _ => {}
+            }
+        }
+        Ok(stats)
     }
 
     async fn list_after_sequence(

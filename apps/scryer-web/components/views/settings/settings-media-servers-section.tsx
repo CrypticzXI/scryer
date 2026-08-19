@@ -273,6 +273,7 @@ export function SettingsMediaServersSection({
             <TableBody>
               {visibleConnections.map((connection) => (
                 <TableRow
+                  data-ui="settings-table-row"
                   key={connection.id}
                   id={selectorId("settings-media-server-row", connection.id)}
                 >

@@ -10,6 +10,8 @@ mod activity_history;
 mod auth_runtime_passkeys;
 #[path = "integration_graphql/backups.rs"]
 mod backups;
+#[path = "integration_graphql/dashboard.rs"]
+mod dashboard;
 #[path = "integration_graphql/dataloader_enrichment.rs"]
 mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
@@ -36,6 +38,8 @@ mod schema_core_queue_import;
 mod security_settings;
 #[path = "integration_graphql/title_catalog.rs"]
 mod title_catalog;
+#[path = "integration_graphql/title_credits.rs"]
+mod title_credits;
 #[path = "integration_graphql/title_image_cache.rs"]
 mod title_image_cache;
 #[path = "integration_graphql/title_match.rs"]

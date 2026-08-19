@@ -224,7 +224,7 @@ function RefFieldTable({ section }: { section: RefSectionDef }) {
           </TableHeader>
           <TableBody>
             {section.fields.map((f) => (
-              <TableRow key={f.field}>
+              <TableRow key={f.field} data-ui="settings-table-row">
                 <TableCell>
                   <code className="text-xs">
                     {section.path}.{f.field}
@@ -315,7 +315,7 @@ function RulesContextReference() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  <TableRow>
+                  <TableRow data-ui="settings-table-row">
                     <TableCell>
                       <code className="text-xs">scryer.block_score()</code>
                     </TableCell>
@@ -328,7 +328,7 @@ function RulesContextReference() {
                       {t("settings.refFnBlockScore")}
                     </TableCell>
                   </TableRow>
-                  <TableRow>
+                  <TableRow data-ui="settings-table-row">
                     <TableCell>
                       <code className="text-xs">scryer.size_gib(bytes)</code>
                     </TableCell>
@@ -341,7 +341,7 @@ function RulesContextReference() {
                       {t("settings.refFnSizeGib")}
                     </TableCell>
                   </TableRow>
-                  <TableRow>
+                  <TableRow data-ui="settings-table-row">
                     <TableCell>
                       <code className="text-xs">
                         scryer.lang_matches(code, pattern)
@@ -356,7 +356,7 @@ function RulesContextReference() {
                       {t("settings.refFnLangMatches")}
                     </TableCell>
                   </TableRow>
-                  <TableRow>
+                  <TableRow data-ui="settings-table-row">
                     <TableCell>
                       <code className="text-xs">
                         scryer.normalize_source(raw)
@@ -371,7 +371,7 @@ function RulesContextReference() {
                       {t("settings.refFnNormalizeSource")}
                     </TableCell>
                   </TableRow>
-                  <TableRow>
+                  <TableRow data-ui="settings-table-row">
                     <TableCell>
                       <code className="text-xs">
                         scryer.normalize_codec(raw)
@@ -931,6 +931,7 @@ export function SettingsRulesSection({
             <TableBody>
               {ruleSetRecords.filter(isUserOwnedRuleSet).map((record) => (
                 <TableRow
+                  data-ui="settings-table-row"
                   key={record.id}
                   id={selectorId("settings-rule-row", record.id)}
                 >

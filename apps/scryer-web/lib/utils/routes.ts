@@ -104,3 +104,99 @@ export function canAccessSystemSection(
     ? canAccessRecycleBinPage(canManageSystemSettings, canManageTitle)
     : canManageSystemSettings;
 }
+
+export function defaultSettingsSection(
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
+): SettingsSection {
+  if (canManageSystemSettings) {
+    return "general";
+  }
+
+  if (canManageCatalogSettings) {
+    return "qualityProfiles";
+  }
+
+  if (canManageUserAccounts) {
+    return "security";
+  }
+
+  if (canManageUserAccess) {
+    return "users";
+  }
+
+  return "profile";
+}
+
+export type AccessibleRoute = {
+  view: ViewId;
+  settingsSection?: SettingsSection;
+  contentSettingsSection?: ContentSettingsSection;
+};
+
+/**
+ * The best route a user can actually reach, in preference order.
+ *
+ * This is both where `/` sends a user — the path alone cannot decide, because
+ * the answer depends on permissions — and where the shell bounces anyone who
+ * navigates directly to a route they may not open.
+ */
+export function defaultAccessibleRoute(
+  canViewCatalog: boolean,
+  canRequestMedia: boolean,
+  canResolveImports: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
+  canManageLibrarySettings: boolean,
+): AccessibleRoute {
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+
+  // The dashboard is the operator home, so it outranks the catalog for anyone
+  // who can reach it. This is also what `/` resolves to for those users.
+  if (canManageSystemSettings) {
+    return {
+      view: "dashboard",
+    };
+  }
+
+  if (canViewCatalog) {
+    return {
+      view: "movies",
+      contentSettingsSection: "overview",
+    };
+  }
+
+  if (canRequestMedia) {
+    return {
+      view: "requests",
+    };
+  }
+
+  if (canResolveImports) {
+    return {
+      view: "movies",
+      contentSettingsSection: "import",
+    };
+  }
+
+  if (canManageLibrarySettings && !canManageConfig) {
+    return {
+      view: "movies",
+      contentSettingsSection: "library",
+    };
+  }
+
+  return {
+    view: "settings",
+    settingsSection: defaultSettingsSection(
+      canManageSystemSettings,
+      canManageCatalogSettings,
+      canManageUserAccounts,
+      canManageUserAccess,
+    ),
+  };
+}

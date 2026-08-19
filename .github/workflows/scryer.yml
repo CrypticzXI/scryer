@@ -1380,95 +1380,6 @@ jobs:
           path: ${{ github.workspace }}\.sccache
           key: ${{ steps.windows-sccache-restore.outputs.cache-primary-key }}
 
-  docker-export:
-    name: docker-export-${{ matrix.platform_id }}
-    if: ${{ always() && github.event_name == 'pull_request' && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
-    runs-on: ${{ matrix.runs_on }}
-    timeout-minutes: 20
-    needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform_id: amd64
-            runs_on: ubuntu-26.04
-            platform: linux/amd64
-            tar_name: scryer-linux-amd64-image.tar
-            local_tag: scryer:test-amd64
-          - platform_id: arm64
-            runs_on: ubuntu-26.04-arm
-            platform: linux/arm64
-            tar_name: scryer-linux-arm64-image.tar
-            local_tag: scryer:test-arm64
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Download linux amd64 portable artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: scryer-linux-x86_64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 portable artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download launcher amd64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: launcher-linux-amd64-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download launcher arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: launcher-linux-arm64-${{ github.run_id }}
-          path: artifacts
-
-      - name: Prepare build context
-        run: sh docker/prepare-build-context.sh artifacts docker-ctx
-
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - name: Build downloadable image tarball
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: docker-ctx
-          file: docker/scryer.Dockerfile
-          platforms: ${{ matrix.platform }}
-          outputs: type=docker,dest=/tmp/${{ matrix.tar_name }}
-          tags: ${{ matrix.local_tag }}
-
-      - name: Load built image
-        run: docker load -i /tmp/${{ matrix.tar_name }}
-
-      - name: Smoke test image runtime
-        run: sh docker/test_image_runtime.sh ${{ matrix.local_tag }} ${{ matrix.platform }}
-
-      - name: Upload image tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: scryer-image-linux-${{ matrix.platform_id }}-${{ github.run_id }}
-          path: /tmp/${{ matrix.tar_name }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Add local test instructions
-        run: |
-          {
-            echo "### Downloadable Docker image (${{ matrix.platform }})"
-            echo
-            echo "- Artifact: \`scryer-image-linux-${{ matrix.platform_id }}-${{ github.run_id }}\`"
-            echo "- Tarball: \`${{ matrix.tar_name }}\`"
-            echo "- Load: \`docker load -i ${{ matrix.tar_name }}\`"
-            echo "- Run: \`docker run --rm -p 8080:8080 -v /path/to/scryer/config:/config ${{ matrix.local_tag }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   docker-publish-pr-rc:
     name: docker-publish-pr-rc
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
@@ -1477,6 +1388,7 @@ jobs:
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
     permissions:
       contents: read
+      id-token: write
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1537,14 +1449,101 @@ jobs:
             type=raw,value=${{ steps.pr_rc_tags.outputs.commit_tag }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: docker-ctx
           file: docker/scryer.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max,version=v1
+          sbom: true
           tags: ${{ steps.pr_meta.outputs.tags }}
           labels: ${{ steps.pr_meta.outputs.labels }}
+
+      - name: Resolve immutable image reference
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "name=ghcr.io/${{ github.repository_owner }}/scryer" >> "$GITHUB_OUTPUT"
+          echo "digest=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.6.5
+
+      - name: Keylessly sign immutable OCI index
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${{ steps.image.outputs.name }}@${{ steps.image.outputs.digest }}"
+
+      # The signing identity is the PR merge ref (refs/pull/N/merge), not a tag,
+      # so it is read from github.workflow_ref instead of being spelled out.
+      - name: Verify keyless OCI signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.workflow_ref }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ steps.image.outputs.name }}@${{ steps.image.outputs.digest }}"
+
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.image.outputs.digest }}
+
+  oci-verify-pr-rc:
+    name: verify-oci-pr-rc-trust
+    needs: [docker-publish-pr-rc]
+    if: ${{ github.event_name == 'pull_request' && needs.docker-publish-pr-rc.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.6.5
+
+      # Mirrors oci-verify, minus the slsa-verifier checks: the SLSA generator
+      # does not support pull_request, so RC images carry buildx's own
+      # provenance attestation rather than a generator-signed one.
+      - name: Verify OCI signature, provenance, and SBOM
+        shell: bash
+        env:
+          IMAGE: ${{ needs.docker-publish-pr-rc.outputs.image }}
+          DIGEST: ${{ needs.docker-publish-pr-rc.outputs.digest }}
+        run: |
+          set -euo pipefail
+          immutable_image="${IMAGE}@${DIGEST}"
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.workflow_ref }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$immutable_image"
+          index="$(docker buildx imagetools inspect --raw "$immutable_image")"
+          for platform in linux/amd64 linux/arm64; do
+            os="${platform%/*}"
+            architecture="${platform#*/}"
+            subject_digest="$(jq -r \
+              --arg os "$os" \
+              --arg architecture "$architecture" \
+              '.manifests[] | select(.platform.os == $os and .platform.architecture == $architecture) | .digest' \
+              <<< "$index")"
+            test -n "$subject_digest" && test "$subject_digest" != null
+            attestation_digest="$(jq -r \
+              --arg subject "$subject_digest" \
+              '.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest" and .annotations["vnd.docker.reference.digest"] == $subject) | .digest' \
+              <<< "$index")"
+            test -n "$attestation_digest" && test "$attestation_digest" != null
+            attestation="$(docker buildx imagetools inspect --raw "${IMAGE}@${attestation_digest}")"
+            jq -e 'any(.layers[]; .mediaType == "application/vnd.in-toto+json" and .annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document")' > /dev/null <<< "$attestation"
+            jq -e 'any(.layers[]; .mediaType == "application/vnd.in-toto+json" and (.annotations["in-toto.io/predicate-type"] | startswith("https://slsa.dev/provenance/")))' > /dev/null <<< "$attestation"
+          done
 
   release-trust:
     name: verify-release-trust

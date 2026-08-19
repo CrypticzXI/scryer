@@ -10,6 +10,7 @@ import {
   FileText,
   FolderCog,
   Inbox,
+  LayoutDashboard,
   ListChecks,
   Puzzle,
   Server,
@@ -111,6 +112,7 @@ export function buildRouteCommands({
     canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
   const automationGroupLabel = t("nav.group.automation");
   const catalogsGroupLabel = t("nav.group.catalogs");
+  const overviewGroupLabel = t("nav.group.overview");
   const integrationsGroupLabel = t("nav.group.integrations");
   const requestsGroupLabel = t("nav.group.requests");
   const settingsGroupLabel = t("nav.settings");
@@ -203,6 +205,25 @@ export function buildRouteCommands({
     : [];
 
   return [
+    ...(canManageSystemSettings
+      ? [{
+          id: "dashboard",
+          label: t("nav.dashboard"),
+          description: t("dashboard.commandDescription"),
+          groupLabel: overviewGroupLabel,
+          keywords: [
+            "dashboard",
+            "home",
+            "overview",
+            "attention",
+            "storage",
+            "queue",
+            "status",
+          ],
+          icon: LayoutDashboard,
+          onSelect: buildNavigate(onNavigate, "dashboard"),
+        } satisfies RouteCommand]
+      : []),
     ...mediaOverviewCommands,
     ...(canManageTitle || canRequestMedia
       ? [{

@@ -628,6 +628,7 @@ fn import_completed_event_data(
         dest_path: None,
         quality: None,
         episode_ids,
+        size_bytes: None,
     }
 }
 
@@ -2016,6 +2017,7 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
                     current_file_id: Some("file-new".to_string()),
                     old_score: None,
                     new_score: None,
+                    size_bytes: None,
                 }),
             ),
         ),

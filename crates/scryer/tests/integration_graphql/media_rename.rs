@@ -1643,3 +1643,186 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     assert!(source_path.exists());
     assert!(!std::path::Path::new(&expected_path).exists());
 }
+
+#[tokio::test]
+async fn graphql_media_rename_preview_scopes_returned_items_without_changing_counts() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let media_root = tempfile::tempdir().expect("media root tempdir");
+    configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
+
+    let title = create_catalog_title(
+        &ctx,
+        "Rename Preview Show",
+        MediaFacet::Anime,
+        vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "91001".to_string(),
+        }],
+        vec![],
+        true,
+    )
+    .await;
+
+    let collection = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: scryer_domain::CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("3".to_string()),
+            last_episode_number: Some("4".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create season collection");
+
+    let make_episode = |episode_number: &str, absolute_number: &str| {
+        let ctx = &ctx;
+        let title_id = title.id.clone();
+        let collection_id = collection.id.clone();
+        let episode_number = episode_number.to_string();
+        let absolute_number = absolute_number.to_string();
+        async move {
+            ctx.shows
+                .create_episode(Episode {
+                    id: Id::new().0,
+                    title_id,
+                    collection_id: Some(collection_id),
+                    episode_type: scryer_domain::EpisodeType::Standard,
+                    episode_number: Some(episode_number.clone()),
+                    season_number: Some("1".to_string()),
+                    episode_label: Some(format!("S01E0{episode_number}")),
+                    title: Some("Arrival".to_string()),
+                    air_date: None,
+                    duration_seconds: Some(1440),
+                    has_multi_audio: false,
+                    has_subtitle: false,
+                    is_filler: false,
+                    is_recap: false,
+                    absolute_number: Some(absolute_number),
+                    overview: None,
+                    tvdb_id: None,
+                    image_url: None,
+                    monitored: true,
+                    created_at: chrono::Utc::now(),
+                })
+                .await
+                .expect("create episode")
+        }
+    };
+
+    let misnamed_episode = make_episode("3", "12").await;
+    let named_episode = make_episode("4", "13").await;
+
+    let season_dir = media_root
+        .path()
+        .join("Rename Preview Show")
+        .join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    set_title_folder_path(&ctx, &title.id, season_dir.parent().expect("title folder")).await;
+
+    let misnamed_path = season_dir.join("[SubsPlease] Rename Preview Show - 03 (1080p).mkv");
+    std::fs::write(&misnamed_path, b"anime-preview").expect("write misnamed file");
+
+    // Already sitting at the path the template renders, so it plans as a noop.
+    let named_dir = media_root
+        .path()
+        .join("Rename Preview Show (2024)")
+        .join("Season 1");
+    std::fs::create_dir_all(&named_dir).expect("create renamed season dir");
+    let named_path = named_dir.join("Rename Preview Show - S01E04 (013) - 1080p.mkv");
+    std::fs::write(&named_path, b"anime-preview-named").expect("write named file");
+
+    for (path, episode) in [
+        (&misnamed_path, &misnamed_episode),
+        (&named_path, &named_episode),
+    ] {
+        let file_id = ctx
+            .media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: path.to_string_lossy().to_string(),
+                size_bytes: 2048,
+                quality_label: Some("1080p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("insert media file");
+        ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
+            .await
+            .expect("link file to episode");
+    }
+
+    let preview = |scope: Value| {
+        let ctx = &ctx;
+        let title_id = title.id.clone();
+        async move {
+            let mut input = json!({
+                "facet": "ANIME",
+                "titleId": title_id,
+                "dryRun": true
+            });
+            if let (Some(input), Some(scope)) = (input.as_object_mut(), scope.as_object()) {
+                for (key, value) in scope {
+                    input.insert(key.clone(), value.clone());
+                }
+            }
+            let body = gql(
+                ctx,
+                r#"
+                query($input: MediaRenamePreviewInput!) {
+                  mediaRenamePreview(input: $input) {
+                    fingerprint
+                    total
+                    renamable
+                    noop
+                    items {
+                      currentPath
+                      writeAction
+                    }
+                  }
+                }
+                "#,
+                json!({ "input": input }),
+            )
+            .await;
+            assert_no_errors(&body);
+            body["data"]["mediaRenamePreview"].clone()
+        }
+    };
+
+    let full = preview(json!({})).await;
+    assert_eq!(full["total"].as_i64(), Some(2));
+    assert_eq!(full["renamable"].as_i64(), Some(1));
+    assert_eq!(full["noop"].as_i64(), Some(1));
+    assert_eq!(full["items"].as_array().map(Vec::len), Some(2));
+    let fingerprint = full["fingerprint"]
+        .as_str()
+        .expect("fingerprint")
+        .to_string();
+
+    let renamable_only = preview(json!({ "renamableOnly": true })).await;
+    assert_eq!(renamable_only["fingerprint"].as_str(), Some(&*fingerprint));
+    assert_eq!(renamable_only["total"].as_i64(), Some(2));
+    assert_eq!(renamable_only["renamable"].as_i64(), Some(1));
+    assert_eq!(renamable_only["noop"].as_i64(), Some(1));
+    let items = renamable_only["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["writeAction"], "move");
+    assert_eq!(
+        items[0]["currentPath"],
+        json!(misnamed_path.to_string_lossy().to_string())
+    );
+
+    let capped = preview(json!({ "renamableOnly": true, "maxItems": 0 })).await;
+    assert_eq!(capped["fingerprint"].as_str(), Some(&*fingerprint));
+    assert_eq!(capped["total"].as_i64(), Some(2));
+    assert_eq!(capped["renamable"].as_i64(), Some(1));
+    assert_eq!(capped["items"].as_array().map(Vec::len), Some(0));
+}

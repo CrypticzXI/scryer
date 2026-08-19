@@ -2,6 +2,7 @@
 import { useEffect, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type ConfirmDialogProps = {
   open: boolean;
@@ -9,6 +10,7 @@ type ConfirmDialogProps = {
   description: string;
   confirmLabel: string;
   cancelLabel: string;
+  contentClassName?: string;
   contentId?: string;
   confirmButtonId?: string;
   cancelButtonId?: string;
@@ -27,6 +29,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   cancelLabel,
+  contentClassName,
   contentId,
   confirmButtonId,
   cancelButtonId,
@@ -66,7 +69,10 @@ export function ConfirmDialog({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg"
+        className={cn(
+          "w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg",
+          contentClassName,
+        )}
       >
         <h2 className="mb-2 text-sm font-semibold">{title}</h2>
         {description ? (
