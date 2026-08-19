@@ -469,12 +469,14 @@ const TOP_NAV_BADGE_GROUP_CLASS =
 const TOP_NAV_BADGE_BASE_CLASS =
   "inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium tabular-nums";
 
-type NavBadgeTone = "cta" | "danger" | "request";
+type NavBadgeTone = "cta" | "danger" | "warning" | "request";
 
 function navBadgeToneClass(tone: NavBadgeTone) {
   switch (tone) {
     case "danger":
       return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
+    case "warning":
+      return "bg-[var(--scry-warning-solid)] text-[var(--scry-warning-on-solid)]";
     case "request":
       return "bg-primary text-primary-foreground";
     case "cta":
@@ -1248,7 +1250,9 @@ function RootSidebarContent({
                             </SidebarMenuBadge>
                           ) : null}
                           {item.id === "settings" && pluginUpdateCount > 0 ? (
-                            <SidebarMenuBadge className="bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]">
+                            <SidebarMenuBadge
+                              className={navBadgeToneClass("warning")}
+                            >
                               {pluginUpdateCount}
                             </SidebarMenuBadge>
                           ) : null}
@@ -1377,7 +1381,7 @@ function RootSidebarContent({
                                         pluginUpdateCount > 0 ? (
                                           <LeafNavBadge
                                             count={pluginUpdateCount}
-                                            tone="danger"
+                                            tone="warning"
                                           />
                                         ) : null}
                                       </SidebarMenuSubButton>

@@ -103,6 +103,7 @@
   --scry-warning-text: #b45309;
   --scry-warning-solid: #d97706;
   --scry-warning-solid-hover: #b45309;
+  --scry-warning-on-solid: #451a03;
   --scry-success: #059669;
   --scry-success-rgb: 5, 150, 105;
   --scry-success-bg: rgba(var(--scry-success-rgb), 0.11);
@@ -263,6 +264,7 @@
   --scry-warning-text: #fde68a;
   --scry-warning-solid: #f59e0b;
   --scry-warning-solid-hover: #d97706;
+  --scry-warning-on-solid: #451a03;
   --scry-success: #34d399;
   --scry-success-rgb: 52, 211, 153;
   --scry-success-bg: rgba(var(--scry-success-rgb), 0.12);
