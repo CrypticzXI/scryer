@@ -558,7 +558,7 @@ pub use types::{
     ResolvePendingImportResult, RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth,
     TitleAcquisitionDiagnostics, TitleCatalogContentStatus, TitleCatalogFilter,
     TitleCatalogFilterCounts, TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort,
-    TitleCatalogSortKey, TitleCatalogTagFilterOption, TitleEpisodeProgressSummary,
+    TitleCatalogSortKey, TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary,
     TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageSourceResult,
     TitleImageSyncTask, TitleImageVariantRecord, TitleImageVariantSpec, TitleMediaFile,
     TitleMediaSizeSummary, TitleMetadataUpdate, TitleMovieMediaSummary, TitleQualitySummary,

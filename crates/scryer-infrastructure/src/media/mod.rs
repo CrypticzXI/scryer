@@ -5,4 +5,5 @@ pub(crate) mod requests;
 pub(crate) mod search;
 pub(crate) mod servers;
 pub(crate) mod shows;
+pub(crate) mod title_credits;
 pub(crate) mod titles;

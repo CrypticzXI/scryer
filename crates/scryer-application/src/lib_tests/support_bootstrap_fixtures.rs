@@ -464,6 +464,7 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         studio: "Test Studio".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
         ratings: Default::default(),
+        credits: Vec::new(),
     }
 }
 

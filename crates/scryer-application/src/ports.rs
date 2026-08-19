@@ -1117,6 +1117,11 @@ pub trait TitleRepository: Send + Sync {
         }
         Ok(ratings)
     }
+    /// Title-local cache of the credits SMG returned for the title's last successful
+    /// hydration, in SMG's order.
+    async fn get_title_credits(&self, _title_id: &str) -> AppResult<Vec<TitleCredit>> {
+        Ok(Vec::new())
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,

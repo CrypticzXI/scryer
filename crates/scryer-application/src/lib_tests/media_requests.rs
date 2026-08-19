@@ -136,6 +136,7 @@ fn make_series_metadata(tvdb_id: i64, name: &str) -> SeriesMetadata {
         anime_mappings: Vec::new(),
         anime_movies: Vec::new(),
         ratings: Default::default(),
+        credits: Vec::new(),
     }
 }
 
