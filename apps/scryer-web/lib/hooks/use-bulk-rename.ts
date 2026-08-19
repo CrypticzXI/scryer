@@ -192,7 +192,13 @@ export function useBulkRename({
         }
         try {
           await previewFacet(facet, facetTitles);
-        } catch {
+        } catch (error) {
+          // Falling back silently would hide a backend that never serves the
+          // batch, leaving the dialog quietly back on one request per title.
+          console.warn(
+            "[bulk-rename] batched preview failed; falling back to per-title previews",
+            error,
+          );
           await previewTitlesIndividually(facetTitles);
         }
       }

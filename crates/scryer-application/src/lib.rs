@@ -281,7 +281,7 @@ pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, Activit
 pub use events::activity_api::{
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
-pub(crate) use import::import::{resolve_import_paths, use_season_folders};
+pub(crate) use import::import::use_season_folders;
 pub(crate) use import_workflow::fail_active_manual_import_for_source;
 pub use import_workflow::{
     ManualImportCandidateMapping, ManualImportExecutionResult, ManualImportFileMapping,

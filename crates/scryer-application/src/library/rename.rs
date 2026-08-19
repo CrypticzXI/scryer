@@ -22,8 +22,8 @@ use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DEFAULT_FOLDER_TEMPLATE_ANIME,
     DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_SEASON_FOLDER_TEMPLATE,
     DEFAULT_SPECIALS_FOLDER_TEMPLATE, DownloadSourceIdentity, FOLDER_TEMPLATE_KEY,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
-    use_season_folders,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, SEASON_FOLDER_TEMPLATE_KEY,
+    SPECIALS_FOLDER_TEMPLATE_KEY, TitleMediaFile, parse_release_metadata, use_season_folders,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,10 +219,17 @@ struct RenameRollbackOutcome {
     detail: String,
 }
 
+/// Facet-level rename settings, resolved once per plan.
+///
+/// Every field here is constant across the titles in one plan, so reading them
+/// per title only repeats the same settings queries. The media root is the one
+/// path input that genuinely varies, and it stays a per-title lookup.
 #[derive(Clone)]
 struct RenamePlanSettings {
     template: String,
     folder_template: String,
+    season_folder_template: String,
+    specials_folder_template: String,
     collision_policy: RenameCollisionPolicy,
     missing_metadata_policy: RenameMissingMetadataPolicy,
 }
@@ -279,12 +286,10 @@ impl AppUseCase {
         title_ids: &[String],
         facet: MediaFacet,
     ) -> AppResult<Vec<RenamePlan>> {
-        if !self.resolve_rename_enabled(&facet).await? {
-            return Err(AppError::Validation("renamer_disabled".into()));
-        }
-        let settings = self.read_rename_plan_settings(&facet).await?;
-
-        let mut plans = Vec::with_capacity(title_ids.len());
+        // Authorize every title before reading any settings, so an actor who
+        // cannot see these titles learns nothing about the facet's renamer.
+        // This keeps the single-title ordering: load, authorize, then check.
+        let mut titles = Vec::with_capacity(title_ids.len());
         for title_id in title_ids {
             let title = self
                 .services
@@ -304,7 +309,16 @@ impl AppUseCase {
                     "requested facet does not match title facet".into(),
                 ));
             }
+            titles.push(title);
+        }
 
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
+        let settings = self.read_rename_plan_settings(&facet).await?;
+
+        let mut plans = Vec::with_capacity(titles.len());
+        for title in titles {
             plans.push(
                 self.build_rename_plan_for_titles(
                     title.facet.clone(),
@@ -453,6 +467,20 @@ impl AppUseCase {
         Ok(RenamePlanSettings {
             template: self.resolve_rename_template(facet).await?,
             folder_template: self.read_folder_template(facet_settings).await?,
+            season_folder_template: normalize_season_folder_template_or_default(
+                self.read_setting_string_value(
+                    SEASON_FOLDER_TEMPLATE_KEY,
+                    Some(facet_settings.scope_id),
+                )
+                .await?,
+            ),
+            specials_folder_template: normalize_specials_folder_template_or_default(
+                self.read_setting_string_value(
+                    SPECIALS_FOLDER_TEMPLATE_KEY,
+                    Some(facet_settings.scope_id),
+                )
+                .await?,
+            ),
             collision_policy: self.read_collision_policy(facet_settings).await?,
             missing_metadata_policy: self.read_missing_metadata_policy(facet_settings).await?,
         })
@@ -835,14 +863,7 @@ impl AppUseCase {
         let mut items = Vec::new();
         for title in titles {
             let mut title_items = self
-                .build_rename_plan_items_for_title(
-                    title,
-                    &settings.template,
-                    &settings.folder_template,
-                    &settings.collision_policy,
-                    &settings.missing_metadata_policy,
-                    &mut planning,
-                )
+                .build_rename_plan_items_for_title(title, &settings, &mut planning)
                 .await?;
             items.append(&mut title_items);
         }
@@ -860,13 +881,12 @@ impl AppUseCase {
     async fn build_rename_plan_items_for_title(
         &self,
         title: &Title,
-        template: &str,
-        folder_template: &str,
-        collision_policy: &RenameCollisionPolicy,
-        missing_metadata_policy: &RenameMissingMetadataPolicy,
+        settings: &RenamePlanSettings,
         planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
-        let import_paths = crate::resolve_import_paths(self, title).await?;
+        // Only the media root varies per title; every template and policy came
+        // from `settings`, which was resolved once for the whole plan.
+        let media_root = self.title_root_folder_path_override(title).await?;
         let collections = self
             .services
             .catalog
@@ -898,21 +918,17 @@ impl AppUseCase {
         // for the whole title.
         let items = {
             let title = title.clone();
-            let template = template.to_string();
-            let folder_template = folder_template.to_string();
-            let collision_policy = collision_policy.clone();
-            let missing_metadata_policy = missing_metadata_policy.clone();
-            let import_paths = import_paths.clone();
+            let settings = settings.clone();
             let mut owned_planning = std::mem::take(planning);
             let (built, returned_planning) = tokio::task::spawn_blocking(move || {
                 let items = match title.facet.clone() {
                     MediaFacet::Movie => {
                         let mut options = MovieRenamePlanOptions {
-                            media_root: &import_paths.media_root,
-                            folder_template: &folder_template,
-                            template: &template,
-                            collision_policy: &collision_policy,
-                            missing_metadata_policy: &missing_metadata_policy,
+                            media_root: &media_root,
+                            folder_template: &settings.folder_template,
+                            template: &settings.template,
+                            collision_policy: &settings.collision_policy,
+                            missing_metadata_policy: &settings.missing_metadata_policy,
                             planning: &mut owned_planning,
                         };
                         build_movie_rename_plan_items(&title, collections, media_files, &mut options)
@@ -923,13 +939,13 @@ impl AppUseCase {
                             collections,
                             episodes,
                             media_files,
-                            &import_paths.media_root,
-                            &folder_template,
-                            &import_paths.season_folder_template,
-                            &import_paths.specials_folder_template,
-                            &template,
-                            &collision_policy,
-                            &missing_metadata_policy,
+                            &media_root,
+                            &settings.folder_template,
+                            &settings.season_folder_template,
+                            &settings.specials_folder_template,
+                            &settings.template,
+                            &settings.collision_policy,
+                            &settings.missing_metadata_policy,
                             &mut owned_planning,
                         )
                     }
@@ -981,8 +997,11 @@ impl AppUseCase {
             .list_collections_by_ordered_paths(&lookup_paths)
             .await?
         {
+            // `ordered_path` has no unique constraint, and the per-path query
+            // this replaced resolved duplicates with `ORDER BY id ASC LIMIT 1`.
+            // Rows arrive id-ascending, so keep the first and ignore the rest.
             if let Some(ordered_path) = collection.ordered_path.clone() {
-                collection_cache.insert(ordered_path, collection);
+                collection_cache.entry(ordered_path).or_insert(collection);
             }
         }
 

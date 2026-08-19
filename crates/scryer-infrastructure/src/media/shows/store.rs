@@ -1922,8 +1922,9 @@ async fn insert_scoped_episode_ids_postgres(
 #[cfg(test)]
 mod tests {
     use super::{
-        SqlTarget, SummaryCandidate, list_series_movie_external_id_lookup_matches_query,
-        summary_candidate_sort_key,
+        SqlTarget, SummaryCandidate, get_collection_by_ordered_path_query,
+        list_collections_by_ordered_paths_query,
+        list_series_movie_external_id_lookup_matches_query, summary_candidate_sort_key,
     };
     use scryer_application::TitleExternalIdLookup;
     use scryer_domain::CollectionType;
@@ -2053,5 +2054,94 @@ mod tests {
 
         assert_eq!(candidates[0].collection_index, "1");
         assert_eq!(candidates[0].label.as_deref(), Some("1080P"));
+    }
+}
+
+#[cfg(test)]
+mod collection_ordered_path_tests {
+    use super::{
+        SqlTarget, get_collection_by_ordered_path_query, list_collections_by_ordered_paths_query,
+    };
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// `ordered_path` has no unique constraint, so the batched lookup has to
+    /// resolve duplicates exactly like the single-path query it replaced:
+    /// lowest id wins. Callers key the batch by first-seen, so the order this
+    /// returns is the contract.
+    #[tokio::test]
+    async fn batched_ordered_path_lookup_matches_single_path_winner() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open SQLite pool");
+        sqlx::query(
+            "CREATE TABLE collections (
+                id TEXT PRIMARY KEY,
+                title_id TEXT NOT NULL,
+                collection_type TEXT NOT NULL,
+                collection_index TEXT NOT NULL,
+                label TEXT,
+                ordered_path TEXT,
+                narrative_order TEXT,
+                first_episode_number TEXT,
+                last_episode_number TEXT,
+                monitored INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create collections table");
+
+        // Inserted highest id first so a naive last-wins map would pick "b".
+        for id in ["collection-b", "collection-a"] {
+            sqlx::query(
+                "INSERT INTO collections (
+                    id, title_id, collection_type, collection_index, label, ordered_path,
+                    narrative_order, first_episode_number, last_episode_number, monitored, created_at
+                ) VALUES (?, 'title-1', 'season', '1', 'Season 1', '/media/Show/Season 1',
+                    NULL, NULL, NULL, 1, '2026-01-01T00:00:00Z')",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("insert collection");
+        }
+
+        let single = get_collection_by_ordered_path_query(
+            SqlTarget::Sqlite(&pool),
+            "/media/Show/Season 1",
+        )
+        .await
+        .expect("single lookup")
+        .expect("collection present");
+        assert_eq!(single.id, "collection-a");
+
+        let batched = list_collections_by_ordered_paths_query(
+            SqlTarget::Sqlite(&pool),
+            &["/media/Show/Season 1".to_string()],
+        )
+        .await
+        .expect("batched lookup");
+        assert_eq!(batched.len(), 2, "both duplicates are returned");
+        assert_eq!(
+            batched.first().map(|collection| collection.id.as_str()),
+            Some(single.id.as_str()),
+            "the first batched row is the single-path winner"
+        );
+    }
+
+    #[tokio::test]
+    async fn batched_ordered_path_lookup_returns_nothing_for_empty_input() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open SQLite pool");
+        let batched = list_collections_by_ordered_paths_query(SqlTarget::Sqlite(&pool), &[])
+            .await
+            .expect("batched lookup");
+        assert!(batched.is_empty());
     }
 }

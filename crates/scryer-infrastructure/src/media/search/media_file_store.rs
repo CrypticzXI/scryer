@@ -1209,13 +1209,19 @@ impl MediaFileRepository for MediaFileStore {
         for chunk in file_paths.chunks(MEDIA_FILE_PATH_LOOKUP_CHUNK) {
             let mut predicates = Vec::with_capacity(chunk.len());
             let mut args = Vec::new();
-            let mut requested_by_match_key = HashMap::with_capacity(chunk.len());
+            // Several requested paths can share a match key (Windows matches
+            // case- and separator-insensitively), and the predicate matches a
+            // row for each of them, so every one keeps its own result entry.
+            let mut requested_by_match_key: HashMap<String, Vec<String>> =
+                HashMap::with_capacity(chunk.len());
             for file_path in chunk {
                 let (predicate, mut predicate_args) = media_file_path_predicate(file_path);
                 predicates.push(predicate);
                 args.append(&mut predicate_args);
                 requested_by_match_key
-                    .insert(media_file_path_match_key(file_path), file_path.clone());
+                    .entry(media_file_path_match_key(file_path))
+                    .or_default()
+                    .push(file_path.clone());
             }
             let where_clause = predicates.join(" OR ");
             let sql = format!(
@@ -1227,10 +1233,12 @@ impl MediaFileRepository for MediaFileStore {
             for media_file in fetch_media_files(self.datastore.read_exec(), &sql, &args).await? {
                 // Attribute each row to the path the caller asked for, using the
                 // same equivalence the predicate above matched on.
-                if let Some(requested) =
+                if let Some(requested_paths) =
                     requested_by_match_key.get(&media_file_path_match_key(&media_file.file_path))
                 {
-                    media_files.push((requested.clone(), media_file));
+                    for requested in requested_paths {
+                        media_files.push((requested.clone(), media_file.clone()));
+                    }
                 }
             }
         }
