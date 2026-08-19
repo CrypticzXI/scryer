@@ -872,7 +872,7 @@ impl AppUseCase {
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 // Captured off the release `extra` map when the row was parked
-                // (migration 0163), so a delayed grab gets the same tracker
+                // (migration 0165), so a delayed grab gets the same tracker
                 // clamp as an immediate one. Rows parked before that migration
                 // carry `None` and simply fall back to the profile's own goals.
                 tracker_min_seed_ratio: pr.seed_minimums.min_seed_ratio,

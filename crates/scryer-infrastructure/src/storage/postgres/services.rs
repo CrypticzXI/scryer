@@ -1250,7 +1250,7 @@ mod tests {
             .or_default()
             .extend([
                 "indexer_id".to_string(),
-                // Tracker seeding minimums (migration 0163).
+                // Tracker seeding minimums (migration 0165).
                 "minimum_seed_ratio".to_string(),
                 "minimum_seed_time_minutes".to_string(),
                 "season_pack_seed_ratio".to_string(),
@@ -1266,7 +1266,7 @@ mod tests {
             .extend([
                 "source_provider_id".to_string(),
                 "source_provider_name".to_string(),
-                // Resolved seeding goals (migration 0162).
+                // Resolved seeding goals (migration 0164).
                 "seeding_profile_id".to_string(),
                 "seed_goal_ratio".to_string(),
                 "seed_goal_seconds".to_string(),

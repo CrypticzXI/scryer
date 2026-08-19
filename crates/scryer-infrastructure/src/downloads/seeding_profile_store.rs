@@ -208,7 +208,7 @@ fn row_to_seeding_profile(row: &SqlRow) -> AppResult<SeedingProfile> {
             AppError::Repository(format!("unknown seed goal met action '{goal_met_action}'"))
         })?,
         never_remove: row.bool("never_remove")?,
-        // NULL only for a row that predates migration 0164; `Park` is the
+        // NULL only for a row that predates migration 0166; `Park` is the
         // shipped default and the direction that keeps managing the torrent.
         post_import_tracking: row
             .opt_text("post_import_tracking")?
@@ -237,7 +237,7 @@ mod tests {
             .expect("in-memory sqlite should open");
         // The shipped migration also touches `indexers`, which this fixture does
         // not create; apply only the seeding-profile statements.
-        for statement in include_str!("../../../scryer/src/db/migrations/0161_seeding_profiles.sql")
+        for statement in include_str!("../../../scryer/src/db/migrations/0163_seeding_profiles.sql")
             .split(';')
             .map(str::trim)
             .filter(|statement| !statement.is_empty() && statement.contains("seeding_profiles"))
@@ -247,10 +247,10 @@ mod tests {
                 .await
                 .expect("seeding profile schema should apply");
         }
-        // 0164 also touches `download_submissions`, which this fixture does not
+        // 0166 also touches `download_submissions`, which this fixture does not
         // create; apply only its seeding-profile statement.
         for statement in include_str!(
-            "../../../scryer/src/db/migrations/0164_seeding_profile_post_import_tracking.sql"
+            "../../../scryer/src/db/migrations/0166_seeding_profile_post_import_tracking.sql"
         )
         .split(';')
         .map(str::trim)

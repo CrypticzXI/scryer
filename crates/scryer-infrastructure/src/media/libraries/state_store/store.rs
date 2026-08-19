@@ -1539,7 +1539,7 @@ fn pending_release_row_to_item(
         )?,
         published_at: opt_timestamp_text(row, "published_at")?,
         info_hash: row.opt_text("info_hash")?,
-        // Rows parked before migration 0163 read back as all-`None`; the grab
+        // Rows parked before migration 0165 read back as all-`None`; the grab
         // then falls back to the profile's own goals with no tracker clamp.
         seed_minimums: ReleaseSeedMinimums {
             min_seed_ratio: row.opt_f64("minimum_seed_ratio")?,

@@ -1187,7 +1187,7 @@ pub struct PendingRelease {
     /// park time. The `extra` map itself is not persisted, so without these the
     /// delayed grab would reach the client with profile goals but no tracker
     /// clamp — the immediate-grab paths read them straight off the release.
-    /// Rows parked before migration 0163 read back as all-`None`.
+    /// Rows parked before migration 0165 read back as all-`None`.
     pub seed_minimums: ReleaseSeedMinimums,
 }
 

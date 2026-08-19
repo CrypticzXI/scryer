@@ -3,7 +3,7 @@ use super::*;
 /// Migration 0163 gave `pending_releases` the four tracker-minimum columns a
 /// delayed grab needs. Proves both directions through the real migrated schema:
 /// a parked row keeps its minimums, and a row written without them (the shape
-/// every pre-0163 row has) reads back as `None` rather than failing the map.
+/// every pre-0165 row has) reads back as `None` rather than failing the map.
 #[tokio::test]
 async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_as_none() {
     let (services, db) = temp_services("scryer_pending_release_seed_minimums").await;
@@ -50,7 +50,7 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
             .expect("pending release should exist");
     assert_eq!(loaded.seed_minimums, parked.seed_minimums);
 
-    // Written the way every row parked before 0163 was: the four columns absent
+    // Written the way every row parked before 0165 was: the four columns absent
     // from the INSERT, so the migration's defaults (NULL) apply.
     sqlx::query(
         "INSERT INTO pending_releases

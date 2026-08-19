@@ -940,7 +940,7 @@ fn seed_goals_from_row(row: &SqlRow) -> AppResult<Option<PersistedSeedGoals>> {
             .opt_text("seed_goal_met_action")?
             .as_deref()
             .and_then(scryer_domain::SeedGoalMetAction::parse),
-        // Absent (rows written before migration 0164) or unparseable reads as
+        // Absent (rows written before migration 0166) or unparseable reads as
         // `Park`: Scryer keeps managing the torrent, which is the direction
         // that cannot lose a seeding obligation.
         post_import_tracking: row
@@ -1012,7 +1012,7 @@ mod seed_goal_tests {
         .await
         .expect("episode link table should be created");
         for statement in include_str!(
-            "../../../../scryer/src/db/migrations/0162_download_submission_seed_goals.sql"
+            "../../../../scryer/src/db/migrations/0164_download_submission_seed_goals.sql"
         )
         .split(';')
         .map(str::trim)
@@ -1023,10 +1023,10 @@ mod seed_goal_tests {
                 .await
                 .expect("seed goal migration should apply");
         }
-        // 0164 also touches `seeding_profiles`, which this fixture does not
+        // 0166 also touches `seeding_profiles`, which this fixture does not
         // create; apply only its download-submission statements.
         for statement in include_str!(
-            "../../../../scryer/src/db/migrations/0164_seeding_profile_post_import_tracking.sql"
+            "../../../../scryer/src/db/migrations/0166_seeding_profile_post_import_tracking.sql"
         )
         .split(';')
         .map(str::trim)
@@ -1186,7 +1186,7 @@ mod seed_goal_tests {
         );
     }
 
-    /// Rows frozen before migration 0164 carry a NULL tracking mode. They must
+    /// Rows frozen before migration 0166 carry a NULL tracking mode. They must
     /// read back as `Park` — Scryer keeps managing them — because the other
     /// direction would silently stop tracking torrents that were grabbed under
     /// a profile that never offered the choice.

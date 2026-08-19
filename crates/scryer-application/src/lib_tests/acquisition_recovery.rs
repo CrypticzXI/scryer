@@ -4172,7 +4172,7 @@ async fn tracker_minimums_survive_the_pending_release_park_and_reach_the_grab() 
     assert_eq!(submitted.as_slice(), &[parked.seed_minimums]);
 }
 
-/// Rows parked before migration 0163 read back with every minimum `NULL`. The
+/// Rows parked before migration 0165 read back with every minimum `NULL`. The
 /// grab must still go through — it simply falls back to the profile's own goals
 /// with no tracker clamp.
 #[tokio::test]
@@ -4198,7 +4198,7 @@ async fn pending_releases_parked_before_the_minimums_migration_still_grab() {
         2024,
     )
     .await;
-    // `pending_movie_release` mirrors the pre-0163 read-back shape: every
+    // `pending_movie_release` mirrors the pre-0165 read-back shape: every
     // minimum `None`.
     let pending = pending_movie_release(
         &wanted_id,
