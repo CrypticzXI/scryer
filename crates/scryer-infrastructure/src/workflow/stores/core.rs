@@ -906,8 +906,18 @@ pub(crate) fn build_title_history_filter_sql(
                             DomainEventType::SeedingCompleted.as_str().into(),
                         ));
                     }
-                    TitleHistoryEventType::DownloadCompleted
-                    | TitleHistoryEventType::DownloadIgnored => parts.push("0".to_string()),
+                    TitleHistoryEventType::DownloadIgnored => {
+                        parts.push("event_type = {}".to_string());
+                        args.push(SqlArg::Text(
+                            DomainEventType::DownloadIgnored.as_str().into(),
+                        ));
+                    }
+                    // No `DomainEventType::DownloadCompleted` exists and no
+                    // projection ever produces this history type, so nothing
+                    // is stored that could match: a never-match clause is the
+                    // correct filter, not a bug. Give it a real event type
+                    // here if one is ever recorded.
+                    TitleHistoryEventType::DownloadCompleted => parts.push("0".to_string()),
                 }
             }
             clauses.push(format!("({})", parts.join(" OR ")));

@@ -3,6 +3,7 @@ import {
   ArrowDownToLine,
   Ban,
   ArchiveRestore,
+  EyeOff,
   FileEdit,
   HardDrive,
   Replace,
@@ -18,6 +19,7 @@ export const TITLE_HISTORY_FILTERS = [
   "grabbed",
   "download_failed",
   "blocklisted",
+  "download_ignored",
   "scanned",
   "imported",
   "import_failed",
@@ -125,6 +127,12 @@ const eventMeta: Record<string, EventMeta> = {
     iconClassName: "text-[var(--scry-success-text-soft)]",
     labelKey: "history.seedingCompleted",
     badgeClassName: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  },
+  download_ignored: {
+    icon: EyeOff,
+    iconClassName: "text-[var(--scry-warning-text)]",
+    labelKey: "history.downloadIgnored",
+    badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   },
   rematched: {
     icon: RefreshCcw,

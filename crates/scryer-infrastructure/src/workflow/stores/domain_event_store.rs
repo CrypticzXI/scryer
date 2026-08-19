@@ -148,3 +148,142 @@ impl DomainEventRepository for DomainEventStore {
         .await
     }
 }
+
+#[cfg(test)]
+mod title_history_filter_tests {
+    use std::sync::Arc;
+
+    use scryer_domain::{
+        DomainEventActorKind, DomainEventPayload, DomainEventStream, DownloadIgnoredEventData,
+        MediaFacet,
+    };
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn store() -> DomainEventStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        sqlx::query(
+            "CREATE TABLE domain_events(
+                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                 event_id TEXT NOT NULL UNIQUE,
+                 occurred_at TEXT NOT NULL,
+                 actor_kind TEXT NOT NULL DEFAULT 'system',
+                 actor_user_id TEXT,
+                 actor_display_name TEXT NOT NULL DEFAULT 'System',
+                 title_id TEXT,
+                 facet TEXT,
+                 correlation_id TEXT,
+                 causation_id TEXT,
+                 schema_version INTEGER NOT NULL,
+                 stream_kind TEXT NOT NULL,
+                 stream_id TEXT,
+                 event_type TEXT NOT NULL,
+                 payload_json TEXT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("domain event table should be created");
+        DomainEventStore::new(StoreDatastore::Sqlite {
+            pool,
+            writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    fn download_ignored_event() -> NewDomainEvent {
+        NewDomainEvent {
+            event_id: "event-1".to_string(),
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some("title-1".to_string()),
+            facet: Some(MediaFacet::Movie),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: "title-1".to_string(),
+            },
+            payload: DomainEventPayload::DownloadIgnored(DownloadIgnoredEventData {
+                title: None,
+                download_client_item_id: "job-1".to_string(),
+                client_id: Some("primary".to_string()),
+                client_type: Some("qbittorrent".to_string()),
+                source_provider: None,
+                source_title: Some("Some Release".to_string()),
+            }),
+        }
+    }
+
+    /// Filtering the history page by "download ignored" used to push a literal
+    /// never-match clause, so the filtered page came back empty while the
+    /// unfiltered page showed the very same rows.
+    #[tokio::test]
+    async fn a_download_ignored_row_survives_its_own_filter() {
+        let store = store().await;
+        store
+            .append(download_ignored_event())
+            .await
+            .expect("event should append");
+
+        let unfiltered = store
+            .list_title_history_page_events(None, None, None, 50, 0)
+            .await
+            .expect("unfiltered page should load");
+        assert_eq!(unfiltered.len(), 1, "the row is on the unfiltered page");
+
+        let filtered = store
+            .list_title_history_page_events(
+                Some(&[TitleHistoryEventType::DownloadIgnored]),
+                None,
+                None,
+                50,
+                0,
+            )
+            .await
+            .expect("filtered page should load");
+        assert_eq!(filtered.len(), 1, "and must survive its own filter");
+        assert_eq!(filtered[0].event_id, "event-1");
+
+        assert_eq!(
+            store
+                .count_title_history_page_events(
+                    Some(&[TitleHistoryEventType::DownloadIgnored]),
+                    None,
+                    None
+                )
+                .await
+                .expect("filtered count should load"),
+            1
+        );
+    }
+
+    /// `DownloadCompleted` has no stored domain-event equivalent, so its
+    /// never-match clause is correct and must stay.
+    #[tokio::test]
+    async fn download_completed_has_nothing_to_match() {
+        let store = store().await;
+        store
+            .append(download_ignored_event())
+            .await
+            .expect("event should append");
+
+        let filtered = store
+            .list_title_history_page_events(
+                Some(&[TitleHistoryEventType::DownloadCompleted]),
+                None,
+                None,
+                50,
+                0,
+            )
+            .await
+            .expect("filtered page should load");
+        assert!(filtered.is_empty());
+    }
+}
