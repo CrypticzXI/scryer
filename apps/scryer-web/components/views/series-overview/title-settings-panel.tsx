@@ -13,7 +13,7 @@ import { MediaRenamePlanPanel } from "@/components/common/media-rename-plan-pane
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { mediaRenamePreviewQuery } from "@/lib/graphql/queries";
-import { applyMediaRenameMutation, setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
+import { renameTitlesMutation, setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleDetail } from "@/components/containers/series-overview-container";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -233,26 +233,22 @@ export function TitleSettingsPanel({
     if (!renamePlan) return;
     setRenameApplying(true);
     try {
-      const { data, error } = await client.mutation(applyMediaRenameMutation, {
+      // A single title can hold a thousand files, so the rename runs as a job
+      // and the title is locked until it finishes.
+      const { data, error } = await client.mutation(renameTitlesMutation, {
         input: {
           facet: title.facet,
-          titleId: title.id,
-          fingerprint: renamePlan.fingerprint,
+          titleIds: [title.id],
         },
       }).toPromise();
       if (error) throw error;
-      const result = data.applyMediaRename as {
-        applied: number;
-        skipped: number;
-        failed: number;
-      };
-      setGlobalStatus(
-        t("status.renameApplied", {
-          applied: result.applied,
-          skipped: result.skipped,
-          failed: result.failed,
-        }),
-      );
+      const accepted =
+        (data?.renameTitles?.acceptedTitleIds as string[] | undefined)?.length ??
+        0;
+      if (accepted === 0) {
+        throw new Error(t("status.bulkRenameFailed"));
+      }
+      setGlobalStatus(t("status.renameQueued"));
       setRenamePlan(null);
       await onTitleChanged?.();
     } catch (error: unknown) {

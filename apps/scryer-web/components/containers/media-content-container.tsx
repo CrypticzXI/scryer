@@ -8,7 +8,7 @@ import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import {
   addTitleMutation,
-  applyMediaRenameMutation,
+  renameTitlesMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
   createLibraryMutation,
@@ -3065,37 +3065,36 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const applyTitleRename = React.useCallback(
-    async (title: TitleRecord, plan: MediaRenamePlan) => {
+    async (title: TitleRecord, _plan: MediaRenamePlan) => {
       try {
         recordCriticalCatalogMutation();
+        // One title can be a thousand files, so this starts a job and the
+        // title stays locked until the job is done with it.
         const { data, error } = await client
           .mutation<{
-            applyMediaRename: {
-              applied: number;
-              skipped: number;
-              failed: number;
+            renameTitles: {
+              acceptedTitleIds: string[];
+              jobRun?: unknown;
             };
-          }>(applyMediaRenameMutation, {
+          }>(renameTitlesMutation, {
             input: {
               facet: title.facet,
-              titleId: title.id,
-              fingerprint: plan.fingerprint,
+              titleIds: [title.id],
             },
           })
           .toPromise();
         if (error) {
           throw error;
         }
+        if ((data?.renameTitles.acceptedTitleIds.length ?? 0) === 0) {
+          throw new Error(t("status.bulkRenameFailed"));
+        }
+        const run = normalizeJobRun(data?.renameTitles.jobRun);
+        if (run) {
+          registerInteractiveJobRun(run);
+        }
 
-        const result = data?.applyMediaRename;
-        setGlobalStatus(
-          t("status.renameApplied", {
-            applied: result?.applied ?? 0,
-            skipped: result?.skipped ?? 0,
-            failed: result?.failed ?? 0,
-          }),
-        );
-        await refreshMovieSidePanelOverview(title.id);
+        setGlobalStatus(t("status.renameQueued"));
         return true;
       } catch (error) {
         setGlobalStatus(
@@ -3107,7 +3106,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       client,
       recordCriticalCatalogMutation,
-      refreshMovieSidePanelOverview,
+      registerInteractiveJobRun,
       setGlobalStatus,
       t,
     ],

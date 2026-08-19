@@ -2678,6 +2678,8 @@ const en: LocaleDictionary = {
   "status.foundNzb": "Found {{count}} NZBGeek result(s).",
   "status.renamePreviewGenerated":
     "Rename preview ready: {{renamable}} of {{total}} file(s) can be renamed.",
+  "status.renameQueued":
+    "Renaming in the background; progress appears in Activity.",
   "status.renameApplied":
     "Rename apply complete: {{applied}} applied, {{skipped}} skipped, {{failed}} failed.",
   "status.nzbFoundForTitle":
