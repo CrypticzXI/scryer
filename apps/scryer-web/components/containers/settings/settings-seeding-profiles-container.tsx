@@ -14,6 +14,10 @@ type PendingSeedingProfileEditorAction =
   | { type: "close" }
   | null;
 
+/// Nothing on this pane reads provider options, so a plugin change has nothing
+/// to refresh here. Module scope keeps the identity stable across renders.
+const NO_PROVIDER_OPTIONS_TO_REFRESH = async () => {};
+
 export function SettingsSeedingProfilesContainer() {
   const manager = useSeedingProfilesManager();
   const t = useTranslate();
@@ -149,9 +153,7 @@ export function SettingsSeedingProfilesContainer() {
         ? createPortal(
             <FilteredPluginList
               family="INDEXER"
-              // Nothing on this pane reads provider options, so there is
-              // nothing to refresh after a plugin change.
-              refreshProviderOptions={async () => {}}
+              refreshProviderOptions={NO_PROVIDER_OPTIONS_TO_REFRESH}
             />,
             pluginsTarget,
           )

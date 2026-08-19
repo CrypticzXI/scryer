@@ -7,7 +7,6 @@ import {
   PowerOff,
   RefreshCw,
   Trash2,
-  TriangleAlert,
 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { PluginVisualLabel } from "@/components/common/plugin-visual";
@@ -963,11 +962,7 @@ export function SettingsIndexersSection({
       <div id="settings-indexer-proxies-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="flex items-center gap-2 text-base">
-            Indexer proxies
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
-              <TriangleAlert className="h-3.5 w-3.5" />
-              Beta
-            </span>
+            {t("settings.indexerProxies")}
           </CardTitle>
         </div>
         <div className="overflow-x-auto">

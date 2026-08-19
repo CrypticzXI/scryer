@@ -193,21 +193,38 @@ export function usePluginManagement({
     [client],
   );
 
+  // `refreshProviderOptions` and `t` are called by the reload, but they must
+  // not *trigger* one: callers pass them inline, so their identity changes on
+  // every parent render and a keystroke in an unrelated form would otherwise
+  // refetch the whole plugin list. The reload is driven by the catalog
+  // version alone; these refs just keep the latest callables reachable.
+  const refreshProviderOptionsRef = useRef(refreshProviderOptions);
+  const translateRef = useRef(t);
+  useEffect(() => {
+    refreshProviderOptionsRef.current = refreshProviderOptions;
+    translateRef.current = t;
+  }, [refreshProviderOptions, t]);
+
   useEffect(() => {
     void (async () => {
       setPluginsLoading(true);
       setPluginsError(null);
       try {
-        await Promise.all([refreshProviderOptions(), loadPlugins(true)]);
+        await Promise.all([
+          refreshProviderOptionsRef.current(),
+          loadPlugins(true),
+        ]);
       } catch (error) {
         setPluginsError(
-          error instanceof Error ? error.message : t("status.failedToLoad"),
+          error instanceof Error
+            ? error.message
+            : translateRef.current("status.failedToLoad"),
         );
       } finally {
         setPluginsLoading(false);
       }
     })();
-  }, [catalogVersion, loadPlugins, refreshProviderOptions, t]);
+  }, [catalogVersion, loadPlugins]);
 
   useEffect(() => {
     const subscriptions = installProgressSubscriptionsRef.current;
