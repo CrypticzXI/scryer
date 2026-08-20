@@ -7,7 +7,7 @@ use scryer_application::{
     IndexerPluginProvider, NotificationPluginProvider, PluginInstallationRepository,
 };
 use scryer_domain::User;
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 fn admin() -> User {
     User {

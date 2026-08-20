@@ -73,10 +73,13 @@ use scryer_domain::{
     MediaServerProvider, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
     TitleContextSnapshot, User, UserAuthorization,
 };
-use scryer_infrastructure::{
-    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
-    SettingDefinitionSeed, TotpStore, WebauthnStore,
+use scryer_infrastructure_identity::users::{totp_store::TotpStore, webauthn_store::WebauthnStore};
+use scryer_infrastructure_library::media::{
+    libraries::renamer::FileSystemLibraryRenamer, search::media_file_store::MediaFileStore,
+    servers::MediaServerConnectionStore,
 };
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::stores::DownloadSubmissionStore;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::{BTreeMap, HashMap};

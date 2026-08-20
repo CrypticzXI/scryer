@@ -11,7 +11,7 @@ use scryer_application::{
     ShowRepository, TitleRepository,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, NewTitle, Title, User};
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 fn admin() -> User {
     let mut user = User::new_admin("admin");

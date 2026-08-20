@@ -20,9 +20,11 @@ use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
     ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::{
-    DownloadClientConfigStore, DownloadSubmissionStore, FsFileImporter, ImportStore,
-    SettingDefinitionSeed,
+use scryer_infrastructure_acquisition::downloads::config_store::DownloadClientConfigStore;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::{
+    file_importer::FsFileImporter,
+    stores::{DownloadSubmissionStore, ImportStore},
 };
 
 // ---------------------------------------------------------------------------
@@ -1407,11 +1409,13 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::AcquisitionScopeStatus::Wanted
     );
 
-    let failures =
-        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state())
-            .list_failed_release_signatures_for_title(&title.id, 10)
-            .await
-            .expect("failed signatures");
+    let failures = scryer_infrastructure_workflow::workflow::release_store::ReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .list_failed_release_signatures_for_title(&title.id, 10)
+    .await
+    .expect("failed signatures");
     assert!(
         failures.iter().any(|failure| {
             failure.source_title.as_deref() == Some(blocklisted_title.as_str())

@@ -25,7 +25,8 @@ use scryer_domain::{
     NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
     TitleContextSnapshot,
 };
-use scryer_infrastructure::{MediaServerConnectionStore, NotificationStore};
+use scryer_infrastructure_library::media::servers::MediaServerConnectionStore;
+use scryer_infrastructure_notifications::notifications::store::NotificationStore;
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;

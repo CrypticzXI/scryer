@@ -1,0 +1,45 @@
+[package]
+name = "scryer-infrastructure-acquisition"
+version = "0.18.16"
+edition.workspace = true
+publish = false
+build = "build.rs"
+
+[dependencies]
+scryer-domain = { path = "../scryer-domain" }
+scryer-application = { path = "../scryer-application" }
+scryer-outbound-http = { path = "../scryer-outbound-http" }
+scryer-rules = { path = "../scryer-rules" }
+scryer-infrastructure-sql = { path = "../scryer-infrastructure-sql" }
+scryer-infrastructure-crypto = { path = "../scryer-infrastructure-crypto" }
+async-compression = { version = "0.4", default-features = false, features = ["tokio", "zstd", "gzip"] }
+async-trait = { workspace = true }
+base64 = "0.23"
+chrono = { workspace = true }
+filetime = "0.2"
+futures-util = "0.3"
+metrics = { workspace = true }
+quick-xml = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "query", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate", "stream"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+uuid = { workspace = true }
+unicode-normalization = "0.1"
+zstd = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
+tempfile = "3"
+tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }
+
+[build-dependencies]
+graphql-parser = "0.4"

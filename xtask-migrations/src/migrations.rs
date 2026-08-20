@@ -22,7 +22,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         bail!("--through must be a positive migration version");
     }
 
-    scryer_infrastructure::register_spellfix_auto_extension()
+    scryer_infrastructure_datastore::register_spellfix_auto_extension()
         .map_err(|error| anyhow!(error.to_string()))?;
 
     let db_root = ctx.path("crates/scryer/src/db");
@@ -31,8 +31,9 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
     let postgres_baseline_relative = baseline_relative(args.through, BaselineEngine::Postgres);
     let postgres_baseline_path = db_root.join(&postgres_baseline_relative);
 
-    let mut manifest = scryer_infrastructure::migration_assets::load_source_manifest(&db_root)
-        .map_err(|error| anyhow!(error))?;
+    let mut manifest =
+        scryer_infrastructure_datastore::migration_assets::load_source_manifest(&db_root)
+            .map_err(|error| anyhow!(error))?;
     let sqlite_entry_present =
         manifest_has_baseline_entry(&manifest, args.through, BaselineEngine::Sqlite);
     let postgres_entry_present =
@@ -49,8 +50,9 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         );
     }
 
-    let source_bundle = scryer_infrastructure::migrations::load_source_migration_catalog()
-        .map_err(|error| anyhow!(error.to_string()))?;
+    let source_bundle =
+        scryer_infrastructure_datastore::migrations::load_source_migration_catalog()
+            .map_err(|error| anyhow!(error.to_string()))?;
     if source_bundle.catalog.find_migration(args.through).is_none() {
         bail!(
             "migration {:04} does not exist in the source catalog",
@@ -67,7 +69,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         && generation_catalog
             .latest_baseline_at_or_below(
                 args.through,
-                scryer_infrastructure::migration_assets::EngineScope::Postgres,
+                scryer_infrastructure_datastore::migration_assets::EngineScope::Postgres,
             )
             .is_none()
     {
@@ -84,7 +86,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .connect("sqlite::memory:")
             .await
             .context("failed to open reference in-memory sqlite database")?;
-        scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
+        scryer_infrastructure_datastore::migrations::replay_catalog_into_fresh_db(
             &reference_pool,
             &generation_catalog,
             &source_bundle.payload_bytes,
@@ -110,7 +112,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .expect("PostgreSQL container is present when PostgreSQL work is required");
         let target_db = format!("rebaseline_target_{}", unique_token(args.through));
         let target_pool = container.create_database_pool(&target_db).await?;
-        scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
+        scryer_infrastructure_datastore::postgres::replay_catalog_into_fresh_db(
             &target_pool,
             &generation_catalog,
             &source_bundle.payload_bytes,
@@ -137,19 +139,22 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         BaselineEngine::Postgres,
     );
     if manifest_changed {
-        scryer_infrastructure::migration_assets::write_source_manifest(&db_root, &manifest)
-            .map_err(|error| anyhow!(error))?;
+        scryer_infrastructure_datastore::migration_assets::write_source_manifest(
+            &db_root, &manifest,
+        )
+        .map_err(|error| anyhow!(error))?;
     }
 
-    let updated_bundle = scryer_infrastructure::migrations::load_source_migration_catalog()
-        .map_err(|error| anyhow!(error.to_string()))?;
+    let updated_bundle =
+        scryer_infrastructure_datastore::migrations::load_source_migration_catalog()
+            .map_err(|error| anyhow!(error.to_string()))?;
 
     let reference_head_pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .context("failed to open reference full-replay in-memory sqlite database")?;
-    scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
+    scryer_infrastructure_datastore::migrations::replay_catalog_into_fresh_db(
         &reference_head_pool,
         &generation_catalog,
         &source_bundle.payload_bytes,
@@ -165,7 +170,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         .connect("sqlite::memory:")
         .await
         .context("failed to open verification in-memory sqlite database")?;
-    scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
+    scryer_infrastructure_datastore::migrations::replay_catalog_into_fresh_db(
         &verification_pool,
         &updated_bundle.catalog,
         &updated_bundle.payload_bytes,
@@ -209,7 +214,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .expect("PostgreSQL container is present when PostgreSQL work is required");
         let reference_db = format!("rebaseline_reference_{}", unique_token(args.through));
         let reference_pool = container.create_database_pool(&reference_db).await?;
-        scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
+        scryer_infrastructure_datastore::postgres::replay_catalog_into_fresh_db(
             &reference_pool,
             &generation_catalog,
             &source_bundle.payload_bytes,
@@ -221,7 +226,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
 
         let verification_db = format!("rebaseline_verification_{}", unique_token(args.through));
         let verification_pool = container.create_database_pool(&verification_db).await?;
-        scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
+        scryer_infrastructure_datastore::postgres::replay_catalog_into_fresh_db(
             &verification_pool,
             &updated_bundle.catalog,
             &updated_bundle.payload_bytes,
@@ -283,10 +288,12 @@ enum BaselineEngine {
 }
 
 impl BaselineEngine {
-    fn scope(self) -> scryer_infrastructure::migration_assets::EngineScope {
+    fn scope(self) -> scryer_infrastructure_datastore::migration_assets::EngineScope {
         match self {
-            Self::Sqlite => scryer_infrastructure::migration_assets::EngineScope::Sqlite,
-            Self::Postgres => scryer_infrastructure::migration_assets::EngineScope::Postgres,
+            Self::Sqlite => scryer_infrastructure_datastore::migration_assets::EngineScope::Sqlite,
+            Self::Postgres => {
+                scryer_infrastructure_datastore::migration_assets::EngineScope::Postgres
+            }
         }
     }
 
@@ -305,7 +312,7 @@ fn baseline_relative(through_version: i64, engine: BaselineEngine) -> String {
 }
 
 fn manifest_has_baseline_entry(
-    manifest: &scryer_infrastructure::migration_assets::SourceMigrationManifest,
+    manifest: &scryer_infrastructure_datastore::migration_assets::SourceMigrationManifest,
     through_version: i64,
     engine: BaselineEngine,
 ) -> bool {
@@ -316,7 +323,7 @@ fn manifest_has_baseline_entry(
 }
 
 fn upsert_baseline_entry(
-    manifest: &mut scryer_infrastructure::migration_assets::SourceMigrationManifest,
+    manifest: &mut scryer_infrastructure_datastore::migration_assets::SourceMigrationManifest,
     through_version: i64,
     file: &str,
     engine: BaselineEngine,
@@ -334,7 +341,7 @@ fn upsert_baseline_entry(
         entry.file = desired_file;
     } else {
         manifest.baselines.push(
-            scryer_infrastructure::migration_assets::SourceBaselineEntry {
+            scryer_infrastructure_datastore::migration_assets::SourceBaselineEntry {
                 through_version,
                 file: desired_file,
                 engine: desired_engine,
@@ -354,17 +361,17 @@ fn upsert_baseline_entry(
 
 fn baseline_sort_key(
     through_version: i64,
-    engine: scryer_infrastructure::migration_assets::EngineScope,
+    engine: scryer_infrastructure_datastore::migration_assets::EngineScope,
     file: &str,
 ) -> (i64, u8, &str) {
     (through_version, engine_sort_key(engine), file)
 }
 
-fn engine_sort_key(engine: scryer_infrastructure::migration_assets::EngineScope) -> u8 {
+fn engine_sort_key(engine: scryer_infrastructure_datastore::migration_assets::EngineScope) -> u8 {
     match engine {
-        scryer_infrastructure::migration_assets::EngineScope::All => 0,
-        scryer_infrastructure::migration_assets::EngineScope::Sqlite => 1,
-        scryer_infrastructure::migration_assets::EngineScope::Postgres => 2,
+        scryer_infrastructure_datastore::migration_assets::EngineScope::All => 0,
+        scryer_infrastructure_datastore::migration_assets::EngineScope::Sqlite => 1,
+        scryer_infrastructure_datastore::migration_assets::EngineScope::Postgres => 2,
     }
 }
 
@@ -880,7 +887,7 @@ fn quote_sql_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scryer_infrastructure::migration_assets::{
+    use scryer_infrastructure_datastore::migration_assets::{
         EngineScope, LegacySqlBlock, SourceMigrationManifest,
     };
 
@@ -924,7 +931,7 @@ ALTER TABLE ONLY public.download_jobs
             },
             migrations: Vec::new(),
             baselines: vec![
-                scryer_infrastructure::migration_assets::SourceBaselineEntry {
+                scryer_infrastructure_datastore::migration_assets::SourceBaselineEntry {
                     through_version: 114,
                     file: "baselines/0114_baseline.sql".to_string(),
                     engine: EngineScope::Sqlite,

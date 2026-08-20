@@ -29,7 +29,8 @@ use scryer_domain::{
     DomainEventPayload, DomainEventType, ImportMode, LibraryPermissionMask, MediaFacet,
     MediaFileDeletedReason, Title, User, UserAuthorization,
 };
-use scryer_infrastructure::{FsFileImporter, MediaFileStore};
+use scryer_infrastructure_library::media::search::media_file_store::MediaFileStore;
+use scryer_infrastructure_workflow::workflow::file_importer::FsFileImporter;
 
 // ---------------------------------------------------------------------------
 // Helpers

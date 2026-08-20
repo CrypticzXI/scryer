@@ -14,7 +14,7 @@ use scryer_application::{
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
 };
-use scryer_infrastructure::{AcquisitionStore, DownloadSubmissionStore};
+use scryer_infrastructure_workflow::workflow::stores::{AcquisitionStore, DownloadSubmissionStore};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ async fn seed_pending_release(
         info_hash: None,
         seed_minimums: Default::default(),
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -323,7 +323,7 @@ async fn pending_release_roundtrips_indexer_provenance() {
         info_hash: None,
         seed_minimums: Default::default(),
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -410,7 +410,7 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     )
     .await;
 
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )

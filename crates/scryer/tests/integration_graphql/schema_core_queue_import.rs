@@ -1551,10 +1551,12 @@ async fn graphql_traverses_core_graph_relationships() {
         explanation_json: None,
         created_at: "2026-03-20T00:05:00Z".to_string(),
     };
-    scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-        .insert_release_decision(&decision)
-        .await
-        .expect("seed release decision");
+    scryer_infrastructure_library::media::libraries::state_store::WantedStore::new(
+        ctx.db.datastore(),
+    )
+    .insert_release_decision(&decision)
+    .await
+    .expect("seed release decision");
 
     let pending_release = PendingRelease {
         id: Id::new().0,
@@ -1578,7 +1580,7 @@ async fn graphql_traverses_core_graph_relationships() {
         info_hash: None,
         seed_minimums: Default::default(),
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use scryer_application::{AppResult, AppUseCase, SETTINGS_SCOPE_SYSTEM};
-use scryer_infrastructure::SettingsStore;
+use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
 use tokio::task::JoinHandle;
 
 use super::versioning::{MajorMinor, parse_major_minor};
@@ -118,7 +118,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use scryer_application::AppError;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
+    use scryer_infrastructure_datastore::{MigrationMode, SqliteServices};
 
     use super::*;
     use crate::settings_bootstrap::seed_service_setting_definitions;

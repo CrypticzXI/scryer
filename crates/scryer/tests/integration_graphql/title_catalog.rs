@@ -3072,7 +3072,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed wanted item");
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -3130,18 +3130,20 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     assert_eq!(body["data"]["deleteTitle"]["id"], id);
 
     assert!(
-        scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-            .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
-                title_id: Some(id.clone()),
-                limit: 10,
-                ..scryer_application::AcquisitionScopeStatesQuery::default()
-            })
-            .await
-            .expect("wanted items")
-            .is_empty()
+        scryer_infrastructure_library::media::libraries::state_store::WantedStore::new(
+            ctx.db.datastore()
+        )
+        .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
+            title_id: Some(id.clone()),
+            limit: 10,
+            ..scryer_application::AcquisitionScopeStatesQuery::default()
+        })
+        .await
+        .expect("wanted items")
+        .is_empty()
     );
     assert!(
-        scryer_infrastructure::PendingReleaseStore::new(
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
             ctx.db.datastore(),
             ctx.db.encryption_key_state(),
         )

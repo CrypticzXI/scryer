@@ -625,15 +625,15 @@ async fn exclusive_rename(source: &Path, dest: &Path) -> Option<std::io::Result<
     let source_c = CString::new(source.as_os_str().as_bytes()).ok()?;
     let dest_c = CString::new(dest.as_os_str().as_bytes()).ok()?;
     let result = tokio::task::spawn_blocking(move || {
-        // SAFETY: both paths are NUL-terminated and outlive the call.
-        let code = unsafe {
+        let code = {
             #[cfg(target_os = "linux")]
             {
                 renameat2_no_replace(source_c.as_ptr(), dest_c.as_ptr())
             }
             #[cfg(target_os = "macos")]
             {
-                libc::renamex_np(source_c.as_ptr(), dest_c.as_ptr(), libc::RENAME_EXCL)
+                // SAFETY: both paths are NUL-terminated and outlive the call.
+                unsafe { libc::renamex_np(source_c.as_ptr(), dest_c.as_ptr(), libc::RENAME_EXCL) }
             }
         };
         if code == 0 {

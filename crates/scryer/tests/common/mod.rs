@@ -26,18 +26,56 @@ use scryer_application::{
     OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
     SubtitleDownloadRepository,
 };
-use scryer_infrastructure::sqlite::{
-    LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
-    SettingsStore, ShowStore, TitleStore, UserStore,
+use scryer_infrastructure_acquisition::{
+    downloads::{
+        clients::NzbgetDownloadClient, config_store::DownloadClientConfigStore,
+        staged_nzb_store::FileSystemStagedNzbStore,
+    },
+    indexers::{
+        config_store::IndexerConfigStore, search_client::MultiIndexerSearchClient,
+        stats::InMemoryIndexerStatsTracker,
+    },
 };
-use scryer_infrastructure::{
-    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
-    DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
-    FileSystemStagedNzbStore, HousekeepingStore, ImageProxyStore, ImportStore, IndexerConfigStore,
-    LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
-    MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, OAuthStore,
-    PendingReleaseStore, ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore,
-    TitleImageStore, TotpStore, WantedStore, WebauthnStore, WorkflowOperationStore,
+use scryer_infrastructure_configuration::{
+    customization::{
+        plugin_store::PluginStore, post_processing_script_store::PostProcessingScriptStore,
+        rule_set_store::RuleSetStore,
+    },
+    settings::{quality_profile_store::QualityProfileStore, settings_store::SettingsStore},
+};
+use scryer_infrastructure_crypto::EncryptionKey;
+use scryer_infrastructure_datastore::{SqliteServices, keystore};
+use scryer_infrastructure_identity::{
+    external_identity::HttpExternalIdentityVerifier,
+    oauth::store::OAuthStore,
+    users::{store::UserStore, totp_store::TotpStore, webauthn_store::WebauthnStore},
+};
+use scryer_infrastructure_library::media::{
+    images::{image_proxy_store::ImageProxyStore, title_image_store::TitleImageStore},
+    libraries::{
+        scan_unmatched_store::LibraryScanUnmatchedStore,
+        scanner::FileSystemLibraryScanner,
+        state_store::{
+            BlocklistStore, HousekeepingStore, LibraryProbeStore, PendingReleaseStore,
+            SubtitleDownloadStore, WantedStore,
+        },
+        store::LibraryStore,
+    },
+    search::media_file_store::MediaFileStore,
+    servers::MediaServerConnectionStore,
+    shows::store::ShowStore,
+    titles::store::TitleStore,
+};
+use scryer_infrastructure_metadata::metadata::gateway::client::{
+    MetadataGatewayClient, SmgEnrollmentConfig,
+};
+use scryer_infrastructure_workflow::workflow::{
+    release_store::ReleaseStore,
+    stores::{
+        AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
+        ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
+        WorkflowOperationStore,
+    },
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, MfaVerification,
@@ -45,7 +83,7 @@ use scryer_interface::context::{
 use scryer_interface::{ApiSchema, build_schema};
 
 pub fn disable_platform_keystore_for_tests() {
-    scryer_infrastructure::keystore::disable_platform_keystore_for_tests();
+    keystore::disable_platform_keystore_for_tests();
 }
 
 static TEST_WASMTIME_RUNTIME: Once = Once::new();
@@ -97,7 +135,7 @@ pub struct TestContext {
 pub struct TestLibraryStateStore {
     pub wanted: WantedStore,
     pub pending_releases: PendingReleaseStore,
-    pub blocklist: scryer_infrastructure::BlocklistStore,
+    pub blocklist: BlocklistStore,
     pub housekeeping: HousekeepingStore,
     pub subtitle_downloads: SubtitleDownloadStore,
 }
@@ -635,10 +673,8 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 
 impl TestContext {
     pub async fn new() -> Self {
-        Self::new_with_external_identity_verifier(Arc::new(
-            scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
-        ))
-        .await
+        Self::new_with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
+            .await
     }
 
     pub async fn new_with_external_identity_verifier(
@@ -707,18 +743,17 @@ impl TestContext {
             Arc::new(scryer_plugins::DynamicPluginProvider::new(
                 scryer_plugins::build_indexer_plugin_provider(&[], &[]),
             ));
-        let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> = Arc::new(
-            scryer_infrastructure::InMemoryIndexerStatsTracker::new(None),
-        );
+        let indexer_stats: Arc<dyn scryer_application::IndexerStatsTracker> =
+            Arc::new(InMemoryIndexerStatsTracker::new(None));
         let indexer_client = MultiIndexerSearchClient::new(
             indexer_config_store.clone(),
             indexer_stats.clone(),
             plugin_provider.clone(),
         );
 
-        let metadata_gateway = MetadataGatewayClient::new(
+        let metadata_gateway = MetadataGatewayClient::new_with_enrollment_store(
             format!("{}/graphql", smg_server.uri()),
-            db.clone(),
+            settings_store.clone(),
             SmgEnrollmentConfig {
                 registration_secret: None,
             },
@@ -748,7 +783,7 @@ impl TestContext {
         let wanted_store = WantedStore::new(datastore.clone());
         let pending_release_store =
             PendingReleaseStore::new(datastore.clone(), db.encryption_key_state());
-        let blocklist_store = scryer_infrastructure::BlocklistStore::new(datastore.clone());
+        let blocklist_store = BlocklistStore::new(datastore.clone());
         let housekeeping_store = HousekeepingStore::new(datastore.clone());
         let subtitle_download_store = SubtitleDownloadStore::new(datastore.clone());
         let library_state_store = TestLibraryStateStore {
@@ -773,10 +808,7 @@ impl TestContext {
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
         let external_import_setup_secret_draft_store = Arc::new(
-            scryer_infrastructure::ExternalImportSetupSecretDraftStore::new(
-                datastore.clone(),
-                db.encryption_key_state(),
-            ),
+            ExternalImportSetupSecretDraftStore::new(datastore.clone(), db.encryption_key_state()),
         );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));

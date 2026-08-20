@@ -47,7 +47,6 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
-    "scryer-infrastructure",
     "scryer-interface",
     "scryer-mediainfo",
     "scryer-plugins",
@@ -58,7 +57,6 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
-    "scryer-infrastructure",
     "scryer-interface",
     "scryer-interface-acquisition",
     "scryer-interface-core",
@@ -4801,7 +4799,7 @@ mod tests {
     #[test]
     fn release_hygiene_allows_users_api_routes() {
         let violations = scan_release_hygiene_content(
-            Path::new("crates/scryer-infrastructure/src/security/external_identity.rs"),
+            Path::new("crates/scryer-infrastructure-identity/src/external_identity.rs"),
             r#"
                 .and(path("/Users/AuthenticateByName"))
                 let avatar = format!("{}/Users/jf-user/Images/Primary?tag=tag", server.uri());

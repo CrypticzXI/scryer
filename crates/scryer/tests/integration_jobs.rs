@@ -15,7 +15,8 @@ use scryer_domain::{
     ConfigurationChangeAction, DomainEventFilter, DomainEventPayload, DomainEventType, ExternalId,
     Id, Library, LibraryGrant, LibraryPermissionMask, MediaFacet, Title, User,
 };
-use scryer_infrastructure::{SettingDefinitionSeed, WorkflowOperationStore};
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::stores::WorkflowOperationStore;
 
 async fn seed_media_path_settings(ctx: &TestContext) {
     ctx.settings_store

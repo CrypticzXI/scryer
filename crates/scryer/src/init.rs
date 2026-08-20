@@ -1,5 +1,5 @@
-use scryer_infrastructure::encryption::EncryptionKey;
-use scryer_infrastructure::keystore;
+use scryer_infrastructure_crypto::EncryptionKey;
+use scryer_infrastructure_datastore::keystore;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 

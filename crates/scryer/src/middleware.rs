@@ -2363,10 +2363,12 @@ mod tests {
 
         let context = common::TestContext::new().await;
         let fetch_calls = Arc::new(AtomicUsize::new(0));
-        let connection_store = Arc::new(scryer_infrastructure::MediaServerConnectionStore::new(
-            context.db.datastore(),
-            context.db.encryption_key_state(),
-        ));
+        let connection_store = Arc::new(
+            scryer_infrastructure_library::media::servers::MediaServerConnectionStore::new(
+                context.db.datastore(),
+                context.db.encryption_key_state(),
+            ),
+        );
         let app = context.app.with_test_overrides(|builder| {
             builder
                 .with_media_server_connection_store(connection_store.clone())

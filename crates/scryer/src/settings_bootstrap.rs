@@ -29,7 +29,9 @@ use scryer_application::{
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{QualityProfileStore, SettingsStore};
+use scryer_infrastructure_configuration::settings::{
+    quality_profile_store::QualityProfileStore, settings_store::SettingsStore,
+};
 use serde_json::{Value, json};
 
 use crate::{
@@ -1084,18 +1086,21 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
 pub(crate) async fn seed_service_setting_definitions(
     database: Arc<SettingsStore>,
 ) -> Result<(), String> {
-    let definitions: Vec<scryer_infrastructure::SettingDefinitionSeed> = service_setting_seeds()
-        .iter()
-        .map(|seed| scryer_infrastructure::SettingDefinitionSeed {
-            category: seed.category.to_string(),
-            scope: seed.scope.to_string(),
-            key_name: seed.key_name.to_string(),
-            data_type: seed.data_type.to_string(),
-            default_value_json: seed.default_value_json.to_string(),
-            is_sensitive: seed.is_sensitive,
-            validation_json: None,
-        })
-        .collect();
+    let definitions: Vec<scryer_infrastructure_sql::types::SettingDefinitionSeed> =
+        service_setting_seeds()
+            .iter()
+            .map(
+                |seed| scryer_infrastructure_sql::types::SettingDefinitionSeed {
+                    category: seed.category.to_string(),
+                    scope: seed.scope.to_string(),
+                    key_name: seed.key_name.to_string(),
+                    data_type: seed.data_type.to_string(),
+                    default_value_json: seed.default_value_json.to_string(),
+                    is_sensitive: seed.is_sensitive,
+                    validation_json: None,
+                },
+            )
+            .collect();
 
     database
         .batch_ensure_setting_definitions(definitions)
@@ -1719,24 +1724,26 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
     }
 }
 
-pub(crate) fn parse_migration_mode(raw: Option<String>) -> scryer_infrastructure::MigrationMode {
+pub(crate) fn parse_migration_mode(
+    raw: Option<String>,
+) -> scryer_infrastructure_datastore::MigrationMode {
     match raw.as_deref() {
         Some(value) if value.eq_ignore_ascii_case("validate") => {
-            scryer_infrastructure::MigrationMode::ValidateOnly
+            scryer_infrastructure_datastore::MigrationMode::ValidateOnly
         }
         Some(value) if value.eq_ignore_ascii_case("apply") => {
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
         Some(value) if value.eq_ignore_ascii_case("auto") => {
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
-        Some("0") => scryer_infrastructure::MigrationMode::ValidateOnly,
-        Some("1") => scryer_infrastructure::MigrationMode::Apply,
+        Some("0") => scryer_infrastructure_datastore::MigrationMode::ValidateOnly,
+        Some("1") => scryer_infrastructure_datastore::MigrationMode::Apply,
         Some(value) => {
             tracing::warn!(value = value, "unknown migration mode, defaulting to apply");
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
-        None => scryer_infrastructure::MigrationMode::Apply,
+        None => scryer_infrastructure_datastore::MigrationMode::Apply,
     }
 }
 
@@ -1760,7 +1767,7 @@ pub(crate) fn extract_pending_migration_ids(message: &str) -> Option<Vec<String>
 mod tests {
     use super::*;
     use scryer_application::SettingsRepository;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
+    use scryer_infrastructure_datastore::{MigrationMode, SqliteServices};
 
     async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let temp = tempfile::tempdir().expect("tempdir");

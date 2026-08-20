@@ -24,14 +24,20 @@ use scryer_application::{
     StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
-use scryer_infrastructure::{
-    DownloadClientConfigStore, FileSystemStagedNzbStore, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
+use scryer_infrastructure_acquisition::downloads::{
+    clients::{
+        NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
+        WeaverDownloadClient,
+    },
+    config_store::DownloadClientConfigStore,
+    staged_nzb_store::FileSystemStagedNzbStore,
 };
 use scryer_plugins::WasmDownloadClientPluginProvider;
 
-fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
-    scryer_infrastructure::NzbgetDownloadClient::new(
+fn new_nzbget_client(
+    uri: &str,
+) -> scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient {
+    scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         uri.to_string(),
         Some("test-user".to_string()),
         Some("test-pass".to_string()),
@@ -39,8 +45,10 @@ fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
     )
 }
 
-async fn new_submit_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
-    scryer_infrastructure::NzbgetDownloadClient::with_staged_nzb_store(
+async fn new_submit_nzbget_client(
+    uri: &str,
+) -> scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient {
+    scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::with_staged_nzb_store(
         uri.to_string(),
         Some("test-user".to_string()),
         Some("test-pass".to_string()),
@@ -437,7 +445,7 @@ async fn nzbget_test_connection_returns_version() {
 
 #[tokio::test]
 async fn nzbget_test_connection_unreachable() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://127.0.0.1:1".to_string(),
         None,
         None,
@@ -1082,7 +1090,7 @@ async fn nzbget_submit_download_uses_staged_cache_entry_without_refetch() {
 
 #[tokio::test]
 async fn nzbget_endpoint_appends_jsonrpc() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789".to_string(),
         None,
         None,
@@ -1093,7 +1101,7 @@ async fn nzbget_endpoint_appends_jsonrpc() {
 
 #[tokio::test]
 async fn nzbget_endpoint_preserves_existing_jsonrpc() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789/jsonrpc".to_string(),
         None,
         None,
@@ -1104,7 +1112,7 @@ async fn nzbget_endpoint_preserves_existing_jsonrpc() {
 
 #[tokio::test]
 async fn nzbget_endpoint_strips_trailing_slash() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789/".to_string(),
         None,
         None,

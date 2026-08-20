@@ -5683,7 +5683,17 @@ dependencies = [
  "rustls",
  "scryer-application",
  "scryer-domain",
- "scryer-infrastructure",
+ "scryer-infrastructure-acquisition",
+ "scryer-infrastructure-configuration",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-datastore",
+ "scryer-infrastructure-identity",
+ "scryer-infrastructure-library",
+ "scryer-infrastructure-metadata",
+ "scryer-infrastructure-notifications",
+ "scryer-infrastructure-runtime",
+ "scryer-infrastructure-sql",
+ "scryer-infrastructure-workflow",
  "scryer-interface",
  "scryer-outbound-http",
  "scryer-plugins",
@@ -5780,37 +5790,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "scryer-infrastructure"
+name = "scryer-infrastructure-acquisition"
 version = "0.18.16"
 dependencies = [
  "async-compression",
  "async-trait",
- "aws-lc-rs",
  "base64 0.23.1",
- "blake3",
- "cc",
  "chrono",
- "fast_image_resize",
  "filetime",
  "futures-util",
  "graphql-parser",
- "image",
- "kamadak-exif",
- "keyring-core",
- "libc",
- "libsqlite3-sys",
  "metrics",
- "ml-dsa",
  "quick-xml",
- "ravif",
  "reqwest",
  "scryer-application",
  "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-sql",
  "scryer-outbound-http",
  "scryer-plugin-sdk",
  "scryer-rules",
- "security-framework",
- "security-framework-sys",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5825,11 +5824,253 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "windows-native-keyring-store",
- "windows-sys 0.61.2",
  "wiremock",
  "zstd",
+]
+
+[[package]]
+name = "scryer-infrastructure-configuration"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-sql",
+ "scryer-rules",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scryer-infrastructure-crypto"
+version = "0.18.16"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "scryer-application",
+ "serde_json",
+]
+
+[[package]]
+name = "scryer-infrastructure-datastore"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "blake3",
+ "cc",
+ "chrono",
+ "keyring-core",
+ "libsqlite3-sys",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-configuration",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-identity",
+ "scryer-infrastructure-library",
+ "scryer-infrastructure-library-search",
+ "scryer-infrastructure-sql",
+ "security-framework",
+ "security-framework-sys",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "windows-native-keyring-store",
+ "zstd",
+]
+
+[[package]]
+name = "scryer-infrastructure-identity"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "quick-xml",
+ "reqwest",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-sql",
+ "scryer-infrastructure-workflow",
+ "scryer-outbound-http",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "scryer-infrastructure-library"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "chrono",
+ "fast_image_resize",
+ "image",
+ "kamadak-exif",
+ "ravif",
+ "reqwest",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-datastore",
+ "scryer-infrastructure-library-search",
+ "scryer-infrastructure-sql",
+ "scryer-infrastructure-workflow",
+ "scryer-outbound-http",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "url",
+ "uuid",
  "zune-core",
+]
+
+[[package]]
+name = "scryer-infrastructure-library-search"
+version = "0.18.16"
+dependencies = [
+ "scryer-application",
+ "scryer-domain",
+ "serde_json",
+ "sqlx",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "scryer-infrastructure-metadata"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "blake3",
+ "chrono",
+ "graphql-parser",
+ "ml-dsa",
+ "reqwest",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-datastore",
+ "scryer-infrastructure-library",
+ "scryer-infrastructure-sql",
+ "scryer-outbound-http",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "scryer-infrastructure-notifications"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-sql",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scryer-infrastructure-runtime"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "blake3",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-acquisition",
+ "scryer-infrastructure-configuration",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-datastore",
+ "scryer-infrastructure-identity",
+ "scryer-infrastructure-library",
+ "scryer-infrastructure-library-search",
+ "scryer-infrastructure-metadata",
+ "scryer-infrastructure-notifications",
+ "scryer-infrastructure-sql",
+ "scryer-infrastructure-workflow",
+ "scryer-outbound-http",
+ "scryer-plugin-sdk",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "wiremock",
+ "zstd",
+]
+
+[[package]]
+name = "scryer-infrastructure-sql"
+version = "0.18.16"
+dependencies = [
+ "chrono",
+ "scryer-application",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scryer-infrastructure-workflow"
+version = "0.18.16"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "libc",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-infrastructure-crypto",
+ "scryer-infrastructure-sql",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8836,7 +9077,7 @@ version = "0.15.9"
 dependencies = [
  "anyhow",
  "clap",
- "scryer-infrastructure",
+ "scryer-infrastructure-datastore",
  "sqlx",
  "tokio",
  "xtask-support",
