@@ -1821,9 +1821,10 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 }
 
 #[tokio::test]
-async fn passkey_registration_requires_password_backed_user() {
+async fn passkey_registration_allows_external_user() {
     let users = Arc::new(MockUserRepo::default());
     let mut user = test_user_with_app_permissions("jellyfin_user", AppPermissionMask::NONE);
+    user.account_kind = scryer_domain::UserAccountKind::ExternalAutoProvisioned;
     user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT;
     users.create(user.clone()).await.expect("create user");
 
@@ -1837,13 +1838,10 @@ async fn passkey_registration_requires_password_backed_user() {
 
     let result = app.webauthn_register_start(&user, true).await;
 
-    match result {
-        Err(AppError::Validation(message)) => {
-            assert_eq!(message, "passkeys require a password-backed account");
-        }
-        Err(error) => panic!("expected password-backed validation error, got {error}"),
-        Ok(_) => panic!("expected password-backed validation error"),
-    }
+    assert!(
+        matches!(&result, Err(AppError::Repository(message)) if message == "not configured"),
+        "the external user should pass eligibility checks before reaching the WebAuthn repository: {result:?}"
+    );
 }
 
 #[tokio::test]

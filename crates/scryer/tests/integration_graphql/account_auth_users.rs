@@ -1666,7 +1666,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
     assert!(
         errors[0]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("cannot reset your own MFA")),
+            .is_some_and(|message| message.contains("cannot reset your own authentication factors")),
         "expected self-reset rejection: {self_reset}"
     );
 }

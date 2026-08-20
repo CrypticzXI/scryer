@@ -528,18 +528,21 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // types 581->582. The threshold itself rides on existing types as
     // SeedingProfilePayload.minimumSeeders and
     // DefaultSeedingProfilePayload.minimumSeedersFloor, so OBJECT is unchanged.
+    // Login-factor verification then adds five mutations for enrollment and
+    // passkey/TOTP completion: mutation 181->186, public types 582->585,
+    // OBJECT 300->301, and INPUT_OBJECT 166->168.
     assert_eq!(
         query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 181,
+        mutation_field_count, 186,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 582);
-    assert_eq!(kind_count("OBJECT"), 300);
-    assert_eq!(kind_count("INPUT_OBJECT"), 166);
+    assert_eq!(public_types.len(), 585);
+    assert_eq!(kind_count("OBJECT"), 301);
+    assert_eq!(kind_count("INPUT_OBJECT"), 168);
     assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

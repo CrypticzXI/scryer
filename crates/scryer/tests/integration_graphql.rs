@@ -218,22 +218,31 @@ fn manage_users_actor(username: &str) -> User {
     }
 }
 
-async fn enroll_totp_for_test_and_current_code(ctx: &TestContext, user: &User) -> String {
+async fn enroll_totp_for_test_credentials(ctx: &TestContext, user: &User) -> (String, String) {
     let enrollment = ctx
         .app
         .totp_enrollment_start(user)
         .await
         .expect("start TOTP enrollment");
     let code = test_totp_code(&enrollment.secret_base32);
-    ctx.app
+    let completed = ctx
+        .app
         .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
         .await
         .expect("complete TOTP enrollment");
-    test_totp_code_for_step_offset(&enrollment.secret_base32, 1)
+    let recovery_code = completed
+        .recovery_codes
+        .into_iter()
+        .next()
+        .expect("TOTP enrollment provides recovery codes");
+    (
+        test_totp_code_for_step_offset(&enrollment.secret_base32, 1),
+        recovery_code,
+    )
 }
 
 async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
-    enroll_totp_for_test_and_current_code(ctx, user).await;
+    let _ = enroll_totp_for_test_credentials(ctx, user).await;
 }
 
 async fn enable_form_login_with_config_step_up(
@@ -282,18 +291,20 @@ async fn enable_form_login_with_config_step_up(
         .await
         .unwrap();
     ctx.auth_runtime.apply_saved_security_settings(true, false);
-    let totp_code = enroll_totp_for_test_and_current_code(ctx, &admin).await;
+    let (totp_code, recovery_code) = enroll_totp_for_test_credentials(ctx, &admin).await;
 
     let login = gql(
         ctx,
         r#"
-        mutation Login($username: String!, $password: String!) {
-          login(input: { username: $username, password: $password }) {
+        mutation Login($username: String!, $password: String!, $totpCode: String!) {
+          login(input: { username: $username, password: $password, totpCode: $totpCode }) {
             token
           }
         }
         "#,
-        json!({ "username": username, "password": password }),
+        // Preserve the untouched TOTP code for the step-up assertion below;
+        // recovery codes are a supported primary-login fallback.
+        json!({ "username": username, "password": password, "totpCode": recovery_code }),
     )
     .await;
     assert_no_errors(&login);
