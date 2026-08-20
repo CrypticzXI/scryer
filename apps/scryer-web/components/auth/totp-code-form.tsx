@@ -20,6 +20,7 @@ type TotpCodeFormProps = {
   busy?: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
+  allowRecoveryCode?: boolean;
   className?: string;
   onCodeChange: (code: string) => void;
   onSubmit: () => void | Promise<void>;
@@ -40,12 +41,13 @@ export function TotpCodeForm({
   busy = false,
   disabled = false,
   autoFocus = true,
+  allowRecoveryCode = false,
   className,
   onCodeChange,
   onSubmit,
   onCancel,
 }: TotpCodeFormProps) {
-  const submitDisabled = disabled || busy || code.length !== 6;
+  const submitDisabled = disabled || busy || (allowRecoveryCode ? !code.trim() : code.length !== 6);
 
   return (
     <form
@@ -63,13 +65,17 @@ export function TotpCodeForm({
         <p className="text-sm leading-6 text-[var(--scry-muted)]">{description}</p>
       </div>
       <Input
-        {...integerInputProps}
+        {...(allowRecoveryCode ? {} : integerInputProps)}
         id={inputId}
         autoComplete="one-time-code"
         autoFocus={autoFocus}
-        maxLength={6}
+        maxLength={allowRecoveryCode ? 128 : 6}
         value={code}
-        onChange={(event) => onCodeChange(sanitizeTotpCode(event.target.value))}
+        onChange={(event) =>
+          onCodeChange(
+            allowRecoveryCode ? event.target.value : sanitizeTotpCode(event.target.value),
+          )
+        }
         placeholder={title}
         className="h-10 rounded-[9px] border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-ink2)] placeholder:text-[var(--scry-muted3)] focus-visible:border-[var(--scry-accent-ring)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]"
       />

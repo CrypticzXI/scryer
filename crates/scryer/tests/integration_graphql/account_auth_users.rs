@@ -1,5 +1,5 @@
 use super::*;
-use scryer_application::{JobKey, JobRunStatus};
+use scryer_application::{JobKey, JobRunStatus, UserRepository};
 use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
@@ -1472,7 +1472,7 @@ async fn graphql_set_user_login_enabled_updates_status_and_auth_epoch() {
 }
 
 #[tokio::test]
-async fn graphql_reset_user_mfa_clears_totp_state_and_preserves_passkeys() {
+async fn graphql_reset_user_mfa_clears_all_authentication_factors() {
     let ctx = TestContext::new().await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let target = ctx
@@ -1542,7 +1542,7 @@ async fn graphql_reset_user_mfa_clears_totp_state_and_preserves_passkeys() {
     let reset_user = &reset["data"]["resetUserMfa"];
     assert_eq!(reset_user["id"], target.id);
     assert_eq!(reset_user["hasMfa"], false);
-    assert_eq!(reset_user["hasPasskey"], true);
+    assert_eq!(reset_user["hasPasskey"], false);
 
     assert!(
         totp_store
@@ -1581,7 +1581,7 @@ async fn graphql_reset_user_mfa_clears_totp_state_and_preserves_passkeys() {
         .list_credentials_for_user(&target.id)
         .await
         .expect("list passkeys");
-    assert_eq!(passkeys.len(), 1, "passkeys should be preserved");
+    assert!(passkeys.is_empty(), "passkeys should be removed");
     assert!(
         ctx.app.authenticate_token(&old_token).await.is_err(),
         "tokens issued before MFA reset should be invalidated"
@@ -3346,7 +3346,7 @@ async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment
 }
 
 #[tokio::test]
-async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_code() {
+async fn graphql_local_password_login_with_voluntary_totp_requires_and_accepts_code() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
@@ -3401,7 +3401,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
             passwordMinLength: 8
             skipLoginForLocalIps: false
             mfaRequireConfigStepUp: false
-            mfaRequirePasswordLogin: true
+            mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
             totpRequireEmbyLogin: false
           }) {
@@ -3410,7 +3410,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
           }
         }
         "#,
-        Some(admin),
+        Some(admin.clone()),
     )
     .await;
     assert_no_errors(&update);
@@ -3438,6 +3438,11 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         errors[0]["extensions"]["code"], "MFA_STEP_UP_REQUIRED",
         "unexpected missing-code rejection shape: {missing_code}"
     );
+    let login_challenge_id = errors[0]["extensions"]["loginChallengeId"]
+        .as_str()
+        .expect("login verification challenge ID");
+    assert_eq!(errors[0]["extensions"]["hasPasskey"], false);
+    assert_eq!(errors[0]["extensions"]["hasTotp"], true);
 
     let invalid_code = schema_exec(
         &ctx,
@@ -3469,7 +3474,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         &format!(
             r#"
             mutation {{
-              login(input: {{ username: "localmfa_totp", password: "s3cr3t!!", totpCode: "{valid_code}" }}) {{
+              loginVerificationTotpComplete(input: {{ loginChallengeId: "{login_challenge_id}", code: "{valid_code}" }}) {{
                 token
                 mfaEnrollmentRequired
                 mfaVerifiedUntil
@@ -3482,7 +3487,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
     )
     .await;
     assert_no_errors(&valid_login);
-    let payload = &valid_login["data"]["login"];
+    let payload = &valid_login["data"]["loginVerificationTotpComplete"];
     assert_eq!(payload["mfaEnrollmentRequired"], false);
     assert!(payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(payload["user"]["username"], "localmfa_totp");
@@ -3494,4 +3499,92 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
         .expect("authenticate full token");
     assert_eq!(claims.session_scope, JwtSessionScope::Full);
     assert!(claims.mfa_verified_until.is_some());
+
+    let verified_auth_session_version = ctx
+        .users
+        .auth_session_version(&user.id)
+        .await
+        .expect("load verified session version");
+    ctx.app
+        .reset_user_mfa(&admin, &user.id)
+        .await
+        .expect("reset authentication factors");
+    let error = ctx
+        .app
+        .issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+            &user,
+            Some(Utc::now()),
+            None,
+            false,
+            &verified_auth_session_version,
+        )
+        .await
+        .expect_err("stale factor-verification epoch must not issue a session");
+    assert!(matches!(
+        error,
+        scryer_application::AppError::Unauthorized(_)
+    ));
+}
+
+#[tokio::test]
+async fn graphql_local_password_login_with_voluntary_passkey_requires_verification() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+    let user = ctx
+        .app
+        .create_user(
+            &admin,
+            "localmfa_passkey".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create passkey user");
+    seed_test_passkey(&ctx, &user.id, "voluntary-passkey").await;
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            mfaRequireJellyfinLogin: false
+            mfaRequireEmbyLogin: false
+          }) { mfaRequirePasswordLogin }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+
+    let login = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          login(input: { username: "localmfa_passkey", password: "s3cr3t!!" }) { token }
+        }
+        "#,
+        None,
+    )
+    .await;
+    let errors = login["errors"]
+        .as_array()
+        .expect("verification challenge error");
+    assert_eq!(errors[0]["extensions"]["code"], "MFA_STEP_UP_REQUIRED");
+    assert_eq!(errors[0]["extensions"]["hasPasskey"], true);
+    assert_eq!(errors[0]["extensions"]["hasTotp"], false);
+    assert_eq!(errors[0]["extensions"]["preferredFactor"], "PASSKEY");
+    assert!(errors[0]["extensions"]["loginChallengeId"].is_string());
 }

@@ -581,13 +581,21 @@ type AuthRuntimeStatePayload {
 	"""
 	mfaRequireConfigStepUp: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean!
 	"""
-	Whether Emby login requires TOTP.
+	Whether Emby login requires an enrolled authentication factor.
 	"""
-	totpRequireEmbyLogin: Boolean!
+	mfaRequireEmbyLogin: Boolean!
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean! @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`.
+	"""
+	totpRequireEmbyLogin: Boolean! @deprecated(reason: "Use mfaRequireEmbyLogin.")
 }
 
 """
@@ -7517,11 +7525,11 @@ input LibrarySettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
-	Metadata language override; null inherits the global metadata language.
+	Metadata language override; null inherits the global default.
 	"""
 	metadataLanguage: String
 	"""
-	Season-folder override; null inherits the facet setting.
+	Whether episodic titles use season folders; null inherits the facet setting.
 	"""
 	useSeasonFolders: Boolean
 	"""
@@ -7607,7 +7615,7 @@ type LibrarySettingsPayload {
 	"""
 	requiredAudioLanguages: [String!]!
 	"""
-	Library metadata-language override; null means inherit.
+	Library metadata-language override; null means inherit the global default.
 	"""
 	metadataLanguageOverride: String
 	"""
@@ -7615,7 +7623,7 @@ type LibrarySettingsPayload {
 	"""
 	metadataLanguage: String!
 	"""
-	Library season-folder override; null means inherit.
+	Library override for season folders; null means inherit the facet setting.
 	"""
 	useSeasonFoldersOverride: Boolean
 	"""
@@ -7909,6 +7917,20 @@ type LoginMfaEnrollmentCompletePayload {
 }
 
 """
+Result of completing passkey enrollment during a restricted login enrollment session.
+"""
+type LoginPasskeyEnrollmentCompletePayload {
+	"""
+	Registered passkey summary.
+	"""
+	passkey: PasskeySummaryPayload!
+	"""
+	Authenticated login payload issued after enrollment completes.
+	"""
+	login: LoginPayload!
+}
+
+"""
 Session or MFA-enrollment result returned after authentication.
 """
 type LoginPayload {
@@ -7936,6 +7958,38 @@ type LoginPayload {
 	Whether the session was requested to persist.
 	"""
 	persistSession: Boolean!
+}
+
+"""
+Passkey completion for a previously verified primary login.
+"""
+input LoginVerificationPasskeyCompleteInput {
+	"""
+	Opaque ID returned in the MFA step-up error after primary authentication.
+	"""
+	loginChallengeId: ID!
+	"""
+	ID returned by `loginVerificationPasskeyStart`.
+	"""
+	webauthnChallengeId: ID!
+	"""
+	Browser assertion JSON; credential material is consumed for verification and not echoed.
+	"""
+	responseJson: JSON!
+}
+
+"""
+TOTP or recovery-code completion for a previously verified primary login.
+"""
+input LoginVerificationTotpCompleteInput {
+	"""
+	Opaque ID returned in the MFA step-up error after primary authentication.
+	"""
+	loginChallengeId: ID!
+	"""
+	Current authenticator or recovery code; never returned in a payload.
+	"""
+	code: String!
 }
 
 """
@@ -10081,6 +10135,19 @@ type MutationRoot {
 		input: WebauthnRegisterCompleteInput!
 	): PasskeySummaryPayload!
 	"""
+	Starts passkey enrollment for a restricted post-primary MFA-enrollment session.
+	"""
+	webauthnLoginEnrollmentStart: WebauthnChallengePayload!
+	"""
+	Completes passkey enrollment for a restricted post-primary MFA-enrollment session and issues a full session.
+	"""
+	webauthnLoginEnrollmentComplete(
+		"""
+		Passkey registration challenge and browser response for login enrollment.
+		"""
+		input: WebauthnRegisterCompleteInput!
+	): LoginPasskeyEnrollmentCompletePayload!
+	"""
 	Starts TOTP enrollment for the authenticated session or MFA-enrollment session.
 	"""
 	totpEnrollmentStart: TotpEnrollmentStartPayload!
@@ -10146,6 +10213,33 @@ type MutationRoot {
 		Challenge ID and WebAuthn assertion response from the authentication start request.
 		"""
 		input: WebauthnCompleteInput!
+	): LoginPayload!
+	"""
+	Starts the user-bound passkey assertion required after primary credentials succeed.
+	"""
+	loginVerificationPasskeyStart(
+		"""
+		Opaque login verification challenge ID returned after primary authentication.
+		"""
+		challengeId: ID!
+	): WebauthnChallengePayload!
+	"""
+	Completes the passkey assertion required after primary credentials succeed.
+	"""
+	loginVerificationPasskeyComplete(
+		"""
+		Pending login verification and browser assertion response.
+		"""
+		input: LoginVerificationPasskeyCompleteInput!
+	): LoginPayload!
+	"""
+	Completes the TOTP or recovery-code fallback required after primary credentials succeed.
+	"""
+	loginVerificationTotpComplete(
+		"""
+		Pending login verification challenge and current authenticator or recovery code.
+		"""
+		input: LoginVerificationTotpCompleteInput!
 	): LoginPayload!
 	"""
 	Deletes the authenticated actor's passkey identified by `id`.
@@ -10233,11 +10327,11 @@ type MutationRoot {
 		id: ID!
 	): DeleteUserPayload!
 	"""
-	Resets MFA enrollment for the user identified by `id` after checking the manage-users permission.
+	Resets all authentication factors for the user identified by `id` after checking the manage-users permission.
 	"""
 	resetUserMfa(
 		"""
-		ID of the user whose MFA enrollment should be reset.
+		ID of the user whose authentication factors should be reset.
 		"""
 		id: ID!
 	): UserPayload!
@@ -15177,13 +15271,21 @@ type SecuritySettingsPayload {
 	"""
 	mfaRequirePasswordLogin: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean!
 	"""
-	Whether Emby login requires TOTP.
+	Whether Emby login requires an enrolled authentication factor.
 	"""
-	totpRequireEmbyLogin: Boolean!
+	mfaRequireEmbyLogin: Boolean!
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean! @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`.
+	"""
+	totpRequireEmbyLogin: Boolean! @deprecated(reason: "Use mfaRequireEmbyLogin.")
 	"""
 	Effective form-login state after environment overrides.
 	"""
@@ -17157,10 +17259,6 @@ Optional title settings used when creating or updating a title.
 """
 input TitleOptionsInput {
 	"""
-	Metadata language override; omission preserves the current value and null inherits.
-	"""
-	metadataLanguage: String
-	"""
 	Quality profile identity; omission preserves the current value, null clears it, and a value replaces it.
 	"""
 	qualityProfileId: ID
@@ -17176,6 +17274,10 @@ input TitleOptionsInput {
 	Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
 	"""
 	useSeasonFolders: Boolean
+	"""
+	Metadata language; omission preserves the current value, null clears it, and a value replaces it.
+	"""
+	metadataLanguage: String
 	"""
 	Whether specials are monitored; omission preserves the current value, null clears it, and a value replaces it.
 	"""
@@ -17311,18 +17413,6 @@ type TitlePayload {
 	"""
 	metadataLanguage: String
 	"""
-	Title metadata-language override; null means inherit.
-	"""
-	metadataLanguageOverride: String
-	"""
-	Effective metadata language after title, library, and global resolution.
-	"""
-	effectiveMetadataLanguage: String!
-	"""
-	Whether metadata language inherits from the library or global setting.
-	"""
-	inheritsMetadataLanguage: Boolean!
-	"""
 	Time of the latest metadata fetch in UTC, or null before a fetch completes.
 	"""
 	metadataFetchedAt: DateTime
@@ -17342,18 +17432,6 @@ type TitlePayload {
 	Whether episodic files use season directories, or null when unset.
 	"""
 	useSeasonFolders: Boolean
-	"""
-	Explicit season-folder title override; null means inherit.
-	"""
-	useSeasonFoldersOverride: Boolean
-	"""
-	Effective season-folder setting after title, library, and facet resolution.
-	"""
-	effectiveUseSeasonFolders: Boolean!
-	"""
-	Whether season folders inherit from the library or facet setting.
-	"""
-	inheritsUseSeasonFolders: Boolean!
 	"""
 	Whether specials are monitored, or null when unset.
 	"""
@@ -17445,6 +17523,30 @@ type TitlePayload {
 	Absolute root-folder path for this title; requires view permission on its library.
 	"""
 	rootFolderPath: String!
+	"""
+	Explicit metadata-language override, or null when the global default is inherited.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Metadata language after applying title and library overrides.
+	"""
+	effectiveMetadataLanguage: String!
+	"""
+	Whether this title inherits metadata language from its library or the global default.
+	"""
+	inheritsMetadataLanguage: Boolean!
+	"""
+	Explicit season-folder override, or null when library/facet settings are inherited.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Whether this title uses season folders after applying inheritance.
+	"""
+	effectiveUseSeasonFolders: Boolean!
+	"""
+	Whether this title inherits the season-folder setting from its library or facet.
+	"""
+	inheritsUseSeasonFolders: Boolean!
 	"""
 	Title-specific required audio-language override, or null when the facet setting is inherited.
 	"""
@@ -18476,7 +18578,7 @@ input UpdateMediaSettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
-	Optional season-folder setting for episodic facets.
+	Whether episodic titles use season folders.
 	"""
 	useSeasonFolders: Boolean
 	"""
@@ -18752,13 +18854,21 @@ input UpdateSecuritySettingsInput {
 	"""
 	mfaRequirePasswordLogin: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean
 	"""
-	Whether Emby login requires TOTP. Omission preserves the saved setting.
+	Whether Emby login requires an enrolled authentication factor. Omission preserves the saved setting.
 	"""
-	totpRequireEmbyLogin: Boolean
+	mfaRequireEmbyLogin: Boolean
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`. Omission preserves the saved setting.
+	"""
+	totpRequireEmbyLogin: Boolean @deprecated(reason: "Use mfaRequireEmbyLogin.")
 }
 
 """
@@ -19316,6 +19426,10 @@ type WebauthnChallengePayload {
 	Browser options JSON; it contains challenge data and should not be persisted as a credential.
 	"""
 	optionsJson: JSON!
+	"""
+	UTC time when the challenge expires.
+	"""
+	expiresAt: DateTime!
 }
 
 """

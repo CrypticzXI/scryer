@@ -8,7 +8,6 @@ const enabled = {
   effectiveFormLoginEnabled: true,
   passkeyEnabled: true,
   userId: "user-1",
-  accountKind: "LOCAL",
 };
 
 test("Passkey loading waits for enabled form authentication", () => {
@@ -19,5 +18,4 @@ test("Passkey loading waits for enabled form authentication", () => {
     false,
   );
   assert.equal(shouldLoadProfilePasskeys({ ...enabled, passkeyEnabled: false }), false);
-  assert.equal(shouldLoadProfilePasskeys({ ...enabled, accountKind: "EXTERNAL" }), false);
 });

@@ -1914,6 +1914,61 @@ impl WebauthnChallengeType {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebauthnChallengePurpose {
+    StandaloneAuthentication,
+    LoginVerification,
+    AccountRegistration,
+    LoginEnrollment,
+}
+
+impl WebauthnChallengePurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StandaloneAuthentication => "standalone_authentication",
+            Self::LoginVerification => "login_verification",
+            Self::AccountRegistration => "account_registration",
+            Self::LoginEnrollment => "login_enrollment",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "standalone_authentication" => Some(Self::StandaloneAuthentication),
+            "login_verification" => Some(Self::LoginVerification),
+            "account_registration" => Some(Self::AccountRegistration),
+            "login_enrollment" => Some(Self::LoginEnrollment),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginVerificationMethod {
+    LocalPassword,
+    Jellyfin,
+    Emby,
+}
+
+impl LoginVerificationMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalPassword => "local_password",
+            Self::Jellyfin => "jellyfin",
+            Self::Emby => "emby",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local_password" => Some(Self::LocalPassword),
+            "jellyfin" => Some(Self::Jellyfin),
+            "emby" => Some(Self::Emby),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebauthnCredentialRecord {
     pub id: String,
@@ -1930,6 +1985,8 @@ pub struct WebauthnChallengeRecord {
     pub id: String,
     pub user_id: Option<String>,
     pub challenge_type: WebauthnChallengeType,
+    pub purpose: WebauthnChallengePurpose,
+    pub login_verification_challenge_id: Option<String>,
     pub state_json: String,
     pub created_at: String,
     pub expires_at: String,
@@ -1939,6 +1996,36 @@ pub struct WebauthnChallengeRecord {
 pub struct WebauthnChallengeStart {
     pub challenge_id: String,
     pub options_json: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginVerificationChallengeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub login_method: LoginVerificationMethod,
+    pub persist_session: bool,
+    pub allow_passkey: bool,
+    pub allow_totp: bool,
+    pub auth_session_version: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginVerificationSatisfied {
+    pub mfa_verified_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Session version observed before a factor was verified. When
+    /// `mfa_verified_until` is set, callers must bind the issued token to this
+    /// version so an administrator reset cannot race token issuance.
+    pub auth_session_version: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginVerificationRequirement {
+    Satisfied(LoginVerificationSatisfied),
+    EnrollmentRequired,
+    Challenge(LoginVerificationChallengeRecord),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

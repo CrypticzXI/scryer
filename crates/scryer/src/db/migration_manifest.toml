@@ -1015,6 +1015,23 @@ file = "postgres/migrations/0166_seeding_profile_post_import_tracking.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 167
+description = "login verification challenges"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0167_login_verification_challenges.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0167_login_verification_challenges.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

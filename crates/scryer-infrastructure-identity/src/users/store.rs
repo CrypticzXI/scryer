@@ -65,6 +65,54 @@ impl UserRepository for UserStore {
             .unwrap_or(Ok(None))
     }
 
+    async fn reset_authentication_factors_and_invalidate_sessions(
+        &self,
+        user_id: &str,
+        auth_session_version: &str,
+    ) -> AppResult<()> {
+        let user_id = user_id.to_string();
+        let auth_session_version = auth_session_version.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "reset_authentication_factors_and_invalidate_sessions",
+            move |tx| {
+                let user_id = user_id.clone();
+                let auth_session_version = auth_session_version.clone();
+                Box::pin(async move {
+                    let rows = tx
+                        .execute(
+                            "UPDATE users SET auth_session_version = {} WHERE id = {}",
+                            &[
+                                SqlArg::Text(auth_session_version),
+                                SqlArg::Text(user_id.clone()),
+                            ],
+                        )
+                        .await?;
+                    if rows == 0 {
+                        return Err(AppError::NotFound(format!("user {user_id}")));
+                    }
+                    for table in [
+                        "totp_credentials",
+                        "totp_recovery_codes",
+                        "totp_failed_attempts",
+                        "totp_enrollment_challenges",
+                        "webauthn_challenges",
+                        "webauthn_credentials",
+                        "login_verification_challenges",
+                    ] {
+                        tx.execute(
+                            &format!("DELETE FROM {table} WHERE user_id = {{}}"),
+                            &[SqlArg::Text(user_id.clone())],
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "update_user_password_hash", move |tx| {

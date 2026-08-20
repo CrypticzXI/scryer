@@ -197,6 +197,26 @@ pub struct WebauthnCompleteInput {
     pub persist_session: Option<bool>,
 }
 
+/// TOTP or recovery-code completion for a previously verified primary login.
+#[derive(InputObject)]
+pub struct LoginVerificationTotpCompleteInput {
+    /// Opaque ID returned in the MFA step-up error after primary authentication.
+    pub login_challenge_id: ID,
+    /// Current authenticator or recovery code; never returned in a payload.
+    pub code: String,
+}
+
+/// Passkey completion for a previously verified primary login.
+#[derive(InputObject)]
+pub struct LoginVerificationPasskeyCompleteInput {
+    /// Opaque ID returned in the MFA step-up error after primary authentication.
+    pub login_challenge_id: ID,
+    /// ID returned by `loginVerificationPasskeyStart`.
+    pub webauthn_challenge_id: ID,
+    /// Browser assertion JSON; credential material is consumed for verification and not echoed.
+    pub response_json: Json<serde_json::Value>,
+}
+
 /// WebAuthn registration response paired with a previously issued challenge.
 #[derive(InputObject)]
 pub struct WebauthnRegisterCompleteInput {
@@ -287,6 +307,15 @@ pub struct LoginMfaEnrollmentCompletePayload {
     pub login: LoginPayload,
 }
 
+/// Result of completing passkey enrollment during a restricted login enrollment session.
+#[derive(SimpleObject, Clone)]
+pub struct LoginPasskeyEnrollmentCompletePayload {
+    /// Registered passkey summary.
+    pub passkey: PasskeySummaryPayload,
+    /// Authenticated login payload issued after enrollment completes.
+    pub login: LoginPayload,
+}
+
 /// WebAuthn registration or authentication challenge options.
 #[derive(SimpleObject, Clone)]
 pub struct WebauthnChallengePayload {
@@ -294,6 +323,8 @@ pub struct WebauthnChallengePayload {
     pub challenge_id: ID,
     /// Browser options JSON; it contains challenge data and should not be persisted as a credential.
     pub options_json: Json<serde_json::Value>,
+    /// UTC time when the challenge expires.
+    pub expires_at: DateTime<Utc>,
 }
 
 /// Non-secret summary of a registered passkey.

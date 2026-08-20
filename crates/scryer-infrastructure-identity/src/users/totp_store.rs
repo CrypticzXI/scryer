@@ -214,6 +214,21 @@ impl TotpRepository for TotpStore {
                     .await?;
                     tx.execute(
                         "DELETE FROM totp_enrollment_challenges WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM webauthn_challenges WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM webauthn_credentials WHERE user_id = {}",
+                        &[SqlArg::Text(user_id.clone())],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM login_verification_challenges WHERE user_id = {}",
                         &[SqlArg::Text(user_id)],
                     )
                     .await?;

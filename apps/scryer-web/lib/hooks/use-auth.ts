@@ -168,7 +168,7 @@ type AuthBootstrapSnapshot = {
   defaultPersistSession: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean | null;
-  totpRequireJellyfinLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
 };
 
 let authBootstrapSnapshot: AuthBootstrapSnapshot | null = null;
@@ -233,8 +233,8 @@ function rememberAuthBootstrapSession(token: string | null, user: AuthUser | nul
       authBootstrapSnapshot?.mfaRequirePasswordLogin ?? false,
     mfaRequireConfigStepUp:
       authBootstrapSnapshot?.mfaRequireConfigStepUp ?? null,
-    totpRequireJellyfinLogin:
-      authBootstrapSnapshot?.totpRequireJellyfinLogin ?? false,
+    mfaRequireJellyfinLogin:
+      authBootstrapSnapshot?.mfaRequireJellyfinLogin ?? false,
   };
 }
 
@@ -245,7 +245,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
   let defaultPersistSession = false;
   let mfaRequirePasswordLogin = false;
   let mfaRequireConfigStepUp: boolean | null = null;
-  let totpRequireJellyfinLogin = false;
+  let mfaRequireJellyfinLogin = false;
 
   try {
     const data = await queryWithRateLimitRetry<{
@@ -263,7 +263,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
       typeof runtimeState?.mfaRequireConfigStepUp === "boolean"
         ? runtimeState.mfaRequireConfigStepUp
         : null;
-    totpRequireJellyfinLogin = runtimeState?.totpRequireJellyfinLogin === true;
+    mfaRequireJellyfinLogin = runtimeState?.mfaRequireJellyfinLogin === true;
   } catch {
     // Fall back to the existing token/bootstrap path when the public
     // runtime-state probe is temporarily unavailable.
@@ -279,7 +279,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
       defaultPersistSession,
       mfaRequirePasswordLogin,
       mfaRequireConfigStepUp,
-      totpRequireJellyfinLogin,
+      mfaRequireJellyfinLogin,
     };
   }
 
@@ -291,7 +291,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
     defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
-    totpRequireJellyfinLogin,
+    mfaRequireJellyfinLogin,
   });
 
   // When auth is enabled, or the runtime mode is temporarily unknown,
@@ -310,7 +310,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
         defaultPersistSession,
         mfaRequirePasswordLogin,
         mfaRequireConfigStepUp,
-        totpRequireJellyfinLogin,
+        mfaRequireJellyfinLogin,
       };
     }
     clearPersistedAuthToken();
@@ -333,7 +333,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
         defaultPersistSession,
         mfaRequirePasswordLogin,
         mfaRequireConfigStepUp,
-        totpRequireJellyfinLogin,
+        mfaRequireJellyfinLogin,
       };
     }
     clearPersistedAuthToken();
@@ -359,7 +359,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
     defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
-    totpRequireJellyfinLogin,
+    mfaRequireJellyfinLogin,
   };
 }
 
@@ -398,7 +398,7 @@ export type AuthState = {
   defaultPersistSession: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean | null;
-  totpRequireJellyfinLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
   login: (
     username: string,
     password: string,
@@ -443,7 +443,7 @@ export function useAuth(): AuthState {
   const [mfaRequireConfigStepUp, setMfaRequireConfigStepUp] = useState<
     boolean | null
   >(null);
-  const [totpRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
+  const [mfaRequireJellyfinLogin, setTotpRequireJellyfinLogin] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -462,7 +462,7 @@ export function useAuth(): AuthState {
       setDefaultPersistSession(snapshot.defaultPersistSession);
       setMfaRequirePasswordLogin(snapshot.mfaRequirePasswordLogin);
       setMfaRequireConfigStepUp(snapshot.mfaRequireConfigStepUp);
-      setTotpRequireJellyfinLogin(snapshot.totpRequireJellyfinLogin);
+      setTotpRequireJellyfinLogin(snapshot.mfaRequireJellyfinLogin);
       setLoading(false);
     });
 
@@ -538,7 +538,7 @@ export function useAuth(): AuthState {
     defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
-    totpRequireJellyfinLogin,
+    mfaRequireJellyfinLogin,
     login,
     adoptSession,
     logout,

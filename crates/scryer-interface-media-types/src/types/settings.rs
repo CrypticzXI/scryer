@@ -150,9 +150,15 @@ pub struct SecuritySettingsPayload {
     pub mfa_require_config_step_up: bool,
     /// Whether password login is required alongside MFA.
     pub mfa_require_password_login: bool,
-    /// Whether Jellyfin login requires TOTP.
+    /// Whether Jellyfin login requires an enrolled authentication factor.
+    pub mfa_require_jellyfin_login: bool,
+    /// Whether Emby login requires an enrolled authentication factor.
+    pub mfa_require_emby_login: bool,
+    /// Deprecated alias for `mfaRequireJellyfinLogin`.
+    #[graphql(deprecation = "Use mfaRequireJellyfinLogin.")]
     pub totp_require_jellyfin_login: bool,
-    /// Whether Emby login requires TOTP.
+    /// Deprecated alias for `mfaRequireEmbyLogin`.
+    #[graphql(deprecation = "Use mfaRequireEmbyLogin.")]
     pub totp_require_emby_login: bool,
     /// Effective form-login state after environment overrides.
     pub effective_form_login_enabled: bool,
@@ -354,9 +360,15 @@ pub struct AuthRuntimeStatePayload {
     pub mfa_require_password_login: bool,
     /// Whether configuration changes require MFA step-up.
     pub mfa_require_config_step_up: bool,
-    /// Whether Jellyfin login requires TOTP.
+    /// Whether Jellyfin login requires an enrolled authentication factor.
+    pub mfa_require_jellyfin_login: bool,
+    /// Whether Emby login requires an enrolled authentication factor.
+    pub mfa_require_emby_login: bool,
+    /// Deprecated alias for `mfaRequireJellyfinLogin`.
+    #[graphql(deprecation = "Use mfaRequireJellyfinLogin.")]
     pub totp_require_jellyfin_login: bool,
-    /// Whether Emby login requires TOTP.
+    /// Deprecated alias for `mfaRequireEmbyLogin`.
+    #[graphql(deprecation = "Use mfaRequireEmbyLogin.")]
     pub totp_require_emby_login: bool,
 }
 
@@ -773,9 +785,15 @@ pub struct UpdateSecuritySettingsInput {
     pub mfa_require_config_step_up: bool,
     /// Whether password login requires MFA.
     pub mfa_require_password_login: bool,
-    /// Whether Jellyfin login requires TOTP.
-    pub totp_require_jellyfin_login: bool,
-    /// Whether Emby login requires TOTP. Omission preserves the saved setting.
+    /// Whether Jellyfin login requires an enrolled authentication factor.
+    pub mfa_require_jellyfin_login: Option<bool>,
+    /// Whether Emby login requires an enrolled authentication factor. Omission preserves the saved setting.
+    pub mfa_require_emby_login: Option<bool>,
+    /// Deprecated alias for `mfaRequireJellyfinLogin`.
+    #[graphql(deprecation = "Use mfaRequireJellyfinLogin.")]
+    pub totp_require_jellyfin_login: Option<bool>,
+    /// Deprecated alias for `mfaRequireEmbyLogin`. Omission preserves the saved setting.
+    #[graphql(deprecation = "Use mfaRequireEmbyLogin.")]
     pub totp_require_emby_login: Option<bool>,
 }
 

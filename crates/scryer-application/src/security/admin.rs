@@ -960,14 +960,16 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
 
         if user.id == actor.id {
-            return Err(AppError::Validation("cannot reset your own MFA".into()));
+            return Err(AppError::Validation(
+                "cannot reset your own authentication factors".into(),
+            ));
         }
 
         let auth_session_version = Id::new().0;
         self.services
             .identity
-            .totp
-            .reset_user_mfa_and_invalidate_sessions(user_id, &auth_session_version)
+            .users
+            .reset_authentication_factors_and_invalidate_sessions(user_id, &auth_session_version)
             .await?;
         self.revoke_oauth_refresh_grants_for_user(user_id, "auth_session_changed")
             .await?;
@@ -975,7 +977,7 @@ impl AppUseCase {
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             actor,
-            "user_mfa",
+            "user_authentication_factors",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
         )

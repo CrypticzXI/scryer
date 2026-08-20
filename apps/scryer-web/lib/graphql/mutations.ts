@@ -42,6 +42,7 @@ export const webauthnRegisterStartMutation = `mutation WebauthnRegisterStart {
   webauthnRegisterStart {
     challengeId
     optionsJson
+    expiresAt
   }
 }`;
 
@@ -58,12 +59,55 @@ export const webauthnAuthenticateStartMutation = `mutation WebauthnAuthenticateS
   webauthnAuthenticateStart(username: $username) {
     challengeId
     optionsJson
+    expiresAt
   }
 }`;
 
 export const webauthnAuthenticateCompleteMutation = `mutation WebauthnAuthenticateComplete($input: WebauthnCompleteInput!) {
   webauthnAuthenticateComplete(input: $input) {
 ${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginVerificationPasskeyStartMutation = `mutation LoginVerificationPasskeyStart($challengeId: ID!) {
+  loginVerificationPasskeyStart(challengeId: $challengeId) {
+    challengeId
+    optionsJson
+    expiresAt
+  }
+}`;
+
+export const loginVerificationPasskeyCompleteMutation = `mutation LoginVerificationPasskeyComplete($input: LoginVerificationPasskeyCompleteInput!) {
+  loginVerificationPasskeyComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginVerificationTotpCompleteMutation = `mutation LoginVerificationTotpComplete($input: LoginVerificationTotpCompleteInput!) {
+  loginVerificationTotpComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const webauthnLoginEnrollmentStartMutation = `mutation WebauthnLoginEnrollmentStart {
+  webauthnLoginEnrollmentStart {
+    challengeId
+    optionsJson
+    expiresAt
+  }
+}`;
+
+export const webauthnLoginEnrollmentCompleteMutation = `mutation WebauthnLoginEnrollmentComplete($input: WebauthnRegisterCompleteInput!) {
+  webauthnLoginEnrollmentComplete(input: $input) {
+    passkey {
+      id
+      friendlyName
+      createdAt
+      lastUsedAt
+    }
+    login {
+${LOGIN_PAYLOAD_FIELDS}
+    }
   }
 }`;
 
@@ -817,8 +861,8 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     skipLoginForLocalIps
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
-    totpRequireJellyfinLogin
-    totpRequireEmbyLogin
+    mfaRequireJellyfinLogin
+    mfaRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
