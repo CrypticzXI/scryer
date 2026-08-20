@@ -274,7 +274,6 @@ test("every seeding-profile string the UI renders has an English entry", () => {
     "settings.seedingProfileSeedTimeLabel",
     "settings.seedingProfileSeedTimeHelp",
     "settings.seedingProfileSeedTimeTransmissionHelp",
-    "settings.seedingProfileSeasonPacksColumn",
     "settings.seedingProfileSeasonPackAdvanced",
     "settings.seedingProfileSeasonPackModeLabel",
     "settings.seedingProfileSeasonPackModeHelp",

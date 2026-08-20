@@ -2628,8 +2628,16 @@ impl AppUseCase {
                     title_updated_after_scan = true;
                 }
 
-                if let Some(use_season_folders) = layout_summary.inferred_use_season_folders()
+                if matches!(title.facet, MediaFacet::Series | MediaFacet::Anime)
+                    && let Some(use_season_folders) = layout_summary.inferred_use_season_folders()
                     && crate::import_workflow::season_folder_tag_override(&title).is_none()
+                    // A scan must not turn a layout observed under a previous
+                    // policy into a title override that defeats an explicit
+                    // library setting.
+                    && self
+                        .library_use_season_folders_override(&title.library_id)
+                        .await?
+                        .is_none()
                     && self.resolve_use_season_folders(&title).await? != use_season_folders
                 {
                     let tags = merge_title_scan_option_tags(title.tags.clone(), use_season_folders);

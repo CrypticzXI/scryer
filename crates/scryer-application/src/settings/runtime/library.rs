@@ -760,7 +760,7 @@ impl AppUseCase {
             .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&library.id))
             .await?
             .and_then(|value| normalize_optional_string(Some(value)))
-            .map(|value| value.to_ascii_lowercase());
+            .and_then(|value| crate::normalize_metadata_language_code(&value));
         let metadata_language = match metadata_language_override.clone() {
             Some(language) => language,
             None => self.metadata_language().await,
@@ -1425,12 +1425,20 @@ impl AppUseCase {
             .await;
         let is_anime_library = library.facet == MediaFacet::Anime;
         let metadata_language_override = normalize_optional_string(settings.metadata_language.clone())
-            .map(|value| value.to_ascii_lowercase());
+            .map(|value| {
+                crate::normalize_metadata_language_code(&value).ok_or_else(|| {
+                    AppError::Validation(
+                        "metadata language must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn"
+                            .to_string(),
+                    )
+                })
+            })
+            .transpose()?;
         let metadata_language_changed = self
             .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&library.id))
             .await?
             .and_then(|value| normalize_optional_string(Some(value)))
-            .map(|value| value.to_ascii_lowercase())
+            .and_then(|value| crate::normalize_metadata_language_code(&value))
             != metadata_language_override;
         if !is_anime_library
             && (settings.filler_policy.is_some()

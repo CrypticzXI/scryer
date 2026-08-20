@@ -1219,6 +1219,12 @@ pub trait TitleRepository: Send + Sync {
         Ok(Vec::new())
     }
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
+    async fn mark_titles_metadata_hydration_due_now(&self, ids: &[String]) -> AppResult<()> {
+        for id in ids {
+            self.mark_title_metadata_hydration_due_now(id).await?;
+        }
+        Ok(())
+    }
     async fn schedule_title_metadata_hydration_retry(
         &self,
         id: &str,

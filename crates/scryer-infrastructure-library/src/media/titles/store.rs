@@ -1277,6 +1277,37 @@ impl TitleRepository for TitleStore {
         .await
     }
 
+    async fn mark_titles_metadata_hydration_due_now(&self, ids: &[String]) -> AppResult<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let ids = ids.to_vec();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "mark_titles_metadata_hydration_due_now",
+            move |tx| {
+                let ids = ids.clone();
+                Box::pin(async move {
+                    let placeholders = std::iter::repeat_n("{}", ids.len())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let sql = format!(
+                        "UPDATE titles
+                            SET metadata_hydration_next_attempt_at = {{}},
+                                metadata_hydration_attempt_count = 0
+                          WHERE id IN ({placeholders})"
+                    );
+                    let mut args = vec![SqlArg::Timestamp(Utc::now())];
+                    args.extend(ids.into_iter().map(SqlArg::Text));
+                    SqlRuntime::execute(SqlExec::Tx(tx), &sql, &args).await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
     async fn schedule_title_metadata_hydration_retry(
         &self,
         id: &str,

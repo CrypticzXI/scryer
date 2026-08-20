@@ -313,7 +313,7 @@ pub(crate) use library::rename::{
 pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
     normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
-    normalize_known_audio_language_code,
+    normalize_known_audio_language_code, normalize_metadata_language_code,
 };
 pub use media_requests::{
     ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,

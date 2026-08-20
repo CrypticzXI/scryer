@@ -964,6 +964,78 @@ async fn graphql_add_title_with_structured_options() {
 }
 
 #[tokio::test]
+async fn graphql_movie_rejects_season_folder_options_and_ignores_legacy_tags() {
+    let ctx = TestContext::new().await;
+    let rejected_add = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) { addTitle(input: $input) { title { id } } }"#,
+        json!({
+            "input": {
+                "name": "Movie season folders must fail",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "options": { "useSeasonFolders": false }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        rejected_add
+            .to_string()
+            .contains("useSeasonFolders is only valid for series and anime titles"),
+        "Movie season-folder option should be rejected: {rejected_add}"
+    );
+
+    let legacy = create_catalog_title(
+        &ctx,
+        "Legacy Movie season folders",
+        MediaFacet::Movie,
+        vec![],
+        vec!["scryer:season-folder:disabled".to_string()],
+        true,
+    )
+    .await;
+    let body = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                useSeasonFolders
+                useSeasonFoldersOverride
+                effectiveUseSeasonFolders
+                inheritsUseSeasonFolders
+            }
+        }"#,
+        json!({ "id": legacy.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title = &body["data"]["title"];
+    assert!(title["useSeasonFolders"].is_null());
+    assert!(title["useSeasonFoldersOverride"].is_null());
+    assert_eq!(title["effectiveUseSeasonFolders"], true);
+    assert_eq!(title["inheritsUseSeasonFolders"], true);
+
+    let rejected_update = gql(
+        &ctx,
+        r#"mutation($input: UpdateTitleInput!) { updateTitle(input: $input) { id } }"#,
+        json!({
+            "input": {
+                "titleId": legacy.id,
+                "options": { "useSeasonFolders": false }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        rejected_update
+            .to_string()
+            .contains("useSeasonFolders is only valid for series and anime titles"),
+        "Movie season-folder update should be rejected: {rejected_update}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_add_title_root_folder_id_validates_library_and_infers_library() {
     let ctx = TestContext::new().await;
     let movie_library_a = create_title_catalog_library(
@@ -1208,6 +1280,82 @@ async fn graphql_reused_add_applies_explicit_options_and_preserves_omitted_ones(
     assert_eq!(
         cleared["data"]["addTitle"]["title"]["monitorType"],
         "ALL_EPISODES"
+    );
+}
+
+#[tokio::test]
+async fn graphql_reused_add_preserves_metadata_language_tri_state() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let query = r#"mutation($input: AddTitleInput!) {
+        addTitle(input: $input) {
+            reusedExistingTitle
+            title {
+                id
+                metadataLanguageOverride
+                effectiveMetadataLanguage
+                inheritsMetadataLanguage
+            }
+        }
+    }"#;
+    let input = |options: Value| {
+        json!({
+            "input": {
+                "name": "Reusable metadata language series",
+                "facet": "SERIES",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "metadata-language-reuse" }],
+                "options": options,
+            }
+        })
+    };
+
+    let set = gql(&ctx, query, input(json!({ "metadataLanguage": " FRA " }))).await;
+    assert_no_errors(&set);
+    assert_eq!(set["data"]["addTitle"]["reusedExistingTitle"], false);
+    assert_eq!(
+        set["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "fra"
+    );
+
+    let cleared = gql(&ctx, query, input(json!({ "metadataLanguage": null }))).await;
+    assert_no_errors(&cleared);
+    assert_eq!(cleared["data"]["addTitle"]["reusedExistingTitle"], true);
+    assert!(cleared["data"]["addTitle"]["title"]["metadataLanguageOverride"].is_null());
+    assert_eq!(
+        cleared["data"]["addTitle"]["title"]["effectiveMetadataLanguage"],
+        "eng"
+    );
+    assert_eq!(
+        cleared["data"]["addTitle"]["title"]["inheritsMetadataLanguage"],
+        true
+    );
+
+    let omitted = gql(&ctx, query, input(json!({}))).await;
+    assert_no_errors(&omitted);
+    assert!(omitted["data"]["addTitle"]["title"]["metadataLanguageOverride"].is_null());
+
+    let reset = gql(&ctx, query, input(json!({ "metadataLanguage": "JPN" }))).await;
+    assert_no_errors(&reset);
+    assert_eq!(
+        reset["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "jpn"
+    );
+
+    let preserved = gql(&ctx, query, input(json!({}))).await;
+    assert_no_errors(&preserved);
+    assert_eq!(
+        preserved["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "jpn"
+    );
+
+    let rejected = gql(&ctx, query, input(json!({ "metadataLanguage": "rus" }))).await;
+    assert!(
+        rejected.to_string().contains(
+            "metadataLanguage must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn"
+        ),
+        "invalid metadata language should be rejected: {rejected}"
     );
 }
 

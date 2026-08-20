@@ -190,6 +190,20 @@ pub fn normalize_known_audio_language_code(code: &str) -> Option<String> {
         })
 }
 
+/// Normalize a language selected for metadata hydration.
+///
+/// Metadata providers are deliberately limited to the language choices exposed
+/// by Scryer's metadata-language picker, rather than accepting arbitrary ISO
+/// or release aliases intended for media-file detection.
+pub fn normalize_metadata_language_code(code: &str) -> Option<String> {
+    let normalized = code.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "eng" | "spa" | "fra" | "deu" | "ita" | "por" | "kor" | "zho" | "jpn"
+    )
+    .then_some(normalized)
+}
+
 pub fn normalize_detected_audio_languages<'a>(
     languages: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {
@@ -233,6 +247,7 @@ mod tests {
     use super::{
         normalize_detected_audio_language_code, normalize_detected_audio_languages,
         normalize_detected_subtitle_language_code, normalize_detected_subtitle_languages,
+        normalize_metadata_language_code,
     };
     use crate::media_language_data::ISO6392_LANGUAGE_ENTRIES;
 
@@ -356,6 +371,26 @@ mod tests {
             Some("zxx")
         );
         assert_eq!(normalize_detected_subtitle_language_code("und"), None);
+    }
+
+    #[test]
+    fn normalizes_only_metadata_picker_languages() {
+        for language in [
+            "eng", "spa", "fra", "deu", "ita", "por", "kor", "zho", "jpn",
+        ] {
+            assert_eq!(
+                normalize_metadata_language_code(&language.to_ascii_uppercase()).as_deref(),
+                Some(language),
+            );
+        }
+
+        for language in ["en", "en-US", "rus", "pob", "und", "", "  "] {
+            assert_eq!(
+                normalize_metadata_language_code(language),
+                None,
+                "{language}"
+            );
+        }
     }
 
     #[test]

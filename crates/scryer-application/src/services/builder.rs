@@ -438,6 +438,7 @@ impl AppServicesBuilder {
         system_info,
         Arc<dyn SystemInfoProvider>
     );
+    app_services_builder_setter!(with_settings, config.settings, Arc<dyn SettingsRepository>);
     app_services_builder_setter!(
         with_logical_backup_exporter,
         config.logical_backup_exporter,

@@ -671,7 +671,7 @@ pub struct TitleOptionsInput {
     pub root_folder_id: MaybeUndefined<ID>,
     /// Monitoring policy; omission preserves the current value, null clears it, and a value replaces it.
     pub monitor_type: MaybeUndefined<MonitorTypeValue>,
-    /// Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
+    /// Whether season folders are used for Series or Anime; omission preserves the current value, null clears it, and a value replaces it. Movies reject this field.
     pub use_season_folders: MaybeUndefined<bool>,
     /// Metadata language; omission preserves the current value, null clears it, and a value replaces it.
     pub metadata_language: MaybeUndefined<String>,

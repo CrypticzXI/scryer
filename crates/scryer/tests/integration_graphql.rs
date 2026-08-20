@@ -59,10 +59,10 @@ use scryer_application::{
     CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
     InsertMediaFileInput, JwtSessionScope, LibraryRepository, LibraryRootDraft, MediaFileAnalysis,
     MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
-    PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary,
-    TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository,
-    UserRepository, WebauthnCredentialRecord, WebauthnRepository,
+    PendingReleaseRepository, ReleaseDecision, SettingsRepository, ShowRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord,
+    TotpRepository, UserRepository, WebauthnCredentialRecord, WebauthnRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -578,6 +578,91 @@ impl MediaFileRepository for FailingMediaFileRepo {
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
         self.inner.delete_media_file(file_id).await
+    }
+}
+
+/// Delegating [`SettingsRepository`] double that separates direct explicit
+/// reads from scoped batch reads for request-loader regression coverage.
+struct CountingSettingsRepo {
+    inner: std::sync::Arc<dyn SettingsRepository>,
+    direct_explicit_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    batch_explicit_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    global_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl SettingsRepository for CountingSettingsRepo {
+    async fn get_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        self.global_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get_setting_json(scope, key_name, scope_id).await
+    }
+
+    async fn get_setting_json_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        self.direct_explicit_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .get_setting_json_explicit(scope, key_name, scope_id)
+            .await
+    }
+
+    async fn list_setting_json_explicit_for_scope_ids(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_ids: &[String],
+    ) -> AppResult<Vec<(String, String)>> {
+        self.batch_explicit_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .list_setting_json_explicit_for_scope_ids(scope, key_name, scope_ids)
+            .await
+    }
+
+    async fn upsert_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+        value_json: String,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .upsert_setting_json(
+                scope,
+                key_name,
+                scope_id,
+                value_json,
+                source,
+                updated_by_user_id,
+            )
+            .await
+    }
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .delete_setting_value(scope, key_name, scope_id)
+            .await
+    }
+
+    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+        self.inner.delete_values_for_scope_id(scope_id).await
     }
 }
 
@@ -1611,6 +1696,33 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 key_name: "plexmatch.write_on_import.anime".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "metadata_language".into(),
+                data_type: "string".into(),
+                default_value_json: "\"eng\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "metadata_language.title_override".into(),
+                data_type: "string".into(),
+                default_value_json: "null".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "rename.use_season_folders".into(),
+                data_type: "boolean".into(),
+                default_value_json: "true".into(),
                 is_sensitive: false,
                 validation_json: None,
             },

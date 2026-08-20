@@ -93,8 +93,12 @@ pub fn from_title(app: &AppUseCase, title: Title) -> TitlePayload {
     let monitor_type = extract_tag_string(&title.tags, "scryer:monitor-type:")
         .as_deref()
         .and_then(MonitorTypeValue::from_tag_value);
-    let use_season_folders = extract_tag_string(&title.tags, "scryer:season-folder:")
-        .map(|value| !value.eq_ignore_ascii_case("disabled"));
+    let use_season_folders = if title.facet == MediaFacet::Movie {
+        None
+    } else {
+        extract_tag_string(&title.tags, "scryer:season-folder:")
+            .map(|value| !value.eq_ignore_ascii_case("disabled"))
+    };
     let monitor_specials = extract_tag_bool(&title.tags, "scryer:monitor-specials:");
     let inter_season_movies = extract_tag_bool(&title.tags, "scryer:inter-season-movies:");
     let filler_policy = extract_tag_string(&title.tags, "scryer:filler-policy:")

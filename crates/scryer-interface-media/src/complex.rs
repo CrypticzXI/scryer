@@ -459,6 +459,12 @@ impl TitlePayload {
 
     /// Explicit metadata-language override, or null when the global default is inherited.
     async fn metadata_language_override(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            return loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await;
+        }
         Box::pin(async move {
             app_from_ctx(ctx)?
                 .title_metadata_language_override(self.id.as_ref())
@@ -470,6 +476,27 @@ impl TitlePayload {
 
     /// Metadata language after applying title and library overrides.
     async fn effective_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            if let Some(language) = loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await?
+            {
+                return Ok(language);
+            }
+            if let Some(language) = loaders
+                .library_metadata_language_override
+                .load_one(self.library_id.to_string())
+                .await?
+            {
+                return Ok(language);
+            }
+            return Ok(loaders
+                .global_metadata_language
+                .load_one("metadata-language".to_owned())
+                .await?
+                .unwrap_or_else(|| "eng".to_owned()));
+        }
         Box::pin(async move {
             app_from_ctx(ctx)?
                 .effective_metadata_language_for_title(self.id.as_ref())
@@ -481,6 +508,13 @@ impl TitlePayload {
 
     /// Whether this title inherits metadata language from its library or the global default.
     async fn inherits_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            return Ok(loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await?
+                .is_none());
+        }
         Box::pin(async move {
             Ok(app_from_ctx(ctx)?
                 .title_metadata_language_override(self.id.as_ref())
@@ -493,11 +527,33 @@ impl TitlePayload {
 
     /// Explicit season-folder override, or null when library/facet settings are inherited.
     async fn use_season_folders_override(&self) -> Option<bool> {
-        self.use_season_folders
+        (self.facet != MediaFacetValue::Movie)
+            .then_some(self.use_season_folders)
+            .flatten()
     }
 
     /// Whether this title uses season folders after applying inheritance.
     async fn effective_use_season_folders(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        if self.facet == MediaFacetValue::Movie {
+            return Ok(true);
+        }
+        if let Some(use_season_folders) = self.use_season_folders {
+            return Ok(use_season_folders);
+        }
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            if let Some(use_season_folders) = loaders
+                .library_use_season_folders_override
+                .load_one(self.library_id.to_string())
+                .await?
+            {
+                return Ok(use_season_folders);
+            }
+            return Ok(loaders
+                .facet_use_season_folders_override
+                .load_one(self.facet.into_domain().as_str().to_owned())
+                .await?
+                .unwrap_or(true));
+        }
         Box::pin(async move {
             app_from_ctx(ctx)?
                 .effective_use_season_folders_for_title(self.id.as_ref())
@@ -509,7 +565,7 @@ impl TitlePayload {
 
     /// Whether this title inherits the season-folder setting from its library or facet.
     async fn inherits_use_season_folders(&self) -> bool {
-        self.use_season_folders.is_none()
+        self.facet == MediaFacetValue::Movie || self.use_season_folders.is_none()
     }
 
     /// Title-specific required audio-language override, or null when the facet setting is inherited.

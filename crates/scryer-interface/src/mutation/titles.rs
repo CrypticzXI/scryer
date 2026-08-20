@@ -63,9 +63,10 @@ fn root_folder_id_override(root: &LibraryRoot) -> Option<Option<String>> {
 }
 
 fn resolved_title_options(
+    facet: &MediaFacet,
     options: TitleOptionsInput,
     root_folder_id: Option<Option<String>>,
-) -> ResolvedTitleOptionsInput {
+) -> GqlResult<ResolvedTitleOptionsInput> {
     let TitleOptionsInput {
         quality_profile_id,
         root_folder_id: _,
@@ -78,7 +79,18 @@ fn resolved_title_options(
         recap_policy,
     } = options;
 
-    ResolvedTitleOptionsInput {
+    let use_season_folders = match use_season_folders {
+        MaybeUndefined::Undefined => None,
+        MaybeUndefined::Null => Some(None),
+        MaybeUndefined::Value(value) => Some(Some(value)),
+    };
+    if *facet == MediaFacet::Movie && use_season_folders.is_some() {
+        return Err(validation_error(
+            "useSeasonFolders is only valid for series and anime titles",
+        ));
+    }
+
+    Ok(ResolvedTitleOptionsInput {
         quality_profile_id: match quality_profile_id {
             MaybeUndefined::Undefined => None,
             MaybeUndefined::Null => Some(None),
@@ -90,15 +102,17 @@ fn resolved_title_options(
             MaybeUndefined::Null => Some(None),
             MaybeUndefined::Value(value) => Some(Some(value.as_tag_value().to_string())),
         },
-        use_season_folders: match use_season_folders {
-            MaybeUndefined::Undefined => None,
-            MaybeUndefined::Null => Some(None),
-            MaybeUndefined::Value(value) => Some(Some(value)),
-        },
+        use_season_folders,
         metadata_language: match metadata_language {
             MaybeUndefined::Undefined => None,
             MaybeUndefined::Null => Some(None),
-            MaybeUndefined::Value(value) => Some(Some(value.trim().to_ascii_lowercase())),
+            MaybeUndefined::Value(value) => Some(Some(
+                scryer_application::normalize_metadata_language_code(&value).ok_or_else(|| {
+                    validation_error(
+                        "metadataLanguage must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn",
+                    )
+                })?,
+            )),
         },
         monitor_specials: match monitor_specials {
             MaybeUndefined::Undefined => None,
@@ -120,7 +134,7 @@ fn resolved_title_options(
             MaybeUndefined::Null => Some(None),
             MaybeUndefined::Value(value) => Some(Some(value.as_app_str().to_string())),
         },
-    }
+    })
 }
 
 async fn manageable_libraries_for_facet(
@@ -149,7 +163,7 @@ async fn resolve_add_title_options(
         MaybeUndefined::Null => (library_id, Some(None)),
         MaybeUndefined::Value(root_folder_id) => {
             let root_folder_id = normalized_root_folder_id(&root_folder_id)?;
-            let libraries = manageable_libraries_for_facet(app, actor, facet).await?;
+            let libraries = manageable_libraries_for_facet(app, actor, facet.clone()).await?;
             let (root_library, root) =
                 find_library_root(&libraries, root_folder_id).ok_or_else(|| {
                     validation_error("rootFolderId must reference a configured library root")
@@ -170,7 +184,7 @@ async fn resolve_add_title_options(
 
     Ok((
         library_id,
-        Some(resolved_title_options(options, root_folder_id)),
+        Some(resolved_title_options(&facet, options, root_folder_id)?),
     ))
 }
 
@@ -178,6 +192,7 @@ async fn resolve_update_title_options(
     app: &AppUseCase,
     actor: &User,
     title: &Title,
+    facet: &MediaFacet,
     options: TitleOptionsInput,
 ) -> GqlResult<ResolvedTitleOptionsInput> {
     let root_folder_id = options.root_folder_id.clone();
@@ -204,7 +219,7 @@ async fn resolve_update_title_options(
         }
     };
 
-    Ok(resolved_title_options(options, root_folder_id))
+    resolved_title_options(facet, options, root_folder_id)
 }
 
 #[Object]
@@ -381,8 +396,9 @@ impl TitleMutations {
                 Some(tags) => tags,
                 None => title.tags.clone(),
             };
+            let target_facet = facet.as_ref().unwrap_or(&title.facet);
             let resolved_options =
-                resolve_update_title_options(&app, &actor, &title, options).await?;
+                resolve_update_title_options(&app, &actor, &title, target_facet, options).await?;
             root_folder_id = resolved_options.root_folder_id.clone();
             metadata_language_override = resolved_options.metadata_language.clone();
             tags = Some(merge_title_option_tags(base_tags, resolved_options));

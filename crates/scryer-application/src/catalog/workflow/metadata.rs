@@ -95,8 +95,12 @@ impl AppUseCase {
             .await
             .ok()
             .flatten()
-            .filter(|v| !v.trim().is_empty())
+            .and_then(|language| crate::normalize_metadata_language_code(&language))
             .unwrap_or_else(|| "eng".to_string())
+    }
+
+    pub async fn global_metadata_language(&self) -> String {
+        self.metadata_language().await
     }
 
     pub(crate) async fn resolve_metadata_language_for_title(&self, title: &Title) -> String {
@@ -106,20 +110,64 @@ impl AppUseCase {
                 Some(&title.id),
             )
             .await
-            && !language.trim().is_empty()
+            && let Some(language) = crate::normalize_metadata_language_code(&language)
         {
-            return language.trim().to_ascii_lowercase();
+            return language;
         }
 
         if let Ok(Some(language)) = self
             .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&title.library_id))
             .await
-            && !language.trim().is_empty()
+            && let Some(language) = crate::normalize_metadata_language_code(&language)
         {
-            return language.trim().to_ascii_lowercase();
+            return language;
         }
 
         self.metadata_language().await
+    }
+
+    /// Resolve a collection of titles with one read per override tier.
+    ///
+    /// Individual resolver failures intentionally inherit from the next tier;
+    /// retain that behavior for bulk hydration rather than failing an entire
+    /// refresh because one settings read is unavailable.
+    pub(crate) async fn resolve_metadata_languages_for_titles(
+        &self,
+        titles: &[Title],
+    ) -> HashMap<String, String> {
+        if titles.is_empty() {
+            return HashMap::new();
+        }
+
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let library_ids = titles
+            .iter()
+            .map(|title| title.library_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (title_overrides, library_overrides, global_language) = tokio::join!(
+            self.load_title_metadata_language_overrides(&title_ids),
+            self.load_library_metadata_language_overrides(&library_ids),
+            self.metadata_language(),
+        );
+        let title_overrides = title_overrides.unwrap_or_default();
+        let library_overrides = library_overrides.unwrap_or_default();
+
+        titles
+            .iter()
+            .map(|title| {
+                let language = title_overrides
+                    .get(&title.id)
+                    .or_else(|| library_overrides.get(&title.library_id))
+                    .cloned()
+                    .unwrap_or_else(|| global_language.clone());
+                (title.id.clone(), language)
+            })
+            .collect()
     }
 
     pub async fn title_metadata_language_override(
@@ -131,7 +179,7 @@ impl AppUseCase {
             Some(title_id),
         )
         .await
-        .map(|value| value.map(|language| language.trim().to_ascii_lowercase()))
+        .map(|value| value.and_then(|language| crate::normalize_metadata_language_code(&language)))
     }
 
     pub async fn effective_metadata_language_for_title(&self, title_id: &str) -> AppResult<String> {
@@ -179,11 +227,15 @@ impl AppUseCase {
         )
         .await?;
 
-        if let Some(language) = language
-            .as_deref()
-            .map(str::trim)
-            .filter(|language| !language.is_empty())
-        {
+        let language = language
+            .filter(|language| !language.trim().is_empty())
+            .map(|language| {
+                crate::normalize_metadata_language_code(&language).ok_or_else(|| {
+                    AppError::Validation("metadata language must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn".to_string())
+                })
+            })
+            .transpose()?;
+        if let Some(language) = language {
             self.services
                 .config
                 .settings
@@ -191,7 +243,7 @@ impl AppUseCase {
                     SETTINGS_SCOPE_SYSTEM,
                     TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
                     Some(title.id.clone()),
-                    serde_json::to_string(&language.to_ascii_lowercase())
+                    serde_json::to_string(&language)
                         .map_err(|error| AppError::Repository(error.to_string()))?,
                     SETTINGS_SOURCE_TYPED_GRAPHQL,
                     Some(actor.id.clone()),
@@ -221,31 +273,56 @@ impl AppUseCase {
             .titles
             .list_for_libraries(None, &[library_id.to_string()], None)
             .await?;
-        for title in titles {
-            if self.title_metadata_language_override(&title.id).await?.is_none() {
-                self.services
-                    .catalog
-                    .titles
-                    .mark_title_metadata_hydration_due_now(&title.id)
-                    .await?;
-            }
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let title_overrides = self
+            .load_title_metadata_language_overrides(&title_ids)
+            .await?;
+        let rehydration_ids = titles
+            .into_iter()
+            .filter(|title| !title_overrides.contains_key(&title.id))
+            .map(|title| title.id)
+            .collect::<Vec<_>>();
+        if !rehydration_ids.is_empty() {
+            self.services
+                .catalog
+                .titles
+                .mark_titles_metadata_hydration_due_now(&rehydration_ids)
+                .await?;
         }
         self.runtime.catalog.title_hydration_wake.notify_one();
         Ok(())
     }
 
-    pub(crate) async fn resolve_use_season_folders(&self, title: &Title) -> AppResult<bool> {
-        if let Some(value) = crate::import_workflow::season_folder_tag_override(title) {
-            return Ok(value);
-        }
+    pub(crate) async fn library_use_season_folders_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<bool>> {
+        self.read_setting_bool_value_explicit(USE_SEASON_FOLDERS_KEY, Some(library_id))
+            .await
+    }
 
+    pub(crate) async fn resolve_use_season_folders(&self, title: &Title) -> AppResult<bool> {
         if !matches!(title.facet, MediaFacet::Series | MediaFacet::Anime) {
             return Ok(true);
         }
 
+        if let Some(value) = crate::import_workflow::season_folder_tag_override(title) {
+            return Ok(value);
+        }
+
+        if let Some(value) = self
+            .library_use_season_folders_override(&title.library_id)
+            .await?
+        {
+            return Ok(value);
+        }
+
         self.resolve_library_bool_setting(
             USE_SEASON_FOLDERS_KEY,
-            Some(&title.library_id),
+            None,
             Some(title.facet.as_str()),
             true,
         )

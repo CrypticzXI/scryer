@@ -22,10 +22,10 @@ use scryer_application::{
     REQUEST_QUALITY_PROFILE_IDS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
     SEASON_FOLDER_TEMPLATE_KEY, SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY,
     SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
-    USE_SEASON_FOLDERS_KEY, builtin_4k_profile, builtin_1080p_profile,
-    builtin_default_quality_profile,
+    TITLE_METADATA_LANGUAGE_OVERRIDE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, USE_SEASON_FOLDERS_KEY,
+    builtin_4k_profile, builtin_1080p_profile, builtin_default_quality_profile,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
@@ -525,6 +525,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: REQUIRED_AUDIO_LANGUAGES_KEY,
             data_type: "json",
             default_value_json: "[]",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+            data_type: "string",
+            default_value_json: "null",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -2079,6 +2087,12 @@ mod tests {
                 && seed.key_name == METADATA_LANGUAGE_KEY
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"eng\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == TITLE_METADATA_LANGUAGE_OVERRIDE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "null"
         }));
     }
 

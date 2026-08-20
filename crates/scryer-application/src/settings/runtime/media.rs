@@ -238,6 +238,88 @@ impl AppUseCase {
         }
         Ok(overrides)
     }
+
+    pub async fn load_title_metadata_language_overrides(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<HashMap<String, String>> {
+        self.load_metadata_language_overrides_for_scope_ids(
+            TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+            title_ids,
+        )
+        .await
+    }
+
+    pub async fn load_library_metadata_language_overrides(
+        &self,
+        library_ids: &[String],
+    ) -> AppResult<HashMap<String, String>> {
+        self.load_metadata_language_overrides_for_scope_ids(METADATA_LANGUAGE_KEY, library_ids)
+            .await
+    }
+
+    async fn load_metadata_language_overrides_for_scope_ids(
+        &self,
+        key_name: &str,
+        scope_ids: &[String],
+    ) -> AppResult<HashMap<String, String>> {
+        if scope_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let raw_values = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(SETTINGS_SCOPE_SYSTEM, key_name, scope_ids)
+            .await?;
+        let mut overrides = HashMap::with_capacity(raw_values.len());
+        for (scope_id, raw_value) in raw_values {
+            let language = serde_json::from_str::<serde_json::Value>(&raw_value)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or(raw_value);
+            if let Some(language) = crate::normalize_metadata_language_code(&language) {
+                overrides.insert(scope_id, language);
+            }
+        }
+        Ok(overrides)
+    }
+
+    pub async fn load_use_season_folders_overrides(
+        &self,
+        scope_ids: &[String],
+    ) -> AppResult<HashMap<String, bool>> {
+        if scope_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let raw_values = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                USE_SEASON_FOLDERS_KEY,
+                scope_ids,
+            )
+            .await?;
+        let mut overrides = HashMap::with_capacity(raw_values.len());
+        for (scope_id, raw_value) in raw_values {
+            let value = serde_json::from_str::<serde_json::Value>(&raw_value)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or(raw_value);
+            if let Some(value) = match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            } {
+                overrides.insert(scope_id, value);
+            }
+        }
+        Ok(overrides)
+    }
 }
 impl AppUseCase {
     pub(crate) async fn resolve_required_audio_languages(
