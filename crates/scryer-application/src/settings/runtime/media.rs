@@ -3,6 +3,7 @@ pub struct MediaSettings {
     pub library_path: String,
     pub root_folders: Vec<RootFolderEntry>,
     pub required_audio_languages: Vec<String>,
+    pub use_season_folders: bool,
     pub folder_template: String,
     pub season_folder_template: Option<String>,
     pub specials_folder_template: Option<String>,
@@ -28,6 +29,7 @@ pub struct UpdateMediaSettings {
     pub library_path: Option<String>,
     pub root_folders: Option<Vec<RootFolderEntry>>,
     pub required_audio_languages: Option<Vec<String>>,
+    pub use_season_folders: Option<bool>,
     pub folder_template: Option<String>,
     pub season_folder_template: Option<String>,
     pub specials_folder_template: Option<String>,
@@ -513,6 +515,13 @@ impl AppUseCase {
             } else {
                 (None, None)
             };
+        let use_season_folders = if matches!(facet, MediaFacet::Series | MediaFacet::Anime) {
+            self.read_setting_bool_value(USE_SEASON_FOLDERS_KEY, Some(facet.as_str()))
+                .await?
+                .unwrap_or(true)
+        } else {
+            true
+        };
         let scoped_collision_policy = self
             .read_setting_string_value(RENAME_COLLISION_POLICY_KEY, Some(facet.as_str()))
             .await?;
@@ -547,6 +556,7 @@ impl AppUseCase {
             required_audio_languages: self
                 .load_facet_required_audio_languages(facet.as_str())
                 .await?,
+            use_season_folders,
             folder_template,
             season_folder_template,
             specials_folder_template,
@@ -684,7 +694,9 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
         if facet == MediaFacet::Movie
-            && (input.season_folder_template.is_some() || input.specials_folder_template.is_some())
+            && (input.season_folder_template.is_some()
+                || input.specials_folder_template.is_some()
+                || input.use_season_folders.is_some())
         {
             return Err(AppError::Validation(
                 "season folder templates are only supported for series and anime".to_string(),
@@ -833,6 +845,22 @@ impl AppUseCase {
                 )
                 .await?;
             changed_keys.push(REQUIRED_AUDIO_LANGUAGES_KEY.to_string());
+        }
+
+        if let Some(use_season_folders) = input.use_season_folders {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    USE_SEASON_FOLDERS_KEY,
+                    Some(facet.as_str().to_string()),
+                    encode_setting_json(&use_season_folders)?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            changed_keys.push(USE_SEASON_FOLDERS_KEY.to_string());
         }
 
         if let Some(policy) = normalize_optional_string(input.rename_collision_policy) {

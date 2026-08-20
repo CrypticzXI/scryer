@@ -618,6 +618,8 @@ function librarySettingsInput(
   }
   return {
     requiredAudioLanguages: settings.requiredAudioLanguages,
+    metadataLanguage: settings.metadataLanguage,
+    useSeasonFolders: settings.useSeasonFolders,
     qualityProfileId: settings.qualityProfileId,
     requestQualityProfileIds: settings.requestQualityProfileIds,
     scoringPersona: settings.scoringPersona,
@@ -1825,6 +1827,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setCategoryFolderTemplates,
     categorySeasonFolderTemplates,
     setCategorySeasonFolderTemplates,
+    categoryUseSeasonFolders,
+    setCategoryUseSeasonFolders,
     categorySpecialsFolderTemplates,
     setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,
@@ -5218,6 +5222,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setCategoryFolderTemplates,
           categorySeasonFolderTemplates,
           setCategorySeasonFolderTemplates,
+          categoryUseSeasonFolders,
+          setCategoryUseSeasonFolders,
           categorySpecialsFolderTemplates,
           setCategorySpecialsFolderTemplates,
           categoryRenameTemplates,

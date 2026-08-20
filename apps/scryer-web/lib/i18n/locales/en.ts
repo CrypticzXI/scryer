@@ -457,6 +457,13 @@ const en: LocaleDictionary = {
   "settings.librarySettingsLoadFailed": "Failed to load library settings.",
   "settings.libraryRequiredAudioLabel": "Required audio",
   "settings.libraryEffectiveAudio": "Effective: {{value}}",
+  "settings.libraryMetadataLanguageLabel": "Metadata language",
+  "settings.libraryEffectiveMetadataLanguage": "Effective: {{value}}",
+  "settings.librarySeasonFoldersLabel": "Season folders",
+  "settings.libraryEffectiveSeasonFolders": "Effective: {{value}}",
+  "settings.libraryInheritGlobal": "Inherit global default",
+  "settings.useSeasonFoldersLabel": "Use season folders",
+  "settings.useSeasonFoldersHelp": "Place episodic files in their season or specials folder.",
   "settings.libraryQualityProfileLabel": "Quality profile",
   "settings.libraryRequestQualityProfilesLabel": "Request profiles",
   "settings.libraryRequestQualityProfilesHelp":

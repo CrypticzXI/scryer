@@ -13,6 +13,7 @@ export const ENABLED_TITLE_EDIT_VALUE = "enabled";
 export const DISABLED_TITLE_EDIT_VALUE = "disabled";
 
 export type TitleEditDraft = {
+  metadataLanguage: string;
   qualityProfileId: string;
   rootFolderId: string;
   monitorType: string;
@@ -24,10 +25,11 @@ export type TitleEditDraft = {
 };
 
 type TitleEditSource = {
+  metadataLanguageOverride?: string | null;
   qualityProfileId?: string | null;
   rootFolderId?: string | null;
   monitorType?: string | null;
-  useSeasonFolders?: boolean | null;
+  useSeasonFoldersOverride?: boolean | null;
   monitorSpecials?: boolean | null;
   interSeasonMovies?: boolean | null;
   fillerPolicy?: string | null;
@@ -44,6 +46,12 @@ function booleanDraftValue(value: boolean | null | undefined): string {
   return UNCHANGED_TITLE_EDIT_VALUE;
 }
 
+function seasonFolderDraftValue(value: boolean | null | undefined): string {
+  return value === null || value === undefined
+    ? INHERIT_TITLE_EDIT_VALUE
+    : booleanDraftValue(value);
+}
+
 function inheritedDraftValue(value: string | null | undefined): string {
   return value?.trim() ? value : INHERIT_TITLE_EDIT_VALUE;
 }
@@ -53,6 +61,7 @@ export function initialTitleEditDraft(
 ): TitleEditDraft {
   if (directTarget === null) {
     return {
+      metadataLanguage: UNCHANGED_TITLE_EDIT_VALUE,
       qualityProfileId: UNCHANGED_TITLE_EDIT_VALUE,
       rootFolderId: UNCHANGED_TITLE_EDIT_VALUE,
       monitorType: UNCHANGED_TITLE_EDIT_VALUE,
@@ -65,10 +74,11 @@ export function initialTitleEditDraft(
   }
 
   return {
+    metadataLanguage: inheritedDraftValue(directTarget.metadataLanguageOverride),
     qualityProfileId: inheritedDraftValue(directTarget.qualityProfileId),
     rootFolderId: directTarget.rootFolderId ?? UNCHANGED_TITLE_EDIT_VALUE,
     monitorType: directTarget.monitorType ?? UNCHANGED_TITLE_EDIT_VALUE,
-    useSeasonFolders: booleanDraftValue(directTarget.useSeasonFolders),
+    useSeasonFolders: seasonFolderDraftValue(directTarget.useSeasonFoldersOverride),
     monitorSpecials: booleanDraftValue(directTarget.monitorSpecials),
     interSeasonMovies: booleanDraftValue(directTarget.interSeasonMovies),
     fillerPolicy: inheritedDraftValue(directTarget.fillerPolicy),
@@ -99,6 +109,12 @@ export function buildTitleEditChanges(
     changes.qualityProfileId =
       draft.qualityProfileId === INHERIT_TITLE_EDIT_VALUE ? null : draft.qualityProfileId;
   }
+  if (changed("metadataLanguage")) {
+    changes.metadataLanguage =
+      draft.metadataLanguage === INHERIT_TITLE_EDIT_VALUE
+        ? null
+        : draft.metadataLanguage;
+  }
   if (changed("rootFolderId")) {
     changes.rootFolderId = draft.rootFolderId;
   }
@@ -106,7 +122,10 @@ export function buildTitleEditChanges(
     changes.monitorType = draft.monitorType;
   }
   if (changed("useSeasonFolders")) {
-    changes.useSeasonFolders = draft.useSeasonFolders === ENABLED_TITLE_EDIT_VALUE;
+    changes.useSeasonFolders =
+      draft.useSeasonFolders === INHERIT_TITLE_EDIT_VALUE
+        ? null
+        : draft.useSeasonFolders === ENABLED_TITLE_EDIT_VALUE;
   }
   if (changed("monitorSpecials")) {
     changes.monitorSpecials = draft.monitorSpecials === ENABLED_TITLE_EDIT_VALUE;
@@ -126,6 +145,7 @@ export function buildTitleEditChanges(
 }
 
 type TitleOptionSnapshot = {
+  metadataLanguageOverride?: string | null;
   qualityProfileId?: string | null;
   rootFolderId?: string | null;
   monitorType?: string | null;
@@ -158,6 +178,14 @@ export function titleMatchesOptionUpdates(
     ) {
       return false;
     }
+  }
+
+  if (
+    changes.metadataLanguage !== undefined &&
+    normalizedOptionalString(title.metadataLanguageOverride) !==
+      normalizedOptionalString(changes.metadataLanguage)
+  ) {
+    return false;
   }
 
   const booleanFields = [

@@ -1694,8 +1694,10 @@ async fn import_series_movie_download(
 
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
     ensure_import_title_folder_available(app, title, &full_folder_path).await?;
+    let use_season_folders = app.resolve_use_season_folders(title).await?;
     let dest_path = episodic_import_parent_path(
         title,
+        use_season_folders,
         &full_folder_path,
         &season_folder_template,
         &specials_folder_template,

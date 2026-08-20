@@ -316,6 +316,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 folder_template: Some(template.to_string()),
                 season_folder_template: None,
                 specials_folder_template: None,
+                use_season_folders: None,
                 rename_enabled: None,
                 rename_template: None,
                 rename_collision_policy: None,

@@ -71,6 +71,7 @@ fn resolved_title_options(
         root_folder_id: _,
         monitor_type,
         use_season_folders,
+        metadata_language,
         monitor_specials,
         inter_season_movies,
         filler_policy,
@@ -93,6 +94,11 @@ fn resolved_title_options(
             MaybeUndefined::Undefined => None,
             MaybeUndefined::Null => Some(None),
             MaybeUndefined::Value(value) => Some(Some(value)),
+        },
+        metadata_language: match metadata_language {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value.trim().to_ascii_lowercase())),
         },
         monitor_specials: match monitor_specials {
             MaybeUndefined::Undefined => None,
@@ -219,6 +225,9 @@ impl TitleMutations {
         let options = input.options.clone();
         let (library_id, resolved_options) =
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let metadata_language_override = resolved_options
+            .as_ref()
+            .and_then(|options| options.metadata_language.clone());
         let options_patch = resolved_options
             .as_ref()
             .map(ResolvedTitleOptionsInput::to_application_patch)
@@ -243,6 +252,11 @@ impl TitleMutations {
             .await
         }
         .map_err(to_gql_error)?;
+        if let Some(language) = metadata_language_override {
+            app.set_title_metadata_language_override(&actor, &result.title.id, language)
+                .await
+                .map_err(to_gql_error)?;
+        }
 
         Ok(AddTitleResult {
             title: from_title(&app, result.title),
@@ -275,6 +289,9 @@ impl TitleMutations {
         let options = input.options.clone();
         let (library_id, resolved_options) =
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let metadata_language_override = resolved_options
+            .as_ref()
+            .and_then(|options| options.metadata_language.clone());
         let options_patch = resolved_options
             .as_ref()
             .map(ResolvedTitleOptionsInput::to_application_patch)
@@ -308,6 +325,11 @@ impl TitleMutations {
             .await
         }
         .map_err(to_gql_error)?;
+        if let Some(language) = metadata_language_override {
+            app.set_title_metadata_language_override(&actor, &result.title.id, language)
+                .await
+                .map_err(to_gql_error)?;
+        }
         let queued_download = queued_download_payload(
             &result.title,
             result.download_job_id.clone(),
@@ -347,6 +369,7 @@ impl TitleMutations {
         let facet = facet.map(MediaFacetValue::into_domain);
         let mut tags = tags.map(normalize_title_tags);
         let mut root_folder_id = None;
+        let mut metadata_language_override = None;
 
         if let Some(options) = options {
             let title = app
@@ -361,6 +384,7 @@ impl TitleMutations {
             let resolved_options =
                 resolve_update_title_options(&app, &actor, &title, options).await?;
             root_folder_id = resolved_options.root_folder_id.clone();
+            metadata_language_override = resolved_options.metadata_language.clone();
             tags = Some(merge_title_option_tags(base_tags, resolved_options));
         }
 
@@ -375,6 +399,11 @@ impl TitleMutations {
             )
             .await
             .map_err(to_gql_error)?;
+        if let Some(language) = metadata_language_override {
+            app.set_title_metadata_language_override(&actor, &title.id, language)
+                .await
+                .map_err(to_gql_error)?;
+        }
         Ok(from_title(&app, title))
     }
 

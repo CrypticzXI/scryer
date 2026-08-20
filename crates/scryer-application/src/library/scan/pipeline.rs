@@ -1583,7 +1583,10 @@ impl ScanHydrationBatcher {
         &mut self,
         reservation: LibraryScanMediaWorkReservation,
     ) -> AppResult<ScanHydrationSubmission> {
-        let metadata_language = self.app.metadata_language().await;
+        let metadata_language = self
+            .app
+            .resolve_metadata_language_for_title(&reservation.work.title)
+            .await;
         if title_requires_scan_hydration(&self.app, &reservation.work.title, &metadata_language)
             .await?
         {

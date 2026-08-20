@@ -1815,6 +1815,10 @@ export function MediaContentView({
     setCategorySeasonFolderTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    categoryUseSeasonFolders: Record<ViewCategoryId, boolean>;
+    setCategoryUseSeasonFolders: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, boolean>>
+    >;
     categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
     setCategorySpecialsFolderTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -2140,6 +2144,8 @@ export function MediaContentView({
     setCategoryFolderTemplates,
     categorySeasonFolderTemplates,
     setCategorySeasonFolderTemplates,
+    categoryUseSeasonFolders,
+    setCategoryUseSeasonFolders,
     categorySpecialsFolderTemplates,
     setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,
@@ -3420,6 +3426,13 @@ export function MediaContentView({
           handleFolderTemplateChange={handleFolderTemplateChange}
           categorySeasonFolderTemplates={categorySeasonFolderTemplates}
           handleSeasonFolderTemplateChange={handleSeasonFolderTemplateChange}
+          categoryUseSeasonFolders={categoryUseSeasonFolders}
+          handleUseSeasonFoldersChange={(checked) =>
+            setCategoryUseSeasonFolders((previous) => ({
+              ...previous,
+              [activeQualityScopeId]: checked,
+            }))
+          }
           categorySpecialsFolderTemplates={categorySpecialsFolderTemplates}
           handleSpecialsFolderTemplateChange={handleSpecialsFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}

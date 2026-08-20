@@ -287,7 +287,6 @@ pub use events::activity::{ActivityChannel, ActivityEvent, ActivityKind, Activit
 pub use events::activity_api::{
     is_supported_title_history_event_type, supported_title_history_event_types,
 };
-pub(crate) use import::import::use_season_folders;
 pub(crate) use import_workflow::fail_active_manual_import_for_source;
 pub use import_workflow::{
     ManualImportCandidateMapping, ManualImportExecutionResult, ManualImportFileMapping,
@@ -529,9 +528,10 @@ pub use settings::keys::{
     REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SEASON_FOLDER_TEMPLATE_KEY, SERIES_PATH_KEY,
     SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY, SETTINGS_SCOPE_MEDIA,
     SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
-    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
-    TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY,
-    TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY,
+    TITLE_METADATA_LANGUAGE_OVERRIDE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY,
+    TLS_KEY_PATH_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    USE_SEASON_FOLDERS_KEY,
 };
 pub use settings::runtime::is_bootstrap_default_library_root_set;
 pub(crate) use types::JwtClaims;

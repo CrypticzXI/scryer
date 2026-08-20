@@ -24,7 +24,8 @@ use scryer_application::{
     SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY,
     TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
     TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
-    builtin_4k_profile, builtin_1080p_profile, builtin_default_quality_profile,
+    USE_SEASON_FOLDERS_KEY, builtin_4k_profile, builtin_1080p_profile,
+    builtin_default_quality_profile,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
@@ -154,6 +155,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: METADATA_LANGUAGE_KEY,
             data_type: "string",
             default_value_json: "\"eng\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: USE_SEASON_FOLDERS_KEY,
+            data_type: "boolean",
+            default_value_json: "true",
             is_sensitive: false,
         },
         ServiceSettingSeed {

@@ -1077,6 +1077,8 @@ export function RenameSettingsPanel({
   handleFolderTemplateChange,
   categorySeasonFolderTemplates,
   handleSeasonFolderTemplateChange,
+  categoryUseSeasonFolders,
+  handleUseSeasonFoldersChange,
   categorySpecialsFolderTemplates,
   handleSpecialsFolderTemplateChange,
   categoryRenameTemplates,
@@ -1096,6 +1098,8 @@ export function RenameSettingsPanel({
   handleFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categorySeasonFolderTemplates: Record<ViewCategoryId, string>;
   handleSeasonFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  categoryUseSeasonFolders: Record<ViewCategoryId, boolean>;
+  handleUseSeasonFoldersChange: (checked: boolean) => void;
   categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
   handleSpecialsFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categoryRenameTemplates: Record<ViewCategoryId, string>;
@@ -1111,6 +1115,7 @@ export function RenameSettingsPanel({
   const t = useTranslate();
   const folderTemplateValue = categoryFolderTemplates[activeQualityScopeId];
   const episodicScope = activeQualityScopeId !== "MOVIE";
+  const useSeasonFolders = categoryUseSeasonFolders[activeQualityScopeId] !== false;
   const seasonFolderTemplateValue = categorySeasonFolderTemplates[activeQualityScopeId];
   const specialsFolderTemplateValue = categorySpecialsFolderTemplates[activeQualityScopeId];
   const renameEnabled = categoryRenameEnabled[activeQualityScopeId] !== "false";
@@ -1324,7 +1329,25 @@ export function RenameSettingsPanel({
             <TemplateExample value={folderPreview} />
 
             {episodicScope ? (
-              <div className="grid gap-5 border-t border-[var(--scry-border)] pt-5 md:grid-cols-2">
+              <div className="space-y-5 border-t border-[var(--scry-border)] pt-5">
+                <div className="flex items-center justify-between gap-4 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] px-3.5 py-3">
+                  <div>
+                    <Label className="text-sm text-card-foreground">
+                      {t("settings.useSeasonFoldersLabel")}
+                    </Label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {t("settings.useSeasonFoldersHelp")}
+                    </p>
+                  </div>
+                  <SettingsToggleSwitch
+                    id="rename-settings-use-season-folders-toggle"
+                    checked={useSeasonFolders}
+                    disabled={mediaSettingsLoading}
+                    ariaLabel={useSeasonFolders ? t("label.enabled") : t("label.disabled")}
+                    onChange={handleUseSeasonFoldersChange}
+                  />
+                </div>
+              <div className="grid gap-5 md:grid-cols-2">
                 <div className="space-y-3">
                   <div className="space-y-2.5">
                     <Label className="text-sm text-card-foreground">
@@ -1394,6 +1417,7 @@ export function RenameSettingsPanel({
                   </div>
                   <TemplateExample value={specialsFolderPreview} />
                 </div>
+              </div>
               </div>
             ) : null}
           </div>

@@ -1030,6 +1030,7 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    useSeasonFolders
     folderTemplate
     seasonFolderTemplate
     specialsFolderTemplate

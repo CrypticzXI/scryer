@@ -1048,12 +1048,13 @@ pub(crate) async fn resolve_import_paths(
 /// is not configured to use season folders.
 pub(crate) fn episodic_import_parent_path(
     title: &scryer_domain::Title,
+    use_season_folders: bool,
     title_folder_path: &Path,
     season_folder_template: &str,
     specials_folder_template: &str,
     season_num: u32,
 ) -> PathBuf {
-    if use_season_folders(title) {
+    if use_season_folders {
         let season_folder = crate::render_episode_folder_name(
             title,
             season_num,
@@ -1064,6 +1065,23 @@ pub(crate) fn episodic_import_parent_path(
     } else {
         title_folder_path.to_path_buf()
     }
+}
+
+/// Return the explicit season-folder title override encoded in legacy tags.
+/// The application resolver combines this value with library and facet settings.
+pub(crate) fn season_folder_tag_override(title: &scryer_domain::Title) -> Option<bool> {
+    title
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("scryer:season-folder:"))
+        .map(|value| !value.trim().eq_ignore_ascii_case("disabled"))
+}
+
+/// Legacy title-tag interpretation retained for focused tag parsing tests.
+/// Runtime import, scan, and rename paths use `AppUseCase::resolve_use_season_folders`.
+#[cfg(test)]
+pub(crate) fn use_season_folders(title: &scryer_domain::Title) -> bool {
+    season_folder_tag_override(title).unwrap_or(true)
 }
 
 /// Compute the destination path for an episode import using the canonical
@@ -1080,6 +1098,7 @@ pub(crate) fn episodic_import_parent_path(
 )]
 pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
+    use_season_folders: bool,
     parsed: &crate::ParsedReleaseMetadata,
     ext: &str,
     source_path: &Path,
@@ -1116,25 +1135,13 @@ pub(crate) fn episode_import_dest_path(
     };
     episodic_import_parent_path(
         title,
+        use_season_folders,
         title_folder_path,
         season_folder_template,
         specials_folder_template,
         season_num,
     )
     .join(rendered)
-}
-/// Check whether the title's tags request season-folder organisation.
-/// Defaults to `true` (use season folders) when the tag is absent.
-pub(crate) fn use_season_folders(title: &scryer_domain::Title) -> bool {
-    title
-        .tags
-        .iter()
-        .find(|t| t.starts_with("scryer:season-folder:"))
-        .map(|t| {
-            !t.trim_start_matches("scryer:season-folder:")
-                .eq_ignore_ascii_case("disabled")
-        })
-        .unwrap_or(true)
 }
 /// Build the common rename token map from parsed release metadata.
 pub(crate) fn build_rename_tokens(

@@ -36,6 +36,14 @@ pub struct LibrarySettingsPayload {
     pub required_audio_languages_override: Option<Vec<String>>,
     /// Effective required audio language codes after inheritance.
     pub required_audio_languages: Vec<String>,
+    /// Library metadata-language override; null means inherit the global default.
+    pub metadata_language_override: Option<String>,
+    /// Effective metadata language after inheritance.
+    pub metadata_language: String,
+    /// Library override for season folders; null means inherit the facet setting.
+    pub use_season_folders_override: Option<bool>,
+    /// Effective season-folder setting after inheritance.
+    pub use_season_folders: bool,
     /// Library override quality-profile ID; null means inherit.
     pub quality_profile_id_override: Option<ID>,
     /// Effective quality-profile ID.
@@ -665,6 +673,8 @@ pub struct TitleOptionsInput {
     pub monitor_type: MaybeUndefined<MonitorTypeValue>,
     /// Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
     pub use_season_folders: MaybeUndefined<bool>,
+    /// Metadata language; omission preserves the current value, null clears it, and a value replaces it.
+    pub metadata_language: MaybeUndefined<String>,
     /// Whether specials are monitored; omission preserves the current value, null clears it, and a value replaces it.
     pub monitor_specials: MaybeUndefined<bool>,
     /// Whether inter-season movies are monitored; omission preserves the current value, null clears it, and a value replaces it.
@@ -982,6 +992,10 @@ pub struct UpdateLibraryInput {
 pub struct LibrarySettingsInput {
     /// Required audio-language codes.
     pub required_audio_languages: Option<Vec<String>>,
+    /// Metadata language override; null inherits the global default.
+    pub metadata_language: Option<String>,
+    /// Whether episodic titles use season folders; null inherits the facet setting.
+    pub use_season_folders: Option<bool>,
     /// Default quality profile identity.
     pub quality_profile_id: Option<ID>,
     /// Quality profile identities allowed for requests.

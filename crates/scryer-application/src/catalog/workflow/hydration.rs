@@ -535,11 +535,16 @@ impl AppUseCase {
         targets: Vec<HydrationTarget>,
         cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> AppResult<HydrationBatchOutcome> {
-        let language = self.metadata_language().await;
+        let mut targets_by_language = HashMap::<String, Vec<HydrationTarget>>::new();
+        for target in targets {
+            let language = self.resolve_metadata_language_for_title(&target.title).await;
+            targets_by_language.entry(language).or_default().push(target);
+        }
         let mut outcome = HydrationBatchOutcome::default();
         let hydration_started_at = Instant::now();
 
-        'chunks: for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
+        for (language, targets) in targets_by_language {
+            'chunks: for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
             if crate::library::library::library_scan_cancel_requested(cancel_token) {
                 break;
             }
@@ -783,6 +788,7 @@ impl AppUseCase {
                 total_elapsed_ms = hydration_started_at.elapsed().as_millis(),
                 "metadata hydration chunk complete"
             );
+            }
         }
 
         Ok(outcome)
@@ -793,7 +799,7 @@ impl AppUseCase {
         &self,
         target: HydrationTarget,
     ) -> AppResult<Title> {
-        let language = self.metadata_language().await;
+        let language = self.resolve_metadata_language_for_title(&target.title).await;
         self.emit_hydration_started(&target.title).await;
         let tvdb_id = target
             .requested_tvdb_id

@@ -51,6 +51,8 @@ fn library_settings_draft(
 
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
+        metadata_language: input.metadata_language,
+        use_season_folders: input.use_season_folders,
         quality_profile_id: input.quality_profile_id.map(String::from),
         request_quality_profile_ids: input
             .request_quality_profile_ids

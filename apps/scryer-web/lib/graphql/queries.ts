@@ -543,6 +543,9 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
     country
     aliases
     metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     requiredAudioLanguagesOverride
@@ -552,6 +555,9 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
     rootFolderPath
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -588,6 +594,10 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     canonicalTags {${TITLE_CANONICAL_TAG_FIELDS}
     }
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     network
     metadataFetchedAt
     qualityProfileId
@@ -595,6 +605,9 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     inheritsRequiredAudioLanguages
     rootFolderId
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     fillerPolicy
     recapPolicy
     createdAt
@@ -638,6 +651,9 @@ export const TITLE_MUTATION_RESULT_FIELDS = `
     country
     aliases
     metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     requiredAudioLanguagesOverride
@@ -647,6 +663,9 @@ export const TITLE_MUTATION_RESULT_FIELDS = `
     rootFolderPath
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -1194,6 +1213,10 @@ export const TITLE_LIST_FIELDS = `
     episodesMonitored
     episodesTotal
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     createdAt`;
 
@@ -1227,11 +1250,18 @@ const TITLE_CATALOG_BASE_FIELDS = `
     backgroundUrl
     backgroundSourceUrl
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     rootFolderId
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -1405,6 +1435,10 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
   librarySettings(libraryId: $libraryId) {
     requiredAudioLanguagesOverride
     requiredAudioLanguages
+    metadataLanguageOverride
+    metadataLanguage
+    useSeasonFoldersOverride
+    useSeasonFolders
     qualityProfileIdOverride
     qualityProfileId
     requestQualityProfileIdsOverride

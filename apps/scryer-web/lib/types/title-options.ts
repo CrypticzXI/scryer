@@ -1,4 +1,5 @@
 export type TitleOptionUpdates = {
+  metadataLanguage?: string | null;
   qualityProfileId?: string | null;
   rootFolderId?: string | null;
   monitorType?: string | null;

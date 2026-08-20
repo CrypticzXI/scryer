@@ -4266,6 +4266,7 @@ async fn import_series_duplicate_destination_requires_catalog_for_already_import
     let parsed = crate::parse_release_metadata(release_name);
     let dest_path = crate::import_workflow::episode_import_dest_path(
         &stored_title,
+        true,
         &parsed,
         "mkv",
         &source_path,

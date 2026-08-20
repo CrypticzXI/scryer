@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import { SCORING_PERSONA_CHOICES } from "@/lib/constants/quality-profiles";
+import { AVAILABLE_LANGUAGES } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
@@ -297,6 +298,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [settingsLoading, setSettingsLoading] = React.useState(false);
   const [settingsError, setSettingsError] = React.useState<string | null>(null);
   const [draftRequiredAudioLanguages, setDraftRequiredAudioLanguages] = React.useState<string[]>([]);
+  const [draftMetadataLanguage, setDraftMetadataLanguage] = React.useState(INHERIT_VALUE);
+  const [draftUseSeasonFolders, setDraftUseSeasonFolders] = React.useState(INHERIT_VALUE);
   const [draftQualityProfileId, setDraftQualityProfileId] = React.useState(INHERIT_VALUE);
   const [draftRequestQualityProfileIds, setDraftRequestQualityProfileIds] = React.useState<string[]>([]);
   const [draftScoringPersona, setDraftScoringPersona] = React.useState(INHERIT_VALUE);
@@ -358,6 +361,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   }, [canCreateLibrary, libraries, mode]);
   const currentFacet = activeLibrary?.facet ?? facet;
   const isAnimeFacet = currentFacet === "ANIME";
+  const isEpisodicFacet = currentFacet === "SERIES" || currentFacet === "ANIME";
   const showPlexmatch = currentFacet === "SERIES" || currentFacet === "ANIME";
   const savedDownloadClientRoutingEntries =
     savedSettings?.downloadClientRoutingOverride ?? null;
@@ -375,6 +379,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     (settings: LibrarySettingsRecord | null) => {
       setSavedSettings(settings);
       setDraftRequiredAudioLanguages(settings?.requiredAudioLanguagesOverride ?? []);
+      setDraftMetadataLanguage(settings?.metadataLanguageOverride ?? INHERIT_VALUE);
+      setDraftUseSeasonFolders(
+        booleanOverrideSelectValue(settings?.useSeasonFoldersOverride),
+      );
       setDraftQualityProfileId(settings?.qualityProfileIdOverride ?? INHERIT_VALUE);
       setDraftRequestQualityProfileIds(settings?.requestQualityProfileIdsOverride ?? []);
       setDraftScoringPersona(settings?.scoringPersonaOverride ?? INHERIT_VALUE);
@@ -431,6 +439,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     if (mode === "new") {
       setSavedSettings(null);
       setDraftRequiredAudioLanguages([]);
+      setDraftMetadataLanguage(INHERIT_VALUE);
+      setDraftUseSeasonFolders(INHERIT_VALUE);
       setDraftQualityProfileId(INHERIT_VALUE);
       setDraftRequestQualityProfileIds([]);
       setDraftScoringPersona(INHERIT_VALUE);
@@ -613,6 +623,11 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       const draft: LibrarySettingsDraft = {
         requiredAudioLanguages:
           draftRequiredAudioLanguages.length > 0 ? draftRequiredAudioLanguages : null,
+        metadataLanguage:
+          draftMetadataLanguage === INHERIT_VALUE ? null : draftMetadataLanguage,
+        useSeasonFolders: isEpisodicFacet
+          ? booleanOverrideFromSelectValue(draftUseSeasonFolders)
+          : null,
         qualityProfileId:
           draftQualityProfileId === INHERIT_VALUE ? null : draftQualityProfileId,
         requestQualityProfileIds:
@@ -654,6 +669,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       canManageDownloadClientRouting,
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
+      draftMetadataLanguage,
       draftChownGroup,
       draftFileChmod,
       draftFolderChmod,
@@ -669,7 +685,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       draftRequiredAudioLanguages,
       draftScoringPersona,
       draftSetPermissionsLinux,
+      draftUseSeasonFolders,
       isAnimeFacet,
+      isEpisodicFacet,
       savedSettings,
       showPlexmatch,
     ],
@@ -679,6 +697,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     (savedSettings !== null &&
       (draftRequiredAudioLanguages.join("\n") !==
         (savedSettings.requiredAudioLanguagesOverride ?? []).join("\n") ||
+        settingsDraft.metadataLanguage !== savedSettings.metadataLanguageOverride ||
+        settingsDraft.useSeasonFolders !== savedSettings.useSeasonFoldersOverride ||
         settingsDraft.qualityProfileId !== savedSettings.qualityProfileIdOverride ||
         (settingsDraft.requestQualityProfileIds ?? []).join("\n") !==
           (savedSettings.requestQualityProfileIdsOverride ?? []).join("\n") ||
@@ -1288,6 +1308,65 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </EffectiveChip>
                   ) : null}
                 </div>
+                <div className="space-y-2">
+                  <Label>{t("settings.libraryMetadataLanguageLabel")}</Label>
+                  <Select
+                    value={draftMetadataLanguage}
+                    onValueChange={setDraftMetadataLanguage}
+                    disabled={settingsBusy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={INHERIT_VALUE}>
+                        {t("settings.libraryInheritGlobal")}
+                      </SelectItem>
+                      {AVAILABLE_LANGUAGES.map((language) => (
+                        <SelectItem key={language.code} value={language.code}>
+                          {language.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {savedSettings ? (
+                    <EffectiveChip>
+                      {t("settings.libraryEffectiveMetadataLanguage", {
+                        value: savedSettings.metadataLanguage,
+                      })}
+                    </EffectiveChip>
+                  ) : null}
+                </div>
+                {isEpisodicFacet ? (
+                  <div className="space-y-2">
+                    <Label>{t("settings.librarySeasonFoldersLabel")}</Label>
+                    <Select
+                      value={draftUseSeasonFolders}
+                      onValueChange={setDraftUseSeasonFolders}
+                      disabled={settingsBusy}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={INHERIT_VALUE}>
+                          {t("settings.libraryInheritFacet")}
+                        </SelectItem>
+                        <SelectItem value={BOOLEAN_TRUE_VALUE}>{t("label.enabled")}</SelectItem>
+                        <SelectItem value={BOOLEAN_FALSE_VALUE}>{t("label.disabled")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {savedSettings ? (
+                      <EffectiveChip>
+                        {t("settings.libraryEffectiveSeasonFolders", {
+                          value: savedSettings.useSeasonFolders
+                            ? t("label.enabled")
+                            : t("label.disabled"),
+                        })}
+                      </EffectiveChip>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>
                   <Select

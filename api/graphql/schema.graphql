@@ -7517,6 +7517,14 @@ input LibrarySettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
+	Metadata language override; null inherits the global metadata language.
+	"""
+	metadataLanguage: String
+	"""
+	Season-folder override; null inherits the facet setting.
+	"""
+	useSeasonFolders: Boolean
+	"""
 	Default quality profile identity.
 	"""
 	qualityProfileId: ID
@@ -7598,6 +7606,22 @@ type LibrarySettingsPayload {
 	Effective required audio language codes after inheritance.
 	"""
 	requiredAudioLanguages: [String!]!
+	"""
+	Library metadata-language override; null means inherit.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Effective metadata language after inheritance.
+	"""
+	metadataLanguage: String!
+	"""
+	Library season-folder override; null means inherit.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Effective season-folder setting after inheritance.
+	"""
+	useSeasonFolders: Boolean!
 	"""
 	Library override quality-profile ID; null means inherit.
 	"""
@@ -8899,6 +8923,10 @@ type MediaSettingsPayload {
 	Effective required audio language codes.
 	"""
 	requiredAudioLanguages: [String!]!
+	"""
+	Whether episodic titles use season folders.
+	"""
+	useSeasonFolders: Boolean!
 	"""
 	Folder naming template.
 	"""
@@ -17129,6 +17157,10 @@ Optional title settings used when creating or updating a title.
 """
 input TitleOptionsInput {
 	"""
+	Metadata language override; omission preserves the current value and null inherits.
+	"""
+	metadataLanguage: String
+	"""
 	Quality profile identity; omission preserves the current value, null clears it, and a value replaces it.
 	"""
 	qualityProfileId: ID
@@ -17279,6 +17311,18 @@ type TitlePayload {
 	"""
 	metadataLanguage: String
 	"""
+	Title metadata-language override; null means inherit.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Effective metadata language after title, library, and global resolution.
+	"""
+	effectiveMetadataLanguage: String!
+	"""
+	Whether metadata language inherits from the library or global setting.
+	"""
+	inheritsMetadataLanguage: Boolean!
+	"""
 	Time of the latest metadata fetch in UTC, or null before a fetch completes.
 	"""
 	metadataFetchedAt: DateTime
@@ -17298,6 +17342,18 @@ type TitlePayload {
 	Whether episodic files use season directories, or null when unset.
 	"""
 	useSeasonFolders: Boolean
+	"""
+	Explicit season-folder title override; null means inherit.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Effective season-folder setting after title, library, and facet resolution.
+	"""
+	effectiveUseSeasonFolders: Boolean!
+	"""
+	Whether season folders inherit from the library or facet setting.
+	"""
+	inheritsUseSeasonFolders: Boolean!
 	"""
 	Whether specials are monitored, or null when unset.
 	"""
@@ -18419,6 +18475,10 @@ input UpdateMediaSettingsInput {
 	Optional required audio-language codes.
 	"""
 	requiredAudioLanguages: [String!]
+	"""
+	Optional season-folder setting for episodic facets.
+	"""
+	useSeasonFolders: Boolean
 	"""
 	Optional title folder template.
 	"""

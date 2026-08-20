@@ -1543,6 +1543,7 @@ pub(super) fn empty_update_media_settings_with_roots(
         library_path: None,
         root_folders: Some(root_folders),
         required_audio_languages: None,
+        use_season_folders: None,
         folder_template: None,
         season_folder_template: None,
         specials_folder_template: None,
@@ -1570,6 +1571,7 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
         library_path: None,
         root_folders: None,
         required_audio_languages: None,
+        use_season_folders: None,
         folder_template: None,
         season_folder_template: None,
         specials_folder_template: None,
@@ -1595,6 +1597,8 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
 pub(super) fn empty_library_settings_override() -> LibrarySettingsOverrideDraft {
     LibrarySettingsOverrideDraft {
         required_audio_languages: None,
+        metadata_language: None,
+        use_season_folders: None,
         quality_profile_id: None,
         request_quality_profile_ids: None,
         scoring_persona: None,

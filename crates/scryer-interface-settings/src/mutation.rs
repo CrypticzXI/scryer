@@ -1259,6 +1259,7 @@ impl SettingsMutations {
                         .collect()
                 }),
                 required_audio_languages: input.required_audio_languages,
+                use_season_folders: input.use_season_folders,
                 folder_template: input.folder_template,
                 season_folder_template: input.season_folder_template,
                 specials_folder_template: input.specials_folder_template,

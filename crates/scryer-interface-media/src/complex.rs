@@ -457,6 +457,61 @@ impl TitlePayload {
         .await
     }
 
+    /// Explicit metadata-language override, or null when the global default is inherited.
+    async fn metadata_language_override(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .title_metadata_language_override(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Metadata language after applying title and library overrides.
+    async fn effective_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .effective_metadata_language_for_title(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Whether this title inherits metadata language from its library or the global default.
+    async fn inherits_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        Box::pin(async move {
+            Ok(app_from_ctx(ctx)?
+                .title_metadata_language_override(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)?
+                .is_none())
+        })
+        .await
+    }
+
+    /// Explicit season-folder override, or null when library/facet settings are inherited.
+    async fn use_season_folders_override(&self) -> Option<bool> {
+        self.use_season_folders
+    }
+
+    /// Whether this title uses season folders after applying inheritance.
+    async fn effective_use_season_folders(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .effective_use_season_folders_for_title(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Whether this title inherits the season-folder setting from its library or facet.
+    async fn inherits_use_season_folders(&self) -> bool {
+        self.use_season_folders.is_none()
+    }
+
     /// Title-specific required audio-language override, or null when the facet setting is inherited.
     async fn required_audio_languages_override(
         &self,

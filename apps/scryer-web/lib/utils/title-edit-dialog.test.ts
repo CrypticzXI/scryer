@@ -31,13 +31,14 @@ test("direct movie edit starts with the movie's linked profile and options", () 
       qualityProfileId: "profile-uhd",
       rootFolderId: "root-movies",
       monitorType: "MONITORED",
-      useSeasonFolders: false,
+      useSeasonFoldersOverride: false,
       monitorSpecials: true,
       interSeasonMovies: false,
       fillerPolicy: "SKIP_FILLER",
       recapPolicy: "DOWNLOAD_ALL",
     }),
     {
+      metadataLanguage: INHERIT_TITLE_EDIT_VALUE,
       qualityProfileId: "profile-uhd",
       rootFolderId: "root-movies",
       monitorType: "MONITORED",
@@ -111,5 +112,24 @@ test("title edit outcome treats null and empty inherited overrides equivalently"
       { qualityProfileId: null, fillerPolicy: null, recapPolicy: null },
     ),
     true,
+  );
+});
+
+test("title edit can clear metadata-language and season-folder overrides", () => {
+  const initialDraft = initialTitleEditDraft({
+    metadataLanguageOverride: "fra",
+    useSeasonFoldersOverride: false,
+  });
+
+  assert.deepEqual(
+    buildTitleEditChanges(
+      {
+        ...initialDraft,
+        metadataLanguage: INHERIT_TITLE_EDIT_VALUE,
+        useSeasonFolders: INHERIT_TITLE_EDIT_VALUE,
+      },
+      initialDraft,
+    ),
+    { metadataLanguage: null, useSeasonFolders: null },
   );
 });

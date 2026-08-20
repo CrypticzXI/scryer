@@ -24,7 +24,7 @@ use crate::{
     DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_SEASON_FOLDER_TEMPLATE,
     DEFAULT_SPECIALS_FOLDER_TEMPLATE, DownloadSourceIdentity, FOLDER_TEMPLATE_KEY,
     ParsedEpisodeMetadata, ParsedReleaseMetadata, SEASON_FOLDER_TEMPLATE_KEY,
-    SPECIALS_FOLDER_TEMPLATE_KEY, TitleMediaFile, parse_release_metadata, use_season_folders,
+    SPECIALS_FOLDER_TEMPLATE_KEY, TitleMediaFile, parse_release_metadata,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -656,9 +656,13 @@ impl AppUseCase {
             let Some(title) = self.resolve_title_for_rename_item(&probe).await? else {
                 continue;
             };
-            let Some(folder_path) =
-                infer_title_folder_path_after_rename(&title, &item.current_path, proposed_path)
-            else {
+            let use_season_folders = self.resolve_use_season_folders(&title).await?;
+            let Some(folder_path) = infer_title_folder_path_after_rename(
+                &title,
+                use_season_folders,
+                &item.current_path,
+                proposed_path,
+            ) else {
                 continue;
             };
             crate::folder_ownership::ensure_folder_move_available_to_title(
@@ -849,17 +853,25 @@ impl AppUseCase {
             Ok(title) => title,
             Err(error) => return Err(RenamePersistenceFailure { error, state }),
         };
-        if let Some(title) = title
-            && let Some(folder_path) =
-                infer_title_folder_path_after_rename(&title, &item.current_path, final_path)
-            && let Err(error) = self
+        if let Some(title) = title {
+            let use_season_folders = match self.resolve_use_season_folders(&title).await {
+                Ok(value) => value,
+                Err(error) => return Err(RenamePersistenceFailure { error, state }),
+            };
+            if let Some(folder_path) = infer_title_folder_path_after_rename(
+                &title,
+                use_season_folders,
+                &item.current_path,
+                final_path,
+            ) && let Err(error) = self
                 .services
                 .catalog
                 .titles
                 .set_folder_path(&title.id, &folder_path)
                 .await
-        {
-            return Err(RenamePersistenceFailure { error, state });
+            {
+                return Err(RenamePersistenceFailure { error, state });
+            }
         }
 
         Ok(())
@@ -958,6 +970,7 @@ impl AppUseCase {
         // Only the media root varies per title; every template and policy came
         // from `settings`, which was resolved once for the whole plan.
         let media_root = self.title_root_folder_path_override(title).await?;
+        let use_season_folders = self.resolve_use_season_folders(title).await?;
         let collections = self
             .services
             .catalog
@@ -1011,6 +1024,7 @@ impl AppUseCase {
                     MediaFacet::Series | MediaFacet::Anime => {
                         build_series_rename_plan_items_from_media_files(
                             &title,
+                            use_season_folders,
                             collections,
                             episodes,
                             media_files,
@@ -1733,8 +1747,13 @@ pub(crate) fn title_folder_path_for_renamed_file(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "episode rename placement needs its title, resolved layout, and template inputs explicitly"
+)]
 fn episode_parent_path_for_renamed_file(
     title: &Title,
+    use_season_folders: bool,
     current_file: &Path,
     media_root: &str,
     folder_template: &str,
@@ -1743,7 +1762,7 @@ fn episode_parent_path_for_renamed_file(
     specials_folder_template: &str,
 ) -> PathBuf {
     let desired_root = configured_title_folder_path(media_root, title, folder_template, title.year);
-    if !crate::use_season_folders(title) {
+    if !use_season_folders {
         return desired_root;
     }
     let Some(season) = season else {
@@ -1764,6 +1783,7 @@ fn episode_parent_path_for_renamed_file(
 
 fn infer_title_folder_path_after_rename(
     title: &Title,
+    use_season_folders: bool,
     current_path: &str,
     final_path: &str,
 ) -> Option<String> {
@@ -1787,12 +1807,16 @@ fn infer_title_folder_path_after_rename(
         }
     }
 
-    infer_title_folder_path_from_final_path(title, final_parent)
+    infer_title_folder_path_from_final_path(title, use_season_folders, final_parent)
         .map(|path| path_to_stored_string(&path))
 }
 
-fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -> Option<PathBuf> {
-    if use_season_folders(title)
+fn infer_title_folder_path_from_final_path(
+    _title: &Title,
+    use_season_folders: bool,
+    final_parent: &Path,
+) -> Option<PathBuf> {
+    if use_season_folders
         && final_parent
             .file_name()
             .and_then(|value| value.to_str())
@@ -2298,6 +2322,7 @@ fn finalize_rename_plan_item(
 )]
 pub(crate) fn build_series_rename_plan_items_from_media_files(
     title: &Title,
+    use_season_folders: bool,
     mut collections: Vec<Collection>,
     episodes: Vec<Episode>,
     media_files: Vec<TitleMediaFile>,
@@ -2334,6 +2359,7 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
         .map(|source| {
             build_series_media_file_rename_plan_item(
                 title,
+                use_season_folders,
                 &collections,
                 &collections_by_id,
                 &episodes_by_id,
@@ -2388,6 +2414,7 @@ fn group_title_media_files(media_files: Vec<TitleMediaFile>) -> Vec<GroupedTitle
 )]
 fn build_series_media_file_rename_plan_item(
     title: &Title,
+    use_season_folders: bool,
     collections: &[Collection],
     collections_by_id: &HashMap<String, Collection>,
     episodes_by_id: &HashMap<String, Episode>,
@@ -2474,6 +2501,7 @@ fn build_series_media_file_rename_plan_item(
     };
     let target_parent = episode_parent_path_for_renamed_file(
         title,
+        use_season_folders,
         &source_file.current_file,
         media_root,
         folder_template,

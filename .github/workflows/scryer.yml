@@ -2023,7 +2023,7 @@ jobs:
             git push origin HEAD:main
           fi
 
-      - name: Trigger marketing site rebuild
+      - name: Rebuild website for released GraphQL schema
         continue-on-error: true
         env:
           WEB_TOKEN: ${{ secrets.WEB_DISPATCH_TOKEN }}
@@ -2037,7 +2037,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "133935777+NZBMan@users.noreply.github.com"
           git commit --allow-empty -m "rebuild: ${{ github.ref_name }}"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Website rebuild commit pushed for ${{ github.ref_name }}."
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "Unable to push website rebuild commit after ${attempt} attempts." >&2
+              exit 1
+            fi
+
+            echo "Website main advanced; rebasing rebuild commit before retrying." >&2
+            git pull --rebase origin main
+          done
 
   winget-prep:
     name: winget-prep

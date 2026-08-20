@@ -308,6 +308,7 @@ export type MediaSettings = {
   libraryPath: string;
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
+  useSeasonFolders: boolean;
   folderTemplate: string;
   seasonFolderTemplate: string | null;
   specialsFolderTemplate: string | null;

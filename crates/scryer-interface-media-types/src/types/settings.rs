@@ -545,6 +545,8 @@ pub struct MediaSettingsPayload {
     pub root_folders: Vec<RootFolderPayload>,
     /// Effective required audio language codes.
     pub required_audio_languages: Vec<String>,
+    /// Whether episodic titles use season folders.
+    pub use_season_folders: bool,
     /// Folder naming template.
     pub folder_template: String,
     /// Season-folder template, or null for facets without seasons.
@@ -663,6 +665,8 @@ pub struct UpdateMediaSettingsInput {
     pub root_folders: Option<Vec<RootFolderInput>>,
     /// Optional required audio-language codes.
     pub required_audio_languages: Option<Vec<String>>,
+    /// Whether episodic titles use season folders.
+    pub use_season_folders: Option<bool>,
     /// Optional title folder template.
     pub folder_template: Option<String>,
     /// Optional season folder template.

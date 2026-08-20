@@ -19,6 +19,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
+import { AVAILABLE_LANGUAGES } from "@/lib/i18n";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 import {
   DISABLED_TITLE_EDIT_VALUE,
@@ -235,6 +236,36 @@ export function BulkTitleEditDialog({
             </Select>
           </EditableField>
 
+          <EditableField label={t("settings.libraryMetadataLanguageLabel")}>
+            <Select
+              value={draft.metadataLanguage}
+              onValueChange={(value) =>
+                setDraft((previous) => ({ ...previous, metadataLanguage: value }))
+              }
+              disabled={busy}
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {directTitle ? (
+                  <SelectItem value={INHERIT_VALUE}>
+                    {t("settings.libraryInheritGlobal")}
+                  </SelectItem>
+                ) : (
+                  <SelectItem value={UNCHANGED_VALUE}>
+                    {t("label.unchanged")}
+                  </SelectItem>
+                )}
+                {AVAILABLE_LANGUAGES.map((language) => (
+                  <SelectItem key={language.code} value={language.code}>
+                    {language.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </EditableField>
+
           {!isMovieView ? (
             <EditableField label={t("search.addConfigSeasonFolder")}>
               <Select
@@ -251,9 +282,15 @@ export function BulkTitleEditDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={UNCHANGED_VALUE}>
-                    {t("label.unchanged")}
-                  </SelectItem>
+                  {directTitle ? (
+                    <SelectItem value={INHERIT_VALUE}>
+                      {t("title.inheritDefault")}
+                    </SelectItem>
+                  ) : (
+                    <SelectItem value={UNCHANGED_VALUE}>
+                      {t("label.unchanged")}
+                    </SelectItem>
+                  )}
                   <SelectItem value={ENABLED_VALUE}>
                     {t("search.seasonFolder.enabled")}
                   </SelectItem>

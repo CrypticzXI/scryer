@@ -1377,6 +1377,7 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
 
     let dest_path = episode_import_dest_path(
         &title,
+        true,
         &rescored,
         "mkv",
         std::path::Path::new("/downloads/obfuscated.release.name.mkv"),
@@ -1406,6 +1407,7 @@ fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
 
     let dest_path = episode_import_dest_path(
         &title,
+        true,
         &parsed,
         "mkv",
         std::path::Path::new("/downloads/Obfuscated.Source.Name.mkv"),
@@ -1437,6 +1439,7 @@ fn episode_import_dest_path_uses_configured_regular_and_specials_folders() {
 
     let regular = episode_import_dest_path(
         &title,
+        true,
         &parsed,
         "mkv",
         source,
@@ -1458,6 +1461,7 @@ fn episode_import_dest_path_uses_configured_regular_and_specials_folders() {
 
     let specials = episode_import_dest_path(
         &title,
+        true,
         &parsed,
         "mkv",
         source,
@@ -1480,6 +1484,7 @@ fn episode_import_dest_path_uses_configured_regular_and_specials_folders() {
     title.tags = vec!["scryer:season-folder:disabled".to_string()];
     let flat = episode_import_dest_path(
         &title,
+        false,
         &parsed,
         "mkv",
         source,

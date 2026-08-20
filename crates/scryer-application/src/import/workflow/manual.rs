@@ -1555,8 +1555,10 @@ async fn execute_manual_series_movie_import(
     } else {
         preserved_import_filename(source)
     };
+    let use_season_folders = app.resolve_use_season_folders(title).await?;
     let dest_path = episodic_import_parent_path(
         title,
+        use_season_folders,
         full_folder_path,
         season_folder_template,
         specials_folder_template,

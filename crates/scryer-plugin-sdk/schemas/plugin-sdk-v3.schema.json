@@ -4743,12 +4743,14 @@
           "maximum": 255
         },
         "can_move_files": {
+          "description": "Whether the payload is fully downloaded and stable on disk — nothing is\nstill being written, verified, unpacked or moved, so reading or\nrelocating the files cannot produce a torn result.\n\nThis is a statement about the **data**, not permission to move it. A\nseeding torrent's data is complete, and `can_move_files: Some(true)` is\nthe right answer for it; the core combines this with its own\n`seeding_complete` determination before it will use an `ImportMode::Move`\nimport. Report data completeness honestly and let the core decide.\n\n`None` means the client does not expose enough to say. The core then\nfalls back to the completed-download evidence it has, and still refuses\nto move anything it cannot prove is finished seeding.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "can_remove": {
+          "description": "The client's own verdict on whether this item's **seeding obligation**\nis discharged, so removing the entry would not cut a torrent's seeding\nshort. Tri-state, and every state is load-bearing:\n\n- `Some(true)`  — the client's own limits are met, or it has stopped the\n  torrent, so nothing is lost by removing the entry.\n- `Some(false)` — the client can point at a specific limit that is\n  provably **not** met yet. This is not a veto: a Scryer seeding profile\n  may carry a different goal that *is* met, and that goal wins.\n- `None`        — unknowable from this client's API. The core evaluates\n  the goal itself. Never substitute `false` (which asserts a limit you\n  cannot see) or `true` (which invites a hit and run on a private\n  tracker) for an honest `None`.\n\nFor a non-torrent (usenet) item, `Some(true)` once the download is\nfinished is correct: there is no seeding obligation to discharge.",
           "type": [
             "boolean",
             "null"
@@ -4908,6 +4910,7 @@
           ]
         },
         "is_private": {
+          "description": "Whether the torrent's metainfo carries the `private` flag.\n\n`None` means the client does not report it and **must never be read as\n\"public\"**. The core treats an observed `Some(true)` as a hard rail —\nsuch a torrent is never auto-removed on the client's word alone,\nbecause a private tracker counts an early removal as a hit and run —\nand it will not synthesise that flag from anything else. Report\n`Some(false)` only when the client actually told you the torrent is\npublic; otherwise leave it `None`.",
           "type": [
             "boolean",
             "null"

@@ -286,7 +286,11 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn delete_scoped_system_setting(&self, key_name: &str, scope_id: &str) -> AppResult<()> {
+    pub(crate) async fn delete_scoped_system_setting(
+        &self,
+        key_name: &str,
+        scope_id: &str,
+    ) -> AppResult<()> {
         self.services
             .config
             .settings

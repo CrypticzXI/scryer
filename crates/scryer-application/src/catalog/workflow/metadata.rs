@@ -99,6 +99,159 @@ impl AppUseCase {
             .unwrap_or_else(|| "eng".to_string())
     }
 
+    pub(crate) async fn resolve_metadata_language_for_title(&self, title: &Title) -> String {
+        if let Ok(Some(language)) = self
+            .read_setting_string_value_explicit(
+                TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+                Some(&title.id),
+            )
+            .await
+            && !language.trim().is_empty()
+        {
+            return language.trim().to_ascii_lowercase();
+        }
+
+        if let Ok(Some(language)) = self
+            .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&title.library_id))
+            .await
+            && !language.trim().is_empty()
+        {
+            return language.trim().to_ascii_lowercase();
+        }
+
+        self.metadata_language().await
+    }
+
+    pub async fn title_metadata_language_override(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        self.read_setting_string_value_explicit(
+            TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+            Some(title_id),
+        )
+        .await
+        .map(|value| value.map(|language| language.trim().to_ascii_lowercase()))
+    }
+
+    pub async fn effective_metadata_language_for_title(&self, title_id: &str) -> AppResult<String> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        Ok(self.resolve_metadata_language_for_title(&title).await)
+    }
+
+    pub async fn effective_use_season_folders_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<bool> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.resolve_use_season_folders(&title).await
+    }
+
+    pub async fn set_title_metadata_language_override(
+        &self,
+        actor: &User,
+        title_id: &str,
+        language: Option<String>,
+    ) -> AppResult<()> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+
+        if let Some(language) = language
+            .as_deref()
+            .map(str::trim)
+            .filter(|language| !language.is_empty())
+        {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+                    Some(title.id.clone()),
+                    serde_json::to_string(&language.to_ascii_lowercase())
+                        .map_err(|error| AppError::Repository(error.to_string()))?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+        } else {
+            self.delete_scoped_system_setting(TITLE_METADATA_LANGUAGE_OVERRIDE_KEY, &title.id)
+                .await?;
+        }
+
+        self.services
+            .catalog
+            .titles
+            .mark_title_metadata_hydration_due_now(&title.id)
+            .await?;
+        self.runtime.catalog.title_hydration_wake.notify_one();
+        Ok(())
+    }
+
+    pub(crate) async fn queue_library_metadata_rehydration(
+        &self,
+        library_id: &str,
+    ) -> AppResult<()> {
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(None, &[library_id.to_string()], None)
+            .await?;
+        for title in titles {
+            if self.title_metadata_language_override(&title.id).await?.is_none() {
+                self.services
+                    .catalog
+                    .titles
+                    .mark_title_metadata_hydration_due_now(&title.id)
+                    .await?;
+            }
+        }
+        self.runtime.catalog.title_hydration_wake.notify_one();
+        Ok(())
+    }
+
+    pub(crate) async fn resolve_use_season_folders(&self, title: &Title) -> AppResult<bool> {
+        if let Some(value) = crate::import_workflow::season_folder_tag_override(title) {
+            return Ok(value);
+        }
+
+        if !matches!(title.facet, MediaFacet::Series | MediaFacet::Anime) {
+            return Ok(true);
+        }
+
+        self.resolve_library_bool_setting(
+            USE_SEASON_FOLDERS_KEY,
+            Some(&title.library_id),
+            Some(title.facet.as_str()),
+            true,
+        )
+        .await
+    }
+
     /// Discovery region seam. Mirrors `metadata_language` so a
     /// future preferences UI only has to write `DISCOVERY_REGION_KEY`. Defaults
     /// to "US" (the previous hardcoded value) so behavior is unchanged until set.

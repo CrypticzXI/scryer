@@ -196,6 +196,9 @@ export type TitleRecord = {
   country?: string | null;
   aliases?: string[];
   metadataLanguage?: string | null;
+  metadataLanguageOverride?: string | null;
+  effectiveMetadataLanguage?: string | null;
+  inheritsMetadataLanguage?: boolean;
   metadataFetchedAt?: string | null;
   minAvailability?: string | null;
   qualityProfileId?: string | null;
@@ -203,6 +206,9 @@ export type TitleRecord = {
   rootFolderPath?: string;
   monitorType?: string | null;
   useSeasonFolders?: boolean | null;
+  useSeasonFoldersOverride?: boolean | null;
+  effectiveUseSeasonFolders?: boolean;
+  inheritsUseSeasonFolders?: boolean;
   monitorSpecials?: boolean | null;
   interSeasonMovies?: boolean | null;
   fillerPolicy?: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
@@ -290,6 +296,10 @@ export type MediaRequestRecord = {
 export type LibrarySettingsRecord = {
   requiredAudioLanguagesOverride: string[] | null;
   requiredAudioLanguages: string[];
+  metadataLanguageOverride: string | null;
+  metadataLanguage: string;
+  useSeasonFoldersOverride: boolean | null;
+  useSeasonFolders: boolean;
   qualityProfileIdOverride: string | null;
   qualityProfileId: string;
   requestQualityProfileIdsOverride: string[] | null;
@@ -327,6 +337,8 @@ export type LibrarySettingsRecord = {
 
 export type LibrarySettingsDraft = {
   requiredAudioLanguages: string[] | null;
+  metadataLanguage: string | null;
+  useSeasonFolders: boolean | null;
   qualityProfileId: string | null;
   requestQualityProfileIds: string[] | null;
   scoringPersona: string | null;

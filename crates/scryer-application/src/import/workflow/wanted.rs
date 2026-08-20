@@ -72,6 +72,7 @@ async fn execute_resolved_episode_import(
     runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
     additional_import: bool,
 ) -> AppResult<EpisodeImportOutcome> {
+    let use_season_folders = app.resolve_use_season_folders(title).await?;
     let source_size = std::fs::metadata(source_video)
         .map(|metadata| metadata.len() as i64)
         .unwrap_or(0);
@@ -118,6 +119,7 @@ async fn execute_resolved_episode_import(
             parsed_with_quality_override(parsed, effective_quality_label.as_deref());
         let canonical_dest_path = episode_import_dest_path(
             title,
+            use_season_folders,
             &effective_parsed,
             &ext,
             source_video,
@@ -281,6 +283,7 @@ async fn execute_resolved_episode_import(
         parsed_with_quality_override(parsed, precheck_quality_label.as_deref());
     let precheck_dest_path = episode_import_dest_path(
         title,
+        use_season_folders,
         &precheck_parsed,
         &precheck_ext,
         source_video,
@@ -423,6 +426,7 @@ async fn execute_resolved_episode_import(
         parsed_with_quality_override(&prepared.parsed, effective_quality_label.as_deref());
     let dest_path = episode_import_dest_path(
         title,
+        use_season_folders,
         &effective_parsed,
         &ext,
         source_video,

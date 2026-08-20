@@ -363,6 +363,10 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
     LibrarySettingsPayload {
         required_audio_languages_override: settings.required_audio_languages_override,
         required_audio_languages: settings.required_audio_languages,
+        metadata_language_override: settings.metadata_language_override,
+        metadata_language: settings.metadata_language,
+        use_season_folders_override: settings.use_season_folders_override,
+        use_season_folders: settings.use_season_folders,
         quality_profile_id_override: settings.quality_profile_id_override.map(Into::into),
         quality_profile_id: settings.quality_profile_id.into(),
         request_quality_profile_ids_override: settings
@@ -479,6 +483,7 @@ pub fn from_media_settings(
             })
             .collect(),
         required_audio_languages: settings.required_audio_languages,
+        use_season_folders: settings.use_season_folders,
         folder_template: settings.folder_template,
         season_folder_template: settings.season_folder_template,
         specials_folder_template: settings.specials_folder_template,

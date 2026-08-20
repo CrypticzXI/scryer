@@ -569,6 +569,7 @@ fn infer_title_folder_path_after_rename_decodes_stored_paths() {
 
     let inferred = infer_title_folder_path_after_rename(
         &title,
+        true,
         &path_to_stored_string(&current_path),
         &path_to_stored_string(&final_path),
     )
@@ -589,6 +590,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
 
     let regular = episode_parent_path_for_renamed_file(
         &title,
+        true,
         current_file,
         "/library/series",
         "{title}",
@@ -603,6 +605,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
 
     let specials = episode_parent_path_for_renamed_file(
         &title,
+        true,
         current_file,
         "/library/series",
         "{title}",
@@ -615,6 +618,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
     title.tags = vec!["scryer:season-folder:disabled".to_string()];
     let flat = episode_parent_path_for_renamed_file(
         &title,
+        false,
         current_file,
         "/library/series",
         "{title}",

@@ -756,6 +756,32 @@ impl AppUseCase {
         let required_audio_languages = self
             .resolve_required_audio_languages(None, Some(&library.id), Some(scope_id))
             .await?;
+        let metadata_language_override = self
+            .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&library.id))
+            .await?
+            .and_then(|value| normalize_optional_string(Some(value)))
+            .map(|value| value.to_ascii_lowercase());
+        let metadata_language = match metadata_language_override.clone() {
+            Some(language) => language,
+            None => self.metadata_language().await,
+        };
+        let use_season_folders_override = if matches!(library.facet, MediaFacet::Series | MediaFacet::Anime) {
+            self.read_setting_bool_value_explicit(USE_SEASON_FOLDERS_KEY, Some(&library.id))
+                .await?
+        } else {
+            None
+        };
+        let use_season_folders = if matches!(library.facet, MediaFacet::Series | MediaFacet::Anime) {
+            self.resolve_library_bool_setting(
+                USE_SEASON_FOLDERS_KEY,
+                Some(&library.id),
+                Some(scope_id),
+                true,
+            )
+            .await?
+        } else {
+            true
+        };
         let quality_profile_id_override = self
             .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(&library.id))
             .await?
@@ -941,6 +967,10 @@ impl AppUseCase {
         Ok(LibrarySettings {
             required_audio_languages_override,
             required_audio_languages,
+            metadata_language_override,
+            metadata_language,
+            use_season_folders_override,
+            use_season_folders,
             quality_profile_id_override,
             quality_profile_id,
             request_quality_profile_ids_override,
@@ -1394,6 +1424,14 @@ impl AppUseCase {
             .lock()
             .await;
         let is_anime_library = library.facet == MediaFacet::Anime;
+        let metadata_language_override = normalize_optional_string(settings.metadata_language.clone())
+            .map(|value| value.to_ascii_lowercase());
+        let metadata_language_changed = self
+            .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&library.id))
+            .await?
+            .and_then(|value| normalize_optional_string(Some(value)))
+            .map(|value| value.to_ascii_lowercase())
+            != metadata_language_override;
         if !is_anime_library
             && (settings.filler_policy.is_some()
                 || settings.recap_policy.is_some()
@@ -1403,6 +1441,11 @@ impl AppUseCase {
         {
             return Err(AppError::Validation(
                 "anime-specific settings require an anime library".to_string(),
+            ));
+        }
+        if library.facet == MediaFacet::Movie && settings.use_season_folders.is_some() {
+            return Err(AppError::Validation(
+                "season folders are only valid for series and anime libraries".to_string(),
             ));
         }
         if library.facet == MediaFacet::Movie && settings.plexmatch_write_on_import.is_some() {
@@ -1437,6 +1480,34 @@ impl AppUseCase {
         } else {
             self.delete_scoped_system_setting(REQUIRED_AUDIO_LANGUAGES_KEY, &library.id)
                 .await?;
+        }
+
+        if let Some(language) = metadata_language_override {
+            self.upsert_scoped_system_setting_json(
+                METADATA_LANGUAGE_KEY,
+                &library.id,
+                &language,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(METADATA_LANGUAGE_KEY, &library.id)
+                .await?;
+        }
+
+        if matches!(library.facet, MediaFacet::Series | MediaFacet::Anime) {
+            if let Some(value) = settings.use_season_folders {
+                self.upsert_scoped_system_setting_json(
+                    USE_SEASON_FOLDERS_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            } else {
+                self.delete_scoped_system_setting(USE_SEASON_FOLDERS_KEY, &library.id)
+                    .await?;
+            }
         }
 
         if let Some(profile_id) = normalize_optional_string(settings.quality_profile_id) {
@@ -1702,6 +1773,8 @@ impl AppUseCase {
 
         let mut changed_keys = vec![
             REQUIRED_AUDIO_LANGUAGES_KEY.to_string(),
+            METADATA_LANGUAGE_KEY.to_string(),
+            USE_SEASON_FOLDERS_KEY.to_string(),
             QUALITY_PROFILE_ID_KEY.to_string(),
             REQUEST_QUALITY_PROFILE_IDS_KEY.to_string(),
             SCORING_PERSONA_KEY.to_string(),
@@ -1721,6 +1794,9 @@ impl AppUseCase {
 
         self.refresh_download_client_category_admission_best_effort()
             .await;
+        if metadata_language_changed {
+            self.queue_library_metadata_rehydration(&library.id).await?;
+        }
 
         self.emit_settings_saved(
             actor,
