@@ -313,7 +313,7 @@ export function SettingsUsersSection({
                     </TableCell>
                     <TableCell className="align-middle text-right">
                       <div className="flex justify-end gap-2">
-                        {!isOwnUser && user.hasMfa ? (
+                        {!isOwnUser && (user.hasMfa || user.hasPasskey) ? (
                           <IconButton
                             id={selectorId("settings-user-reset-mfa", user.username)}
                             label={t("settings.resetMfa")}

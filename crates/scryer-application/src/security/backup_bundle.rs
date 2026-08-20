@@ -718,6 +718,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "library_scan_unmatched_items",
         classification: BackupTableClassification::Export,
     },
+    BackupTableCatalogEntry {
+        table: "login_verification_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
     // A manual-import selection is deliberate user intent — the files a user
     // picked and the targets they mapped them to — held until the import
     // executes, so it is backed up like every other download/import lifecycle

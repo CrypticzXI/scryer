@@ -4,7 +4,8 @@ use async_graphql::{Context, Error, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionSettings as AppAcquisitionSettings, AppError, LoginFailureTimingClass,
-    MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
+    LoginVerificationMethod, LoginVerificationRequirement, MediaServerConnectionDraft,
+    MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateBackupSettings as AppUpdateBackupSettings,
@@ -18,9 +19,9 @@ use scryer_application::{
 use super::{from_plugin_auto_update_settings, from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
-    mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx, persist_session_or_default,
-    require_config_app_permission, to_gql_error, to_login_gql_error,
-    to_login_gql_error_after_timing,
+    login_verification_required_gql_error, mfa_enrollment_actor_from_ctx,
+    mfa_verification_from_ctx, persist_session_or_default, require_config_app_permission,
+    to_gql_error, to_login_gql_error, to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
@@ -151,6 +152,8 @@ fn from_security_settings(
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
+        mfa_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        mfa_require_emby_login: settings.totp_require_emby_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
@@ -168,6 +171,21 @@ fn media_server_app_permissions(
             .into_iter()
             .map(AppPermissionValue::into_domain),
     )
+}
+
+fn resolve_mfa_route_requirement(
+    generic: Option<bool>,
+    legacy: Option<bool>,
+    route: &str,
+) -> GqlResult<Option<bool>> {
+    if let (Some(generic), Some(legacy)) = (generic, legacy)
+        && generic != legacy
+    {
+        return Err(to_gql_error(AppError::Validation(format!(
+            "conflicting MFA requirements for {route} login"
+        ))));
+    }
+    Ok(generic.or(legacy))
 }
 
 fn media_server_library_grants(
@@ -355,6 +373,7 @@ fn from_webauthn_challenge_start(
     WebauthnChallengePayload {
         challenge_id: challenge.challenge_id.into(),
         options_json: scryer_interface_media::mappers::json_string_to_value(challenge.options_json),
+        expires_at: parse_required_datetime(&challenge.expires_at, "WebAuthn challenge expires_at"),
     }
 }
 
@@ -402,20 +421,34 @@ async fn login_payload_from_user(
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
     persist_session: bool,
+    expected_auth_session_version: Option<&Option<String>>,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
-    let token = app
-        .issue_access_token_with_mfa_and_persistence(
-            &user,
-            mfa_verified_until,
-            mfa_step_up_verified_until,
-            persist_session,
-        )
-        .await
-        .map_err(to_gql_error)?;
+    let token = match expected_auth_session_version {
+        Some(expected_auth_session_version) => {
+            app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+                &user,
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                persist_session,
+                expected_auth_session_version,
+            )
+            .await
+        }
+        None => {
+            app.issue_access_token_with_mfa_and_persistence(
+                &user,
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                persist_session,
+            )
+            .await
+        }
+    }
+    .map_err(to_gql_error)?;
     let auth_factor_status = app
         .user_auth_factor_status(&user.id)
         .await
@@ -963,6 +996,21 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageUsers).await?;
         let previous_snapshot = auth_runtime.snapshot();
+        let jellyfin_mfa_requirement = resolve_mfa_route_requirement(
+            input.mfa_require_jellyfin_login,
+            input.totp_require_jellyfin_login,
+            "Jellyfin",
+        )?
+        .ok_or_else(|| {
+            to_gql_error(AppError::Validation(
+                "an MFA requirement for Jellyfin login is required".into(),
+            ))
+        })?;
+        let emby_mfa_requirement = resolve_mfa_route_requirement(
+            input.mfa_require_emby_login,
+            input.totp_require_emby_login,
+            "Emby",
+        )?;
 
         let settings = app
             .update_security_settings(
@@ -973,8 +1021,8 @@ impl SettingsMutations {
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
                     mfa_require_config_step_up: input.mfa_require_config_step_up,
                     mfa_require_password_login: input.mfa_require_password_login,
-                    totp_require_jellyfin_login: input.totp_require_jellyfin_login,
-                    totp_require_emby_login: input.totp_require_emby_login,
+                    totp_require_jellyfin_login: jellyfin_mfa_requirement,
+                    totp_require_emby_login: emby_mfa_requirement,
                 },
             )
             .await
@@ -1549,6 +1597,62 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Starts passkey enrollment for a restricted post-primary MFA-enrollment session.
+    async fn webauthn_login_enrollment_start(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = mfa_enrollment_actor_from_ctx(ctx)?;
+        let form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        app.webauthn_login_enrollment_start(&actor, form_login_enabled)
+            .await
+            .map(from_webauthn_challenge_start)
+            .map_err(to_gql_error)
+    }
+
+    /// Completes passkey enrollment for a restricted post-primary MFA-enrollment session and issues a full session.
+    async fn webauthn_login_enrollment_complete(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Passkey registration challenge and browser response for login enrollment."
+        )]
+        input: WebauthnRegisterCompleteInput,
+    ) -> GqlResult<LoginPasskeyEnrollmentCompletePayload> {
+        let app = app_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
+        let actor = mfa_enrollment_actor_from_ctx(ctx)?;
+        let form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        let passkey = app
+            .webauthn_login_enrollment_complete(
+                &actor,
+                input.challenge_id.as_ref(),
+                &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
+                input.friendly_name,
+                form_login_enabled,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let login = login_payload_from_user(
+            &app,
+            actor,
+            Some(app.mfa_freshness_verified_until()),
+            None,
+            mfa.persist_session,
+            None,
+        )
+        .await?;
+        Ok(LoginPasskeyEnrollmentCompletePayload {
+            passkey: from_passkey_summary(passkey),
+            login,
+        })
+    }
+
     /// Starts TOTP enrollment for the authenticated session or MFA-enrollment session.
     async fn totp_enrollment_start(
         &self,
@@ -1607,6 +1711,7 @@ impl SettingsMutations {
             Some(app.mfa_freshness_verified_until()),
             None,
             mfa.persist_session,
+            None,
         )
         .await?;
         Ok(LoginMfaEnrollmentCompletePayload {
@@ -1629,7 +1734,15 @@ impl SettingsMutations {
             .mfa_verify_step_up(&actor, &input.code)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until), true).await
+        login_payload_from_user(
+            &app,
+            actor,
+            None,
+            Some(mfa_step_up_verified_until),
+            true,
+            None,
+        )
+        .await
     }
 
     /// Disables TOTP after verifying the supplied code and returns updated status.
@@ -1708,7 +1821,7 @@ impl SettingsMutations {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         let form_login_enabled = auth_runtime.snapshot().effective_form_login_enabled;
         let started_at = Instant::now();
-        let user = match app
+        let (user, auth_session_version) = match app
             .webauthn_authenticate_complete(
                 input.challenge_id.as_ref(),
                 &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
@@ -1734,7 +1847,90 @@ impl SettingsMutations {
             input.persist_session,
             default_persist_session_from_ctx(ctx),
         );
-        login_payload_from_user(&app, user, None, None, persist_session).await
+        login_payload_from_user(
+            &app,
+            user,
+            Some(app.mfa_freshness_verified_until()),
+            None,
+            persist_session,
+            Some(&auth_session_version),
+        )
+        .await
+    }
+
+    /// Starts the user-bound passkey assertion required after primary credentials succeed.
+    async fn login_verification_passkey_start(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Opaque login verification challenge ID returned after primary authentication."
+        )]
+        challenge_id: ID,
+    ) -> GqlResult<WebauthnChallengePayload> {
+        let app = app_from_ctx(ctx)?;
+        let form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        app.login_verification_passkey_start(challenge_id.as_ref(), form_login_enabled)
+            .await
+            .map(from_webauthn_challenge_start)
+            .map_err(to_gql_error)
+    }
+
+    /// Completes the passkey assertion required after primary credentials succeed.
+    async fn login_verification_passkey_complete(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Pending login verification and browser assertion response.")]
+        input: LoginVerificationPasskeyCompleteInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let form_login_enabled = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled;
+        let (user, verified_until, persist_session, auth_session_version) = app
+            .login_verification_passkey_complete(
+                input.login_challenge_id.as_ref(),
+                input.webauthn_challenge_id.as_ref(),
+                &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
+                form_login_enabled,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(
+            &app,
+            user,
+            Some(verified_until),
+            None,
+            persist_session,
+            Some(&auth_session_version),
+        )
+        .await
+    }
+
+    /// Completes the TOTP or recovery-code fallback required after primary credentials succeed.
+    async fn login_verification_totp_complete(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Pending login verification challenge and current authenticator or recovery code."
+        )]
+        input: LoginVerificationTotpCompleteInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let (user, verified_until, persist_session, auth_session_version) = app
+            .complete_login_verification_totp(input.login_challenge_id.as_ref(), &input.code)
+            .await
+            .map_err(to_gql_error)?;
+        login_payload_from_user(
+            &app,
+            user,
+            Some(verified_until),
+            None,
+            persist_session,
+            Some(&auth_session_version),
+        )
+        .await
     }
 
     /// Deletes the authenticated actor's passkey identified by `id`.
@@ -1797,36 +1993,48 @@ impl SettingsMutations {
                 .await
                 .map_err(to_gql_error)?
                 .mfa_require_password_login;
-        let mfa_verified_until = if password_login_mfa_required {
-            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(
-                    &app,
-                    user,
-                    persist_session_or_default(
-                        input.persist_session,
-                        default_persist_session_from_ctx(ctx),
-                    ),
-                )
-                .await;
-            }
-            let code = input.totp_code.as_deref().ok_or_else(|| {
-                to_gql_error(scryer_application::AppError::MfaStepUpRequired(
-                    "MFA code is required for password login".into(),
-                ))
-            })?;
-            Some(
-                app.verify_totp_for_user(&user, code)
-                    .await
-                    .map_err(to_gql_error)?,
-            )
-        } else {
-            None
-        };
         let persist_session = persist_session_or_default(
             input.persist_session,
             default_persist_session_from_ctx(ctx),
         );
-        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
+        match app
+            .login_verification_requirement(
+                &user,
+                LoginVerificationMethod::LocalPassword,
+                password_login_mfa_required,
+                persist_session,
+                input.totp_code.as_deref(),
+            )
+            .await
+            .map_err(to_gql_error)?
+        {
+            LoginVerificationRequirement::Satisfied(satisfied) => {
+                let expected_auth_session_version = satisfied
+                    .mfa_verified_until
+                    .is_some()
+                    .then_some(&satisfied.auth_session_version);
+                login_payload_from_user(
+                    &app,
+                    user,
+                    satisfied.mfa_verified_until,
+                    None,
+                    persist_session,
+                    expected_auth_session_version,
+                )
+                .await
+            }
+            LoginVerificationRequirement::EnrollmentRequired => {
+                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            }
+            LoginVerificationRequirement::Challenge(challenge) => {
+                Err(login_verification_required_gql_error(
+                    &challenge.id,
+                    &challenge.expires_at,
+                    challenge.allow_passkey,
+                    challenge.allow_totp,
+                ))
+            }
+        }
     }
 
     /// Mark the setup wizard as complete.

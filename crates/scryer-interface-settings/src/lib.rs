@@ -233,6 +233,8 @@ fn from_security_settings(
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
+        mfa_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        mfa_require_emby_login: settings.totp_require_emby_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
@@ -472,6 +474,10 @@ fn from_auth_runtime_state(
             && security_settings.mfa_require_password_login,
         mfa_require_config_step_up: auth_runtime.effective_form_login_enabled
             && security_settings.mfa_require_config_step_up,
+        mfa_require_jellyfin_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_jellyfin_login,
+        mfa_require_emby_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_emby_login,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_jellyfin_login,
         totp_require_emby_login: auth_runtime.effective_form_login_enabled

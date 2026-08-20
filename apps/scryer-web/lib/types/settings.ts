@@ -95,8 +95,8 @@ export type SecuritySettings = {
   skipLoginForLocalIps: boolean;
   mfaRequireConfigStepUp: boolean;
   mfaRequirePasswordLogin: boolean;
-  totpRequireJellyfinLogin: boolean;
-  totpRequireEmbyLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
+  mfaRequireEmbyLogin: boolean;
   effectiveFormLoginEnabled: boolean;
   envOverrideActive: boolean;
   envOverrideDescription: string | null;
@@ -264,7 +264,7 @@ export type AuthRuntimeState = {
   envOverrideActive: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean;
-  totpRequireJellyfinLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
 };
 
 export type PasskeySummary = {

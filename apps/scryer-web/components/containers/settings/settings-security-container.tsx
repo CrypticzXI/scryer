@@ -24,8 +24,8 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   skipLoginForLocalIps: false,
   mfaRequireConfigStepUp: false,
   mfaRequirePasswordLogin: false,
-  totpRequireJellyfinLogin: false,
-  totpRequireEmbyLogin: false,
+  mfaRequireJellyfinLogin: false,
+  mfaRequireEmbyLogin: false,
   effectiveFormLoginEnabled: false,
   envOverrideActive: false,
   envOverrideDescription: null,
@@ -134,8 +134,8 @@ export function SettingsSecurityContainer() {
     skipLoginForLocalIps: boolean,
     mfaRequireConfigStepUp: boolean,
     mfaRequirePasswordLogin: boolean,
-    totpRequireJellyfinLogin: boolean,
-    totpRequireEmbyLogin: boolean = settingsRef.current.totpRequireEmbyLogin,
+    mfaRequireJellyfinLogin: boolean,
+    mfaRequireEmbyLogin: boolean = settingsRef.current.mfaRequireEmbyLogin,
   ) => {
     const { data, error } = await client
       .mutation(updateSecuritySettingsMutation, {
@@ -145,8 +145,8 @@ export function SettingsSecurityContainer() {
           skipLoginForLocalIps,
           mfaRequireConfigStepUp,
           mfaRequirePasswordLogin,
-          totpRequireJellyfinLogin,
-          totpRequireEmbyLogin,
+          mfaRequireJellyfinLogin,
+          mfaRequireEmbyLogin,
         },
       })
       .toPromise();
@@ -192,7 +192,7 @@ export function SettingsSecurityContainer() {
         currentSettings.skipLoginForLocalIps,
         currentSettings.mfaRequireConfigStepUp,
         currentSettings.mfaRequirePasswordLogin,
-        currentSettings.totpRequireJellyfinLogin,
+        currentSettings.mfaRequireJellyfinLogin,
       );
       settingsRef.current = nextSettings;
       setSettings(nextSettings);
@@ -299,7 +299,7 @@ export function SettingsSecurityContainer() {
         settings.skipLoginForLocalIps,
         settings.mfaRequireConfigStepUp,
         settings.mfaRequirePasswordLogin,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(
@@ -342,7 +342,7 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
     effectivePasswordMinLength,
     user?.username,
@@ -380,7 +380,7 @@ export function SettingsSecurityContainer() {
         settings.skipLoginForLocalIps,
         settings.mfaRequireConfigStepUp,
         settings.mfaRequirePasswordLogin,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(
@@ -412,7 +412,7 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
   ]);
 
@@ -438,7 +438,7 @@ export function SettingsSecurityContainer() {
         enabled,
         settings.mfaRequireConfigStepUp,
         settings.mfaRequirePasswordLogin,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(t("settings.securityPreferenceSaved"));
@@ -469,7 +469,7 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
     token,
   ]);
@@ -488,7 +488,7 @@ export function SettingsSecurityContainer() {
         settings.skipLoginForLocalIps,
         enabled,
         settings.mfaRequirePasswordLogin,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(t("settings.securityPreferenceSaved"));
@@ -507,7 +507,7 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
   ]);
 
@@ -525,7 +525,7 @@ export function SettingsSecurityContainer() {
         settings.skipLoginForLocalIps,
         settings.mfaRequireConfigStepUp,
         enabled,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
       );
       setSettings(nextSettings);
       toast.success(t("settings.securityPreferenceSaved"));
@@ -544,12 +544,12 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
   ]);
 
   const handleTotpJellyfinLoginChange = React.useCallback(async (enabled: boolean) => {
-    if (confirmBusy || saveBusy || enabled === settings.totpRequireJellyfinLogin) {
+    if (confirmBusy || saveBusy || enabled === settings.mfaRequireJellyfinLogin) {
       return;
     }
 
@@ -581,12 +581,12 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
   ]);
 
   const handleTotpEmbyLoginChange = React.useCallback(async (enabled: boolean) => {
-    if (confirmBusy || saveBusy || enabled === settings.totpRequireEmbyLogin) {
+    if (confirmBusy || saveBusy || enabled === settings.mfaRequireEmbyLogin) {
       return;
     }
 
@@ -599,7 +599,7 @@ export function SettingsSecurityContainer() {
         settings.skipLoginForLocalIps,
         settings.mfaRequireConfigStepUp,
         settings.mfaRequirePasswordLogin,
-        settings.totpRequireJellyfinLogin,
+        settings.mfaRequireJellyfinLogin,
         enabled,
       );
       setSettings(nextSettings);
@@ -619,8 +619,8 @@ export function SettingsSecurityContainer() {
     submitPasswordMinLength,
     settings.mfaRequireConfigStepUp,
     settings.mfaRequirePasswordLogin,
-    settings.totpRequireEmbyLogin,
-    settings.totpRequireJellyfinLogin,
+    settings.mfaRequireEmbyLogin,
+    settings.mfaRequireJellyfinLogin,
     t,
   ]);
 

@@ -51,7 +51,7 @@ impl AppUseCase {
             .ok_or_else(|| AppError::Validation("passkey authentication is not configured".into()))
     }
 
-    async fn load_password_backed_user(&self, user_id: &str) -> AppResult<User> {
+    async fn load_passkey_user(&self, user_id: &str) -> AppResult<User> {
         let user = self
             .services
             .identity
@@ -62,12 +62,6 @@ impl AppUseCase {
 
         if !user.login_status().is_enabled() {
             return Err(AppError::Unauthorized("credentials unavailable".into()));
-        }
-
-        if !user.account_kind.allows_local_credentials() || user.password_hash.is_none() {
-            return Err(AppError::Validation(
-                "passkeys require a password-backed account".into(),
-            ));
         }
 
         Ok(user)
@@ -82,9 +76,9 @@ impl AppUseCase {
         candidates
     }
 
-    async fn load_password_backed_user_by_webauthn_uuid(&self, user_uuid: Uuid) -> AppResult<User> {
+    async fn load_passkey_user_by_webauthn_uuid(&self, user_uuid: Uuid) -> AppResult<User> {
         for candidate in Self::user_id_candidates_for_webauthn_uuid(user_uuid) {
-            match self.load_password_backed_user(&candidate).await {
+            match self.load_passkey_user(&candidate).await {
                 Ok(user) => return Ok(user),
                 Err(AppError::NotFound(_)) => {}
                 Err(error) => return Err(error),
@@ -155,10 +149,40 @@ impl AppUseCase {
     ) -> AppResult<WebauthnChallengeStart> {
         self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
             .await?;
+        let user = self.load_passkey_user(&actor.id).await?;
+        self.webauthn_register_start_for_user(
+            user,
+            WebauthnChallengePurpose::AccountRegistration,
+            form_login_enabled,
+        )
+        .await
+    }
+
+    /// Starts passkey enrollment while the actor holds the restricted
+    /// post-primary MFA-enrollment session.
+    pub async fn webauthn_login_enrollment_start(
+        &self,
+        actor: &User,
+        form_login_enabled: bool,
+    ) -> AppResult<WebauthnChallengeStart> {
+        let user = self.load_passkey_user(&actor.id).await?;
+        self.webauthn_register_start_for_user(
+            user,
+            WebauthnChallengePurpose::LoginEnrollment,
+            form_login_enabled,
+        )
+        .await
+    }
+
+    async fn webauthn_register_start_for_user(
+        &self,
+        user: User,
+        purpose: WebauthnChallengePurpose,
+        form_login_enabled: bool,
+    ) -> AppResult<WebauthnChallengeStart> {
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         self.cleanup_expired_webauthn_challenges().await?;
 
-        let user = self.load_password_backed_user(&actor.id).await?;
         let existing_records = self
             .services
             .identity
@@ -192,6 +216,8 @@ impl AppUseCase {
             id: Id::new().0,
             user_id: Some(user.id),
             challenge_type: WebauthnChallengeType::Registration,
+            purpose,
+            login_verification_challenge_id: None,
             state_json: serde_json::to_string(&StoredChallengeState::Registration(state)).map_err(
                 |error| {
                     AppError::Repository(format!(
@@ -217,6 +243,7 @@ impl AppUseCase {
                     "failed to encode passkey registration options: {error}"
                 ))
             })?,
+            expires_at: challenge.expires_at,
         })
     }
 
@@ -230,9 +257,50 @@ impl AppUseCase {
     ) -> AppResult<PasskeySummary> {
         self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
             .await?;
-        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
+        let user = self.load_passkey_user(&actor.id).await?;
+        self.webauthn_register_complete_for_user(
+            user,
+            challenge_id,
+            response_json,
+            friendly_name,
+            WebauthnChallengePurpose::AccountRegistration,
+            form_login_enabled,
+        )
+        .await
+    }
 
-        let user = self.load_password_backed_user(&actor.id).await?;
+    /// Completes passkey enrollment for a restricted post-primary login and
+    /// returns the registered credential summary for the final login payload.
+    pub async fn webauthn_login_enrollment_complete(
+        &self,
+        actor: &User,
+        challenge_id: &str,
+        response_json: &str,
+        friendly_name: Option<String>,
+        form_login_enabled: bool,
+    ) -> AppResult<PasskeySummary> {
+        let user = self.load_passkey_user(&actor.id).await?;
+        self.webauthn_register_complete_for_user(
+            user,
+            challenge_id,
+            response_json,
+            friendly_name,
+            WebauthnChallengePurpose::LoginEnrollment,
+            form_login_enabled,
+        )
+        .await
+    }
+
+    async fn webauthn_register_complete_for_user(
+        &self,
+        user: User,
+        challenge_id: &str,
+        response_json: &str,
+        friendly_name: Option<String>,
+        expected_purpose: WebauthnChallengePurpose,
+        form_login_enabled: bool,
+    ) -> AppResult<PasskeySummary> {
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
         let challenge = self
             .services
             .identity
@@ -249,6 +317,11 @@ impl AppUseCase {
         if challenge.challenge_type != WebauthnChallengeType::Registration {
             return Err(AppError::Validation(
                 "passkey challenge is not a registration ceremony".into(),
+            ));
+        }
+        if challenge.purpose != expected_purpose {
+            return Err(AppError::Validation(
+                "passkey challenge has an unexpected registration purpose".into(),
             ));
         }
         if Self::challenge_expired(&challenge) {
@@ -340,7 +413,7 @@ impl AppUseCase {
                 .await?
                 .ok_or_else(invalid_username_passkey)?;
 
-            if !user.login_status().is_enabled() || user.password_hash.is_none() {
+            if !user.login_status().is_enabled() {
                 return Err(invalid_username_passkey());
             }
 
@@ -370,6 +443,8 @@ impl AppUseCase {
                 id: Id::new().0,
                 user_id: Some(user.id),
                 challenge_type: WebauthnChallengeType::Authentication,
+                purpose: WebauthnChallengePurpose::StandaloneAuthentication,
+                login_verification_challenge_id: None,
                 state_json: serde_json::to_string(&StoredChallengeState::Authentication(
                     StoredAuthenticationState::Passkey(state),
                 ))
@@ -402,6 +477,8 @@ impl AppUseCase {
                 id: Id::new().0,
                 user_id: None,
                 challenge_type: WebauthnChallengeType::Authentication,
+                purpose: WebauthnChallengePurpose::StandaloneAuthentication,
+                login_verification_challenge_id: None,
                 state_json: serde_json::to_string(&StoredChallengeState::Authentication(
                     StoredAuthenticationState::Discoverable(state),
                 ))
@@ -431,6 +508,7 @@ impl AppUseCase {
         Ok(WebauthnChallengeStart {
             challenge_id: record.id,
             options_json,
+            expires_at: record.expires_at,
         })
     }
 
@@ -439,7 +517,25 @@ impl AppUseCase {
         challenge_id: &str,
         response_json: &str,
         form_login_enabled: bool,
-    ) -> AppResult<User> {
+    ) -> AppResult<(User, Option<String>)> {
+        self.webauthn_authenticate_complete_for_purpose(
+            challenge_id,
+            response_json,
+            form_login_enabled,
+            WebauthnChallengePurpose::StandaloneAuthentication,
+            None,
+        )
+        .await
+    }
+
+    async fn webauthn_authenticate_complete_for_purpose(
+        &self,
+        challenge_id: &str,
+        response_json: &str,
+        form_login_enabled: bool,
+        expected_purpose: WebauthnChallengePurpose,
+        expected_login_verification_challenge_id: Option<&str>,
+    ) -> AppResult<(User, Option<String>)> {
         self.ensure_passkey_authentication_enabled(form_login_enabled)?;
 
         let challenge = self
@@ -453,6 +549,18 @@ impl AppUseCase {
         if challenge.challenge_type != WebauthnChallengeType::Authentication {
             return Err(AppError::Validation(
                 "passkey challenge is not an authentication ceremony".into(),
+            ));
+        }
+        if challenge.purpose != expected_purpose {
+            return Err(AppError::Validation(
+                "passkey challenge has an unexpected authentication purpose".into(),
+            ));
+        }
+        if challenge.login_verification_challenge_id.as_deref()
+            != expected_login_verification_challenge_id
+        {
+            return Err(AppError::Unauthorized(
+                "passkey challenge does not belong to this login verification".into(),
             ));
         }
         if Self::challenge_expired(&challenge) {
@@ -484,7 +592,7 @@ impl AppUseCase {
                 let user_id = challenge.user_id.as_deref().ok_or_else(|| {
                     AppError::Repository("authentication challenge missing user id".into())
                 })?;
-                let user = self.load_password_backed_user(user_id).await?;
+                let user = self.load_passkey_user(user_id).await?;
                 let requested_credential_id = Self::encode_credential_id(&credential.raw_id);
                 let mut record = self
                     .services
@@ -498,6 +606,12 @@ impl AppUseCase {
                         "passkey credential does not belong to the challenge user".into(),
                     ));
                 }
+                let auth_session_version = self
+                    .services
+                    .identity
+                    .users
+                    .auth_session_version(&user.id)
+                    .await?;
                 let original_credential_json = record.credential_json.clone();
                 let mut passkey = Self::deserialize_passkey(&record)?;
                 let auth_result = self
@@ -525,7 +639,7 @@ impl AppUseCase {
                             "passkey credential changed during authentication".into(),
                         )
                     })?;
-                Ok(user)
+                Ok((user, auth_session_version))
             }
             StoredAuthenticationState::Discoverable(state) => {
                 let (user_uuid, credential_id) = self
@@ -537,9 +651,7 @@ impl AppUseCase {
                         ))
                     })?;
                 let credential_id = Self::encode_credential_id(credential_id);
-                let user = self
-                    .load_password_backed_user_by_webauthn_uuid(user_uuid)
-                    .await?;
+                let user = self.load_passkey_user_by_webauthn_uuid(user_uuid).await?;
                 let mut record = self
                     .services
                     .identity
@@ -557,6 +669,12 @@ impl AppUseCase {
                             .into(),
                     ));
                 }
+                let auth_session_version = self
+                    .services
+                    .identity
+                    .users
+                    .auth_session_version(&user.id)
+                    .await?;
                 let original_credential_json = record.credential_json.clone();
                 let mut passkey = Self::deserialize_passkey(&record)?;
                 let discoverable_key: DiscoverableKey = passkey.clone().into();
@@ -585,9 +703,109 @@ impl AppUseCase {
                             "discoverable passkey credential changed during authentication".into(),
                         )
                     })?;
-                Ok(user)
+                Ok((user, auth_session_version))
             }
         }
+    }
+
+    pub async fn login_verification_passkey_start(
+        &self,
+        login_verification_challenge_id: &str,
+        form_login_enabled: bool,
+    ) -> AppResult<WebauthnChallengeStart> {
+        self.ensure_passkey_authentication_enabled(form_login_enabled)?;
+        self.cleanup_expired_webauthn_challenges().await?;
+        let (verification, user) = self
+            .require_login_verification_factor(login_verification_challenge_id, true)
+            .await?;
+        let records = self
+            .services
+            .identity
+            .webauthn
+            .list_credentials_for_user(&user.id)
+            .await?;
+        let passkeys = records
+            .iter()
+            .map(Self::deserialize_passkey)
+            .collect::<AppResult<Vec<_>>>()?;
+        if passkeys.is_empty() {
+            return Err(AppError::Unauthorized(
+                "passkey factor is no longer available".into(),
+            ));
+        }
+        let (options, state) = self
+            .webauthn_runtime()?
+            .start_passkey_authentication(&passkeys)
+            .map_err(|error| {
+                AppError::Validation(format!("failed to start passkey authentication: {error}"))
+            })?;
+        let now = Utc::now();
+        let challenge = WebauthnChallengeRecord {
+            id: Id::new().0,
+            user_id: Some(user.id),
+            challenge_type: WebauthnChallengeType::Authentication,
+            purpose: WebauthnChallengePurpose::LoginVerification,
+            login_verification_challenge_id: Some(verification.id),
+            state_json: serde_json::to_string(&StoredChallengeState::Authentication(
+                StoredAuthenticationState::Passkey(state),
+            ))
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to persist passkey verification state: {error}"
+                ))
+            })?,
+            created_at: now.to_rfc3339(),
+            expires_at: (now + Duration::minutes(WEBAUTHN_CHALLENGE_TTL_MINUTES)).to_rfc3339(),
+        };
+        self.services
+            .identity
+            .webauthn
+            .create_challenge(challenge.clone())
+            .await?;
+        Ok(WebauthnChallengeStart {
+            challenge_id: challenge.id,
+            options_json: serde_json::to_string(&options).map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to encode passkey verification options: {error}"
+                ))
+            })?,
+            expires_at: challenge.expires_at,
+        })
+    }
+
+    pub async fn login_verification_passkey_complete(
+        &self,
+        login_verification_challenge_id: &str,
+        webauthn_challenge_id: &str,
+        response_json: &str,
+        form_login_enabled: bool,
+    ) -> AppResult<(User, chrono::DateTime<Utc>, bool, Option<String>)> {
+        let (_expected_verification, expected_user) = self
+            .require_login_verification_factor(login_verification_challenge_id, true)
+            .await?;
+        let (user, _) = self
+            .webauthn_authenticate_complete_for_purpose(
+                webauthn_challenge_id,
+                response_json,
+                form_login_enabled,
+                WebauthnChallengePurpose::LoginVerification,
+                Some(login_verification_challenge_id),
+            )
+            .await?;
+        if user.id != expected_user.id {
+            return Err(AppError::Unauthorized(
+                "passkey credential does not belong to this login verification".into(),
+            ));
+        }
+        let verification = self
+            .consume_login_verification_challenge(login_verification_challenge_id, &user.id)
+            .await?;
+        Ok((
+            user,
+            self.mfa_freshness_verified_until(),
+            verification.persist_session,
+            verification.auth_session_version,
+        ))
     }
 
     pub async fn list_my_passkeys(

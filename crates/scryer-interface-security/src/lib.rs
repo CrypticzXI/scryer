@@ -2,13 +2,15 @@ use std::time::Instant;
 
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
-use scryer_application::{AppError, LoginFailureTimingClass};
+use scryer_application::{
+    LoginFailureTimingClass, LoginVerificationMethod, LoginVerificationRequirement,
+};
 use scryer_domain::AppPermission;
 
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
-    persist_session_or_default, require_config_app_permission, to_gql_error,
-    to_login_gql_error_after_timing,
+    login_verification_required_gql_error, persist_session_or_default,
+    require_config_app_permission, to_gql_error, to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{from_linked_account, from_user_with_auth_factor_status};
 use scryer_interface_media::types::*;
@@ -40,20 +42,34 @@ async fn login_payload_from_user(
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
     persist_session: bool,
+    expected_auth_session_version: Option<&Option<String>>,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
-    let token = app
-        .issue_access_token_with_mfa_and_persistence(
-            &user,
-            mfa_verified_until,
-            mfa_step_up_verified_until,
-            persist_session,
-        )
-        .await
-        .map_err(to_gql_error)?;
+    let token = match expected_auth_session_version {
+        Some(expected_auth_session_version) => {
+            app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+                &user,
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                persist_session,
+                expected_auth_session_version,
+            )
+            .await
+        }
+        None => {
+            app.issue_access_token_with_mfa_and_persistence(
+                &user,
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                persist_session,
+            )
+            .await
+        }
+    }
+    .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
     Ok(LoginPayload {
         token,
@@ -290,11 +306,11 @@ impl UserMutations {
         Ok(DeleteUserPayload { id })
     }
 
-    /// Resets MFA enrollment for the user identified by `id` after checking the manage-users permission.
+    /// Resets all authentication factors for the user identified by `id` after checking the manage-users permission.
     async fn reset_user_mfa(
         &self,
         ctx: &Context<'_>,
-        #[graphql(desc = "ID of the user whose MFA enrollment should be reset.")] id: ID,
+        #[graphql(desc = "ID of the user whose authentication factors should be reset.")] id: ID,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
@@ -443,7 +459,7 @@ impl UserMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None, persist_session).await
+        login_payload_from_user(&app, user, None, None, persist_session, None).await
     }
 
     /// Authenticates through Jellyfin, applies configured TOTP requirements, and issues a session or MFA-enrollment token.
@@ -489,24 +505,44 @@ impl UserMutations {
                 .await
                 .map_err(to_gql_error)?
                 .totp_require_jellyfin_login;
-        let mfa_verified_until = if jellyfin_mfa_required {
-            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
-            }
-            let code = input.totp_code.as_deref().ok_or_else(|| {
-                to_gql_error(AppError::MfaStepUpRequired(
-                    "TOTP code is required for Jellyfin login".into(),
-                ))
-            })?;
-            Some(
-                app.verify_totp_for_user(&user, code)
-                    .await
-                    .map_err(to_gql_error)?,
+        match app
+            .login_verification_requirement(
+                &user,
+                LoginVerificationMethod::Jellyfin,
+                jellyfin_mfa_required,
+                persist_session,
+                input.totp_code.as_deref(),
             )
-        } else {
-            None
-        };
-        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
+            .await
+            .map_err(to_gql_error)?
+        {
+            LoginVerificationRequirement::Satisfied(satisfied) => {
+                let expected_auth_session_version = satisfied
+                    .mfa_verified_until
+                    .is_some()
+                    .then_some(&satisfied.auth_session_version);
+                login_payload_from_user(
+                    &app,
+                    user,
+                    satisfied.mfa_verified_until,
+                    None,
+                    persist_session,
+                    expected_auth_session_version,
+                )
+                .await
+            }
+            LoginVerificationRequirement::EnrollmentRequired => {
+                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            }
+            LoginVerificationRequirement::Challenge(challenge) => {
+                Err(login_verification_required_gql_error(
+                    &challenge.id,
+                    &challenge.expires_at,
+                    challenge.allow_passkey,
+                    challenge.allow_totp,
+                ))
+            }
+        }
     }
 
     /// Authenticates through Emby, applies configured TOTP requirements, and issues a session or MFA-enrollment token.
@@ -552,23 +588,43 @@ impl UserMutations {
                 .await
                 .map_err(to_gql_error)?
                 .totp_require_emby_login;
-        let mfa_verified_until = if emby_mfa_required {
-            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
-            }
-            let code = input.totp_code.as_deref().ok_or_else(|| {
-                to_gql_error(AppError::MfaStepUpRequired(
-                    "TOTP code is required for Emby login".into(),
-                ))
-            })?;
-            Some(
-                app.verify_totp_for_user(&user, code)
-                    .await
-                    .map_err(to_gql_error)?,
+        match app
+            .login_verification_requirement(
+                &user,
+                LoginVerificationMethod::Emby,
+                emby_mfa_required,
+                persist_session,
+                input.totp_code.as_deref(),
             )
-        } else {
-            None
-        };
-        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
+            .await
+            .map_err(to_gql_error)?
+        {
+            LoginVerificationRequirement::Satisfied(satisfied) => {
+                let expected_auth_session_version = satisfied
+                    .mfa_verified_until
+                    .is_some()
+                    .then_some(&satisfied.auth_session_version);
+                login_payload_from_user(
+                    &app,
+                    user,
+                    satisfied.mfa_verified_until,
+                    None,
+                    persist_session,
+                    expected_auth_session_version,
+                )
+                .await
+            }
+            LoginVerificationRequirement::EnrollmentRequired => {
+                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            }
+            LoginVerificationRequirement::Challenge(challenge) => {
+                Err(login_verification_required_gql_error(
+                    &challenge.id,
+                    &challenge.expires_at,
+                    challenge.allow_passkey,
+                    challenge.allow_totp,
+                ))
+            }
+        }
     }
 }

@@ -1,5 +1,7 @@
 use super::*;
-use crate::types::{EpisodeMediaAvailability, TitleCatalogFilterCounts};
+use crate::types::{
+    EpisodeMediaAvailability, LoginVerificationChallengeRecord, TitleCatalogFilterCounts,
+};
 use async_trait::async_trait;
 use scryer_domain::{
     CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
@@ -2027,6 +2029,15 @@ pub trait UserRepository: Send + Sync {
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
     async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
+    async fn reset_authentication_factors_and_invalidate_sessions(
+        &self,
+        _user_id: &str,
+        _auth_session_version: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "authentication-factor recovery is not configured".into(),
+        ))
+    }
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
     async fn update_login_status_and_rotate_session(
         &self,
@@ -2604,6 +2615,35 @@ pub trait WebauthnRepository: Send + Sync {
     async fn take_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
     async fn delete_challenge(&self, id: &str) -> AppResult<()>;
     async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
+    async fn create_login_verification_challenge(
+        &self,
+        _challenge: LoginVerificationChallengeRecord,
+    ) -> AppResult<LoginVerificationChallengeRecord> {
+        Err(AppError::Repository(
+            "login verification challenges are not configured".into(),
+        ))
+    }
+    async fn get_login_verification_challenge(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<LoginVerificationChallengeRecord>> {
+        Ok(None)
+    }
+    async fn take_login_verification_challenge(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<LoginVerificationChallengeRecord>> {
+        Ok(None)
+    }
+    async fn delete_login_verification_challenges_for_user(
+        &self,
+        _user_id: &str,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+    async fn delete_expired_login_verification_challenges(&self, _now: &str) -> AppResult<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]

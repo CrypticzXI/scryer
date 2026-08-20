@@ -426,6 +426,25 @@ pub fn to_login_gql_error(method: &'static str, err: AppError) -> Error {
     }
 }
 
+pub fn login_verification_required_gql_error(
+    challenge_id: &str,
+    expires_at: &str,
+    has_passkey: bool,
+    has_totp: bool,
+) -> Error {
+    Error::new("Additional verification is required.").extend_with(|_, extensions| {
+        extensions.set("code", "MFA_STEP_UP_REQUIRED");
+        extensions.set("loginChallengeId", challenge_id);
+        extensions.set("expiresAt", expires_at);
+        extensions.set("hasPasskey", has_passkey);
+        extensions.set("hasTotp", has_totp);
+        extensions.set(
+            "preferredFactor",
+            if has_passkey { "PASSKEY" } else { "TOTP" },
+        );
+    })
+}
+
 pub async fn to_login_gql_error_after_timing(
     method: &'static str,
     timing_class: LoginFailureTimingClass,

@@ -445,19 +445,51 @@ impl AppUseCase {
         user_id: &str,
         authorization_fingerprint: String,
     ) -> AppResult<String> {
-        let Some(auth_session_version) = self
+        let auth_session_version = self
             .services
             .identity
             .users
             .auth_session_version(user_id)
-            .await?
-        else {
-            return Ok(authorization_fingerprint);
-        };
-
-        Ok(format!(
-            "{authorization_fingerprint}\nauth_session:{auth_session_version}"
+            .await?;
+        Ok(Self::auth_session_fingerprint_for_version(
+            authorization_fingerprint,
+            auth_session_version.as_deref(),
         ))
+    }
+
+    async fn auth_session_fingerprint_at_version(
+        &self,
+        user_id: &str,
+        authorization_fingerprint: String,
+        expected_auth_session_version: &Option<String>,
+    ) -> AppResult<String> {
+        let current_auth_session_version = self
+            .services
+            .identity
+            .users
+            .auth_session_version(user_id)
+            .await?;
+        if current_auth_session_version != *expected_auth_session_version {
+            return Err(AppError::Unauthorized(
+                "authentication session was invalidated".into(),
+            ));
+        }
+        Ok(Self::auth_session_fingerprint_for_version(
+            authorization_fingerprint,
+            expected_auth_session_version.as_deref(),
+        ))
+    }
+
+    fn auth_session_fingerprint_for_version(
+        authorization_fingerprint: String,
+        auth_session_version: Option<&str>,
+    ) -> String {
+        match auth_session_version {
+            Some(auth_session_version) => {
+                format!("{authorization_fingerprint}\nauth_session:{auth_session_version}")
+            }
+            None => authorization_fingerprint,
+        }
     }
 
     /// Derive a per-user JWT signing key:
@@ -623,6 +655,32 @@ impl AppUseCase {
         .await
     }
 
+    /// Issues a full session only while the version observed during factor
+    /// verification remains current. If it changes immediately afterwards,
+    /// this token is deliberately signed with the old version and is rejected.
+    pub async fn issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        persist_session: bool,
+        expected_auth_session_version: &Option<String>,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            AccessTokenOptions {
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                auth_scope: JwtSessionScope::Full,
+                ttl_seconds: self.token_lifetime(),
+                persist_session,
+                oauth: None,
+            },
+            Some(expected_auth_session_version),
+        )
+        .await
+    }
+
     pub async fn issue_mfa_enrollment_token(
         &self,
         actor: &User,
@@ -675,6 +733,7 @@ impl AppUseCase {
                     authorization_source,
                 )),
             },
+            None,
         )
         .await
     }
@@ -698,6 +757,7 @@ impl AppUseCase {
                 persist_session,
                 oauth: None,
             },
+            None,
         )
         .await
     }
@@ -706,6 +766,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         options: AccessTokenOptions,
+        expected_auth_session_version: Option<&Option<String>>,
     ) -> AppResult<String> {
         let AccessTokenOptions {
             mfa_verified_until,
@@ -769,9 +830,20 @@ impl AppUseCase {
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-        let authorization_fingerprint = self
-            .auth_session_fingerprint(&actor.id, Self::authorization_fingerprint(&actor))
-            .await?;
+        let authorization_fingerprint = match expected_auth_session_version {
+            Some(expected_auth_session_version) => {
+                self.auth_session_fingerprint_at_version(
+                    &actor.id,
+                    Self::authorization_fingerprint(&actor),
+                    expected_auth_session_version,
+                )
+                .await?
+            }
+            None => {
+                self.auth_session_fingerprint(&actor.id, Self::authorization_fingerprint(&actor))
+                    .await?
+            }
+        };
         let signing_key = self.derive_jwt_key(&signing_seed, &authorization_fingerprint);
         let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
 

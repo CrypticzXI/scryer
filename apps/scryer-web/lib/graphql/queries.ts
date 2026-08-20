@@ -2610,8 +2610,8 @@ export const securitySettingsQuery = `query SecuritySettings {
     skipLoginForLocalIps
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
-    totpRequireJellyfinLogin
-    totpRequireEmbyLogin
+    mfaRequireJellyfinLogin
+    mfaRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -2802,7 +2802,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     envOverrideActive
     mfaRequirePasswordLogin
     mfaRequireConfigStepUp
-    totpRequireJellyfinLogin
+    mfaRequireJellyfinLogin
   }
 }`;
 

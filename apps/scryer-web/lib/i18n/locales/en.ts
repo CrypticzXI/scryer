@@ -291,7 +291,7 @@ const en: LocaleDictionary = {
     "When enabled, Scryer username and password sign-in requires a one-time code. Passkeys are unchanged.",
   "settings.securityTotpJellyfinLogin": "Require MFA for Jellyfin login",
   "settings.securityTotpJellyfinLoginHelp":
-    "When enabled, Jellyfin password passthrough sign-in requires the user's Scryer MFA code.",
+    "When enabled, Jellyfin password passthrough sign-in requires the user's enrolled Scryer passkey or authenticator factor.",
   "settings.securitySavedPreference": "Saved preference",
   "settings.securityEffectiveMode": "Effective runtime mode",
   "settings.securityOverrideTitle": "Deployment override active",
@@ -1825,9 +1825,9 @@ const en: LocaleDictionary = {
   "settings.passkey": "Passkey",
   "settings.setUp": "Set up",
   "settings.notSetUp": "Not set up",
-  "settings.resetMfa": "Reset MFA",
+  "settings.resetMfa": "Reset authentication factors",
   "settings.resetMfaConfirm":
-    "Reset MFA for {{name}}? They will need to set up MFA again the next time it is required during sign-in.",
+    "Reset authentication factors for {{name}}? All active sessions and registered authentication factors will be revoked. They will need their primary credentials again. If the login policy requires MFA, they will need to enroll a new passkey or authenticator; otherwise their next password login will succeed without enrollment.",
   "settings.loginEnabled": "Login enabled",
   "settings.loginDisabled": "Login disabled",
   "settings.enableLogin": "Enable login",
@@ -2825,7 +2825,7 @@ const en: LocaleDictionary = {
   "user.created": "Created user {{name}}.",
   "user.permissionsUpdated": "Updated permissions for {{name}}.",
   "user.passwordUpdated": "Updated password for {{name}}.",
-  "user.mfaReset": "Reset MFA for {{name}}.",
+  "user.mfaReset": "Reset authentication factors for {{name}}.",
 
   "profile.accountInfo": "Account",
   "profile.operator": "Operator",
