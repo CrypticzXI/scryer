@@ -8,9 +8,9 @@ import type { TitleCreditRecord } from "@/lib/types/titles";
 export const TITLE_CAST_RAIL_DISPLAY_LIMIT = 15;
 
 /**
- * Drop credits with nothing to render. The server filtered by kind and ordered
- * by billing rank; the rails re-order by character so the original and dub rails
- * line up column-for-column (see `sortTitleCastByCharacter`).
+ * Drop credits with nothing to render. Placeholder slots on the dub rail are
+ * the one exception — they carry a character but no person on purpose — so
+ * they are built after this filter, never through it.
  */
 export function titleCastCredits(
   credits: TitleCreditRecord[] | null | undefined,
@@ -21,44 +21,37 @@ export function titleCastCredits(
 }
 
 /**
- * Order both cast rails identically so a character occupies the same column in
- * the original rail and the dub rail, and the portraits line up vertically.
+ * Top-billed first. Every rail uses this: billing rank is what "top billed
+ * cast" means, and re-ordering by anything else (character name, say) buries
+ * the leads.
  *
- * The comparison has to be alignment-safe, which rules out anything that
- * differs between the two rails: `personName` is a different actor per rail, so
- * it is only ever the last-resort tiebreak. `billingOrder` comes from the
- * provider's per-character edge and is therefore identical for a character's
- * Japanese and dubbed rows, which makes it a safe first tiebreak. Credits with
- * no character (crew, unnamed roles) sort last — they have nothing to align on.
+ * The later keys only break ties, and are chosen to be stable rather than
+ * meaningful — two credits sharing a billing rank must not swap between
+ * renders.
  */
-export function sortTitleCastByCharacter(
+export function sortTitleCastByBilling(
   credits: TitleCreditRecord[],
 ): TitleCreditRecord[] {
   return [...credits].sort((left, right) => {
-    const leftCharacter = (left.character ?? "").trim();
-    const rightCharacter = (right.character ?? "").trim();
-    if (leftCharacter !== rightCharacter) {
-      if (leftCharacter.length === 0) {
-        return 1;
-      }
-      if (rightCharacter.length === 0) {
-        return -1;
-      }
-      return leftCharacter.localeCompare(rightCharacter);
-    }
     const leftBilling = left.billingOrder ?? Number.MAX_SAFE_INTEGER;
     const rightBilling = right.billingOrder ?? Number.MAX_SAFE_INTEGER;
     if (leftBilling !== rightBilling) {
       return leftBilling - rightBilling;
+    }
+    const byCharacter = (left.character ?? "").localeCompare(
+      right.character ?? "",
+    );
+    if (byCharacter !== 0) {
+      return byCharacter;
     }
     return (left.personName ?? "").localeCompare(right.personName ?? "");
   });
 }
 
 /**
- * Main-rail cast: on-screen performers plus the original Japanese voice cast.
- * TMDB actor rows carry no language; anime titles only have voice_actor rows,
- * so the `ja` filter is what keeps the main rail single-cast.
+ * Main-rail cast: on-screen performers plus the original Japanese voice cast,
+ * top-billed first. TMDB actor rows carry no language; anime titles only have
+ * voice_actor rows, so the `ja` filter is what keeps the main rail single-cast.
  */
 export function titleCastOriginalCredits(
   credits: TitleCreditRecord[] | null | undefined,
@@ -67,12 +60,12 @@ export function titleCastOriginalCredits(
     (credit) =>
       credit.kind !== "voice_actor" || (credit.language ?? "") === "ja",
   );
-  return sortTitleCastByCharacter(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
+  return sortTitleCastByBilling(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
 }
 
 /**
- * Dub-rail cast: voice actors in one non-Japanese dub language. Empty for
- * movies and live-action series, which renders no dub rail at all.
+ * Dub-rail cast: voice actors in one non-Japanese dub language, top-billed
+ * first. Empty for movies and live-action series, which renders no dub rail.
  *
  * `language` is a dub language code (`en`, `de`, ...). Omitting it returns
  * every dub language at once, which is only useful for "is there a dub rail"
@@ -89,7 +82,73 @@ export function titleCastDubCredits(
       credit.language !== "ja" &&
       (!language || credit.language === language),
   );
-  return sortTitleCastByCharacter(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
+  return sortTitleCastByBilling(cast).slice(0, TITLE_CAST_RAIL_DISPLAY_LIMIT);
+}
+
+/** A dub slot the provider has no actor for; rendered as an empty card. */
+export function isTitleCastPlaceholder(credit: TitleCreditRecord): boolean {
+  return (credit.personName ?? "").trim().length === 0;
+}
+
+/**
+ * The dub rail, laid out to match `original` column for column.
+ *
+ * Sorting both rails by billing rank is nearly enough — AniList assigns the
+ * rank per CHARACTER edge, so a character's Japanese and dubbed rows already
+ * share one — but it drifts the moment a character has no actor in the chosen
+ * dub: every column after it shifts, and each dub portrait sits under the wrong
+ * face. So the original rail defines the slots and this fills them, emitting a
+ * placeholder where the dub has nobody. Pairing is by billing rank (unique per
+ * character within a title) and falls back to the character name for providers
+ * that do not rank consistently.
+ *
+ * Returns an empty list when no dub actor exists at all, so the rail stays
+ * hidden rather than rendering a row of placeholders.
+ */
+export function titleCastDubCreditsAlignedTo(
+  credits: TitleCreditRecord[] | null | undefined,
+  language: string | null | undefined,
+  original: TitleCreditRecord[],
+): TitleCreditRecord[] {
+  const dub = titleCastDubCredits(credits, language);
+  if (dub.length === 0) {
+    return [];
+  }
+  if (original.length === 0) {
+    return dub;
+  }
+
+  const byBilling = new Map<number, TitleCreditRecord>();
+  const byCharacter = new Map<string, TitleCreditRecord>();
+  for (const credit of dub) {
+    if (typeof credit.billingOrder === "number") {
+      byBilling.set(credit.billingOrder, credit);
+    }
+    const character = (credit.character ?? "").trim();
+    if (character.length > 0 && !byCharacter.has(character)) {
+      byCharacter.set(character, credit);
+    }
+  }
+
+  return original.map((slot) => {
+    const character = (slot.character ?? "").trim();
+    const matched =
+      (typeof slot.billingOrder === "number"
+        ? byBilling.get(slot.billingOrder)
+        : undefined) ??
+      (character.length > 0 ? byCharacter.get(character) : undefined);
+    return (
+      matched ?? {
+        kind: slot.kind,
+        personName: "",
+        character: slot.character ?? "",
+        language: language ?? "",
+        billingOrder: slot.billingOrder ?? null,
+        personImageUrl: null,
+        episodeCount: null,
+      }
+    );
+  });
 }
 
 /**

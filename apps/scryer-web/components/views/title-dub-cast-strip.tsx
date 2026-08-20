@@ -12,9 +12,10 @@ import type { TitleCastStripVariant } from "@/components/views/title-cast-strip"
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleCreditRecord } from "@/lib/types/titles";
 import {
-  titleCastDubCredits,
+  titleCastDubCreditsAlignedTo,
   titleCastDubLanguageLabel,
   titleCastDubLanguages,
+  titleCastOriginalCredits,
   titleCastPreferredDubLanguage,
 } from "@/lib/utils/title-cast";
 
@@ -69,10 +70,15 @@ export function TitleDubCastStrip({ credits, variant = "panel" }: Props) {
 
   return (
     <TitleCastStrip
-      credits={titleCastDubCredits(credits, selectedLanguage)}
+      credits={titleCastDubCreditsAlignedTo(
+        credits,
+        selectedLanguage,
+        titleCastOriginalCredits(credits),
+      )}
       variant={variant}
       titleKey="title.dubCast"
       headerAccessory={picker}
+      keepPlaceholders
     />
   );
 }

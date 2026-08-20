@@ -12,7 +12,9 @@ import {
   titleCastDubLanguages,
   titleCastOriginalCredits,
   titleCastPreferredDubLanguage,
-  sortTitleCastByCharacter,
+  sortTitleCastByBilling,
+  titleCastDubCreditsAlignedTo,
+  isTitleCastPlaceholder,
 } from "./title-cast.ts";
 
 function credit(overrides: Record<string, unknown> = {}) {
@@ -193,57 +195,81 @@ test("dub language labels are human readable with a raw-code fallback", () => {
   assert.equal(titleCastDubLanguageLabel("zzzz", "en"), "zzzz");
 });
 
-test("both rails order by character so portraits line up column-for-column", () => {
-  // Providers return the dub cast in a different order than the original; the
-  // rails must converge on one order or the two rows of portraits desync.
-  const credits = [
-    credit({ kind: "voice_actor", personName: "JP Bravo", character: "Bravo", language: "ja", billingOrder: 0 }),
-    credit({ kind: "voice_actor", personName: "JP Alpha", character: "Alpha", language: "ja", billingOrder: 1 }),
-    credit({ kind: "voice_actor", personName: "JP Charlie", character: "Charlie", language: "ja", billingOrder: 2 }),
-    credit({ kind: "voice_actor", personName: "EN Charlie", character: "Charlie", language: "en", billingOrder: 2 }),
-    credit({ kind: "voice_actor", personName: "EN Alpha", character: "Alpha", language: "en", billingOrder: 1 }),
-    credit({ kind: "voice_actor", personName: "EN Bravo", character: "Bravo", language: "en", billingOrder: 0 }),
-  ];
 
-  const original = titleCastOriginalCredits(credits);
-  const dub = titleCastDubCredits(credits, "en");
 
-  assert.deepEqual(
-    original.map((entry) => entry.character),
-    ["Alpha", "Bravo", "Charlie"],
-  );
-  // The column-by-column character sequence is what alignment actually means.
-  assert.deepEqual(
-    dub.map((entry) => entry.character),
-    original.map((entry) => entry.character),
-  );
-});
 
-test("characterless credits sort last on both rails", () => {
-  const sorted = sortTitleCastByCharacter([
-    credit({ personName: "No Character", character: "" }),
-    credit({ personName: "Zulu", character: "Zulu" }),
-    credit({ personName: "Alpha", character: "Alpha" }),
+test("every rail sorts top billed first", () => {
+  const sorted = sortTitleCastByBilling([
+    credit({ personName: "Third", billingOrder: 2 }),
+    credit({ personName: "Lead", billingOrder: 0 }),
+    credit({ personName: "Second", billingOrder: 1 }),
   ]);
 
   assert.deepEqual(
     sorted.map((entry) => entry.personName),
-    ["Alpha", "Zulu", "No Character"],
+    ["Lead", "Second", "Third"],
   );
 });
 
-test("duplicate character names break ties identically on both rails", () => {
-  // Two people share a character name; the tiebreak must not be personName
-  // first, or the rails would diverge (different actors per rail).
-  const credits = [
-    credit({ kind: "voice_actor", personName: "JP Zed", character: "Twin", language: "ja", billingOrder: 5 }),
-    credit({ kind: "voice_actor", personName: "JP Ann", character: "Twin", language: "ja", billingOrder: 2 }),
-    credit({ kind: "voice_actor", personName: "EN Ann", character: "Twin", language: "en", billingOrder: 2 }),
-    credit({ kind: "voice_actor", personName: "EN Zed", character: "Twin", language: "en", billingOrder: 5 }),
-  ];
+test("the main rail keeps billing order for movies, not character order", () => {
+  // Alphabetical-by-character would bury the lead; "top billed cast" has to
+  // mean billed order on every non-dub rail.
+  const cast = titleCastOriginalCredits([
+    credit({ kind: "actor", personName: "Lead", character: "Zane", billingOrder: 0 }),
+    credit({ kind: "actor", personName: "Support", character: "Abby", billingOrder: 1 }),
+  ]);
 
   assert.deepEqual(
-    titleCastOriginalCredits(credits).map((entry) => entry.billingOrder),
-    titleCastDubCredits(credits, "en").map((entry) => entry.billingOrder),
+    cast.map((entry) => entry.personName),
+    ["Lead", "Support"],
   );
+});
+
+test("the dub rail lines up column-for-column with the original", () => {
+  const credits = [
+    credit({ kind: "voice_actor", personName: "JP Lead", character: "Lead", language: "ja", billingOrder: 0 }),
+    credit({ kind: "voice_actor", personName: "JP Rival", character: "Rival", language: "ja", billingOrder: 1 }),
+    // Provider returns the dub in a different order.
+    credit({ kind: "voice_actor", personName: "EN Rival", character: "Rival", language: "en", billingOrder: 1 }),
+    credit({ kind: "voice_actor", personName: "EN Lead", character: "Lead", language: "en", billingOrder: 0 }),
+  ];
+
+  const original = titleCastOriginalCredits(credits);
+  const dub = titleCastDubCreditsAlignedTo(credits, "en", original);
+
+  assert.deepEqual(
+    original.map((entry) => entry.personName),
+    ["JP Lead", "JP Rival"],
+  );
+  assert.deepEqual(
+    dub.map((entry) => entry.personName),
+    ["EN Lead", "EN Rival"],
+  );
+});
+
+test("a character with no dub actor holds its column open", () => {
+  // The whole point of alignment: without a placeholder, "EN Rival" would slide
+  // under the Japanese lead's portrait.
+  const credits = [
+    credit({ kind: "voice_actor", personName: "JP Lead", character: "Lead", language: "ja", billingOrder: 0 }),
+    credit({ kind: "voice_actor", personName: "JP Rival", character: "Rival", language: "ja", billingOrder: 1 }),
+    credit({ kind: "voice_actor", personName: "EN Rival", character: "Rival", language: "en", billingOrder: 1 }),
+  ];
+
+  const original = titleCastOriginalCredits(credits);
+  const dub = titleCastDubCreditsAlignedTo(credits, "en", original);
+
+  assert.equal(dub.length, original.length);
+  assert.equal(isTitleCastPlaceholder(dub[0]), true);
+  assert.equal(dub[0].character, "Lead");
+  assert.equal(dub[1].personName, "EN Rival");
+});
+
+test("a title with no dub actors renders no dub rail at all", () => {
+  const credits = [
+    credit({ kind: "voice_actor", personName: "JP Lead", character: "Lead", language: "ja", billingOrder: 0 }),
+  ];
+
+  const original = titleCastOriginalCredits(credits);
+  assert.deepEqual(titleCastDubCreditsAlignedTo(credits, "en", original), []);
 });

@@ -8,6 +8,7 @@ import {
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleCreditRecord } from "@/lib/types/titles";
 import {
+  isTitleCastPlaceholder,
   titleCastCreditCharacter,
   titleCastCreditEpisodeCount,
   titleCastCreditKey,
@@ -27,6 +28,12 @@ type Props = {
   titleKey?: string;
   /** Rendered beside the heading; the dub rail passes its language picker. */
   headerAccessory?: React.ReactNode;
+  /**
+   * Keep person-less entries. The aligned dub rail relies on this: its
+   * placeholder slots hold a column open so the dub portraits stay under the
+   * matching original ones.
+   */
+  keepPlaceholders?: boolean;
 };
 
 /**
@@ -42,9 +49,10 @@ export function TitleCastStrip({
   variant = "panel",
   titleKey = "title.topBilledCast",
   headerAccessory,
+  keepPlaceholders = false,
 }: Props) {
   const t = useTranslate();
-  const cast = titleCastCredits(credits);
+  const cast = keepPlaceholders ? (credits ?? []) : titleCastCredits(credits);
 
   if (cast.length === 0) {
     return null;
@@ -123,9 +131,13 @@ function TitleCastCard({
   // The server hands back the `w185` portrait variant, which is already the
   // card size; no re-varianting needed.
   const portraitUrl = credit.personImageUrl ?? null;
+  // A placeholder slot holds this character's column open on the dub rail; it
+  // is deliberately dimmed rather than hidden, since hiding it would shift
+  // every later portrait out from under its original-cast counterpart.
+  const placeholder = isTitleCastPlaceholder(credit);
 
   return (
-    <div className="w-24 shrink-0">
+    <div className={placeholder ? "w-24 shrink-0 opacity-45" : "w-24 shrink-0"}>
       <div className="aspect-[2/3] w-full overflow-hidden rounded-[10px] border border-border/60 bg-muted">
         {portraitUrl ? (
           <img
@@ -143,9 +155,9 @@ function TitleCastCard({
       </div>
       <p
         className="mt-1.5 truncate text-[12px] font-semibold text-foreground"
-        title={credit.personName}
+        title={placeholder ? undefined : credit.personName}
       >
-        {credit.personName}
+        {placeholder ? "—" : credit.personName}
       </p>
       {character ? (
         <p className="truncate text-[11px] text-muted-foreground" title={character}>
