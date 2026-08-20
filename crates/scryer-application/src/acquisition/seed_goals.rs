@@ -14,11 +14,14 @@ use chrono::Utc;
 use scryer_domain::{
     IndexerConfig, PostImportTracking, SeasonPackSeedMode, SeedGoalMetAction, SeedingProfile,
 };
+
+use crate::DownloadSourceKind;
 use serde_json::Value;
 
 use crate::{
-    AppResult, DEFAULT_SEEDING_PROFILE_SETTING_KEY, IndexerConfigRepository, SETTINGS_SCOPE_SYSTEM,
-    SeedingProfileRepository, SettingsRepository,
+    AppResult, DEFAULT_SEEDING_PROFILE_SETTING_KEY, IndexerConfigRepository,
+    MINIMUM_SEEDERS_FLOOR_SETTING_KEY, SETTINGS_SCOPE_SYSTEM, SeedingProfileRepository,
+    SettingsRepository,
 };
 
 /// Which assignment level supplied the profile. Persisted with the resolution
@@ -210,6 +213,85 @@ impl SeedGoalResolver {
         self.seeding_profiles.get_by_id(profile_id).await
     }
 
+    /// Fewest seeders a candidate from this indexer may report and still be
+    /// grabbed.
+    ///
+    /// Deliberately a sibling of `resolve_profile` rather than a call into it.
+    /// That walk has a `RoutingEntry` tier, and admission runs *before* a
+    /// download-client route is chosen, so the routing level cannot
+    /// participate: an operator who has only assigned a profile to a routing
+    /// entry gets the floor here, not that profile. Keeping the two walks
+    /// adjacent is what makes that divergence readable as a decision.
+    ///
+    /// Precedence: indexer profile → Prowlarr-managed → global default
+    /// profile → system floor. A resolved profile whose `minimum_seeders` is
+    /// `None` inherits the floor rather than falling through to the next tier,
+    /// matching "first profile wins" everywhere else in this module.
+    pub async fn resolve_minimum_seeders(&self, indexer_id: Option<&str>) -> AppResult<i32> {
+        if let Some(profile) = self.admission_profile(indexer_id).await?
+            && let Some(minimum) = profile.minimum_seeders
+        {
+            return Ok(minimum.max(0));
+        }
+        self.minimum_seeders_floor().await
+    }
+
+    /// The routing-free half of the precedence walk. See
+    /// [`Self::resolve_minimum_seeders`] for why routing is excluded.
+    async fn admission_profile(
+        &self,
+        indexer_id: Option<&str>,
+    ) -> AppResult<Option<SeedingProfile>> {
+        if let Some(indexer_id) = trimmed(indexer_id)
+            && let Some(repository) = self.indexer_configs.as_ref()
+            && let Some(indexer) = repository.get_by_id(&indexer_id).await?
+        {
+            if let Some(profile_id) = trimmed(indexer.seeding_profile_id.as_deref())
+                && let Some(profile) = self.load_profile(&profile_id).await?
+            {
+                return Ok(Some(profile));
+            }
+            if let Some(profile) = prowlarr_managed_profile(&indexer) {
+                return Ok(Some(profile));
+            }
+        }
+
+        if let Some(profile_id) = self.default_seeding_profile_id().await?
+            && let Some(profile) = self.load_profile(&profile_id).await?
+        {
+            return Ok(Some(profile));
+        }
+        Ok(None)
+    }
+
+    /// System floor. Bootstrap seeds this at 1, but a missing or unparseable
+    /// row still resolves to 1: losing the setting must not silently turn the
+    /// protection off.
+    async fn minimum_seeders_floor(&self) -> AppResult<i32> {
+        const DEFAULT_FLOOR: i32 = 1;
+        let Some(raw_value) = self
+            .settings
+            .get_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+                None,
+            )
+            .await?
+        else {
+            return Ok(DEFAULT_FLOOR);
+        };
+        Ok(serde_json::from_str::<Value>(raw_value.trim())
+            .ok()
+            .and_then(|value| match value {
+                Value::Number(number) => number.as_i64(),
+                Value::String(text) => text.trim().parse::<i64>().ok(),
+                _ => None,
+            })
+            .map_or(DEFAULT_FLOOR, |value| {
+                value.clamp(0, i64::from(i32::MAX)) as i32
+            }))
+    }
+
     /// Global default profile id from the nullable settings key. Mirrors
     /// `AppUseCase::default_seeding_profile_id`, reading the repository
     /// directly so the resolver works outside the use-case facade.
@@ -245,6 +327,54 @@ struct ProwlarrManagedSeedCriteria {
     seed_time_minutes: Option<i64>,
     #[serde(default)]
     season_pack_seed_time_minutes: Option<i64>,
+    #[serde(default)]
+    minimum_seeders: Option<i32>,
+}
+
+/// The indexer-reported seeder count carried on a candidate.
+///
+/// Plugins deliver it through the untyped `extra` map (the indexer adapter
+/// writes `extra["seeders"]`), which is also where the GraphQL mapper reads it,
+/// so admission and the UI agree by construction. Anything that is not a
+/// number reads as unknown.
+pub fn seeders_from_extra(extra: &std::collections::HashMap<String, Value>) -> Option<i64> {
+    extra.get("seeders").and_then(Value::as_i64)
+}
+
+/// Whether one candidate clears the minimum-seeder bar.
+///
+/// The single admission rule, called from candidate evaluation *and* from
+/// signed-token redemption. Redemption exists precisely to stop the API being
+/// used to bypass the UI, so a second copy of this logic would be a second
+/// place for the bypass to reopen.
+///
+/// Mirrors Sonarr's `TorrentSeedingSpecification`, which accepts on every
+/// ambiguity and rejects only on a known count below a positive threshold.
+/// Absent, malformed, and negative counts are all "unknown", and unknown is
+/// always eligible — an indexer that does not report seeders must never have
+/// its releases quietly withheld.
+pub fn meets_minimum_seeders(
+    source_kind: Option<DownloadSourceKind>,
+    indexer_id: Option<&str>,
+    seeders: Option<i64>,
+    threshold: i32,
+) -> bool {
+    if threshold <= 0 {
+        return true;
+    }
+    if !matches!(
+        source_kind,
+        Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri)
+    ) {
+        return true;
+    }
+    if trimmed(indexer_id).is_none() {
+        return true;
+    }
+    match seeders {
+        Some(count) if count >= 0 => count >= i64::from(threshold),
+        _ => true,
+    }
 }
 
 /// Builds the throwaway profile that carries Prowlarr's criteria through the
@@ -263,7 +393,17 @@ pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfil
     let season_pack_seed_time_minutes = criteria
         .season_pack_seed_time_minutes
         .filter(|value| *value > 0);
-    if ratio.is_none() && seed_time_minutes.is_none() && season_pack_seed_time_minutes.is_none() {
+    // Deliberately NOT filtered to `> 0` like its siblings above. For a goal,
+    // zero and unset both mean "no goal", so collapsing them is harmless. Here
+    // Prowlarr's zero is a decision — disable the check — and it must not read
+    // as "inherit the floor". Prowlarr's own validator only warns on a
+    // non-positive value, so zero really does arrive.
+    let minimum_seeders = criteria.minimum_seeders.filter(|value| *value >= 0);
+    if ratio.is_none()
+        && seed_time_minutes.is_none()
+        && season_pack_seed_time_minutes.is_none()
+        && minimum_seeders.is_none()
+    {
         return None;
     }
 
@@ -287,6 +427,7 @@ pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfil
         honor_tracker_minimums: true,
         goal_met_action: SeedGoalMetAction::default(),
         never_remove: false,
+        minimum_seeders,
         post_import_tracking: PostImportTracking::default(),
         created_at: now,
         updated_at: now,
@@ -675,6 +816,7 @@ mod tests {
             honor_tracker_minimums: true,
             goal_met_action: SeedGoalMetAction::RemoveEntry,
             never_remove: false,
+            minimum_seeders: None,
             post_import_tracking: PostImportTracking::Park,
             created_at: now,
             updated_at: now,
@@ -748,6 +890,265 @@ mod tests {
         config.managed_parent_config_id = Some("prowlarr-parent".to_string());
         config.managed_metadata_json = Some(metadata.to_string());
         config
+    }
+
+    fn profile_with_minimum(id: &str, minimum_seeders: Option<i32>) -> SeedingProfile {
+        SeedingProfile {
+            minimum_seeders,
+            ..profile(id, Some(1.0), None)
+        }
+    }
+
+    fn resolver_with_floor(
+        profiles: Vec<SeedingProfile>,
+        indexers: Vec<IndexerConfig>,
+        default_profile_id: Option<&str>,
+        floor: Option<&str>,
+    ) -> SeedGoalResolver {
+        let mut values = HashMap::new();
+        if let Some(profile_id) = default_profile_id {
+            values.insert(
+                DEFAULT_SEEDING_PROFILE_SETTING_KEY.to_string(),
+                serde_json::Value::String(profile_id.to_string()).to_string(),
+            );
+        }
+        if let Some(floor) = floor {
+            values.insert(
+                MINIMUM_SEEDERS_FLOOR_SETTING_KEY.to_string(),
+                floor.to_string(),
+            );
+        }
+        SeedGoalResolver::new(
+            Arc::new(FakeSeedingProfiles { profiles }),
+            Some(Arc::new(FakeIndexerConfigs { indexers })),
+            Arc::new(FakeSettings { values }),
+        )
+    }
+
+    #[tokio::test]
+    async fn minimum_seeders_prefers_the_indexer_profile() {
+        let resolver = resolver_with_floor(
+            vec![profile_with_minimum("assigned", Some(5))],
+            vec![indexer("idx", Some("assigned"))],
+            None,
+            Some("1"),
+        );
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn a_profile_zero_disables_the_check_rather_than_inheriting() {
+        let resolver = resolver_with_floor(
+            vec![profile_with_minimum("assigned", Some(0))],
+            vec![indexer("idx", Some("assigned"))],
+            None,
+            Some("3"),
+        );
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            0,
+            "an explicit 0 must not fall through to the floor"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_profile_without_a_minimum_inherits_the_floor() {
+        let resolver = resolver_with_floor(
+            vec![profile_with_minimum("assigned", None)],
+            vec![indexer("idx", Some("assigned"))],
+            None,
+            Some("4"),
+        );
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_floor_row_still_resolves_to_one() {
+        let resolver = resolver_with_floor(Vec::new(), Vec::new(), None, None);
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            1,
+            "losing the setting must not turn the protection off"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_zero_floor_disables_the_check_globally() {
+        let resolver = resolver_with_floor(Vec::new(), Vec::new(), None, Some("0"));
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dangling_profile_assignment_falls_through_to_the_floor() {
+        let resolver = resolver_with_floor(
+            Vec::new(),
+            vec![indexer("idx", Some("deleted-profile"))],
+            None,
+            Some("2"),
+        );
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            2,
+            "a dangling assignment must never fail the search"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_routing_only_profile_cannot_supply_an_admission_threshold() {
+        // The grab-time walk has a routing tier; admission runs before a route
+        // is chosen, so a profile reachable only through routing must not apply
+        // here. Nothing else in this module makes that divergence visible.
+        let resolver = resolver_with_floor(
+            vec![profile_with_minimum("routing-only", Some(9))],
+            vec![indexer("idx", None)],
+            None,
+            Some("1"),
+        );
+        let goals = resolver
+            .resolve(&request(Some("idx"), Some("routing-only")))
+            .await
+            .unwrap();
+        assert_eq!(
+            goals.resolution_source,
+            SeedGoalResolutionSource::RoutingEntry
+        );
+        assert_eq!(
+            resolver.resolve_minimum_seeders(Some("idx")).await.unwrap(),
+            1,
+            "routing supplied the seed goals but must not supply the threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_child_carrying_only_a_minimum_still_yields_a_profile() {
+        let indexer = prowlarr_child(
+            "idx-managed",
+            None,
+            serde_json::json!({ "indexer_id": 7, "minimum_seeders": 4 }),
+        );
+        let managed = prowlarr_managed_profile(&indexer)
+            .expect("a minimum alone is enough to speak for the tracker");
+        assert_eq!(managed.minimum_seeders, Some(4));
+        assert!(managed.ratio.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_managed_child_minimum_of_zero_survives_as_an_explicit_disable() {
+        let indexer = prowlarr_child(
+            "idx-managed",
+            None,
+            serde_json::json!({ "indexer_id": 7, "minimum_seeders": 0 }),
+        );
+        let managed =
+            prowlarr_managed_profile(&indexer).expect("zero is a decision, not an absent field");
+        assert_eq!(managed.minimum_seeders, Some(0));
+    }
+
+    #[tokio::test]
+    async fn an_assigned_profile_overrides_what_prowlarr_holds() {
+        let resolver = resolver_with_floor(
+            vec![profile_with_minimum("scryer-owned", Some(2))],
+            vec![prowlarr_child(
+                "idx-managed",
+                Some("scryer-owned"),
+                serde_json::json!({ "indexer_id": 7, "minimum_seeders": 8 }),
+            )],
+            None,
+            Some("1"),
+        );
+        assert_eq!(
+            resolver
+                .resolve_minimum_seeders(Some("idx-managed"))
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn admission_accepts_on_every_ambiguity() {
+        // Mirrors Sonarr: reject only a known count below a positive threshold.
+        assert!(!meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("idx"),
+            Some(0),
+            1
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("idx"),
+            Some(1),
+            1
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::MagnetUri),
+            Some("idx"),
+            Some(5),
+            3
+        ));
+        assert!(!meets_minimum_seeders(
+            Some(DownloadSourceKind::MagnetUri),
+            Some("idx"),
+            Some(2),
+            3
+        ));
+        // threshold disabled
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("idx"),
+            Some(0),
+            0
+        ));
+        // unknown, negative, non-torrent, and unattributed all stay eligible
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("idx"),
+            None,
+            5
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("idx"),
+            Some(-1),
+            5
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::NzbUrl),
+            Some("idx"),
+            Some(0),
+            5
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            None,
+            Some(0),
+            5
+        ));
+        assert!(meets_minimum_seeders(
+            Some(DownloadSourceKind::TorrentFile),
+            Some("   "),
+            Some(0),
+            5
+        ));
+    }
+
+    #[test]
+    fn seeder_counts_come_from_the_same_place_the_ui_reads() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("seeders".to_string(), serde_json::json!(12));
+        assert_eq!(seeders_from_extra(&extra), Some(12));
+        extra.insert("seeders".to_string(), serde_json::json!("not a number"));
+        assert_eq!(seeders_from_extra(&extra), None);
+        assert_eq!(seeders_from_extra(&std::collections::HashMap::new()), None);
     }
 
     #[tokio::test]

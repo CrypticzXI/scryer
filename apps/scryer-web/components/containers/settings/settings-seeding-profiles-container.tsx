@@ -163,6 +163,8 @@ export function SettingsSeedingProfilesContainer() {
         saving={manager.saving}
         profiles={manager.profiles}
         defaultProfileId={manager.defaultProfileId}
+        minimumSeedersFloor={manager.minimumSeedersFloor}
+        setMinimumSeedersFloor={manager.setMinimumSeedersFloor}
         errorMessage={manager.errorMessage}
         clearErrorMessage={manager.clearErrorMessage}
         draft={manager.draft}

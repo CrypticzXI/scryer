@@ -342,6 +342,7 @@ pub fn from_seeding_profile(profile: SeedingProfile) -> SeedingProfilePayload {
         honor_tracker_minimums: profile.honor_tracker_minimums,
         goal_met_action: seed_goal_met_action_value(profile.goal_met_action),
         never_remove: profile.never_remove,
+        minimum_seeders: profile.minimum_seeders,
         post_import_tracking: post_import_tracking_value(profile.post_import_tracking),
         created_at: profile.created_at,
         updated_at: profile.updated_at,

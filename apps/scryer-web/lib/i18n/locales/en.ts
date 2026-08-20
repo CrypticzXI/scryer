@@ -603,6 +603,17 @@ const en: LocaleDictionary = {
     "Stop seeding once this share ratio is reached. Empty defers to the download client's own limit.",
   "settings.seedingProfileSeedTimeFormatHint": "Duration such as 90m, 36h, 1d 12h or 2w. A plain number is minutes.",
   "settings.seedingProfileSeedTimeLabel": "Seed time",
+  "settings.seedingProfileMinimumSeedersLabel": "Minimum seeders",
+  "settings.seedingProfileMinimumSeedersHelp":
+    "Releases from an indexer using this profile need at least this many seeders to be grabbed. Leave empty to use the system default; enter 0 to turn the check off.",
+  "settings.seedingProfileMinimumSeedersUnknownHelp":
+    "Indexers that do not report a seeder count are always eligible.",
+  "settings.seedingProfileMinimumSeedersPlaceholder":
+    "Leave empty to use the system default",
+  "settings.seedingMinimumSeedersFloorLabel": "Default minimum seeders",
+  "settings.seedingMinimumSeedersFloorHelp":
+    "Applied when no seeding profile covers the indexer a release came from. Enter 0 to allow releases with no seeders anywhere.",
+  "settings.seedingMinimumSeedersFloorSaved": "Default minimum seeders saved.",
   "settings.seedingProfileSeedTimeHelp":
     "Stop seeding once the torrent has seeded this long. Empty defers to the download client's own limit.",
   "settings.seedingProfileSeedTimeTransmissionHelp":
@@ -1419,6 +1430,8 @@ const en: LocaleDictionary = {
     "Remove {{count}} selected downloads from the downloader? They will be ignored after removal succeeds.",
   "queue.manualUnavailableForResult":
     "Manual queue unavailable for this result.",
+  "queue.belowMinimumSeeders":
+    "Too few seeders for this indexer's minimum.",
 
   "importHistory.retry": "Retry",
   "importHistory.retryWithPassword": "Retry with Password",
@@ -2534,6 +2547,7 @@ const en: LocaleDictionary = {
   "wanted.decision.categoryMismatch": "Category mismatch",
   "wanted.decision.ambiguousIdentity": "Ambiguous identity",
   "wanted.decision.qualityBlocked": "Quality blocked",
+  "wanted.decision.minimumSeeders": "Too few seeders",
   "wanted.decision.upgradeRejected": "Upgrade rejected",
   "wanted.decision.pendingDelay": "Pending delay",
   "wanted.decision.alreadyActive": "Already active",

@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS seeding_profiles (
     honor_tracker_minimums BOOLEAN NOT NULL DEFAULT TRUE,
     goal_met_action TEXT NOT NULL DEFAULT 'remove_entry',
     never_remove BOOLEAN NOT NULL DEFAULT FALSE,
+    minimum_seeders INTEGER,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

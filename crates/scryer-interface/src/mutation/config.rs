@@ -309,6 +309,7 @@ impl ConfigMutations {
                         .map(seed_goal_met_action_from_value)
                         .unwrap_or_default(),
                     never_remove: input.never_remove.unwrap_or(false),
+                    minimum_seeders: input.minimum_seeders,
                     post_import_tracking: input
                         .post_import_tracking
                         .map(post_import_tracking_from_value)
@@ -347,6 +348,7 @@ impl ConfigMutations {
                     honor_tracker_minimums: input.honor_tracker_minimums,
                     goal_met_action: input.goal_met_action.map(seed_goal_met_action_from_value),
                     never_remove: input.never_remove,
+                    minimum_seeders: optional_scalar_input(input.minimum_seeders),
                     post_import_tracking: input
                         .post_import_tracking
                         .map(post_import_tracking_from_value),
@@ -382,12 +384,42 @@ impl ConfigMutations {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let seeding_profile_id = input.seeding_profile_id.map(|id| id.to_string());
+        let seeding_profile_id = app
+            .set_default_seeding_profile(&actor, seeding_profile_id.as_deref())
+            .await
+            .map_err(to_gql_error)?
+            .map(Into::into);
+        Ok(DefaultSeedingProfilePayload {
+            seeding_profile_id,
+            minimum_seeders_floor: app
+                .get_minimum_seeders_floor(&actor)
+                .await
+                .map_err(to_gql_error)?,
+        })
+    }
+
+    /// Set the minimum-seeder floor applied when no seeding profile resolves.
+    async fn set_minimum_seeders_floor(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check."
+        )]
+        input: SetMinimumSeedersFloorInput,
+    ) -> GqlResult<DefaultSeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let minimum_seeders_floor = app
+            .set_minimum_seeders_floor(&actor, input.minimum_seeders_floor)
+            .await
+            .map_err(to_gql_error)?;
         Ok(DefaultSeedingProfilePayload {
             seeding_profile_id: app
-                .set_default_seeding_profile(&actor, seeding_profile_id.as_deref())
+                .get_default_seeding_profile_id(&actor)
                 .await
                 .map_err(to_gql_error)?
                 .map(Into::into),
+            minimum_seeders_floor,
         })
     }
 

@@ -8,6 +8,7 @@ import {
   decimalInputProps,
   Input,
   sanitizeDecimal,
+  sanitizeDigits,
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ActionTooltip } from "@/components/ui/tooltip";
@@ -66,6 +67,8 @@ type SettingsSeedingProfilesSectionProps = {
   loadProfileById: (profileId: string) => void;
   resetDraft: () => void;
   setDefaultProfile: (profileId: string | null) => void;
+  minimumSeedersFloor: number;
+  setMinimumSeedersFloor: (floor: number) => void;
   isEditorOpen: boolean;
   editorMode: "create" | "edit";
   startCreateProfile: () => void;
@@ -167,6 +170,8 @@ export function SettingsSeedingProfilesSection({
   loadProfileById,
   resetDraft,
   setDefaultProfile,
+  minimumSeedersFloor,
+  setMinimumSeedersFloor,
   isEditorOpen,
   editorMode,
   startCreateProfile,
@@ -225,6 +230,15 @@ export function SettingsSeedingProfilesSection({
     setIsSeasonPackOpen(draft.seasonPackMode === "OVERRIDE");
     setTouchedFields(new Set());
   }, [draft.seasonPackMode, editorIdentity]);
+
+  // Local draft so the input can hold an in-progress value; re-synced whenever
+  // the persisted floor changes (initial load, or a save landing).
+  const [floorDraft, setFloorDraft] = React.useState(() =>
+    String(minimumSeedersFloor),
+  );
+  React.useEffect(() => {
+    setFloorDraft(String(minimumSeedersFloor));
+  }, [minimumSeedersFloor]);
 
   const defaultProfileMissing =
     defaultProfileId !== null &&
@@ -297,6 +311,35 @@ export function SettingsSeedingProfilesSection({
               ))}
             </SelectContent>
           </Select>
+          <div className="space-y-1.5 pt-4">
+            <FieldLabel
+              htmlFor="settings-seeding-minimum-seeders-floor"
+              label={t("settings.seedingMinimumSeedersFloorLabel")}
+              info={t("settings.seedingMinimumSeedersFloorHelp")}
+            />
+            <Input
+              id="settings-seeding-minimum-seeders-floor"
+              className="w-full max-w-[320px]"
+              value={floorDraft}
+              disabled={loading || saving}
+              onChange={(event) =>
+                setFloorDraft(sanitizeDigits(event.target.value))
+              }
+              // Committed on blur rather than per keystroke: this is a single
+              // number with no Save button, and saving mid-type would persist
+              // the prefix of what the operator is still writing.
+              onBlur={() => {
+                const parsed = Number(floorDraft);
+                if (!floorDraft.trim() || !Number.isSafeInteger(parsed)) {
+                  setFloorDraft(String(minimumSeedersFloor));
+                  return;
+                }
+                if (parsed !== minimumSeedersFloor) {
+                  void setMinimumSeedersFloor(parsed);
+                }
+              }}
+            />
+          </div>
         </div>
       </section>
 
@@ -540,6 +583,46 @@ export function SettingsSeedingProfilesSection({
                       message={errorFor("seedTimeMinutes")}
                     />
                   </div>
+                </div>
+
+                {/* Minimum seeders */}
+                <div className="space-y-1.5">
+                  <FieldLabel
+                    htmlFor="settings-seeding-profile-minimum-seeders"
+                    label={t("settings.seedingProfileMinimumSeedersLabel")}
+                    info={
+                      <>
+                        <p>{t("settings.seedingProfileMinimumSeedersHelp")}</p>
+                        <p className="mt-1.5">
+                          {t("settings.seedingProfileMinimumSeedersUnknownHelp")}
+                        </p>
+                      </>
+                    }
+                  />
+                  <Input
+                    id="settings-seeding-profile-minimum-seeders"
+                    value={draft.minimumSeeders}
+                    onChange={(event) =>
+                      updateField(
+                        "minimumSeeders",
+                        sanitizeDigits(event.target.value),
+                      )
+                    }
+                    onBlur={() => markTouched("minimumSeeders")}
+                    aria-invalid={errorFor("minimumSeeders") ? true : undefined}
+                    aria-describedby={
+                      errorFor("minimumSeeders")
+                        ? errorId("minimumSeeders")
+                        : undefined
+                    }
+                    placeholder={t(
+                      "settings.seedingProfileMinimumSeedersPlaceholder",
+                    )}
+                  />
+                  <FieldError
+                    id={errorId("minimumSeeders")}
+                    message={errorFor("minimumSeeders")}
+                  />
                 </div>
 
                 {/* Post-import tracking */}

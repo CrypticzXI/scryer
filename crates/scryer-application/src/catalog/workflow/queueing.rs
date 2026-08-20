@@ -405,6 +405,7 @@ impl AppUseCase {
             source_kind,
             source_title,
             source_password,
+            seeders,
         } = queued_release;
         let source_provider_name = if let Some(indexer_id) = indexer_id.as_deref() {
             self.services
@@ -454,6 +455,7 @@ impl AppUseCase {
                         source_kind,
                         source_title,
                         source_password,
+                        seeders,
                     },
                     reused_existing: true,
                 }));
@@ -782,6 +784,7 @@ impl AppUseCase {
                 source_kind,
                 source_title: source_title_for_attempt,
                 source_password,
+                seeders,
             },
             reused_existing: false,
         }))
@@ -1301,6 +1304,7 @@ impl AppUseCase {
                 source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
+                seeders: crate::acquisition::seed_goals::seeders_from_extra(&best.extra),
             },
             queue_scope,
             conflict_policy,
@@ -1455,7 +1459,8 @@ mod grab_time_release_title_tests {
                 source_kind: None,
                 source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
                 source_password: None,
-            },
+            
+                seeders: None,},
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
         )
@@ -1493,7 +1498,8 @@ mod grab_time_release_title_tests {
                     source_kind: None,
                     source_title: None,
                     source_password: None,
-                },
+                
+                    seeders: None,},
             )
             .await
             .expect("add title and queue");

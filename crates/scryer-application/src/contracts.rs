@@ -420,6 +420,7 @@ pub struct NewSeedingProfile {
     pub honor_tracker_minimums: bool,
     pub goal_met_action: scryer_domain::SeedGoalMetAction,
     pub never_remove: bool,
+    pub minimum_seeders: Option<i32>,
     pub post_import_tracking: scryer_domain::PostImportTracking,
 }
 
@@ -437,6 +438,7 @@ pub struct SeedingProfileUpdate {
     pub honor_tracker_minimums: Option<bool>,
     pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
     pub never_remove: Option<bool>,
+    pub minimum_seeders: Option<Option<i32>>,
     pub post_import_tracking: Option<scryer_domain::PostImportTracking>,
 }
 
@@ -451,6 +453,7 @@ impl SeedingProfileUpdate {
             || self.honor_tracker_minimums.is_some()
             || self.goal_met_action.is_some()
             || self.never_remove.is_some()
+            || self.minimum_seeders.is_some()
             || self.post_import_tracking.is_some()
     }
 }
@@ -567,6 +570,12 @@ pub struct QueuedReleaseSelection {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
+    /// Indexer-reported seeder count at the moment the candidate was offered.
+    ///
+    /// Carried so redemption can re-judge admission without trusting the
+    /// caller: the client never supplies this, it only round-trips inside the
+    /// signed token.
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

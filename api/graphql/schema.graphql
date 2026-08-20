@@ -1747,6 +1747,10 @@ input CreateSeedingProfileInput {
 	"""
 	neverRemove: Boolean
 	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
 	Whether Scryer keeps managing torrents after import; defaults to parking them.
 	"""
 	postImportTracking: PostImportTrackingValue
@@ -1933,6 +1937,10 @@ type DefaultSeedingProfilePayload {
 	Seeding profile identity used as the default, or null when unset.
 	"""
 	seedingProfileId: ID
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -9741,6 +9749,15 @@ type MutationRoot {
 		input: SetDefaultSeedingProfileInput!
 	): DefaultSeedingProfilePayload!
 	"""
+	Set the minimum-seeder floor applied when no seeding profile resolves.
+	"""
+	setMinimumSeedersFloor(
+		"""
+		Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+		"""
+		input: SetMinimumSeedersFloorInput!
+	): DefaultSeedingProfilePayload!
+	"""
 	Create an indexer proxy configuration.
 	"""
 	createIndexerProxyConfig(
@@ -15363,6 +15380,10 @@ type SeedingProfilePayload {
 	"""
 	neverRemove: Boolean!
 	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
 	Whether Scryer keeps managing torrents grabbed under this profile after import.
 	"""
 	postImportTracking: PostImportTrackingValue!
@@ -15546,6 +15567,16 @@ input SetIndexerSeedingProfileInput {
 	Seeding profile identity to assign, or null to clear the assignment.
 	"""
 	seedingProfileId: ID
+}
+
+"""
+Replacement system-wide minimum-seeder floor.
+"""
+input SetMinimumSeedersFloorInput {
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -17271,7 +17302,7 @@ input TitleOptionsInput {
 	"""
 	monitorType: MonitorTypeValue
 	"""
-	Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
+	Whether season folders are used for Series or Anime; omission preserves the current value, null clears it, and a value replaces it. Movies reject this field.
 	"""
 	useSeasonFolders: Boolean
 	"""
@@ -18915,6 +18946,10 @@ input UpdateSeedingProfileInput {
 	Replacement never-remove flag; omission preserves it.
 	"""
 	neverRemove: Boolean
+	"""
+	Replacement minimum seeders; null restores the system floor and omission preserves it.
+	"""
+	minimumSeeders: Int
 	"""
 	Replacement post-import tracking mode; omission preserves it.
 	"""

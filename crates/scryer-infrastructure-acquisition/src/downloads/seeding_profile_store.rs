@@ -6,14 +6,14 @@ use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreData
 
 const SEEDING_PROFILE_COLUMNS: &str = "id, name, ratio, seed_time_minutes, season_pack_mode,
     season_pack_ratio, season_pack_seed_time_minutes, honor_tracker_minimums, goal_met_action,
-    never_remove, post_import_tracking, created_at, updated_at";
+    never_remove, minimum_seeders, post_import_tracking, created_at, updated_at";
 
 const SEEDING_PROFILE_INSERT_SQL: &str = "INSERT INTO seeding_profiles (
     id, name, ratio, seed_time_minutes, season_pack_mode, season_pack_ratio,
     season_pack_seed_time_minutes, honor_tracker_minimums, goal_met_action, never_remove,
-    post_import_tracking, created_at, updated_at
+    minimum_seeders, post_import_tracking, created_at, updated_at
 ) VALUES (
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 const SEEDING_PROFILE_NAME_CONFLICT_SQL: &str =
@@ -77,6 +77,7 @@ impl SeedingProfileRepository for SeedingProfileStore {
             SqlArg::Bool(profile.honor_tracker_minimums),
             SqlArg::Text(profile.goal_met_action.as_str().to_string()),
             SqlArg::Bool(profile.never_remove),
+            SqlArg::OptI64(profile.minimum_seeders.map(i64::from)),
             SqlArg::Text(profile.post_import_tracking.as_str().to_string()),
             SqlArg::Timestamp(profile.updated_at),
             SqlArg::Text(profile.id.clone()),
@@ -92,7 +93,7 @@ impl SeedingProfileRepository for SeedingProfileStore {
                             name = {}, ratio = {}, seed_time_minutes = {}, season_pack_mode = {},
                             season_pack_ratio = {}, season_pack_seed_time_minutes = {},
                             honor_tracker_minimums = {}, goal_met_action = {}, never_remove = {},
-                            post_import_tracking = {}, updated_at = {}
+                            minimum_seeders = {}, post_import_tracking = {}, updated_at = {}
                          WHERE id = {}",
                     &args,
                 )
@@ -159,6 +160,7 @@ fn seeding_profile_insert_args(profile: &SeedingProfile) -> Vec<SqlArg> {
         SqlArg::Bool(profile.honor_tracker_minimums),
         SqlArg::Text(profile.goal_met_action.as_str().to_string()),
         SqlArg::Bool(profile.never_remove),
+        SqlArg::OptI64(profile.minimum_seeders.map(i64::from)),
         SqlArg::Text(profile.post_import_tracking.as_str().to_string()),
         SqlArg::Timestamp(profile.created_at),
         SqlArg::Timestamp(profile.updated_at),
@@ -208,6 +210,9 @@ fn row_to_seeding_profile(row: &SqlRow) -> AppResult<SeedingProfile> {
             AppError::Repository(format!("unknown seed goal met action '{goal_met_action}'"))
         })?,
         never_remove: row.bool("never_remove")?,
+        minimum_seeders: row
+            .opt_i64("minimum_seeders")?
+            .map(|value| value.clamp(i32::MIN as i64, i32::MAX as i64) as i32),
         // NULL only for a row that predates migration 0166; `Park` is the
         // shipped default and the direction that keeps managing the torrent.
         post_import_tracking: row
@@ -280,6 +285,7 @@ mod tests {
             honor_tracker_minimums: true,
             goal_met_action: SeedGoalMetAction::RemoveEntry,
             never_remove: false,
+            minimum_seeders: None,
             post_import_tracking: PostImportTracking::Park,
             created_at: now,
             updated_at: now,

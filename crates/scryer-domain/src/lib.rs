@@ -1281,6 +1281,18 @@ pub struct SeedingProfile {
     pub goal_met_action: SeedGoalMetAction,
     /// Never auto-remove torrents grabbed under this profile.
     pub never_remove: bool,
+    /// Fewest seeders a candidate may report and still be grabbed.
+    ///
+    /// The odd one out on this profile: every other field is retention policy
+    /// applied after the grab, while this is an admission filter applied
+    /// before it. It lives here because the tracker that dictates seeding
+    /// terms is the same tracker whose swarm health decides whether a grab can
+    /// finish at all, so operators reason about both together.
+    ///
+    /// `None` inherits the system floor, `Some(0)` disables the check, and
+    /// `Some(n)` requires at least `n`. A candidate whose seeder count is
+    /// unknown is always eligible, whatever this says.
+    pub minimum_seeders: Option<i32>,
     /// Whether Scryer keeps managing torrents grabbed under this profile once
     /// they have been imported.
     pub post_import_tracking: PostImportTracking,
@@ -1326,6 +1338,11 @@ impl SeedingProfile {
         validate_seed_time_minutes("seed time", self.seed_time_minutes)?;
         validate_seed_ratio("season pack ratio", self.season_pack_ratio)?;
         validate_seed_time_minutes("season pack seed time", self.season_pack_seed_time_minutes)?;
+        // Zero is legal here and means "do not check", unlike the goal fields
+        // above where zero would be indistinguishable from unset.
+        if self.minimum_seeders.is_some_and(|value| value < 0) {
+            return Err("seeding profile minimum seeders cannot be negative".to_string());
+        }
         Ok(())
     }
 }

@@ -2714,6 +2714,7 @@ export const SEEDING_PROFILE_FIELDS = `
     honorTrackerMinimums
     goalMetAction
     neverRemove
+    minimumSeeders
     postImportTracking`;
 
 export const seedingProfilesQuery = `query SeedingProfiles {
@@ -2724,6 +2725,7 @@ export const seedingProfilesQuery = `query SeedingProfiles {
 export const defaultSeedingProfileQuery = `query DefaultSeedingProfile {
   defaultSeedingProfile {
     seedingProfileId
+    minimumSeedersFloor
   }
 }`;
 

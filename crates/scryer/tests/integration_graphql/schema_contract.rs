@@ -523,18 +523,23 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // job drops both from this count: introspection omits deprecated fields
     // unless asked for them, so the census measures live surface. The fields
     // and their input types are still served: mutation 182->180.
+    // Minimum-seeder admission adds the setMinimumSeedersFloor mutation root
+    // and its input object: mutation 180->181, INPUT_OBJECT 165->166, public
+    // types 581->582. The threshold itself rides on existing types as
+    // SeedingProfilePayload.minimumSeeders and
+    // DefaultSeedingProfilePayload.minimumSeedersFloor, so OBJECT is unchanged.
     assert_eq!(
         query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 180,
+        mutation_field_count, 181,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 581);
+    assert_eq!(public_types.len(), 582);
     assert_eq!(kind_count("OBJECT"), 300);
-    assert_eq!(kind_count("INPUT_OBJECT"), 165);
+    assert_eq!(kind_count("INPUT_OBJECT"), 166);
     assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

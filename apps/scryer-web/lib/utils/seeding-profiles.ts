@@ -45,6 +45,9 @@ export function buildSeedingProfileTemplate(): SeedingProfileDraft {
     honorTrackerMinimums: true,
     goalMetAction: "REMOVE_ENTRY",
     neverRemove: false,
+    // Empty inherits the system floor, which is what a new profile should do
+    // until an operator deliberately overrides it for this tracker.
+    minimumSeeders: "",
     // Parking keeps Scryer managing the torrent, which is what every install
     // did before handoff existed.
     postImportTracking: "PARK",
@@ -71,6 +74,7 @@ export function seedingProfileToDraft(
     honorTrackerMinimums: profile.honorTrackerMinimums,
     goalMetAction: profile.goalMetAction,
     neverRemove: profile.neverRemove,
+    minimumSeeders: numberToDraftValue(profile.minimumSeeders),
     postImportTracking: profile.postImportTracking,
   };
 }
@@ -78,6 +82,22 @@ export function seedingProfileToDraft(
 type ParsedGoal =
   | { ok: true; value: number | null }
   | { ok: false };
+
+/**
+ * Unlike the goal fields, zero is meaningful here: it disables the check for
+ * this profile rather than reading as "unset". Empty still means inherit.
+ */
+export function parseMinimumSeeders(raw: string): ParsedGoal {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: true, value: null };
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    return { ok: false };
+  }
+  const value = Number(trimmed);
+  return Number.isSafeInteger(value) ? { ok: true, value } : { ok: false };
+}
 
 function parseOptionalRatio(raw: string): ParsedGoal {
   const trimmed = raw.trim();
@@ -175,7 +195,8 @@ export type SeedingProfileField =
   | "ratio"
   | "seedTimeMinutes"
   | "seasonPackRatio"
-  | "seasonPackSeedTimeMinutes";
+  | "seasonPackSeedTimeMinutes"
+  | "minimumSeeders";
 
 export type SeedingProfileFieldErrors = Partial<
   Record<SeedingProfileField, string>
@@ -188,6 +209,7 @@ const SEEDING_PROFILE_FIELD_ORDER: SeedingProfileField[] = [
   "seedTimeMinutes",
   "seasonPackRatio",
   "seasonPackSeedTimeMinutes",
+  "minimumSeeders",
 ];
 
 /**
@@ -221,6 +243,9 @@ export function validateSeedingProfileFields(
         "Enter a duration like 90m, 36h, 1d 12h or 2w, or leave empty.";
     }
   }
+  if (!parseMinimumSeeders(draft.minimumSeeders).ok) {
+    errors.minimumSeeders = "Enter a whole number of 0 or more, or leave empty.";
+  }
   return errors;
 }
 
@@ -248,6 +273,7 @@ type SeedingProfileGoalInput = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  minimumSeeders: number | null;
   postImportTracking: PostImportTracking;
 };
 
@@ -265,6 +291,7 @@ export function seedingProfileDraftToInput(
   const seasonPackSeedTime = parseSeedDuration(
     draft.seasonPackSeedTimeMinutes,
   );
+  const minimumSeeders = parseMinimumSeeders(draft.minimumSeeders);
   const isOverride = draft.seasonPackMode === "OVERRIDE";
 
   return {
@@ -278,6 +305,7 @@ export function seedingProfileDraftToInput(
     honorTrackerMinimums: draft.honorTrackerMinimums,
     goalMetAction: draft.goalMetAction,
     neverRemove: draft.neverRemove,
+    minimumSeeders: minimumSeeders.ok ? minimumSeeders.value : null,
     postImportTracking: draft.postImportTracking,
   };
 }

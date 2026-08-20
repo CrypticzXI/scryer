@@ -5,6 +5,7 @@ import {
   createSeedingProfileMutation,
   deleteSeedingProfileMutation,
   setDefaultSeedingProfileMutation,
+  setMinimumSeedersFloorMutation,
   updateSeedingProfileMutation,
 } from "@/lib/graphql/mutations";
 import {
@@ -43,6 +44,9 @@ export type SeedingProfilesManager = {
   loadProfileById: (profileId: string) => void;
   resetDraft: () => void;
   setDefaultProfile: (profileId: string | null) => Promise<boolean>;
+  /** System floor applied when no profile covers the indexer. */
+  minimumSeedersFloor: number;
+  setMinimumSeedersFloor: (floor: number) => Promise<boolean>;
   refreshProfiles: () => Promise<void>;
 };
 
@@ -57,6 +61,8 @@ export function useSeedingProfilesManager(): SeedingProfilesManager {
   const [defaultProfileId, setDefaultProfileId] = React.useState<string | null>(
     null,
   );
+  const [minimumSeedersFloor, setMinimumSeedersFloorState] =
+    React.useState<number>(1);
   const [draft, setDraft] = React.useState<SeedingProfileDraft>(() =>
     buildSeedingProfileTemplate(),
   );
@@ -84,6 +90,9 @@ export function useSeedingProfilesManager(): SeedingProfilesManager {
       setProfiles((listResult.data?.seedingProfiles ?? []) as SeedingProfileRecord[]);
       setDefaultProfileId(
         defaultResult.data?.defaultSeedingProfile?.seedingProfileId ?? null,
+      );
+      setMinimumSeedersFloorState(
+        defaultResult.data?.defaultSeedingProfile?.minimumSeedersFloor ?? 1,
       );
       setErrorMessage("");
     } catch (err) {
@@ -198,6 +207,39 @@ export function useSeedingProfilesManager(): SeedingProfilesManager {
     [client, showStatus, t],
   );
 
+  const setMinimumSeedersFloor = React.useCallback(
+    async (floor: number) => {
+      const previousFloor = minimumSeedersFloor;
+      setMinimumSeedersFloorState(floor);
+      setSaving(true);
+      try {
+        const result = await client
+          .mutation(setMinimumSeedersFloorMutation, {
+            input: { minimumSeedersFloor: floor },
+          })
+          .toPromise();
+        if (result.error) throw result.error;
+        setMinimumSeedersFloorState(
+          result.data?.setMinimumSeedersFloor?.minimumSeedersFloor ?? floor,
+        );
+        setErrorMessage("");
+        showStatus(t("settings.seedingMinimumSeedersFloorSaved"));
+        return true;
+      } catch (err) {
+        setMinimumSeedersFloorState(previousFloor);
+        const message =
+          extractSeedingProfileErrorMessage(err) ??
+          t("settings.seedingProfileSaveError");
+        setErrorMessage(message);
+        showStatus(message);
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [client, minimumSeedersFloor, showStatus, t],
+  );
+
   const setDefaultProfile = React.useCallback(
     async (profileId: string | null) => {
       const previousDefault = defaultProfileId;
@@ -259,6 +301,8 @@ export function useSeedingProfilesManager(): SeedingProfilesManager {
     loadProfileById,
     resetDraft,
     setDefaultProfile,
+    minimumSeedersFloor,
+    setMinimumSeedersFloor,
     refreshProfiles: loadProfiles,
   };
 }

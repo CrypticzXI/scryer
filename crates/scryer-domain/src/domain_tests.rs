@@ -608,6 +608,7 @@ fn seeding_profile_normalizes_and_validates_goals() {
         honor_tracker_minimums: true,
         goal_met_action: SeedGoalMetAction::RemoveEntry,
         never_remove: false,
+        minimum_seeders: None,
         post_import_tracking: PostImportTracking::Park,
         created_at: now,
         updated_at: now,

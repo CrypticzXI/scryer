@@ -21,6 +21,11 @@ export type SeedingProfileRecord = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  /**
+   * Fewest seeders a candidate may report and still be grabbed. null inherits
+   * the system floor, 0 disables the check.
+   */
+  minimumSeeders: number | null;
   postImportTracking: PostImportTracking;
 };
 
@@ -40,6 +45,8 @@ export type SeedingProfileDraft = {
   honorTrackerMinimums: boolean;
   goalMetAction: SeedGoalMetAction;
   neverRemove: boolean;
+  /** Raw so an empty field can mean "inherit the system floor". */
+  minimumSeeders: string;
   postImportTracking: PostImportTracking;
 };
 

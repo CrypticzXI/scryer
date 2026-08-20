@@ -14,6 +14,10 @@ pub const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing"
 pub const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 pub const DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY: &str = "download_client.default_category";
 pub const DEFAULT_SEEDING_PROFILE_SETTING_KEY: &str = "download_client.default_seeding_profile";
+/// Fewest seeders a torrent candidate may report when no seeding profile
+/// resolves. Sonarr defaults every torrent indexer to 1; this is the same
+/// guarantee expressed once instead of per indexer.
+pub const MINIMUM_SEEDERS_FLOOR_SETTING_KEY: &str = "download_client.minimum_seeders_floor";
 pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
