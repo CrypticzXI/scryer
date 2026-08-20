@@ -243,10 +243,16 @@ function SearchResultRow({
         )
         .map((entry) => entry as { label: string; className: string })
     : [];
+  // A dead swarm blocks queueing for the same reason auto-search skipped it:
+  // the grab cannot finish. The row still shows the release and its seeder
+  // count so the operator can see why, rather than the release vanishing.
+  const belowMinimumSeeders = result.autoDecisionCode === "minimum_seeders";
   const queueUnavailableReason =
     requireCandidateToken && !result.candidateToken
       ? t("queue.manualUnavailableForResult")
-      : null;
+      : belowMinimumSeeders
+        ? t("queue.belowMinimumSeeders")
+        : null;
   const queueDisabled = disabled || queueRequested || queueUnavailableReason !== null;
   const queueButtonMuted = queueUnavailableReason !== null;
   const additionalQueueDisabled =

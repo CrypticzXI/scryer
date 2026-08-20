@@ -1739,6 +1739,10 @@ input CreateSeedingProfileInput {
 	"""
 	neverRemove: Boolean
 	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
 	Whether Scryer keeps managing torrents after import; defaults to parking them.
 	"""
 	postImportTracking: PostImportTrackingValue
@@ -1925,6 +1929,10 @@ type DefaultSeedingProfilePayload {
 	Seeding profile identity used as the default, or null when unset.
 	"""
 	seedingProfileId: ID
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -7517,11 +7525,11 @@ input LibrarySettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
-	Metadata language override; null inherits the global metadata language.
+	Metadata language override; null inherits the global default.
 	"""
 	metadataLanguage: String
 	"""
-	Season-folder override; null inherits the facet setting.
+	Whether episodic titles use season folders; null inherits the facet setting.
 	"""
 	useSeasonFolders: Boolean
 	"""
@@ -7607,7 +7615,7 @@ type LibrarySettingsPayload {
 	"""
 	requiredAudioLanguages: [String!]!
 	"""
-	Library metadata-language override; null means inherit.
+	Library metadata-language override; null means inherit the global default.
 	"""
 	metadataLanguageOverride: String
 	"""
@@ -7615,7 +7623,7 @@ type LibrarySettingsPayload {
 	"""
 	metadataLanguage: String!
 	"""
-	Library season-folder override; null means inherit.
+	Library override for season folders; null means inherit the facet setting.
 	"""
 	useSeasonFoldersOverride: Boolean
 	"""
@@ -9685,6 +9693,15 @@ type MutationRoot {
 		Seeding profile identity to use as the default, or null to clear it.
 		"""
 		input: SetDefaultSeedingProfileInput!
+	): DefaultSeedingProfilePayload!
+	"""
+	Set the minimum-seeder floor applied when no seeding profile resolves.
+	"""
+	setMinimumSeedersFloor(
+		"""
+		Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+		"""
+		input: SetMinimumSeedersFloorInput!
 	): DefaultSeedingProfilePayload!
 	"""
 	Create an indexer proxy configuration.
@@ -15261,6 +15278,10 @@ type SeedingProfilePayload {
 	"""
 	neverRemove: Boolean!
 	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
 	Whether Scryer keeps managing torrents grabbed under this profile after import.
 	"""
 	postImportTracking: PostImportTrackingValue!
@@ -15444,6 +15465,16 @@ input SetIndexerSeedingProfileInput {
 	Seeding profile identity to assign, or null to clear the assignment.
 	"""
 	seedingProfileId: ID
+}
+
+"""
+Replacement system-wide minimum-seeder floor.
+"""
+input SetMinimumSeedersFloorInput {
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -17157,10 +17188,6 @@ Optional title settings used when creating or updating a title.
 """
 input TitleOptionsInput {
 	"""
-	Metadata language override; omission preserves the current value and null inherits.
-	"""
-	metadataLanguage: String
-	"""
 	Quality profile identity; omission preserves the current value, null clears it, and a value replaces it.
 	"""
 	qualityProfileId: ID
@@ -17173,9 +17200,13 @@ input TitleOptionsInput {
 	"""
 	monitorType: MonitorTypeValue
 	"""
-	Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
+	Whether season folders are used for Series or Anime; omission preserves the current value, null clears it, and a value replaces it. Movies reject this field.
 	"""
 	useSeasonFolders: Boolean
+	"""
+	Metadata language; omission preserves the current value, null clears it, and a value replaces it.
+	"""
+	metadataLanguage: String
 	"""
 	Whether specials are monitored; omission preserves the current value, null clears it, and a value replaces it.
 	"""
@@ -17311,18 +17342,6 @@ type TitlePayload {
 	"""
 	metadataLanguage: String
 	"""
-	Title metadata-language override; null means inherit.
-	"""
-	metadataLanguageOverride: String
-	"""
-	Effective metadata language after title, library, and global resolution.
-	"""
-	effectiveMetadataLanguage: String!
-	"""
-	Whether metadata language inherits from the library or global setting.
-	"""
-	inheritsMetadataLanguage: Boolean!
-	"""
 	Time of the latest metadata fetch in UTC, or null before a fetch completes.
 	"""
 	metadataFetchedAt: DateTime
@@ -17342,18 +17361,6 @@ type TitlePayload {
 	Whether episodic files use season directories, or null when unset.
 	"""
 	useSeasonFolders: Boolean
-	"""
-	Explicit season-folder title override; null means inherit.
-	"""
-	useSeasonFoldersOverride: Boolean
-	"""
-	Effective season-folder setting after title, library, and facet resolution.
-	"""
-	effectiveUseSeasonFolders: Boolean!
-	"""
-	Whether season folders inherit from the library or facet setting.
-	"""
-	inheritsUseSeasonFolders: Boolean!
 	"""
 	Whether specials are monitored, or null when unset.
 	"""
@@ -17445,6 +17452,30 @@ type TitlePayload {
 	Absolute root-folder path for this title; requires view permission on its library.
 	"""
 	rootFolderPath: String!
+	"""
+	Explicit metadata-language override, or null when the global default is inherited.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Metadata language after applying title and library overrides.
+	"""
+	effectiveMetadataLanguage: String!
+	"""
+	Whether this title inherits metadata language from its library or the global default.
+	"""
+	inheritsMetadataLanguage: Boolean!
+	"""
+	Explicit season-folder override, or null when library/facet settings are inherited.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Whether this title uses season folders after applying inheritance.
+	"""
+	effectiveUseSeasonFolders: Boolean!
+	"""
+	Whether this title inherits the season-folder setting from its library or facet.
+	"""
+	inheritsUseSeasonFolders: Boolean!
 	"""
 	Title-specific required audio-language override, or null when the facet setting is inherited.
 	"""
@@ -18476,7 +18507,7 @@ input UpdateMediaSettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
-	Optional season-folder setting for episodic facets.
+	Whether episodic titles use season folders.
 	"""
 	useSeasonFolders: Boolean
 	"""
@@ -18805,6 +18836,10 @@ input UpdateSeedingProfileInput {
 	Replacement never-remove flag; omission preserves it.
 	"""
 	neverRemove: Boolean
+	"""
+	Replacement minimum seeders; null restores the system floor and omission preserves it.
+	"""
+	minimumSeeders: Int
 	"""
 	Replacement post-import tracking mode; omission preserves it.
 	"""

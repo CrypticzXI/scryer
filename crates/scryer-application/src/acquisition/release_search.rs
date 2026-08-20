@@ -148,6 +148,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     PendingDelay,
     DownloadClientUnavailable,
     RepackGroupMismatch,
+    MinimumSeeders,
 }
 
 impl ReleaseAutoDecisionCode {
@@ -171,6 +172,7 @@ impl ReleaseAutoDecisionCode {
             "pending_delay" => Some(Self::PendingDelay),
             "download_client_unavailable" => Some(Self::DownloadClientUnavailable),
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
+            "minimum_seeders" => Some(Self::MinimumSeeders),
             _ => None,
         }
     }
@@ -193,6 +195,7 @@ impl ReleaseAutoDecisionCode {
             Self::PendingDelay => "pending_delay",
             Self::DownloadClientUnavailable => "download_client_unavailable",
             Self::RepackGroupMismatch => "repack_group_mismatch",
+            Self::MinimumSeeders => "minimum_seeders",
         }
     }
 
@@ -216,6 +219,7 @@ impl ReleaseAutoDecisionCode {
             Self::PendingDelay => "release is eligible but held by a delay profile",
             Self::DownloadClientUnavailable => "matching download clients are unavailable",
             Self::RepackGroupMismatch => "repack group does not match the existing file",
+            Self::MinimumSeeders => "too few seeders for this indexer's seeding profile",
         }
     }
 
@@ -239,6 +243,9 @@ pub(crate) struct AutoCandidateEvaluationContext<'a> {
     pub(crate) existing_files: &'a [TitleMediaFile],
     pub(crate) delay_profiles: &'a [DelayProfile],
     pub(crate) failed_routes: Option<&'a [crate::acquisition_workflow::DownloadRouteKey]>,
+    /// Admission threshold per indexer id, resolved once for the batch.
+    /// An indexer absent from the map is treated as unrestricted.
+    pub(crate) minimum_seeders: &'a HashMap<String, i32>,
 }
 
 pub fn release_strategy_kind_for_label(label: &str, is_rss_request: bool) -> ReleaseStrategyKind {
@@ -1005,6 +1012,25 @@ fn candidate_numbering_contradicts_subject(
     false
 }
 
+/// Apply the shared admission rule to one search candidate.
+fn candidate_meets_minimum_seeders(
+    candidate: &IndexerSearchResult,
+    thresholds: &HashMap<String, i32>,
+) -> bool {
+    let threshold = candidate
+        .indexer_id
+        .as_deref()
+        .and_then(|indexer_id| thresholds.get(indexer_id))
+        .copied()
+        .unwrap_or(0);
+    crate::acquisition::seed_goals::meets_minimum_seeders(
+        candidate.source_kind,
+        candidate.indexer_id.as_deref(),
+        crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+        threshold,
+    )
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
@@ -1056,6 +1082,14 @@ pub(crate) fn evaluate_auto_candidate(
         context.db_blocklist,
     ) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
+    }
+
+    // Swarm health, checked after the sharper vetoes above so a release that is
+    // both mis-categorised and dead still reports the reason an operator can
+    // act on. This is admission only: nothing is recorded, so the same release
+    // becomes eligible again the moment the swarm recovers.
+    if !candidate_meets_minimum_seeders(candidate, context.minimum_seeders) {
+        return ReleaseAutoDecisionCode::MinimumSeeders;
     }
 
     let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
@@ -1340,6 +1374,7 @@ impl AppUseCase {
             }
         };
 
+        let minimum_seeders = self.minimum_seeders_for_candidates(&results).await;
         let evaluation_context = AutoCandidateEvaluationContext {
             title,
             subject,
@@ -1354,6 +1389,7 @@ impl AppUseCase {
             existing_files: &existing_files,
             delay_profiles: &delay_profiles,
             failed_routes: None,
+            minimum_seeders: &minimum_seeders,
         };
 
         for candidate in &mut results {
@@ -2025,6 +2061,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
@@ -2039,12 +2076,124 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
 
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
             ReleaseAutoDecisionCode::TitleMismatch
         );
+    }
+
+    /// A torrent candidate from `indexer` reporting `seeders`.
+    fn torrent_candidate(
+        release_title: &str,
+        indexer: &str,
+        seeders: Option<i64>,
+    ) -> IndexerSearchResult {
+        let mut candidate = make_candidate(release_title, None);
+        candidate.indexer_id = Some(indexer.to_string());
+        candidate.source_kind = Some(DownloadSourceKind::MagnetUri);
+        if let Some(seeders) = seeders {
+            candidate
+                .extra
+                .insert("seeders".to_string(), serde_json::json!(seeders));
+        }
+        candidate
+    }
+
+    #[test]
+    fn a_dead_torrent_reports_minimum_seeders_without_being_recorded() {
+        let mut title = make_title();
+        title.name = "Amber Circuit".to_string();
+        title.facet = MediaFacet::Movie;
+        title.year = Some(2001);
+        let subject = ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(&title),
+            queries: vec![title.name.clone()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            mal_id: None,
+            category: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
+            runtime_minutes: title.runtime_minutes,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Title,
+            current_score: None,
+            last_search_at: None,
+            grabbed_release: None,
+            submission_scope: SubmissionScope::Title,
+        };
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let mut minimum_seeders = HashMap::new();
+        minimum_seeders.insert("idx-private".to_string(), 1);
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_routes: None,
+            minimum_seeders: &minimum_seeders,
+        };
+
+        let dead = torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", Some(0));
+        assert_eq!(
+            evaluate_auto_candidate(&dead, &context),
+            ReleaseAutoDecisionCode::MinimumSeeders
+        );
+        assert!(
+            !ReleaseAutoDecisionCode::MinimumSeeders.is_eligible(),
+            "auto search must skip it and move to the next candidate"
+        );
+
+        // Everything below asserts the gate does not fire rather than asserting
+        // eligibility: this fixture carries no quality decision, so evaluation
+        // continues past this gate and stops at the quality one. What matters
+        // here is that the swarm check let the candidate through.
+        for (label, candidate) in [
+            // Recovered swarm — nothing about the earlier rejection was
+            // recorded, so the same release is judged afresh.
+            (
+                "recovered",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", Some(1)),
+            ),
+            // An indexer with no resolved threshold.
+            (
+                "unthresholded indexer",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-public", Some(0)),
+            ),
+            // An indexer that reports no seeder count at all.
+            (
+                "unknown count",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", None),
+            ),
+        ] {
+            assert_ne!(
+                evaluate_auto_candidate(&candidate, &context),
+                ReleaseAutoDecisionCode::MinimumSeeders,
+                "{label} must not be rejected for seeders"
+            );
+        }
     }
 
     fn numbering_scoped_subject(
@@ -2094,6 +2243,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
@@ -2108,6 +2258,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
 
         assert_eq!(
@@ -2128,6 +2279,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
@@ -2142,6 +2294,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
 
         assert_eq!(
@@ -2165,6 +2318,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
@@ -2179,6 +2333,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
 
         assert_eq!(
@@ -2267,6 +2422,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title,
             subject,
@@ -2281,6 +2437,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
         evaluate_auto_candidate(candidate, &context)
     }
@@ -2484,6 +2641,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::from(["tide.chart.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &live_action,
             subject: &subject,
@@ -2498,6 +2656,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
@@ -2813,6 +2972,7 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
@@ -2827,6 +2987,7 @@ mod tests {
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
         };
 
         assert_eq!(

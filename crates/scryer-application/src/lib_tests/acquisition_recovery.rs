@@ -6905,6 +6905,8 @@ async fn add_and_queue_reuse_reconciles_quality_profile_before_submission() {
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Reconciled.Queued.Movie.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
+
+                seeders: None,
             },
         )
         .await

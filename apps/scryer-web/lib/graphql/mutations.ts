@@ -2441,5 +2441,13 @@ export const deleteSeedingProfileMutation = `mutation DeleteSeedingProfile($id: 
 export const setDefaultSeedingProfileMutation = `mutation SetDefaultSeedingProfile($input: SetDefaultSeedingProfileInput!) {
   setDefaultSeedingProfile(input: $input) {
     seedingProfileId
+    minimumSeedersFloor
+  }
+}`;
+
+export const setMinimumSeedersFloorMutation = `mutation SetMinimumSeedersFloor($input: SetMinimumSeedersFloorInput!) {
+  setMinimumSeedersFloor(input: $input) {
+    seedingProfileId
+    minimumSeedersFloor
   }
 }`;

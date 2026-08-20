@@ -11,6 +11,7 @@ fn new_seeding_profile(name: &str) -> NewSeedingProfile {
         honor_tracker_minimums: true,
         goal_met_action: scryer_domain::SeedGoalMetAction::RemoveEntry,
         never_remove: false,
+        minimum_seeders: None,
         post_import_tracking: scryer_domain::PostImportTracking::Park,
     }
 }

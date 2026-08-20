@@ -45,6 +45,7 @@ impl AppUseCase {
             honor_tracker_minimums: input.honor_tracker_minimums,
             goal_met_action: input.goal_met_action,
             never_remove: input.never_remove,
+            minimum_seeders: input.minimum_seeders,
             post_import_tracking: input.post_import_tracking,
             created_at: now,
             updated_at: now,
@@ -115,6 +116,9 @@ impl AppUseCase {
         }
         if let Some(never_remove) = update.never_remove {
             profile.never_remove = never_remove;
+        }
+        if let Some(minimum_seeders) = update.minimum_seeders {
+            profile.minimum_seeders = minimum_seeders;
         }
         if let Some(post_import_tracking) = update.post_import_tracking {
             profile.post_import_tracking = post_import_tracking;
@@ -311,6 +315,51 @@ impl AppUseCase {
         .await;
         Ok(normalized)
     }
+
+    /// The system-wide minimum-seeder floor, applied when no seeding profile
+    /// resolves for the indexer that supplied a candidate.
+    pub async fn get_minimum_seeders_floor(&self, actor: &User) -> AppResult<i32> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let resolver = crate::acquisition::seed_goals::SeedGoalResolver::new(
+            self.services.integrations.seeding_profiles.clone(),
+            Some(self.services.integrations.indexer_configs.clone()),
+            self.services.config.settings.clone(),
+        );
+        // Reading through the resolver keeps one definition of "what the floor
+        // is", including its fallback when the row is missing.
+        resolver.resolve_minimum_seeders(None).await
+    }
+
+    pub async fn set_minimum_seeders_floor(&self, actor: &User, floor: i32) -> AppResult<i32> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        if floor < 0 {
+            return Err(AppError::Validation(
+                "minimum seeders floor cannot be negative".into(),
+            ));
+        }
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+                None,
+                floor.to_string(),
+                SETTINGS_SOURCE_TYPED_GRAPHQL,
+                (!actor.is_system_execution_actor()).then(|| actor.id.clone()),
+            )
+            .await?;
+        self.emit_settings_saved(
+            actor,
+            "seeding_minimum_seeders_floor",
+            None,
+            vec![MINIMUM_SEEDERS_FLOOR_SETTING_KEY.to_string()],
+        )
+        .await;
+        Ok(floor)
+    }
 }
 
 impl AppUseCase {
@@ -361,6 +410,74 @@ impl AppUseCase {
         Ok(entries.get(client_id).and_then(|config| {
             crate::catalog_helpers::parse_download_client_routing_entry(config).seeding_profile_id
         }))
+    }
+
+    /// Admission threshold for one indexer.
+    ///
+    /// Fails open at 0 (unrestricted): a settings or repository hiccup must
+    /// never silently withhold releases.
+    pub(crate) async fn minimum_seeders_for_indexer(&self, indexer_id: Option<&str>) -> i32 {
+        let resolver = crate::acquisition::seed_goals::SeedGoalResolver::new(
+            self.services.integrations.seeding_profiles.clone(),
+            Some(self.services.integrations.indexer_configs.clone()),
+            self.services.config.settings.clone(),
+        );
+        match resolver.resolve_minimum_seeders(indexer_id).await {
+            Ok(threshold) => threshold,
+            Err(error) => {
+                tracing::warn!(
+                    indexer_id = indexer_id.unwrap_or("<none>"),
+                    error = %error,
+                    "could not resolve the minimum-seeder threshold; treating this indexer as unrestricted"
+                );
+                0
+            }
+        }
+    }
+
+    /// Build the admission threshold map for one batch of candidates.
+    ///
+    /// Resolved once per search rather than per candidate: a batch routinely
+    /// carries dozens of releases from a handful of indexers, and each
+    /// resolution is several repository reads. Only torrent-shaped candidates
+    /// with an indexer id can ever be rejected, so only those indexers are
+    /// looked up.
+    ///
+    /// Fails open. An indexer whose threshold cannot be resolved is omitted,
+    /// which reads downstream as unrestricted — a settings or repository
+    /// hiccup must not silently withhold every release from that indexer.
+    pub(crate) async fn minimum_seeders_for_candidates(
+        &self,
+        candidates: &[crate::IndexerSearchResult],
+    ) -> std::collections::HashMap<String, i32> {
+        use std::collections::{HashMap, HashSet};
+
+        let indexer_ids: HashSet<&str> = candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.source_kind,
+                    Some(
+                        crate::DownloadSourceKind::TorrentFile
+                            | crate::DownloadSourceKind::MagnetUri
+                    )
+                )
+            })
+            .filter_map(|candidate| candidate.indexer_id.as_deref())
+            .filter(|indexer_id| !indexer_id.trim().is_empty())
+            .collect();
+        if indexer_ids.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut thresholds = HashMap::with_capacity(indexer_ids.len());
+        for indexer_id in indexer_ids {
+            let threshold = self.minimum_seeders_for_indexer(Some(indexer_id)).await;
+            if threshold > 0 {
+                thresholds.insert(indexer_id.to_string(), threshold);
+            }
+        }
+        thresholds
     }
 
     pub async fn default_seeding_profile_id(&self) -> AppResult<Option<String>> {

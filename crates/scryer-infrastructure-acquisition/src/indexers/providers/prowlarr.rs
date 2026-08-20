@@ -327,6 +327,11 @@ struct ManagedChildMetadata {
     seed_time_minutes: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     season_pack_seed_time_minutes: Option<i64>,
+    /// Prowlarr's `AppMinimumSeeders`, which it pushes to Sonarr as that app's
+    /// `minimumSeeders`. Scryer treats it the same way it treats the goals
+    /// above: honoured unless a seeding profile is assigned to the child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    minimum_seeders: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1044,6 +1049,9 @@ fn build_managed_child_plan(
         season_pack_seed_time_minutes: is_torrent
             .then(|| prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.packSeedTime"))
             .flatten(),
+        minimum_seeders: is_torrent
+            .then(|| prowlarr_minimum_seeders(&indexer.fields))
+            .flatten(),
     })
     .ok();
 
@@ -1084,6 +1092,28 @@ fn prowlarr_seed_ratio(fields: &[ProwlarrIndexerField]) -> Option<f64> {
             .and_then(|raw| raw.trim().parse::<f64>().ok())
     })?;
     (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+}
+
+/// Read Prowlarr's `AppMinimumSeeders`.
+///
+/// Unlike the goal readers above, this keeps a zero. Prowlarr's own validator
+/// only *warns* on a non-positive value (`.AsWarning()`), so zero really is
+/// storable upstream, and there it means "do not enforce a minimum" — which is
+/// not the same as leaving the field unset, which means "inherit Scryer's
+/// floor". Collapsing the two, as `prowlarr_seed_minutes` deliberately does for
+/// goals where zero and unset both mean "no goal", would silently re-enable a
+/// check the operator turned off.
+fn prowlarr_minimum_seeders(fields: &[ProwlarrIndexerField]) -> Option<i32> {
+    let value = prowlarr_field_value(fields, "torrentBaseSettings.appMinimumSeeders")?;
+    let seeders = value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|value| value as i64))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+        })?;
+    (seeders >= 0).then_some(seeders.clamp(0, i64::from(i32::MAX)) as i32)
 }
 
 fn prowlarr_seed_minutes(fields: &[ProwlarrIndexerField], name: &str) -> Option<i64> {
@@ -1610,6 +1640,55 @@ mod tests {
         assert_eq!(metadata.seed_ratio, Some(1.5));
         assert_eq!(metadata.seed_time_minutes, Some(4320));
         assert_eq!(metadata.season_pack_seed_time_minutes, Some(10080));
+        assert_eq!(
+            metadata.minimum_seeders, None,
+            "the probe left appMinimumSeeders unset, which must read as inherit"
+        );
+    }
+
+    #[test]
+    fn a_prowlarr_minimum_of_zero_imports_as_an_explicit_disable() {
+        // Prowlarr's validator only warns on a non-positive value, so zero is
+        // storable upstream and means "do not enforce". Unlike the goal fields,
+        // it must not collapse into "unset".
+        let disabled = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![seed_field(
+                "torrentBaseSettings.appMinimumSeeders",
+                serde_json::json!(0),
+            )],
+        ));
+        assert_eq!(disabled.minimum_seeders, Some(0));
+
+        let configured = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![seed_field(
+                "torrentBaseSettings.appMinimumSeeders",
+                serde_json::json!(3),
+            )],
+        ));
+        assert_eq!(configured.minimum_seeders, Some(3));
+
+        let absent = child_metadata(indexer_with_fields(
+            "torrent",
+            vec![seed_field(
+                "torrentBaseSettings.appMinimumSeeders",
+                serde_json::Value::Null,
+            )],
+        ));
+        assert_eq!(absent.minimum_seeders, None);
+    }
+
+    #[test]
+    fn usenet_children_ignore_a_stray_minimum_seeders_field() {
+        let metadata = child_metadata(indexer_with_fields(
+            "usenet",
+            vec![seed_field(
+                "torrentBaseSettings.appMinimumSeeders",
+                serde_json::json!(5),
+            )],
+        ));
+        assert_eq!(metadata.minimum_seeders, None);
     }
 
     #[test]

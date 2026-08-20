@@ -956,6 +956,7 @@ impl AppUseCase {
             source_kind: selection.source_kind,
             source_title: source_title.to_string(),
             password_ref,
+            seeders: selection.seeders,
         };
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         let key = jsonwebtoken::EncodingKey::from_secret(signing_key);
@@ -1142,6 +1143,30 @@ impl AppUseCase {
 
         let claimed_scope =
             Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id.clone())?;
+        // Re-judge admission here rather than trusting the verdict made when the
+        // candidate was offered. This path exists so the API cannot be used to
+        // queue something the UI refused, and the threshold may have changed
+        // inside the token's lifetime. A token minted before this field existed
+        // carries no count, which reads as unknown and stays eligible for the
+        // rest of its short TTL — a bounded migration grace, not the same thing
+        // as an indexer that genuinely reports nothing.
+        let minimum_seeders = self
+            .minimum_seeders_for_indexer(claims.indexer_id.as_deref())
+            .await;
+        if !crate::acquisition::seed_goals::meets_minimum_seeders(
+            claims.source_kind,
+            claims.indexer_id.as_deref(),
+            claims.seeders,
+            minimum_seeders,
+        ) {
+            return Err(AppError::Validation(format!(
+                "release reports {} seeders, below the minimum of {minimum_seeders} for this indexer",
+                claims
+                    .seeders
+                    .map_or_else(|| "unknown".to_string(), |count| count.to_string())
+            )));
+        }
+
         let source_password = self.resolve_release_candidate_password_ticket(
             actor,
             title_id,
@@ -1156,6 +1181,7 @@ impl AppUseCase {
                 source_kind: claims.source_kind,
                 source_title: Some(claims.source_title),
                 source_password,
+                seeders: claims.seeders,
             },
             claimed_scope,
         ))

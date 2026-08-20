@@ -1426,6 +1426,10 @@ impl AppUseCase {
             }
         }
 
+        // Hoisted above the loop on purpose: the evaluation context is rebuilt
+        // per candidate below, and resolving thresholds inside it would repeat
+        // the same repository reads for every release in the feed.
+        let minimum_seeders = self.minimum_seeders_for_candidates(scored).await;
         let mut selected: Option<&IndexerSearchResult> = None;
 
         for candidate in scored {
@@ -1459,6 +1463,7 @@ impl AppUseCase {
                 existing_files: &existing_files,
                 delay_profiles,
                 failed_routes: None,
+                minimum_seeders: &minimum_seeders,
             };
             let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
             let candidate_score = candidate

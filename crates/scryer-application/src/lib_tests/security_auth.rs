@@ -1023,6 +1023,8 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some(" release-password ".to_string()),
+
+        seeders: None,
     };
 
     let token = app
@@ -1087,6 +1089,8 @@ async fn release_candidate_token_rejects_missing_password_ticket() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("release-password".to_string()),
+
+        seeders: None,
     };
 
     let token = app
@@ -1142,6 +1146,8 @@ async fn release_candidate_token_drops_placeholder_password_flags() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("protected".to_string()),
+
+        seeders: None,
     };
 
     let token = app
@@ -1189,6 +1195,8 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
         source_password: None,
+
+        seeders: None,
     };
     let scope = SubmissionScope::EpisodeSet {
         episode_ids: vec![
@@ -1212,6 +1220,99 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
 }
 
 #[tokio::test]
+async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_seeders_user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+    // No indexer id, so admission accepts regardless; this is about the count
+    // surviving the round trip rather than about the verdict.
+    let selection = QueuedReleaseSelection {
+        indexer_id: None,
+        source_hint: Some("magnet:?xt=urn:btih:abc".to_string()),
+        source_kind: Some(DownloadSourceKind::MagnetUri),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
+        seeders: Some(42),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-seeders",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let (decoded, _) = app
+        .verify_release_candidate_token_for_signed_scope(
+            &authenticated_user,
+            "title-seeders",
+            &token,
+        )
+        .await
+        .expect("candidate token should verify");
+
+    assert_eq!(
+        decoded.seeders,
+        Some(42),
+        "redemption must be able to re-judge admission from the token alone"
+    );
+}
+
+#[tokio::test]
+async fn a_token_minted_before_this_feature_still_redeems() {
+    // The legacy-token grace: claims without a `seeders` field deserialize as
+    // unknown, and unknown is eligible. A candidate whose count was known to be
+    // zero therefore slips through for the remainder of its short TTL. That is
+    // a deliberate, bounded migration window — not the same thing as an indexer
+    // that genuinely reports nothing.
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_legacy_token_user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        indexer_id: None,
+        source_hint: Some("magnet:?xt=urn:btih:def".to_string()),
+        source_kind: Some(DownloadSourceKind::MagnetUri),
+        source_title: Some("Example.Legacy.1080p.WEB-DL".to_string()),
+        source_password: None,
+        seeders: None,
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-legacy",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let (decoded, _) = app
+        .verify_release_candidate_token_for_signed_scope(
+            &authenticated_user,
+            "title-legacy",
+            &token,
+        )
+        .await
+        .expect("a token without a seeder count must still redeem");
+
+    assert_eq!(decoded.seeders, None);
+}
+
+#[tokio::test]
 async fn release_candidate_token_rejects_tampering() {
     let (app, admin) = bootstrap();
     let (_created, authenticated_user) = create_authenticated_user(
@@ -1228,6 +1329,8 @@ async fn release_candidate_token_rejects_tampering() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+
+        seeders: None,
     };
 
     let token = app
@@ -1279,6 +1382,8 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+
+        seeders: None,
     };
 
     let token = app
@@ -1345,6 +1450,8 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+
+        seeders: None,
     };
     let token = app
         .issue_release_candidate_token(
@@ -1391,6 +1498,8 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+
+        seeders: None,
     };
     let token = app
         .issue_release_candidate_token(

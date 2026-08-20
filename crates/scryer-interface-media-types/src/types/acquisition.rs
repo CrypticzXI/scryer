@@ -567,6 +567,8 @@ pub struct SeedingProfilePayload {
     pub goal_met_action: SeedGoalMetActionValue,
     /// Whether torrents grabbed under this profile are never auto-removed.
     pub never_remove: bool,
+    /// Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+    pub minimum_seeders: Option<i32>,
     /// Whether Scryer keeps managing torrents grabbed under this profile after import.
     pub post_import_tracking: PostImportTrackingValue,
     /// UTC creation time.
@@ -857,6 +859,13 @@ pub struct SetDefaultSeedingProfileInput {
 }
 
 #[derive(InputObject)]
+/// Replacement system-wide minimum-seeder floor.
+pub struct SetMinimumSeedersFloorInput {
+    /// Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+    pub minimum_seeders_floor: i32,
+}
+
+#[derive(InputObject)]
 /// Goals and removal behavior for a new seeding profile.
 pub struct CreateSeedingProfileInput {
     /// Seeding profile name; must be unique.
@@ -877,6 +886,8 @@ pub struct CreateSeedingProfileInput {
     pub goal_met_action: Option<SeedGoalMetActionValue>,
     /// Whether torrents grabbed under this profile are never auto-removed; defaults to false.
     pub never_remove: Option<bool>,
+    /// Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+    pub minimum_seeders: Option<i32>,
     /// Whether Scryer keeps managing torrents after import; defaults to parking them.
     pub post_import_tracking: Option<PostImportTrackingValue>,
 }
@@ -904,6 +915,8 @@ pub struct UpdateSeedingProfileInput {
     pub goal_met_action: Option<SeedGoalMetActionValue>,
     /// Replacement never-remove flag; omission preserves it.
     pub never_remove: Option<bool>,
+    /// Replacement minimum seeders; null restores the system floor and omission preserves it.
+    pub minimum_seeders: MaybeUndefined<i32>,
     /// Replacement post-import tracking mode; omission preserves it.
     pub post_import_tracking: Option<PostImportTrackingValue>,
 }
@@ -920,6 +933,8 @@ pub struct DeleteSeedingProfilePayload {
 pub struct DefaultSeedingProfilePayload {
     /// Seeding profile identity used as the default, or null when unset.
     pub seeding_profile_id: Option<ID>,
+    /// Fewest seeders a torrent candidate may report when no seeding profile resolves.
+    pub minimum_seeders_floor: i32,
 }
 
 #[derive(SimpleObject, Clone)]

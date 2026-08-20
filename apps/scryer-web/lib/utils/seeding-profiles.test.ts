@@ -4,6 +4,8 @@ import test from "node:test";
 import en from "../i18n/locales/en.ts";
 import type { SeedingProfileDraft } from "../types/seeding-profiles.ts";
 import {
+  parseMinimumSeeders,
+  seedingProfileDraftToInput,
   buildSeedingProfileTemplate,
   extractSeedingProfileErrorMessage,
   formatSeasonPackSummary,
@@ -67,6 +69,7 @@ test("a stored profile round-trips through the draft", () => {
     honorTrackerMinimums: false,
     goalMetAction: "STOP_SEEDING" as const,
     neverRemove: true,
+    minimumSeeders: 5,
     postImportTracking: "HAND_OFF" as const,
   };
 
@@ -75,6 +78,7 @@ test("a stored profile round-trips through the draft", () => {
   // Stored minutes come back as the duration syntax the field accepts.
   assert.equal(asDraft.seedTimeMinutes, "3d");
   assert.equal(asDraft.seasonPackSeedTimeMinutes, "1w");
+  assert.equal(asDraft.minimumSeeders, "5");
 
   assert.deepEqual(toUpdateSeedingProfileInput(asDraft), {
     id: "profile-1",
@@ -87,6 +91,7 @@ test("a stored profile round-trips through the draft", () => {
     honorTrackerMinimums: false,
     goalMetAction: "STOP_SEEDING",
     neverRemove: true,
+    minimumSeeders: 5,
     postImportTracking: "HAND_OFF",
   });
 });
@@ -365,4 +370,26 @@ test("every duration the formatter emits parses back to the same minutes", () =>
     const parsed = parseSeedDuration(formatSeedDuration(value));
     assert.equal(parsed.ok && parsed.value, value, String(value));
   }
+});
+
+test("minimum seeders distinguishes empty from zero", () => {
+  // Empty means "inherit the system floor"; 0 means "turn the check off for
+  // this profile". Collapsing them would silently re-enable a check the
+  // operator disabled.
+  assert.deepEqual(parseMinimumSeeders(""), { ok: true, value: null });
+  assert.deepEqual(parseMinimumSeeders("   "), { ok: true, value: null });
+  assert.deepEqual(parseMinimumSeeders("0"), { ok: true, value: 0 });
+  assert.deepEqual(parseMinimumSeeders("3"), { ok: true, value: 3 });
+  assert.deepEqual(parseMinimumSeeders("-1"), { ok: false });
+  assert.deepEqual(parseMinimumSeeders("1.5"), { ok: false });
+  assert.deepEqual(parseMinimumSeeders("many"), { ok: false });
+});
+
+test("a profile minimum of zero round-trips as zero, not as empty", () => {
+  const draft = {
+    ...buildSeedingProfileTemplate(),
+    name: "Public tracker",
+    minimumSeeders: "0",
+  };
+  assert.equal(seedingProfileDraftToInput(draft).minimumSeeders, 0);
 });

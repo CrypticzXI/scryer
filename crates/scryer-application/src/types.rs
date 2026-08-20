@@ -2205,6 +2205,11 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_ref: Option<String>,
+    /// Absent on tokens minted before minimum-seeder admission existed, which
+    /// reads as an unknown count and therefore stays eligible for the rest of
+    /// that token's short TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

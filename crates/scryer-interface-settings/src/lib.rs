@@ -908,6 +908,10 @@ impl SettingsQueries {
                 .await
                 .map_err(to_gql_error)?
                 .map(Into::into),
+            minimum_seeders_floor: app
+                .get_minimum_seeders_floor(&actor)
+                .await
+                .map_err(to_gql_error)?,
         })
     }
 
