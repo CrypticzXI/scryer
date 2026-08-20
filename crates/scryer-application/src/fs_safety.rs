@@ -599,6 +599,22 @@ async fn create_symlink(link_target: &Path, at: &Path) -> std::io::Result<()> {
     tokio::fs::symlink_file(link_target, at).await
 }
 
+#[cfg(target_os = "linux")]
+fn renameat2_no_replace(source: *const libc::c_char, dest: *const libc::c_char) -> libc::c_int {
+    // SAFETY: the caller provides valid, NUL-terminated paths. Calling the syscall directly
+    // avoids depending on a libc `renameat2` wrapper, which musl does not export.
+    unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source,
+            libc::AT_FDCWD,
+            dest,
+            libc::RENAME_NOREPLACE,
+        ) as libc::c_int
+    }
+}
+
 /// `Some` when the platform answered with an exclusive rename, `None` when the
 /// caller should claim the destination instead.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -613,13 +629,7 @@ async fn exclusive_rename(source: &Path, dest: &Path) -> Option<std::io::Result<
         let code = unsafe {
             #[cfg(target_os = "linux")]
             {
-                libc::renameat2(
-                    libc::AT_FDCWD,
-                    source_c.as_ptr(),
-                    libc::AT_FDCWD,
-                    dest_c.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
+                renameat2_no_replace(source_c.as_ptr(), dest_c.as_ptr())
             }
             #[cfg(target_os = "macos")]
             {
