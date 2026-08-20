@@ -1477,7 +1477,10 @@ async fn apply_media_rename_refuses_an_untracked_existing_target() {
             .iter()
             .all(|item| item["writeAction"] != "replace")
     );
-    let fingerprint = plan["fingerprint"].as_str().expect("fingerprint").to_string();
+    let fingerprint = plan["fingerprint"]
+        .as_str()
+        .expect("fingerprint")
+        .to_string();
 
     // Apply reads the filesystem and must refuse rather than clobber it.
     let apply = gql(
