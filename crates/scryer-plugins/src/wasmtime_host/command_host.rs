@@ -17,7 +17,7 @@ use scryer_plugin_sdk::host::{
 use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use wasmtime::{Caller, Linker, Memory};
 
-use crate::plugin_http_host::{PluginHttpHost, PluginHttpRequest};
+use crate::plugin_http_host::{IndexerProxyPolicy, PluginHttpHost, PluginHttpRequest};
 use crate::wasmtime_host::sandbox::HostCtx;
 
 const MAX_RESPONSE_HANDLES: usize = 32;
@@ -77,6 +77,44 @@ impl CommandHost {
                 config,
                 state: Mutex::new(CommandState::default()),
                 http: PluginHttpHost::new(allowed_hosts, None, None, max_http_response_bytes),
+                timeout,
+            })),
+        }
+    }
+
+    /// Build the host services for a command-ABI indexer.
+    ///
+    /// Indexers differ from download clients in exactly two ways, and both live
+    /// in egress: a configured indexer proxy has to wrap every request, and the
+    /// managed-destination cooldown key has to be carried so a shared upstream
+    /// (a Prowlarr parent, say) throttles as one destination rather than once
+    /// per child. Everything else — descriptor-bound config, plugin state, the
+    /// timeout — is identical, so this mirrors `for_download_client` rather
+    /// than growing it another two arguments that every caller passes `None` to.
+    pub(crate) fn for_indexer(
+        plugin_id: String,
+        config: BTreeMap<String, String>,
+        allowed_hosts: Vec<String>,
+        indexer_proxy_policy: Option<IndexerProxyPolicy>,
+        destination_cooldown_key: Option<String>,
+        timeout: Duration,
+        max_http_response_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(CommandHostState {
+                next_handle: 1,
+                responses: HashMap::new(),
+            })),
+            services: Some(Arc::new(CommandHostServices {
+                plugin_id,
+                config,
+                state: Mutex::new(CommandState::default()),
+                http: PluginHttpHost::new(
+                    allowed_hosts,
+                    indexer_proxy_policy,
+                    destination_cooldown_key,
+                    max_http_response_bytes,
+                ),
                 timeout,
             })),
         }

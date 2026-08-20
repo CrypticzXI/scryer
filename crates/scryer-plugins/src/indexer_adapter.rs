@@ -5,13 +5,22 @@ use scryer_application::{
     is_valid_magnet_uri, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
-use std::{collections::BTreeMap, sync::mpsc};
+use scryer_plugin_sdk::command::{
+    PluginActionRequest, PluginActionResponse, PluginCommand, PluginCommandRequest,
+    PluginCommandResult, PluginIndexerCommand, PluginIndexerCommandResult,
+};
+use scryer_plugin_sdk::{PluginError, PluginResult};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, mpsc},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
 use crate::loader::{allowed_hosts_for_descriptor, parse_config_json_entries};
 use crate::plugin_http_host::IndexerProxyPolicy;
+use crate::runtime_backing::PluginInstanceSpec;
 use crate::types::{
     ConfigFieldRole, EXPORT_INDEXER_ACTION, EXPORT_INDEXER_SEARCH, IndexerProtocol,
     IndexerSourceKind, PluginDescriptor, PluginSearchContext, PluginSearchOrigin,
@@ -19,11 +28,38 @@ use crate::types::{
     PluginSearchSubjectKind, decode_plugin_result, normalize_external_ids,
     normalize_indexer_info_hash, tagged_alias_to_sdk,
 };
+use crate::wasmtime_host::command_host::CommandHost;
+use crate::wasmtime_host::{CommandInvocation, process_command};
 
+/// One configured indexer, backed by either runtime.
+///
+/// Exactly one of `worker`/`command` is populated. Legacy artifacts keep the
+/// dedicated worker thread that owns a long-lived Extism instance; command-ABI
+/// artifacts are instantiated per invocation by [`process_command`], so they
+/// need no thread of their own. Keeping both here — rather than behind a trait —
+/// is what lets a single Scryer install serve both plugin generations while the
+/// catalog is mid-migration.
 pub struct WasmIndexerClient {
     descriptor: PluginDescriptor,
     indexer_name: String,
-    worker: IndexerPluginWorker,
+    worker: Option<IndexerPluginWorker>,
+    command: Option<Arc<CommandIndexer>>,
+}
+
+struct CommandIndexer {
+    wasm: Arc<Vec<u8>>,
+    command_host: CommandHost,
+    timeout: std::time::Duration,
+    /// Serializes invocations against one configured indexer.
+    ///
+    /// The command runtime instantiates a fresh module per call, so this is not
+    /// a reentrancy requirement the way the legacy worker thread was. It is
+    /// deliberate parity: the legacy path could only ever run one search at a
+    /// time per indexer, several plugins keep cursor/token state across calls
+    /// through the host `state` service, and per-indexer rate limits assume
+    /// requests leave in order. Dropping the lock would change upstream
+    /// request patterns as a side effect of a runtime migration.
+    invocation_lock: tokio::sync::Mutex<()>,
 }
 
 struct IndexerPluginWorker {
@@ -169,8 +205,114 @@ impl WasmIndexerClient {
         Ok(Self {
             descriptor,
             indexer_name,
-            worker,
+            worker: Some(worker),
+            command: None,
         })
+    }
+
+    /// Build a command-ABI indexer.
+    ///
+    /// This derives its config, allowed hosts, timeout, proxy policy and
+    /// cooldown key from exactly the same helpers the legacy path uses, so the
+    /// two runtimes cannot drift on what a plugin observes — a search that
+    /// worked before the migration sees byte-identical config after it.
+    pub fn new_command(
+        wasm_bytes: Vec<u8>,
+        descriptor: PluginDescriptor,
+        indexer_name: String,
+        config: IndexerConfig,
+        indexer_proxy_config: Option<IndexerProxyConfig>,
+    ) -> Result<Self, AppError> {
+        let inputs =
+            build_runtime_inputs(&descriptor, &indexer_name, &config, indexer_proxy_config);
+        let command_host = CommandHost::for_indexer(
+            descriptor.id.clone(),
+            inputs
+                .config_entries
+                .into_iter()
+                .collect::<BTreeMap<_, _>>(),
+            inputs.allowed_hosts,
+            inputs.indexer_proxy_policy,
+            inputs.destination_cooldown_key,
+            inputs.timeout,
+            None,
+        );
+
+        info!(
+            indexer = indexer_name.as_str(),
+            plugin = descriptor.name.as_str(),
+            "command indexer plugin registered"
+        );
+
+        Ok(Self {
+            descriptor,
+            indexer_name,
+            worker: None,
+            command: Some(Arc::new(CommandIndexer {
+                wasm: Arc::new(wasm_bytes),
+                command_host,
+                timeout: inputs.timeout,
+                invocation_lock: tokio::sync::Mutex::new(()),
+            })),
+        })
+    }
+
+    fn legacy_worker(&self) -> AppResult<&IndexerPluginWorker> {
+        self.worker.as_ref().ok_or_else(|| {
+            AppError::Repository(format!(
+                "command indexer {} cannot use a legacy export",
+                self.descriptor.id
+            ))
+        })
+    }
+
+    /// Run one indexer command, or `Ok(None)` when this client is legacy-backed.
+    ///
+    /// Returning `None` rather than erroring is what keeps every call site a
+    /// plain "try command, else legacy" pair.
+    async fn invoke_command(
+        &self,
+        command: PluginIndexerCommand,
+        operation: &'static str,
+        cancel_token: Option<&CancellationToken>,
+    ) -> AppResult<Option<PluginIndexerCommandResult>> {
+        let Some(indexer) = self.command.as_ref() else {
+            return Ok(None);
+        };
+        let _guard = indexer.invocation_lock.lock().await;
+        let spec = PluginInstanceSpec {
+            wasm: Arc::clone(&indexer.wasm),
+            preopens: Vec::new(),
+            timeout: indexer.timeout,
+            memory_max_bytes: None,
+            command_host: indexer.command_host.clone(),
+        };
+        let request = PluginCommandRequest::new(PluginCommand::Indexer(command));
+        let invocation = process_command(
+            &spec,
+            &request,
+            CommandInvocation {
+                plugin_id: &self.descriptor.id,
+                plugin_version: &self.descriptor.version,
+                operation,
+            },
+        );
+        let response = match cancel_token {
+            Some(token) => tokio::select! {
+                _ = token.cancelled() => {
+                    return Err(AppError::canceled("plugin indexer search canceled"));
+                }
+                response = invocation => response?,
+            },
+            None => invocation.await?,
+        };
+        match response.response {
+            PluginCommandResult::Indexer(result) => Ok(Some(result)),
+            _ => Err(AppError::Repository(format!(
+                "command plugin {} returned a response for another plugin family",
+                self.descriptor.id
+            ))),
+        }
     }
 
     #[allow(dead_code)]
@@ -179,6 +321,27 @@ impl WasmIndexerClient {
         action: &str,
         query: BTreeMap<String, String>,
     ) -> AppResult<Option<serde_json::Value>> {
+        if let Some(result) = self
+            .invoke_command(
+                PluginIndexerCommand::Action(PluginActionRequest {
+                    action: action.to_string(),
+                    payload: serde_json::json!({ "query": query }),
+                }),
+                "indexer_action",
+                None,
+            )
+            .await?
+        {
+            let PluginIndexerCommandResult::Action(result) = result else {
+                return Err(AppError::Repository(
+                    "indexer command returned the wrong result for indexer_action".to_string(),
+                ));
+            };
+            let response: PluginActionResponse =
+                decode_command_result(result, "indexer indexer_action")?;
+            return Ok(Some(response.payload));
+        }
+
         let request = serde_json::json!({
             "action": action,
             "query": query,
@@ -187,7 +350,7 @@ impl WasmIndexerClient {
             AppError::Repository(format!("failed to serialize indexer action request: {e}"))
         })?;
 
-        self.worker
+        self.legacy_worker()?
             .call_action(input)
             .await?
             .map(|output| decode_plugin_result(&output, EXPORT_INDEXER_ACTION))
@@ -199,15 +362,47 @@ impl WasmIndexerClient {
         request: &PluginSearchRequest,
         cancel_token: CancellationToken,
     ) -> AppResult<PluginSearchResponse> {
+        if let Some(result) = self
+            .invoke_command(
+                PluginIndexerCommand::Search(request.clone()),
+                "indexer_search",
+                Some(&cancel_token),
+            )
+            .await?
+        {
+            let PluginIndexerCommandResult::Search(result) = result else {
+                return Err(AppError::Repository(
+                    "indexer command returned the wrong result for indexer_search".to_string(),
+                ));
+            };
+            return decode_command_result(result, "indexer indexer_search");
+        }
+
         let input = serde_json::to_string(request).map_err(|e| {
             AppError::Repository(format!("failed to serialize plugin request: {e}"))
         })?;
 
         tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
 
-        let output = self.worker.call_search(input, cancel_token).await?;
+        let output = self
+            .legacy_worker()?
+            .call_search(input, cancel_token)
+            .await?;
 
         decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)
+    }
+}
+
+fn decode_command_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
+    match result {
+        PluginResult::Ok(value) => Ok(value),
+        PluginResult::Err(PluginError {
+            code,
+            public_message,
+            ..
+        }) => Err(AppError::Repository(format!(
+            "{context}: plugin error {code:?}: {public_message}"
+        ))),
     }
 }
 
@@ -218,6 +413,38 @@ fn build_legacy_spec(
     config: &IndexerConfig,
     indexer_proxy_config: Option<IndexerProxyConfig>,
 ) -> LegacyPluginSpec {
+    let inputs = build_runtime_inputs(descriptor, indexer_name, config, indexer_proxy_config);
+    let mut spec = LegacyPluginSpec::new(wasm_bytes, descriptor.id.clone());
+    spec.allowed_hosts = inputs.allowed_hosts;
+    spec.timeout = inputs.timeout;
+    for (key, value) in inputs.config_entries {
+        spec.config.insert(key, value);
+    }
+    spec.indexer_proxy_policy = inputs.indexer_proxy_policy;
+    spec.destination_cooldown_key = inputs.destination_cooldown_key;
+    spec
+}
+
+/// Everything a configured indexer needs from its runtime, independent of which
+/// runtime that is.
+///
+/// Both constructors go through here so config normalization, host allowlisting,
+/// the proxy timeout bump and the cooldown key stay defined once. A plugin that
+/// migrates to the command ABI must not see different config as a side effect.
+struct IndexerRuntimeInputs {
+    config_entries: std::collections::HashMap<String, String>,
+    allowed_hosts: Vec<String>,
+    timeout: std::time::Duration,
+    indexer_proxy_policy: Option<IndexerProxyPolicy>,
+    destination_cooldown_key: Option<String>,
+}
+
+fn build_runtime_inputs(
+    descriptor: &PluginDescriptor,
+    indexer_name: &str,
+    config: &IndexerConfig,
+    indexer_proxy_config: Option<IndexerProxyConfig>,
+) -> IndexerRuntimeInputs {
     let config_entries = build_config_entries(descriptor, indexer_name, config);
     let connection_url = resolve_connection_url(descriptor, config_entries.as_ref());
     let allowed_hosts = allowed_hosts_for_descriptor(
@@ -230,21 +457,17 @@ fn build_legacy_spec(
             .as_ref()
             .map(|config| config.request_timeout_seconds as u64 + 5)
             .unwrap_or(0);
-    let mut spec = LegacyPluginSpec::new(wasm_bytes, descriptor.id.clone());
-    spec.allowed_hosts = allowed_hosts;
-    spec.timeout = std::time::Duration::from_secs(timeout_seconds);
-    if let Some(map) = &config_entries {
-        for (key, value) in map {
-            spec.config.insert(key.clone(), value.clone());
-        }
+    IndexerRuntimeInputs {
+        config_entries: config_entries.unwrap_or_default(),
+        allowed_hosts,
+        timeout: std::time::Duration::from_secs(timeout_seconds),
+        indexer_proxy_policy: indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
+            indexer_id: config.id.clone(),
+            indexer_name: indexer_name.to_string(),
+            config: proxy_config,
+        }),
+        destination_cooldown_key: config.managed_destination_cooldown_key(),
     }
-    spec.indexer_proxy_policy = indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
-        indexer_id: config.id.clone(),
-        indexer_name: indexer_name.to_string(),
-        config: proxy_config,
-    });
-    spec.destination_cooldown_key = config.managed_destination_cooldown_key();
-    spec
 }
 
 fn build_config_entries(
@@ -1426,5 +1649,64 @@ mod tests {
         );
         assert_eq!(normalized.get("api_path").map(String::as_str), Some("/api"));
         assert!(!normalized.contains_key("additional_params"));
+    }
+
+    /// Guards the invariant that makes the runtime migration safe to ship:
+    /// whatever a legacy artifact observes, a command artifact for the same
+    /// indexer observes too. Both constructors read from `build_runtime_inputs`
+    /// today; this fails the moment either path grows its own normalization.
+    #[test]
+    fn both_runtimes_receive_identical_inputs() {
+        let descriptor = descriptor_with_base_url_role("newznab");
+        let mut config = sample_indexer_config("newznab", Some("parent"));
+        config.config_json =
+            Some(r#"{"base_url":"http://localhost:9696/1","api_path":"/api"}"#.to_string());
+
+        let inputs = build_runtime_inputs(&descriptor, "Managed Child", &config, None);
+        let spec = build_legacy_spec(Vec::new(), &descriptor, "Managed Child", &config, None);
+
+        assert_eq!(spec.timeout, inputs.timeout);
+        assert_eq!(spec.allowed_hosts, inputs.allowed_hosts);
+        assert_eq!(
+            spec.destination_cooldown_key,
+            inputs.destination_cooldown_key
+        );
+        assert!(
+            !inputs.config_entries.is_empty(),
+            "the fixture must produce config for this comparison to mean anything"
+        );
+        for (key, value) in &inputs.config_entries {
+            assert_eq!(
+                spec.config.get(key),
+                Some(value),
+                "legacy spec lost normalized config key {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_clients_are_command_backed_and_refuse_legacy_exports() {
+        let client = WasmIndexerClient::new_command(
+            crate::command_abi::test_support::command_marked_wasm(),
+            descriptor_with_base_url_role("newznab"),
+            "Test".to_string(),
+            sample_indexer_config("newznab", None),
+            None,
+        )
+        .expect("command client builds");
+
+        assert!(client.command.is_some());
+        assert!(
+            client.worker.is_none(),
+            "a command client must not start a legacy worker thread"
+        );
+
+        let Err(error) = client.legacy_worker() else {
+            panic!("a command client must not expose a legacy worker");
+        };
+        assert!(
+            error.to_string().contains("cannot use a legacy export"),
+            "got: {error}"
+        );
     }
 }

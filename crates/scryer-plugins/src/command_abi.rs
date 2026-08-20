@@ -42,9 +42,14 @@ pub(crate) fn command_abi_version(wasm: &[u8]) -> Result<Option<u16>, String> {
     Ok(Some(version))
 }
 
+/// Synthesize marked artifacts for tests in this crate.
+///
+/// Runtime selection is decided by the custom section, so any test that wants to
+/// exercise a command-ABI path needs to be able to produce one; keeping the
+/// encoder here means those tests agree with the reader they are testing.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::COMMAND_ABI_CUSTOM_SECTION;
 
     fn encode_u32_leb(mut value: u32, output: &mut Vec<u8>) {
         loop {
@@ -60,7 +65,7 @@ mod tests {
         }
     }
 
-    fn append_marker(mut wasm: Vec<u8>, marker: &[u8]) -> Vec<u8> {
+    pub(crate) fn append_marker(mut wasm: Vec<u8>, marker: &[u8]) -> Vec<u8> {
         let mut body = Vec::new();
         encode_u32_leb(COMMAND_ABI_CUSTOM_SECTION.len() as u32, &mut body);
         body.extend_from_slice(COMMAND_ABI_CUSTOM_SECTION.as_bytes());
@@ -70,6 +75,25 @@ mod tests {
         wasm.extend_from_slice(&body);
         wasm
     }
+
+    /// A minimal module carrying the current command marker.
+    pub(crate) fn command_marked_wasm() -> Vec<u8> {
+        append_marker(
+            wat::parse_str("(module)").expect("valid wat"),
+            &super::COMMAND_ABI_VERSION.to_le_bytes(),
+        )
+    }
+
+    /// A minimal module with no marker at all — a legacy reactor artifact.
+    pub(crate) fn unmarked_wasm() -> Vec<u8> {
+        wat::parse_str("(module)").expect("valid wat")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::append_marker;
+    use super::*;
 
     #[test]
     fn accepts_current_command_marker() {
