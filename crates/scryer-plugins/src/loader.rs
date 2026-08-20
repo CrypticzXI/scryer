@@ -806,13 +806,38 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             }
         };
 
-        match WasmIndexerClient::new(
-            wasm_bytes,
-            loaded.descriptor.clone(),
-            config.name.clone(),
-            config.clone(),
-            indexer_proxy_config.cloned(),
-        ) {
+        let backing = match indexer_runtime_backing(&loaded.descriptor, &wasm_bytes) {
+            Ok(backing) => backing,
+            Err(error) => {
+                tracing::warn!(
+                    indexer = config.name.as_str(),
+                    provider = provider.as_str(),
+                    error = %error,
+                    "indexer plugin runtime is unusable, indexer will be unavailable"
+                );
+                return None;
+            }
+        };
+
+        let built = if backing == PluginRuntimeBacking::WasmtimeCommand {
+            WasmIndexerClient::new_command(
+                wasm_bytes,
+                loaded.descriptor.clone(),
+                config.name.clone(),
+                config.clone(),
+                indexer_proxy_config.cloned(),
+            )
+        } else {
+            WasmIndexerClient::new(
+                wasm_bytes,
+                loaded.descriptor.clone(),
+                config.name.clone(),
+                config.clone(),
+                indexer_proxy_config.cloned(),
+            )
+        };
+
+        match built {
             Ok(client) => Some(Arc::new(client)),
             Err(e) => {
                 tracing::warn!(
@@ -824,6 +849,28 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                 None
             }
         }
+    }
+}
+
+/// Pick the runtime for one indexer artifact, or explain why it is unusable.
+///
+/// Indexers accept exactly two runtimes: the command ABI when the artifact
+/// carries the marker, and the legacy reactor otherwise. Anything else means the
+/// descriptor and the artifact disagree about what this plugin is, and running
+/// it would be a guess — the loader drops the indexer instead. Keeping the
+/// decision here (rather than inline) is what makes the legacy fallback a
+/// tested property rather than an incidental `else`.
+fn indexer_runtime_backing(
+    descriptor: &PluginDescriptor,
+    wasm: &[u8],
+) -> Result<PluginRuntimeBacking, String> {
+    let backing = PluginRuntimeBacking::for_artifact(descriptor, wasm)
+        .map_err(|error| format!("invalid runtime marker: {error}"))?;
+    match backing {
+        PluginRuntimeBacking::WasmtimeCommand | PluginRuntimeBacking::LegacyReactor => Ok(backing),
+        other => Err(format!(
+            "runtime {other:?} is not valid for an indexer descriptor"
+        )),
     }
 }
 
@@ -4788,5 +4835,47 @@ mod tests {
                 .iter()
                 .all(|provider_type| provider_type != "jimaku")
         );
+    }
+
+    #[test]
+    fn indexer_runtime_backing_selects_command_only_for_marked_artifacts() {
+        let indexer = descriptor("indexer");
+
+        assert_eq!(
+            indexer_runtime_backing(
+                &indexer,
+                &crate::command_abi::test_support::command_marked_wasm()
+            )
+            .expect("marked artifact is usable"),
+            PluginRuntimeBacking::WasmtimeCommand
+        );
+        assert_eq!(
+            indexer_runtime_backing(&indexer, &crate::command_abi::test_support::unmarked_wasm())
+                .expect("unmarked artifact is usable"),
+            PluginRuntimeBacking::LegacyReactor
+        );
+    }
+
+    #[test]
+    fn indexer_runtime_backing_rejects_unusable_artifacts() {
+        let indexer = descriptor("indexer");
+
+        // A marker Scryer cannot read must not silently degrade to legacy: the
+        // artifact is claiming a contract this build does not implement.
+        let malformed = crate::command_abi::test_support::append_marker(
+            crate::command_abi::test_support::unmarked_wasm(),
+            &[1],
+        );
+        let error = indexer_runtime_backing(&indexer, &malformed)
+            .expect_err("a malformed marker is not usable");
+        assert!(error.contains("invalid runtime marker"), "got: {error}");
+
+        // An artifact whose descriptor puts it on a non-indexer runtime is a
+        // descriptor/artifact mismatch, not something to run anyway.
+        let archive = descriptor("archive_extractor");
+        let error =
+            indexer_runtime_backing(&archive, &crate::command_abi::test_support::unmarked_wasm())
+                .expect_err("an archive runtime is not valid for an indexer");
+        assert!(error.contains("not valid for an indexer"), "got: {error}");
     }
 }
