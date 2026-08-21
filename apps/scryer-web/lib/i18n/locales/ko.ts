@@ -993,9 +993,7 @@ const ko: LocaleDictionary = {
   "settings.pluginsRefresh": "레지스트리 새로고침",
   "settings.pluginAutoUpdateEnabled": "플러그인 패치 자동 업데이트",
   "settings.pluginAutoUpdateEnabledHelp":
-    "활성화하면 플러그인을 게시된 최신 패치 버전으로 자동 업데이트합니다(예: 1.0.1 => 1.0.2). 마이너 및 메이저 버전은 운영자가 직접 관리합니다.",
-  "settings.pluginAutoUpdateEnabledReadonly":
-    "플러그인 자동 업데이트는 구성을 관리할 수 있는 사용자가 제어합니다.",
+    "활성화하면 예약된 「Plugin Catalog Refresh」 작업(수동 실행 포함)이 공식 플러그인을 최신 패치 버전으로 업데이트하고(예: 1.0.1 → 1.0.2), 설치된 버전의 최적화 빌드가 있으면 함께 설치합니다. 마이너 및 메이저 버전은 운영자가 직접 관리합니다.",
   "settings.host": "호스트",
   "settings.port": "포트",
   "settings.baseUrl": "기본 URL",

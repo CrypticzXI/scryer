@@ -1037,9 +1037,7 @@ const fr: LocaleDictionary = {
   "settings.pluginsRefresh": "Actualiser le registre",
   "settings.pluginAutoUpdateEnabled": "Mettre à jour automatiquement les correctifs des plugins",
   "settings.pluginAutoUpdateEnabledHelp":
-    "Lorsque cette option est activée, les plugins sont automatiquement mis à jour vers leur dernière version corrective publiée, p. ex. 1.0.1 => 1.0.2. Les versions mineures et majeures restent à la charge de l’opérateur.",
-  "settings.pluginAutoUpdateEnabledReadonly":
-    "Les mises à jour automatiques des plugins sont contrôlées par les utilisateurs autorisés à gérer la configuration.",
+    "Lorsque cette option est activée, la tâche planifiée « Plugin Catalog Refresh » (ou son exécution manuelle) met à jour les plugins officiels vers leur dernière version corrective, p. ex. 1.0.1 → 1.0.2, et installe les versions optimisées de la version installée lorsqu’il en existe une. Les versions mineures et majeures restent à la charge de l’opérateur.",
   "settings.host": "Hôte",
   "settings.port": "Port",
   "settings.baseUrl": "URL de base",

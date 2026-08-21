@@ -1929,9 +1929,7 @@ const en: LocaleDictionary = {
   "settings.pluginsRefresh": "Refresh Catalog",
   "settings.pluginAutoUpdateEnabled": "Auto update plugin patches",
   "settings.pluginAutoUpdateEnabledHelp":
-    "When enabled, automatically updates plugins to their latest published patch version, eg. 1.0.1 => 1.0.2. Minor and major versions remain operator owned.",
-  "settings.pluginAutoUpdateEnabledReadonly":
-    "Automatic plugin updates are controlled by users who can manage configuration.",
+    "When enabled, the scheduled Plugin Catalog Refresh (or running that job manually) updates official plugins to their latest patch version, e.g. 1.0.1 → 1.0.2, and installs optimized builds of the installed version when one is available. Minor and major versions stay operator-owned.",
   "settings.pluginsUpdateAll": "Update All",
   "settings.pluginsUpdatingAll": "Updating All…",
   "settings.host": "Host",

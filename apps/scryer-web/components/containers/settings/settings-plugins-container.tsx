@@ -27,8 +27,6 @@ import {
   togglePluginMutation,
   updatePluginAutoUpdateSettingsMutation,
 } from "@/lib/graphql/mutations";
-import { useAuth } from "@/lib/hooks/use-auth";
-import { APP_PERMISSIONS, hasAnyAppPermission } from "@/lib/utils/permissions";
 import type { PluginAutoUpdateSettings } from "@/lib/types/settings";
 import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog-subscription";
 import { wsClient } from "@/lib/graphql/ws-client";
@@ -160,8 +158,6 @@ export function SettingsPluginsContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { user } = useAuth();
-  const canManageConfig = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
   const [plugins, _setPlugins] = useState<RegistryPluginRecord[]>([]);
   const [catalogStatus, setCatalogStatus] = useState<PluginCatalogStatusRecord | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -337,7 +333,6 @@ export function SettingsPluginsContainer() {
   }, [fetchAutoUpdateSettings]);
 
   const updateAutoUpdateEnabled = useCallback(async (enabled: boolean) => {
-    if (!canManageConfig) return;
     setAutoUpdateSaving(true);
     try {
       const { data, error } = await client
@@ -354,7 +349,7 @@ export function SettingsPluginsContainer() {
     } finally {
       setAutoUpdateSaving(false);
     }
-  }, [canManageConfig, client, setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t]);
 
   useProviderCatalogSubscription(() => {
     if (
@@ -796,7 +791,6 @@ export function SettingsPluginsContainer() {
         autoUpdateEnabled={autoUpdateEnabled}
         autoUpdateLoading={autoUpdateLoading}
         autoUpdateSaving={autoUpdateSaving}
-        canManageAutoUpdate={canManageConfig}
         onAutoUpdateEnabledChange={updateAutoUpdateEnabled}
         remoteActionsBlocked={{
           refresh: blockedRemoteActions.has("catalog_refresh"),

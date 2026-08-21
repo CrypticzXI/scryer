@@ -116,7 +116,6 @@ type SettingsPluginsSectionProps = {
   autoUpdateEnabled: boolean;
   autoUpdateLoading: boolean;
   autoUpdateSaving: boolean;
-  canManageAutoUpdate: boolean;
   remoteActionsBlocked: {
     refresh: boolean;
     install: boolean;
@@ -637,7 +636,6 @@ export function SettingsPluginsSection({
   autoUpdateEnabled,
   autoUpdateLoading,
   autoUpdateSaving,
-  canManageAutoUpdate,
   remoteActionsBlocked,
   onAutoUpdateEnabledChange,
   onManualRepoUrlChange,
@@ -761,11 +759,7 @@ export function SettingsPluginsSection({
               {t("settings.pluginAutoUpdateEnabled")}
             </Label>
             <p className={`text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
-              {t(
-                canManageAutoUpdate
-                  ? "settings.pluginAutoUpdateEnabledHelp"
-                  : "settings.pluginAutoUpdateEnabledReadonly",
-              )}
+              {t("settings.pluginAutoUpdateEnabledHelp")}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -775,7 +769,7 @@ export function SettingsPluginsSection({
             <SettingsToggleSwitch
               id="settings-plugins-auto-update-toggle"
               checked={autoUpdateEnabled}
-              disabled={!canManageAutoUpdate || autoUpdateLoading || autoUpdateSaving}
+              disabled={autoUpdateLoading || autoUpdateSaving}
               ariaLabel={t("settings.pluginAutoUpdateEnabled")}
               onChange={onAutoUpdateEnabledChange}
             />
