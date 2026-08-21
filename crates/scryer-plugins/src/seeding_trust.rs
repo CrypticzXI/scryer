@@ -12,13 +12,26 @@
 //! cannot be older than the code reading it (and defaults to `false`). Scryer's
 //! plugin ABI can skew, so the host checks the plugin's own version against the
 //! first release that reports under the audited semantics and, below it, drops
-//! both fields to `None`.
+//! the verdicts it cannot trust to `None`.
 //!
-//! `None` is "unknowable from this client", which is the honest answer for a
-//! plugin whose answer cannot be trusted: the gate holds the entry with
-//! `no_resolved_goals_and_client_verdict_unknown` and refuses a `Move` import.
-//! Never `false` (asserts a limit nobody can see) and never `true` (invites a
-//! hit and run on a private tracker).
+//! **Only positive verdicts are dropped**, because the two fields are not read
+//! symmetrically. `can_remove: None` is `CLIENT_VERDICT_UNKNOWN` and the gate
+//! holds — strictly safer than the `Some(true)` it replaces. `can_move_files`
+//! is read as `observation.can_move_files != Some(false)`
+//! (`import/seeding_gate.rs`), so `None` is *stable*: erasing a stale
+//! `Some(false)` would upgrade a hardlink-or-copy import into a `Move` and take
+//! the payload out from under a torrent that may still be seeding. A stale
+//! "not stable" claim can only ever downgrade a `Move`, so it is kept
+//! verbatim; Sonarr agrees, defaulting `CanMoveFiles` to `false` and importing
+//! copy-only when it is not set.
+//!
+//! Scope: this is an anti-staleness measure, not a trust boundary. The table is
+//! an allowlist of the first-party clients whose reporting semantics changed,
+//! and the version it checks is self-reported by the plugin, so a plugin that
+//! is not listed — or that misstates its version — is believed. Installing a
+//! plugin is an admin action and plugin code already runs with host-granted
+//! capabilities (see `SECURITY.md`); the floor exists so an *honest* published
+//! build from before the audit cannot silently release torrents.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -61,11 +74,16 @@ pub(crate) fn apply_seeding_trust_floor(
     }
 }
 
-/// Drop the seeding verdicts of a plugin that predates the seeding audit.
+/// Drop the untrustworthy verdicts of a plugin that predates the seeding audit.
 ///
 /// Applied on the way in from the plugin, before any observation is taken, so
 /// there is one place where an untrusted verdict can enter the host and it is
 /// upstream of every reader.
+///
+/// `can_remove` goes to `None` whatever it said: both signs were computed under
+/// semantics the audit changed, and `None` holds. `can_move_files` loses only a
+/// `Some(true)` — see the module doc: `None` reads as *stable*, so dropping a
+/// `Some(false)` would permit a `Move` the plugin was refusing.
 pub(crate) fn coerce_seeding_verdicts(
     descriptor: &PluginDescriptor,
     item: &mut PluginDownloadItem,
@@ -77,7 +95,9 @@ pub(crate) fn coerce_seeding_verdicts(
         return;
     }
     item.can_remove = None;
-    item.can_move_files = None;
+    if item.can_move_files == Some(true) {
+        item.can_move_files = None;
+    }
     warn_once(descriptor.id.trim(), descriptor.version.trim(), floor);
 }
 
@@ -192,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_below_the_floor_loses_both_verdicts() {
+    fn a_plugin_below_the_floor_loses_its_positive_verdicts() {
         // The published registry build: it hardcodes `can_remove: Some(true)`
         // for every item, which would release every imported torrent.
         let item = coerced("qbittorrent", "1.0.5");
@@ -243,14 +263,24 @@ mod tests {
         }
     }
 
+    /// The asymmetry the gate forces on us.
+    ///
+    /// `can_move_files: None` is read as *stable* (`!= Some(false)`), so
+    /// erasing a stale "the data is not stable" would hand the importer a
+    /// `Move` the plugin was refusing — pre-audit deluge reports
+    /// `Some(ratio_goal_met)` and aria2 hardcodes `Some(false)`, so this is the
+    /// common case, not a corner. `can_remove` has no such asymmetry: `None`
+    /// holds.
     #[test]
-    fn an_honest_negative_verdict_below_the_floor_is_also_dropped() {
-        // `Some(false)` from a pre-audit plugin is no more trustworthy than
-        // `Some(true)`: the old semantics are what is in doubt, not the sign.
+    fn a_below_floor_refusal_to_move_survives_while_its_removal_verdict_does_not() {
         let mut item = item(Some(false), Some(false));
         coerce_seeding_verdicts(&descriptor("deluge", "1.0.2"), &mut item);
         assert_eq!(item.can_remove, None);
-        assert_eq!(item.can_move_files, None);
+        assert_eq!(
+            item.can_move_files,
+            Some(false),
+            "a stale refusal can only downgrade a Move, so it is kept"
+        );
     }
 
     #[test]
