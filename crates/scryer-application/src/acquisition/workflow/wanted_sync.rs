@@ -296,7 +296,7 @@ impl AppUseCase {
 impl AppUseCase {
     /// Operator queue replacement: the blocking download is gone, so every
     /// scope it covered re-opens from scratch — score baseline cleared (the
-    /// replacement decides on its own merits), coverage pruned, loop woken.
+    /// replacement decides on its own merits), all coverage pruned, loop woken.
     pub(crate) async fn reset_wanted_items_for_submission_scope(
         &self,
         title_id: &str,
@@ -324,7 +324,8 @@ impl AppUseCase {
                         None,
                     )
                     .await?;
-                self.reopen_wanted_scope_for_acquisition(&item).await;
+                self.reopen_wanted_scope_for_acquisition(&item, CoverageReopen::All)
+                    .await;
             }
         }
         Ok(())

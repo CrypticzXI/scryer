@@ -1530,6 +1530,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     });
     let submission = DownloadSubmission {
@@ -4057,6 +4058,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -4584,6 +4586,134 @@ fn series_pack_completed_download(
         ("*scryer_facet".to_string(), "series".to_string()),
     ];
     completed
+}
+
+#[tokio::test]
+async fn automatic_episode_upgrade_rejection_burns_release() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            library_dir: _library_dir,
+            ..
+        },
+        _submissions,
+    ) = build_fail_closed_pack_fixture(FailClosedPackFixtureOptions {
+        series_root_at_library_dir: true,
+        ..Default::default()
+    })
+    .await;
+
+    let initial_source = tempfile::tempdir().expect("initial source tempdir");
+    write_pack_video(
+        initial_source.path(),
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL.mkv",
+    );
+    let initial = series_pack_completed_download(
+        "burned-upgrade-initial",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
+        initial_source.path(),
+    );
+    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
+        .await
+        .expect("initial completed import should run");
+    assert_eq!(
+        initial_result.decision,
+        scryer_domain::ImportDecision::Imported
+    );
+
+    let rejected_source = tempfile::tempdir().expect("rejected source tempdir");
+    write_pack_video(
+        rejected_source.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv",
+    );
+    let rejected = series_pack_completed_download(
+        "burned-upgrade-rejected",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL",
+        rejected_source.path(),
+    );
+    let result = crate::import::import::import_completed_download(&app, &user, &rejected)
+        .await
+        .expect("lower-quality completed import should run");
+
+    if cfg!(not(feature = "runtime-media-analysis")) {
+        assert_eq!(
+            result.decision,
+            scryer_domain::ImportDecision::Rejected,
+            "{result:?}"
+        );
+        assert!(result.release_burned, "{result:?}");
+    }
+}
+
+#[tokio::test]
+async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir: _library_dir,
+            ..
+        },
+        _submissions,
+    ) = build_fail_closed_pack_fixture(FailClosedPackFixtureOptions {
+        series_root_at_library_dir: true,
+        ..Default::default()
+    })
+    .await;
+    create_second_pack_episode(&app, &user, &title.id, episode.collection_id.clone()).await;
+
+    let initial_source = tempfile::tempdir().expect("initial source tempdir");
+    write_pack_video(
+        initial_source.path(),
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL.mkv",
+    );
+    let initial = series_pack_completed_download(
+        "mixed-burn-initial",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
+        initial_source.path(),
+    );
+    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
+        .await
+        .expect("initial completed import should run");
+    assert_eq!(
+        initial_result.decision,
+        scryer_domain::ImportDecision::Imported
+    );
+
+    let mixed_source = tempfile::tempdir().expect("mixed source tempdir");
+    write_pack_video(
+        mixed_source.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv",
+    );
+    write_pack_video(
+        mixed_source.path(),
+        "Fail.Closed.Pack.S01E02.1080p.WEB-DL.mkv",
+    );
+    let mixed = series_pack_completed_download(
+        "mixed-burn-release",
+        &title.id,
+        "Fail.Closed.Pack.S01.1080p.WEB-DL",
+        mixed_source.path(),
+    );
+    let result = crate::import::import::import_completed_download(&app, &user, &mixed)
+        .await
+        .expect("mixed completed import should run");
+
+    if cfg!(not(feature = "runtime-media-analysis")) {
+        assert_eq!(
+            result.decision,
+            scryer_domain::ImportDecision::Imported,
+            "{result:?}"
+        );
+        assert!(!result.release_burned, "{result:?}");
+    }
 }
 
 #[tokio::test]

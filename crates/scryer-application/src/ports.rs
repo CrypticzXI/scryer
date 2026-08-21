@@ -2901,6 +2901,14 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
         stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>>;
 
+    /// Delete every coverage row for `scope_key`, forcing all routed indexers
+    /// to be searched again on the next convergence pass.
+    async fn prune_scope(&self, scope_key: &str) -> AppResult<()>;
+
+    /// Delete coverage rows for one indexer within `scope_key`, forcing only
+    /// that indexer to be searched again on the next convergence pass.
+    async fn prune_scope_indexer(&self, scope_key: &str, indexer_id: &str) -> AppResult<()>;
+
     /// All coverage rows for the given scope keys, fetched in one round-trip
     ///. The wanted views group these by scope key and compare
     /// each row's `fingerprint` to the live one in memory, so a full page's
@@ -3371,6 +3379,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     }
 
     async fn get_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn get_identity_tracked_state_reason(
         &self,
         _identity: &DownloadSubmissionIdentity,
         _source_identity: Option<&DownloadSourceIdentity>,
@@ -4205,7 +4221,7 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
     /// Re-open a scope for acquisition after a failed grab, a rejected import,
     /// or an operator replacement: status back to `wanted`, the in-flight grab
     /// cleared, the upgrade-baseline score and search cooldown preserved. The
-    /// convergence re-open (coverage prune) is the caller's second half — this
+    /// convergence re-open (coverage invalidation) is the caller's second half — this
     /// only resets the state row.
     async fn transition_acquisition_scope_to_reopened(&self, id: &str) -> AppResult<()> {
         let Some(existing) = self.get_acquisition_scope_state_by_id(id).await? else {

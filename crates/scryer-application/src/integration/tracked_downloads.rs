@@ -72,6 +72,8 @@ pub struct TrackedDownload {
     pub import_hold: Option<ImportHold>,
     /// Manual failure actions can record the failure without reacquiring.
     pub skip_reacquire_on_failure: bool,
+    /// Runtime-only marker that a terminal failure came from a burned import gate.
+    pub burned_by_import_gate: bool,
     /// When this download first went missing from a pruning snapshot.
     ///
     /// A snapshot can be PARTIAL without saying so: the router degrades
@@ -199,6 +201,7 @@ impl TrackedDownload {
         self.import_execution_retry = finished.import_execution_retry;
         self.import_hold = finished.import_hold;
         self.completed_source = finished.completed_source;
+        self.burned_by_import_gate = finished.burned_by_import_gate;
     }
 
     pub(crate) fn reset_for_import_retry(&mut self) {
@@ -212,6 +215,7 @@ impl TrackedDownload {
         self.import_execution_retry = None;
         self.import_hold = None;
         self.skip_reacquire_on_failure = false;
+        self.burned_by_import_gate = false;
     }
 
     /// Whether an automatic import re-attempt is still inside its backoff
@@ -377,6 +381,7 @@ impl TrackedDownloadService {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -617,7 +622,16 @@ impl TrackedDownloadService {
         let Some(td) = self.cache.get(id) else {
             return false;
         };
-        persist_tracked_download_state_marker(app, td, state, None, None).await
+        let (reason, detail) = if state == TrackedDownloadState::Failed && td.burned_by_import_gate
+        {
+            (
+                Some("import_gate_rejected"),
+                td.status_messages.first().map(String::as_str),
+            )
+        } else {
+            (None, None)
+        };
+        persist_tracked_download_state_marker(app, td, state, reason, detail).await
     }
 
     // ── Title Resolution ─────────────────────────────────────────────────
@@ -747,6 +761,11 @@ impl TrackedDownloadService {
     async fn reconstruct_state(app: &AppUseCase, td: &mut TrackedDownload) {
         let observed_identity = observed_queue_item_identity(&td.client_item);
         let observed_source_identity = queue_item_source_identity(&td.client_item);
+        let terminal_source_identity = DownloadSourceIdentity::new(
+            Some(td.client_id.as_str()),
+            &td.client_type,
+            &td.client_item.download_client_item_id,
+        );
         if !download_submission_identity_is_empty(&observed_identity)
             && let Ok(Some(tracked_state)) = app
                 .services
@@ -761,7 +780,34 @@ impl TrackedDownloadService {
             && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
         {
             td.state = state;
-            if state == TrackedDownloadState::ImportBlocked {
+            td.burned_by_import_gate = state == TrackedDownloadState::Failed
+                && app
+                    .services
+                    .workflow
+                    .download_submissions
+                    .get_identity_tracked_state_reason(
+                        &observed_identity,
+                        Some(&terminal_source_identity),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|reason| reason == "import_gate_rejected");
+            if state == TrackedDownloadState::Failed && td.burned_by_import_gate {
+                let detail = app
+                    .services
+                    .workflow
+                    .download_submissions
+                    .get_identity_tracked_state_detail(
+                        &observed_identity,
+                        Some(&terminal_source_identity),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                td.status = TrackedDownloadStatus::Error;
+                td.status_messages = detail.into_iter().collect();
+            } else if state == TrackedDownloadState::ImportBlocked {
                 let detail = app
                     .services
                     .workflow
@@ -1626,7 +1672,7 @@ fn tracked_download_cache_max_entries() -> usize {
         .unwrap_or(DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES)
 }
 
-fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
+pub(crate) fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
     crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
         download_id: item.download_id.as_deref(),
         parameters: &[],
@@ -1734,6 +1780,7 @@ mod tests {
         download_id_submissions:
             Arc<Mutex<Vec<(crate::DownloadSubmission, crate::DownloadSubmissionIdentity)>>>,
         identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
+        identity_tracked_state_reasons: Arc<Mutex<HashMap<String, String>>>,
         identity_tracked_state_details: Arc<Mutex<HashMap<String, String>>>,
     }
 
@@ -1907,7 +1954,7 @@ mod tests {
             identity: &crate::DownloadSubmissionIdentity,
             source_identity: Option<&DownloadSourceIdentity>,
             tracked_state: &str,
-            _: Option<&str>,
+            reason: Option<&str>,
             detail: Option<&str>,
         ) -> AppResult<()> {
             if let Some(key) = test_download_identity_state_key(identity, source_identity) {
@@ -1915,6 +1962,12 @@ mod tests {
                     .lock()
                     .await
                     .insert(key.clone(), tracked_state.to_string());
+                if let Some(reason) = reason {
+                    self.identity_tracked_state_reasons
+                        .lock()
+                        .await
+                        .insert(key.clone(), reason.to_string());
+                }
                 if let Some(detail) = detail {
                     self.identity_tracked_state_details
                         .lock()
@@ -1934,6 +1987,22 @@ mod tests {
                 return Ok(None);
             };
             Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
+        }
+
+        async fn get_identity_tracked_state_reason(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+        ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
+            Ok(self
+                .identity_tracked_state_reasons
+                .lock()
+                .await
+                .get(&key)
+                .cloned())
         }
 
         async fn get_identity_tracked_state_detail(
@@ -2811,6 +2880,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         }
     }
@@ -3329,6 +3399,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_reasons: Arc::new(Mutex::new(HashMap::new())),
             identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
@@ -3480,6 +3551,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persist_terminal_state_marks_burned_import_gate_failure() {
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app(
+            download_submissions.clone(),
+            Arc::new(TestImportRepo::default()),
+        );
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some("scryer-download:burned-import".to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item).await;
+        let tracked = tracker.find_mut(&tracked_id).expect("tracked download");
+        tracked.burned_by_import_gate = true;
+        tracked.status_messages = vec!["release language does not match the title".to_string()];
+
+        assert!(
+            tracker
+                .persist_terminal_state(&app, &tracked_id, TrackedDownloadState::Failed)
+                .await
+        );
+        assert!(
+            download_submissions
+                .identity_tracked_state_reasons
+                .lock()
+                .await
+                .values()
+                .any(|reason| reason == "import_gate_rejected")
+        );
+        assert!(
+            download_submissions
+                .identity_tracked_state_details
+                .lock()
+                .await
+                .values()
+                .any(|detail| detail == "release language does not match the title")
+        );
+    }
+
+    #[tokio::test]
     async fn persist_terminal_state_returns_false_when_repository_write_fails() {
         #[derive(Default)]
         struct FailingDownloadSubmissionRepo;
@@ -3608,6 +3718,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_reasons: Arc::new(Mutex::new(HashMap::new())),
             identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
@@ -4059,6 +4170,7 @@ mod tests {
                     import_execution_retry: None,
                     import_hold: None,
                     skip_reacquire_on_failure: false,
+                    burned_by_import_gate: false,
                     snapshot_missing_since: None,
                 },
             );
@@ -4382,6 +4494,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4429,6 +4542,7 @@ mod tests {
                 import_execution_retry: None,
                 import_hold: None,
                 skip_reacquire_on_failure: false,
+                burned_by_import_gate: false,
                 snapshot_missing_since: None,
             };
 
@@ -4473,6 +4587,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4555,6 +4670,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4765,6 +4881,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 

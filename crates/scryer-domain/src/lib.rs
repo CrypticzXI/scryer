@@ -2128,6 +2128,8 @@ pub struct ImportResult {
     pub file_size_bytes: Option<i64>,
     pub link_type: Option<ImportStrategy>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub release_burned: bool,
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
 }

@@ -1,0 +1,5 @@
+mutation RemoveHistoryItemsDeleteFiles($ids: [Int!]!, $deleteFiles: Boolean!) {
+  removeHistoryItems(ids: $ids, deleteFiles: $deleteFiles) {
+    success
+  }
+}

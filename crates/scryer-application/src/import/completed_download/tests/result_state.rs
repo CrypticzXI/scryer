@@ -1,5 +1,28 @@
 use super::*;
 
+struct TorrentOnlyPluginProvider;
+
+impl crate::DownloadClientPluginProvider for TorrentOnlyPluginProvider {
+    fn client_for_config(
+        &self,
+        _: &scryer_domain::DownloadClientConfig,
+    ) -> Option<std::sync::Arc<dyn crate::DownloadClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        vec!["qbittorrent".to_string()]
+    }
+
+    fn accepted_inputs_for_provider(&self, provider_type: &str) -> Vec<String> {
+        if provider_type.eq_ignore_ascii_case("qbittorrent") {
+            vec!["magnet_uri".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 #[tokio::test]
 async fn apply_result_marks_verified_already_present_skip_imported() {
     let title = build_title("title-1", "Show", MediaFacet::Series);
@@ -32,6 +55,7 @@ async fn apply_result_marks_verified_already_present_skip_imported() {
         file_size_bytes: None,
         link_type: None,
         error_message: Some("episode already imported".to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -74,6 +98,7 @@ async fn apply_result_keeps_rejected_already_imported_result_blocked() {
         file_size_bytes: None,
         link_type: None,
         error_message: Some("existing episode file is equal or better".to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -85,6 +110,103 @@ async fn apply_result_keeps_rejected_already_imported_result_blocked() {
         td.status_messages,
         vec!["existing episode file is equal or better".to_string()]
     );
+}
+
+#[tokio::test]
+async fn apply_result_marks_burned_rejection_failed() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut result = failed_execution_result("release language does not match the title");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Failed);
+    assert_eq!(td.status, TrackedDownloadStatus::Error);
+    assert_eq!(
+        td.status_messages,
+        vec!["release language does not match the title".to_string()]
+    );
+    assert!(td.burned_by_import_gate);
+}
+
+#[tokio::test]
+async fn apply_result_treats_burned_rule_block_as_final() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut result =
+        failed_execution_result("post-download rule(s) blocked import: language policy");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Failed);
+    assert_eq!(td.status, TrackedDownloadStatus::Error);
+    assert!(td.import_execution_retry.is_none());
+    assert_eq!(
+        td.status_messages,
+        vec!["post-download rule(s) blocked import: language policy".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn burned_usenet_rejection_deletes_the_mapped_job_directory() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let job_dir = temp_dir.path().join("completed/job");
+    let source = job_dir.join("release/episode.mkv");
+    std::fs::create_dir_all(source.parent().expect("source parent")).expect("create source");
+    std::fs::write(&source, b"video").expect("write source");
+    let completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        job_dir.to_string_lossy().as_ref(),
+        None,
+    );
+    let mut result = failed_execution_result("release language does not match the title");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+    result.source_path = source.to_string_lossy().into_owned();
+
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, result, 0, Some(&completed), None).await
+    );
+    assert_eq!(td.state, TrackedDownloadState::Failed);
+    assert!(!job_dir.exists());
+}
+
+#[tokio::test]
+async fn burned_torrent_rejection_does_not_delete_download_data() {
+    let mut app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let plugin_provider: std::sync::Arc<dyn crate::DownloadClientPluginProvider> =
+        std::sync::Arc::new(TorrentOnlyPluginProvider);
+    app.services.integrations.download_client_plugin_provider =
+        crate::RuntimeFeature::enabled(plugin_provider);
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    td.client_type = "qbittorrent".to_string();
+    td.client_item.client_type = "qbittorrent".to_string();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let job_dir = temp_dir.path().join("completed/job");
+    let source = job_dir.join("release/episode.mkv");
+    std::fs::create_dir_all(source.parent().expect("source parent")).expect("create source");
+    std::fs::write(&source, b"video").expect("write source");
+    let mut completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        job_dir.to_string_lossy().as_ref(),
+        None,
+    );
+    completed.client_type = "qbittorrent".to_string();
+    let mut result = failed_execution_result("release language does not match the title");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+    result.source_path = source.to_string_lossy().into_owned();
+
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, result, 0, Some(&completed), None).await
+    );
+    assert_eq!(td.state, TrackedDownloadState::Failed);
+    assert!(job_dir.exists());
+    assert!(source.exists());
 }
 
 #[tokio::test]
@@ -114,6 +236,7 @@ async fn apply_result_does_not_verify_unresolved_identity_rejection_as_imported(
         file_size_bytes: None,
         link_type: None,
         error_message: Some("download identity is unresolved".to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -145,6 +268,7 @@ async fn apply_result_keeps_ambiguous_obfuscated_episode_blocked_with_actionable
         file_size_bytes: None,
         link_type: None,
         error_message: Some(reason.to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -175,6 +299,7 @@ async fn apply_result_backs_off_no_video_import_before_blocking() {
         file_size_bytes: None,
         link_type: None,
         error_message: Some("no eligible video files found".to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -217,6 +342,7 @@ async fn apply_result_resets_no_video_retry_when_source_signature_changes() {
         file_size_bytes: None,
         link_type: None,
         error_message: Some("no eligible video files found".to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
@@ -246,6 +372,7 @@ fn failed_execution_result(error_message: &str) -> ImportResult {
         file_size_bytes: None,
         link_type: None,
         error_message: Some(error_message.to_string()),
+        release_burned: false,
         started_at: Utc::now(),
         completed_at: Utc::now(),
     }

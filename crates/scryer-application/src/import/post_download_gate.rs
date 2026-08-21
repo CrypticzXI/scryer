@@ -5,8 +5,9 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
-    normalize_release_attempt_title,
+    AppUseCase, DownloadSourceIdentity, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
+    acquisition::convergence::{CoverageReopen, convergence_scope_key},
+    normalize_release_attempt_hint, normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -1294,10 +1295,15 @@ pub(crate) async fn persist_media_analysis_result(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the import caller supplies the rejection context already resolved for one source file"
+)]
 pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
+    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     episode_ids: &[String],
@@ -1307,6 +1313,7 @@ pub(crate) async fn reject_source_file_before_import(
         app,
         actor,
         title,
+        completed,
         completed_name,
         path,
         episode_ids,
@@ -1315,10 +1322,15 @@ pub(crate) async fn reject_source_file_before_import(
     .await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "finalization carries the same resolved import context without reconstructing it"
+)]
 async fn finalize_import_rejection(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
+    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     episode_ids: &[String],
@@ -1339,8 +1351,6 @@ async fn finalize_import_rejection(
             None,
         )
         .await;
-
-    reset_wanted_items_for_retry(app, &title.id, episode_ids).await;
 
     let reason = Some(format!(
         "{}{}",
@@ -1377,6 +1387,42 @@ async fn finalize_import_rejection(
             "failed to persist blocklist entry for rejected import"
         );
     }
+
+    let coverage = match app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            Some(completed.client_id.as_str()),
+            &completed.client_type,
+            &completed.download_client_item_id,
+        ))
+        .await
+    {
+        Ok(Some(submission)) => {
+            let indexer_id = submission.source_provider_id.clone();
+            if let Some(scope_key) = convergence_scope_key(&submission.scope, &title.id) {
+                app.prune_scope_key_coverage(&scope_key, indexer_id.as_deref())
+                    .await;
+            }
+            indexer_id
+                .map(CoverageReopen::Indexer)
+                .unwrap_or(CoverageReopen::All)
+        }
+        Ok(None) => CoverageReopen::All,
+        Err(error) => {
+            warn!(
+                error = %error,
+                client_id = %completed.client_id,
+                client_type = %completed.client_type,
+                download_client_item_id = %completed.download_client_item_id,
+                "failed to resolve indexer for rejected import coverage invalidation"
+            );
+            CoverageReopen::All
+        }
+    };
+    reset_wanted_items_for_retry(app, &title.id, episode_ids, coverage).await;
+
     let _ = app
         .append_domain_event(new_title_domain_event(
             actor,
@@ -1399,13 +1445,19 @@ async fn finalize_import_rejection(
         .await;
 }
 
-// Re-opens a scope's convergence after a rejected import. For a
+// Re-opens a scope's convergence after a rejected import, invalidating the
+// source indexer's coverage when known (or all coverage otherwise). For a
 // `language_mismatch` rejection this is intentional: the rejected release is
 // blocklisted by title (a provable absence — it genuinely lacks the required
 // audio), so the re-opened search seeks a *different*, correct candidate
 // rather than re-grabbing the same one. Trustworthy verdicts (see
 // `classify_required_audio`) keep this from churning on falsely-rejected files.
-async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {
+async fn reset_wanted_items_for_retry(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_ids: &[String],
+    coverage: CoverageReopen,
+) {
     let targets: Vec<Option<&str>> = if episode_ids.is_empty() {
         vec![None]
     } else {
@@ -1426,7 +1478,8 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
             .await
         {
             Ok(Some(item)) => {
-                app.reopen_wanted_scope_for_acquisition(&item).await;
+                app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
+                    .await;
             }
             Ok(None) => {}
             Err(error) => {

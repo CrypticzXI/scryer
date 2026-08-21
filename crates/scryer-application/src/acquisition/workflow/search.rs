@@ -259,10 +259,11 @@ impl AppUseCase {
                 continue;
             }
 
-            // A rematch changes the scope's fingerprint, so stale coverage is
-            // already ignored — the re-open prunes it eagerly and wakes the
-            // cursor so recovery starts on the next cycle.
-            self.reopen_wanted_scope_for_acquisition(item).await;
+            // This operator-authorized recovery can change a title or alias
+            // without changing the search fingerprint, so it must override
+            // convergence and search every routed indexer again.
+            self.reopen_wanted_scope_for_acquisition(item, CoverageReopen::All)
+                .await;
             queued += 1;
         }
 
@@ -281,7 +282,7 @@ impl AppUseCase {
 impl AppUseCase {
     /// Re-open every fileless monitored episode scope of `title` (optionally
     /// restricted to one season) for acquisition: the derived target set already
-    /// contains them; the re-open prunes any coverage so even converged scopes
+    /// contains them; the re-open prunes all coverage so even converged scopes
     /// are searched again on the next cycle (§D5 — a trigger overrides
     /// convergence). Scopes with an in-flight grab are skipped.
     async fn reopen_series_scopes_for_search(

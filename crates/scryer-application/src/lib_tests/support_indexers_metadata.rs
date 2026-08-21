@@ -251,6 +251,9 @@ pub(super) struct FixedReleaseIndexerClient {
     /// Indexer ids this stand-in reports as having fired. Empty by default — set via [`with_fired_indexers`] when a test
     /// drives the real coverage chokepoint and needs specific indexers recorded.
     pub(super) fired_indexer_ids: Vec<String>,
+    /// Enabled indexer ids requested by each search call. This observes the
+    /// routing plan separately from the stand-in's configured response.
+    requested_indexer_id_sets: Arc<Mutex<Vec<Vec<String>>>>,
     /// When set, every fired indexer reports `Fired { empty: true }` and the
     /// response carries no results — a genuine zero-hit response.
     pub(super) empty_response: bool,
@@ -267,6 +270,7 @@ impl FixedReleaseIndexerClient {
             release_title: release_title.into(),
             indexer_languages: None,
             fired_indexer_ids: Vec::new(),
+            requested_indexer_id_sets: Arc::new(Mutex::new(Vec::new())),
             empty_response: false,
             seeders: None,
         }
@@ -289,6 +293,10 @@ impl FixedReleaseIndexerClient {
         self.empty_response = true;
         self
     }
+
+    pub(super) async fn requested_indexer_id_sets(&self) -> Vec<Vec<String>> {
+        self.requested_indexer_id_sets.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -301,7 +309,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _facet: Option<String>,
         _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
-        _indexer_routing: Option<IndexerRoutingPlan>,
+        indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
         _season: Option<u32>,
         _episode: Option<u32>,
@@ -310,6 +318,17 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        let mut requested_indexer_ids = indexer_routing
+            .into_iter()
+            .flat_map(|plan| plan.entries)
+            .filter(|(_, entry)| entry.enabled)
+            .map(|(indexer_id, _)| indexer_id)
+            .collect::<Vec<_>>();
+        requested_indexer_ids.sort();
+        self.requested_indexer_id_sets
+            .lock()
+            .await
+            .push(requested_indexer_ids);
         let indexer_outcomes = self
             .fired_indexer_ids
             .iter()

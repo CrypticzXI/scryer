@@ -119,6 +119,7 @@ pub async fn retry_failed_import(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
+                release_burned: false,
                 ..base_completed_import_result(
                     import_id,
                     &completed,
@@ -133,6 +134,49 @@ pub async fn retry_failed_import(
         }
     }
 }
+/// Identifies why a failed download reached terminal cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalFailureOrigin {
+    ClientFailure,
+    ImportGate,
+}
+
+pub(crate) async fn should_remove_terminal_download(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    library_id: Option<&str>,
+    facet: Option<&MediaFacet>,
+    state: TrackedDownloadState,
+    cache: Option<&TerminalCleanupTickCache>,
+) -> bool {
+    let client_id = client_id.trim();
+    let routing_key = if client_id.is_empty() {
+        client_type
+    } else {
+        client_id
+    };
+
+    match state {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => match facet {
+            Some(facet) => {
+                should_remove_completed_download_cached(app, library_id, facet, routing_key, cache)
+                    .await
+            }
+            None => false,
+        },
+        TrackedDownloadState::Failed => match facet {
+            Some(facet) => {
+                app.should_remove_failed_download(library_id, facet, routing_key)
+                    .await
+            }
+            None => false,
+        },
+        TrackedDownloadState::Ignored => true,
+        _ => false,
+    }
+}
+
 /// Remove a terminal download's entry from its client, subject to the
 /// seeding-aware gate.
 ///
@@ -157,6 +201,8 @@ async fn reconcile_terminal_download_cleanup(
     library_id: Option<&str>,
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
+    failure_origin: TerminalFailureOrigin,
+    precomputed_should_remove: Option<bool>,
     present_in_client: bool,
     // The freshest seeding observation the caller holds, or `None` to have the
     // gate look one up from the published tracked-download snapshot.
@@ -166,29 +212,20 @@ async fn reconcile_terminal_download_cleanup(
     cache: Option<&TerminalCleanupTickCache>,
 ) -> TerminalDownloadCleanup {
     let client_id = client_id.trim();
-    let routing_key = if client_id.is_empty() {
-        client_type
-    } else {
-        client_id
-    };
-
-    let should_remove = match state {
-        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => match facet {
-            Some(facet) => {
-                should_remove_completed_download_cached(app, library_id, facet, routing_key, cache)
-                    .await
-            }
-            None => false,
-        },
-        TrackedDownloadState::Failed => match facet {
-            Some(facet) => {
-                app.should_remove_failed_download(library_id, facet, routing_key)
-                    .await
-            }
-            None => false,
-        },
-        TrackedDownloadState::Ignored => true,
-        _ => false,
+    let should_remove = match precomputed_should_remove {
+        Some(should_remove) => should_remove,
+        None => {
+            should_remove_terminal_download(
+                app,
+                client_id,
+                client_type,
+                library_id,
+                facet,
+                state,
+                cache,
+            )
+            .await
+        }
     };
 
     if !should_remove {
@@ -205,8 +242,8 @@ async fn reconcile_terminal_download_cleanup(
         .as_ref()
         .and_then(|observation| observation.seed_time_seconds);
     // The client's own removal verdict, post-trust-floor — the same value the
-    // gate would read. Captured here because the gate consumes the observation,
-    // and the `Failed` arm below (which never reaches the gate) has to honor it.
+    // gate would read. A client-reported failure does not enter the gate and
+    // retains this behavior unchanged.
     let observed_can_remove = observation
         .as_ref()
         .and_then(|observation| observation.can_remove);
@@ -217,8 +254,13 @@ async fn reconcile_terminal_download_cleanup(
         seed_time_seconds: observed_seed_time_seconds,
     };
 
+    let is_torrent = crate::seeding_gate::client_type_is_torrent(app, client_type);
     let mut seeding_report = None;
-    if state.counts_as_imported() {
+    if state.counts_as_imported()
+        || (state == TrackedDownloadState::Failed
+            && failure_origin == TerminalFailureOrigin::ImportGate
+            && is_torrent)
+    {
         let key = crate::seeding_gate::SeedGoalLookupKey {
             client_id: client_id.to_string(),
             client_type: client_type.trim().to_string(),
@@ -325,10 +367,13 @@ async fn reconcile_terminal_download_cleanup(
     //   the entry with `RemoveEntry`: the obligation is discharged, the import
     //   already produced the library file, and a copy import's client-side copy
     //   would otherwise be orphaned.
-    // - `Failed` never enters the gate — no private rail, no `never_remove`, no
-    //   HandOff — so the client's own `can_remove` is the only rail there is. A
-    //   torrent it will not release (or cannot answer for) keeps today's
-    //   entry-only removal.
+    // - A client-reported `Failed` never enters the gate — no private rail, no
+    //   `never_remove`, no HandOff — so the client's own `can_remove` is the
+    //   only rail there is. A torrent it will not release (or cannot answer
+    //   for) keeps today's entry-only removal.
+    // - A burned import-gate `Failed` is a release failure, so torrents use
+    //   the same gate and data behavior as imported torrents while Usenet
+    //   history deletion includes its client-side data.
     // - `Ignored` keeps today's behavior on purpose: the operator told Scryer
     //   to stop tracking the download, not to delete what it downloaded.
     //
@@ -336,14 +381,29 @@ async fn reconcile_terminal_download_cleanup(
     // `remove_dir_all` on a watch folder some *other* client is seeding from;
     // the gate refuses it for imported states, and `Failed` skips the gate, so
     // the rule has to be restated here.
-    let remove_data = match state {
-        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => true,
-        TrackedDownloadState::Failed => observed_can_remove == Some(true),
-        _ => false,
-    } && crate::seeding_gate::client_type_is_torrent(app, client_type)
+    let torrent_data_removal_allowed = is_torrent
         && !client_type
             .trim()
             .eq_ignore_ascii_case(crate::seeding_gate::TORRENT_BLACKHOLE_CLIENT_TYPE);
+    let remove_data = match state {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => {
+            torrent_data_removal_allowed
+        }
+        TrackedDownloadState::Failed
+            if failure_origin == TerminalFailureOrigin::ImportGate && is_torrent =>
+        {
+            torrent_data_removal_allowed
+        }
+        TrackedDownloadState::Failed
+            if failure_origin == TerminalFailureOrigin::ImportGate =>
+        {
+            true
+        }
+        TrackedDownloadState::Failed => {
+            observed_can_remove == Some(true) && torrent_data_removal_allowed
+        }
+        _ => false,
+    };
 
     let delete_result = if client_id.is_empty() {
         app.services

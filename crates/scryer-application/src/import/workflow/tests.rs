@@ -7,6 +7,7 @@ mod tests {
         CompletedImportRequestPayload, ReleaseEvidence, SelectedCompletedImportEvidence,
         StoredCompletedImportRequestPayload,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping,
+        completed_import_error_message_is_retryable,
         completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
         manual_episode_suggestion_for_grabbed_scope, resolved_episode_ids_are_within_expected,
         stamp_scryer_submission_origin, submission_has_scryer_origin,
@@ -63,6 +64,16 @@ mod tests {
             sanitized_title_folder_component("Movie Title (2024)"),
             "Movie Title (2024)"
         );
+    }
+
+    #[test]
+    fn retryable_import_errors_match_locked_as_a_word() {
+        assert!(!completed_import_error_message_is_retryable(
+            "post-download rule(s) blocked import: language policy"
+        ));
+        assert!(completed_import_error_message_is_retryable(
+            "source file is locked by another process"
+        ));
     }
 
     #[test]
@@ -1101,6 +1112,7 @@ mod tests {
             file_size_bytes: None,
             link_type: None,
             error_message: None,
+            release_burned: false,
             started_at: Utc::now(),
             completed_at: Utc::now(),
         };
@@ -1255,6 +1267,7 @@ mod tests {
             file_size_bytes: None,
             link_type: None,
             error_message: Some(message),
+            release_burned: false,
             started_at: Utc::now(),
             completed_at: Utc::now(),
         };

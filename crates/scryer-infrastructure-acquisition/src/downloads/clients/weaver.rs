@@ -1586,30 +1586,65 @@ impl DownloadClient for WeaverDownloadClient {
         Ok(())
     }
 
-    /// `_remove_data` is accepted and not acted on: Weaver is usenet, with no
-    /// seeding obligation, and the history delete deliberately keeps
-    /// `deleteFiles: false` so a removal never takes the payload out from under
-    /// an import. Data removal for the first-party usenet clients is out of
-    /// scope for the seeding work.
+    /// A history delete requests payload deletion when `remove_data` is true.
+    /// Older Weaver versions fall back to removing the history entry only when
+    /// they do not support the `deleteFiles` argument.
     async fn delete_queue_item(
         &self,
         id: &str,
         is_history: bool,
-        _remove_data: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         let job_id: u64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;
         if is_history {
-            match self
-                .graphql_request_with_policy::<RemoveHistoryItemsPayload>(
-                    self.mutation_policy("weaver_remove_history_items"),
+            let (mutation, variables) = if remove_data {
+                (
+                    graphql_docs::REMOVE_HISTORY_ITEMS_DELETE_FILES_MUTATION,
+                    json!({ "ids": [job_id], "deleteFiles": true }),
+                )
+            } else {
+                (
                     graphql_docs::REMOVE_HISTORY_ITEMS_MUTATION,
                     json!({ "ids": [job_id] }),
+                )
+            };
+            match self
+                .graphql_request_with_policy::<RemoveHistoryItemsPayload>(
+                    self.mutation_policy(if remove_data {
+                        "weaver_remove_history_items_delete_files"
+                    } else {
+                        "weaver_remove_history_items"
+                    }),
+                    mutation,
+                    variables,
                 )
                 .await
             {
                 Ok(data) => {
+                    if !data.remove_history_items.success {
+                        return Err(AppError::Repository(
+                            "weaver removeHistoryItems did not succeed".into(),
+                        ));
+                    }
+                }
+                Err(error)
+                    if remove_data
+                        && (is_weaver_schema_error(&error, "Unknown argument \"deleteFiles\"")
+                            || is_weaver_schema_error(&error, "Variable \"$deleteFiles\"")) =>
+                {
+                    warn!(
+                        error = %error,
+                        "weaver: deleteFiles is unsupported; data could not be deleted"
+                    );
+                    let data: RemoveHistoryItemsPayload = self
+                        .graphql_request_with_policy(
+                            self.mutation_policy("weaver_remove_history_items"),
+                            graphql_docs::REMOVE_HISTORY_ITEMS_MUTATION,
+                            json!({ "ids": [job_id] }),
+                        )
+                        .await?;
                     if !data.remove_history_items.success {
                         return Err(AppError::Repository(
                             "weaver removeHistoryItems did not succeed".into(),
@@ -1623,7 +1658,7 @@ impl DownloadClient for WeaverDownloadClient {
                         .graphql_request_with_policy(
                             self.mutation_policy("weaver_delete_history_batch"),
                             graphql_docs::DELETE_HISTORY_BATCH_MUTATION,
-                            json!({ "ids": [job_id], "deleteFiles": false }),
+                            json!({ "ids": [job_id], "deleteFiles": remove_data }),
                         )
                         .await?;
                     if !data.delete_history_batch.contains(&job_id) {
@@ -1704,6 +1739,92 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn delete_history_item_without_data_removal_uses_legacy_mutation() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains(
+                "mutation RemoveHistoryItems($ids: [Int!]!)",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "removeHistoryItems": { "success": true } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+        client
+            .delete_queue_item("10002", true, false)
+            .await
+            .expect("legacy history delete should succeed");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        assert!(!String::from_utf8_lossy(&requests[0].body).contains("deleteFiles"));
+    }
+
+    #[tokio::test]
+    async fn delete_history_item_with_data_removal_uses_delete_files_mutation() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("RemoveHistoryItemsDeleteFiles"))
+            .and(body_string_contains("\"deleteFiles\":true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "removeHistoryItems": { "success": true } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+        client
+            .delete_queue_item("10002", true, true)
+            .await
+            .expect("history delete with data removal should succeed");
+    }
+
+    #[tokio::test]
+    async fn delete_history_item_falls_back_when_delete_files_is_unsupported() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("RemoveHistoryItemsDeleteFiles"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "errors": [{
+                    "message": "Unknown argument \"deleteFiles\" on field \"Mutation.removeHistoryItems\"."
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains(
+                "mutation RemoveHistoryItems($ids: [Int!]!)",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "removeHistoryItems": { "success": true } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+        client
+            .delete_queue_item("10002", true, true)
+            .await
+            .expect("legacy fallback should remove the history entry");
     }
 
     #[test]

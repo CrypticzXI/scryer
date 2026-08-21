@@ -93,7 +93,7 @@ impl AppUseCase {
 }
 impl AppUseCase {
     /// A user-initiated "search this scope again": after the submission-conflict
-    /// gate, re-open the scope's convergence (coverage pruned, state reset,
+    /// gate, re-open the scope's convergence (all coverage pruned, state reset,
     /// acquisition woken) so the cursor searches it on the next cycle even if it
     /// had converged.
     pub(crate) async fn reopen_wanted_scope_with_policy(
@@ -109,7 +109,8 @@ impl AppUseCase {
             return Ok(outcome);
         }
 
-        self.reopen_wanted_scope_for_acquisition(item).await;
+        self.reopen_wanted_scope_for_acquisition(item, CoverageReopen::All)
+            .await;
 
         Ok(WantedSearchOutcome {
             queued_count: 1,

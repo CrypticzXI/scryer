@@ -1201,22 +1201,21 @@ impl DownloadClient for SabnzbdDownloadClient {
         Ok(())
     }
 
-    /// `_remove_data` is accepted and not acted on: the queue delete already
-    /// passes `del_files=1`, and a history delete leaves what SABnzbd kept to
-    /// SABnzbd. Data removal for the first-party usenet clients is deliberately
-    /// out of scope for the seeding work.
+    /// A history delete includes `del_files=1` only when `remove_data` is
+    /// requested. Queue deletes continue to include `del_files=1` regardless.
     async fn delete_queue_item(
         &self,
         id: &str,
         is_history: bool,
-        _remove_data: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         if is_history {
-            self.api_get_mutation(
-                &[("mode", "history"), ("name", "delete"), ("value", id)],
-                "sabnzbd_delete_history_item",
-            )
-            .await?;
+            let mut params = vec![("mode", "history"), ("name", "delete"), ("value", id)];
+            if remove_data {
+                params.push(("del_files", "1"));
+            }
+            self.api_get_mutation(&params, "sabnzbd_delete_history_item")
+                .await?;
         } else {
             self.api_get_mutation(
                 &[
@@ -2159,17 +2158,19 @@ fn is_localhost_base_url(base_url: &str) -> Option<bool> {
 mod tests {
     use super::{
         SAB_ADDFILE_UPLOAD_FIELD, SabAddfileOutcome, SabApiAuth, SabApiResponseEvaluation,
-        build_sab_api_urls, completed_downloads_from_sab_slots, evaluate_sab_addfile_response,
-        evaluate_sab_api_response, extract_sabnzbd_category, map_sabnzbd_outbound_error,
-        normalize_sab_job_name, redact_sab_secret_values, sab_addfile_query_params,
-        sab_api_mode_matches_response, sab_reconcile_slot_nzo_id,
+        SabnzbdDownloadClient, build_sab_api_urls, completed_downloads_from_sab_slots,
+        evaluate_sab_addfile_response, evaluate_sab_api_response, extract_sabnzbd_category,
+        map_sabnzbd_outbound_error, normalize_sab_job_name, redact_sab_secret_values,
+        sab_addfile_query_params, sab_api_mode_matches_response, sab_reconcile_slot_nzo_id,
     };
     use chrono::Utc;
     use reqwest::StatusCode;
-    use scryer_application::AppError;
+    use scryer_application::{AppError, DownloadClient};
     use scryer_outbound_http::OutboundHttpError;
     use serde_json::json;
     use std::time::Duration;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn outbound_rate_limit_preserves_retry_after() {
@@ -2529,6 +2530,65 @@ mod tests {
         assert_eq!(
             sab_reconcile_slot_nzo_id(&history_slot, "name", &expected).as_deref(),
             Some("SABnzbd_nzo_2")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_history_item_only_deletes_data_when_requested() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api"))
+            .and(query_param("mode", "history"))
+            .and(query_param("name", "delete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": true })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = SabnzbdDownloadClient::new(server.uri(), "api-key".to_string());
+        client
+            .delete_queue_item("keep-data", true, false)
+            .await
+            .expect("history delete without data removal should succeed");
+        client
+            .delete_queue_item("delete-data", true, true)
+            .await
+            .expect("history delete with data removal should succeed");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let keep_data_request = requests
+            .iter()
+            .find(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "value" && value == "keep-data")
+            })
+            .expect("history delete without data removal should be requested");
+        assert!(
+            !keep_data_request
+                .url
+                .query_pairs()
+                .any(|(key, _)| key == "del_files")
+        );
+
+        let delete_data_request = requests
+            .iter()
+            .find(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "value" && value == "delete-data")
+            })
+            .expect("history delete with data removal should be requested");
+        assert!(
+            delete_data_request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "del_files" && value == "1")
         );
     }
 }

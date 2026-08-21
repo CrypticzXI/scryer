@@ -227,6 +227,8 @@ async fn maybe_remove_completed_manual_import_download(
         library_id.as_deref(),
         Some(&facet),
         TrackedDownloadState::Imported,
+        TerminalFailureOrigin::ClientFailure,
+        None,
         true,
         // No tracked row here, so the gate reads the published snapshot.
         None,
@@ -2497,6 +2499,7 @@ impl QueuedManualImportOutcome {
             file_size_bytes: None,
             link_type: None,
             error_message: None,
+            release_burned: false,
             started_at: now,
             completed_at: now,
         };

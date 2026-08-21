@@ -2391,6 +2391,16 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
     .await;
 
     if cleanup.outcome == crate::import::import::TerminalDownloadCleanupOutcome::HeldForSeeding {
+        if state == TrackedDownloadState::Failed
+            && tracker
+                .find(id)
+                .is_some_and(|tracked| tracked.burned_by_import_gate)
+        {
+            // Keep the burned release visibly failed while its torrent remains
+            // under the same seeding obligation as an imported download; it
+            // deliberately records no seeding history while it is held.
+            return;
+        }
         // Only the transition *into* the hold is history. A held torrent is
         // re-offered to the gate on every poll, and one event per tick would
         // bury the feed under the same fact.

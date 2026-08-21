@@ -382,6 +382,7 @@ async fn resolve_completed_import_target(
                         .unwrap_or_else(|| "unnamed download".to_string()),
                     archive_message
                 )),
+                release_burned: false,
                 ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
@@ -405,6 +406,7 @@ async fn resolve_completed_import_target(
                 "title '{}' has unsupported facet '{:?}', skipping import",
                 title.name, title.facet
             )),
+            release_burned: false,
             ..base_completed_import_result(import_id, completed, release_evidence, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
@@ -457,6 +459,7 @@ async fn resolve_completed_import_target(
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
             title_id: Some(title.id.clone()),
             error_message: Some(format!("no video files found in {}", completed.dest_dir)),
+            release_burned: false,
             ..base_completed_import_result(import_id, completed, release_evidence, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
@@ -634,6 +637,7 @@ async fn hold_replacement_for_manual_resolution(
         file_size_bytes: Some(source_size),
         link_type: None,
         error_message: Some(message),
+        release_burned: false,
         started_at,
         completed_at: Utc::now(),
     };
@@ -739,6 +743,7 @@ async fn import_additional_movie_download(
             file_size_bytes: Some(source_size),
             link_type: None,
             error_message: Some(reason),
+            release_burned: false,
             started_at,
             completed_at: Utc::now(),
         };
@@ -878,6 +883,7 @@ async fn import_additional_movie_download(
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(link_type),
         error_message: None,
+        release_burned: false,
         started_at,
         completed_at: Utc::now(),
     };
@@ -1029,6 +1035,7 @@ async fn import_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
+                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 &[],
@@ -1063,6 +1070,7 @@ async fn import_movie_download(
                 file_size_bytes: Some(source_size),
                 link_type: None,
                 error_message: Some(rejection.message),
+                release_burned: true,
                 started_at,
                 completed_at: Utc::now(),
             };
@@ -1134,6 +1142,7 @@ async fn import_movie_download(
             file_size_bytes: Some(source_size),
             link_type: None,
             error_message: Some(reason),
+            release_burned: false,
             started_at,
             completed_at: Utc::now(),
         };
@@ -1263,6 +1272,7 @@ async fn import_movie_download(
                         link_type: (import_mode == scryer_domain::ImportMode::Move)
                             .then_some(scryer_domain::ImportStrategy::Move),
                         error_message: None,
+                        release_burned: false,
                         started_at,
                         completed_at: Utc::now(),
                     };
@@ -1311,6 +1321,7 @@ async fn import_movie_download(
                         file_size_bytes: Some(source_size),
                         link_type: None,
                         error_message: Some(rejection.message),
+                        release_burned: false,
                         started_at,
                         completed_at: Utc::now(),
                     };
@@ -1538,6 +1549,7 @@ async fn import_movie_download(
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(link_type),
         error_message: None,
+        release_burned: false,
         started_at,
         completed_at: Utc::now(),
     };
@@ -1605,6 +1617,7 @@ async fn import_series_movie_download(
                     "series movie link {series_movie_link_id} does not belong to title {}",
                     title.id
                 )),
+                release_burned: false,
                 ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
@@ -1621,6 +1634,7 @@ async fn import_series_movie_download(
                 error_message: Some(format!(
                     "series movie link {series_movie_link_id} not found"
                 )),
+                release_burned: false,
                 ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
@@ -1801,6 +1815,7 @@ async fn import_series_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
+                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 &[],
@@ -1835,6 +1850,7 @@ async fn import_series_movie_download(
                 file_size_bytes: Some(source_size),
                 link_type: None,
                 error_message: Some(rejection.message),
+                release_burned: true,
                 started_at,
                 completed_at: Utc::now(),
             };
@@ -2029,6 +2045,7 @@ async fn import_series_movie_download(
                         link_type: (import_mode == scryer_domain::ImportMode::Move)
                             .then_some(scryer_domain::ImportStrategy::Move),
                         error_message: None,
+                        release_burned: false,
                         started_at,
                         completed_at: Utc::now(),
                     };
@@ -2070,6 +2087,7 @@ async fn import_series_movie_download(
                         file_size_bytes: Some(source_size),
                         link_type: None,
                         error_message: Some(rejection.message),
+                        release_burned: false,
                         started_at,
                         completed_at: Utc::now(),
                     };
@@ -2125,6 +2143,7 @@ async fn import_series_movie_download(
                 error_message: Some(format!(
                     "new score {new_score} not better than existing {old_score}"
                 )),
+                release_burned: false,
                 started_at,
                 completed_at: Utc::now(),
             };
@@ -2376,6 +2395,7 @@ async fn import_series_movie_download(
         file_size_bytes: Some(file_result.size_bytes as i64),
         link_type: Some(link_type),
         error_message: None,
+        release_burned: false,
         started_at,
         completed_at: Utc::now(),
     };

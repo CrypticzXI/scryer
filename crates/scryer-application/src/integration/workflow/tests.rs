@@ -98,6 +98,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         }
     }
@@ -534,6 +535,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -582,6 +584,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -629,6 +632,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -682,6 +686,7 @@ mod tests {
                 import_execution_retry: None,
                 import_hold: None,
                 skip_reacquire_on_failure: false,
+                burned_by_import_gate: false,
                 snapshot_missing_since: None,
             }
         }
@@ -806,6 +811,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         }
     }
@@ -987,6 +993,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);

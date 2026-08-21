@@ -1707,6 +1707,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     }
 }

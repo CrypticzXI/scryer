@@ -167,6 +167,68 @@ pub(super) async fn apply_import_result_with_completed(
         }
     }
 
+    if result.decision == ImportDecision::Rejected && result.release_burned {
+        // The series aggregate stores the completed download's job directory
+        // in `source_path`; equality is safely inside that directory, so a
+        // dedicated job directory is removed whole.
+        td.clear_no_video_import_retry();
+        td.clear_import_execution_retry();
+        if !crate::seeding_gate::client_type_is_torrent(app, &td.client_type) {
+            if let Some(completed) = completed {
+                let rejected_sources = vec![crate::stored_paths::stored_path_to_path_buf(
+                    &result.source_path,
+                )];
+                match crate::import_workflow::delete_burned_download_data(
+                    app,
+                    completed,
+                    &rejected_sources,
+                )
+                .await
+                {
+                    crate::import_workflow::BurnedDataCleanupOutcome::DeletedDirectory(path) => {
+                        tracing::info!(
+                            path = %path.display(),
+                            "import: deleted burned Usenet download directory"
+                        );
+                    }
+                    crate::import_workflow::BurnedDataCleanupOutcome::DeletedFiles(paths) => {
+                        tracing::info!(
+                            paths = ?paths,
+                            "import: deleted burned Usenet download source files"
+                        );
+                    }
+                    crate::import_workflow::BurnedDataCleanupOutcome::Skipped(reason) => {
+                        tracing::warn!(
+                            import_id = result.import_id.as_str(),
+                            job_dir = %completed.dest_dir,
+                            reason,
+                            "import: skipped burned Usenet download data cleanup"
+                        );
+                    }
+                    crate::import_workflow::BurnedDataCleanupOutcome::Failed(error) => {
+                        tracing::warn!(
+                            import_id = result.import_id.as_str(),
+                            job_dir = %completed.dest_dir,
+                            error = %error,
+                            "import: failed to clean up burned Usenet download data"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    import_id = result.import_id.as_str(),
+                    "import: no completed download source available for burned data cleanup"
+                );
+            }
+        }
+
+        td.state = TrackedDownloadState::Failed;
+        td.status = TrackedDownloadStatus::Error;
+        td.status_messages = vec![import_result_message(&result, ImportStatus::Failed)];
+        td.burned_by_import_gate = true;
+        return false;
+    }
+
     if apply_no_video_import_backoff(app, td, &result).await {
         return false;
     }

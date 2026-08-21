@@ -791,6 +791,12 @@ pub(crate) async fn process_download_failure(
         }
         None => None,
     };
+    let failed_indexer_id = failed_submission
+        .as_ref()
+        .and_then(|submission| submission.source_provider_id.as_deref());
+    let failed_coverage_reopen = failed_indexer_id
+        .map(|indexer_id| CoverageReopen::Indexer(indexer_id.to_string()))
+        .unwrap_or(CoverageReopen::All);
     let attribution = resolve_failed_release_attribution(
         app,
         resolved_title_id.as_deref(),
@@ -799,6 +805,10 @@ pub(crate) async fn process_download_failure(
         failed_collection_items.as_deref(),
     )
     .await;
+
+    let blocklist_reason = format!("download client failure: {}", context.reason);
+    let mut failure_recorded = false;
+    let mut coverage_pruned = false;
 
     let (outcome, failure_reason) = if context.skip_reacquire {
         if let Some(items) = failed_collection_items.as_ref() {
@@ -852,17 +862,42 @@ pub(crate) async fn process_download_failure(
             )
         }
     } else if let Some(items) = failed_collection_items.as_ref() {
-        // A failed season pack re-opens every covered episode scope: coverage
-        // pruned, state reset, acquisition woken. The cursor re-converges them
-        // individually.
-        for item in items {
-            app.reopen_wanted_scope_for_acquisition(item).await;
-        }
-
         let message = format!(
             "season pack download failed for '{}': {}; re-opened season episodes for individual search",
             release_title_for_matching, context.reason
         );
+        record_failed_release_outcome(
+            app,
+            resolved_title_id.as_deref(),
+            &attribution,
+            normalized_source_title.clone(),
+            normalized_source_hint.clone(),
+            download_id.clone(),
+            Some(context.client_id.clone()),
+            context.client_name.clone(),
+            Some(context.client_type.clone()),
+            quality.clone(),
+            Some(message.clone()),
+            Some(blocklist_reason.clone()),
+            None,
+        )
+        .await;
+        failure_recorded = true;
+        prune_coverage_for_failed_download(
+            app,
+            failed_submission.as_ref(),
+            wanted_item.as_ref(),
+            failed_collection_items.as_deref(),
+            failed_indexer_id,
+        )
+        .await;
+        coverage_pruned = true;
+        // A failed season pack re-opens every covered episode scope after its
+        // release is blocklisted and its episode and pack coverage are invalidated.
+        for item in items {
+            app.reopen_wanted_scope_for_acquisition(item, failed_coverage_reopen.clone())
+                .await;
+        }
 
         info!(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
@@ -906,19 +941,46 @@ pub(crate) async fn process_download_failure(
                     ),
                 ),
                 StandbyRecoveryOutcome::Exhausted => {
-                    // No standby candidate left: re-open the scope's convergence
-                    // (coverage pruned, state reset) so the cursor re-searches it.
-                    // The failed release is blocklisted below, and standby-first +
-                    // scheduler pacing keep this from tight-looping — never a
+                    let failure_reason = format!(
+                        "download failed for '{}': {}; standby exhausted, re-opened scope for fresh search",
+                        release_title_for_matching, context.reason
+                    );
+                    record_failed_release_outcome(
+                        app,
+                        resolved_title_id.as_deref(),
+                        &attribution,
+                        normalized_source_title.clone(),
+                        normalized_source_hint.clone(),
+                        download_id.clone(),
+                        Some(context.client_id.clone()),
+                        context.client_name.clone(),
+                        Some(context.client_type.clone()),
+                        quality.clone(),
+                        Some(failure_reason.clone()),
+                        Some(blocklist_reason.clone()),
+                        None,
+                    )
+                    .await;
+                    failure_recorded = true;
+                    prune_coverage_for_failed_download(
+                        app,
+                        failed_submission.as_ref(),
+                        Some(item),
+                        None,
+                        failed_indexer_id,
+                    )
+                    .await;
+                    coverage_pruned = true;
+                    // No standby candidate left: blocklist the failed release,
+                    // invalidate its coverage, then re-open the scope. Standby-first
+                    // and scheduler pacing keep this from tight-looping — never a
                     // cadence write.
-                    app.reopen_wanted_scope_for_acquisition(item).await;
+                    app.reopen_wanted_scope_for_acquisition(item, failed_coverage_reopen.clone())
+                        .await;
 
                     (
                         FailureHandlingOutcome::RequeuedFreshSearch,
-                        format!(
-                            "download failed for '{}': {}; standby exhausted, re-opened scope for fresh search",
-                            release_title_for_matching, context.reason
-                        ),
+                        failure_reason,
                     )
                 }
             }
@@ -941,9 +1003,7 @@ pub(crate) async fn process_download_failure(
         )
     };
 
-    let blocklist_reason = format!("download client failure: {}", context.reason);
-
-    if !failure_already_recorded {
+    if !failure_already_recorded && !failure_recorded {
         record_failed_release_outcome(
             app,
             resolved_title_id.as_deref(),
@@ -958,6 +1018,17 @@ pub(crate) async fn process_download_failure(
             Some(failure_reason),
             Some(blocklist_reason),
             None,
+        )
+        .await;
+    }
+
+    if !context.skip_reacquire && !coverage_pruned {
+        prune_coverage_for_failed_download(
+            app,
+            failed_submission.as_ref(),
+            wanted_item.as_ref(),
+            failed_collection_items.as_deref(),
+            failed_indexer_id,
         )
         .await;
     }
@@ -1041,6 +1112,35 @@ async fn resolve_failure_wanted_item(
         extract_grabbed_release_title(item.grabbed_release.as_deref())
             .is_some_and(|title| title.eq_ignore_ascii_case(release_title))
     })
+}
+
+async fn prune_coverage_for_failed_download(
+    app: &AppUseCase,
+    failed_submission: Option<&DownloadSubmission>,
+    wanted_item: Option<&AcquisitionScopeState>,
+    failed_collection_items: Option<&[AcquisitionScopeState]>,
+    indexer_id: Option<&str>,
+) {
+    let mut scope_keys = HashSet::new();
+    if let Some(items) = failed_collection_items {
+        for item in items {
+            if let Some(scope_key) = crate::acquisition::convergence::convergence_scope_key_for_state(item) {
+                scope_keys.insert(scope_key);
+            }
+        }
+    } else if let Some(item) = wanted_item
+        && let Some(scope_key) = crate::acquisition::convergence::convergence_scope_key_for_state(item)
+    {
+        scope_keys.insert(scope_key);
+    }
+    if let Some(submission) = failed_submission
+        && let Some(scope_key) = convergence_scope_key(&submission.scope, &submission.title_id)
+    {
+        scope_keys.insert(scope_key);
+    }
+    for scope_key in scope_keys {
+        app.prune_scope_key_coverage(&scope_key, indexer_id).await;
+    }
 }
 async fn prune_standby_candidates(app: &AppUseCase) {
     let all_standby = app

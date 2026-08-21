@@ -70,8 +70,9 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
 ) {
     prune_standby_candidates(app).await;
 
-    // Failed downloads first: each failure re-opens its scope (coverage pruned,
-    // state reset), so this cycle's derivation already sees it as searchable.
+    // Failed downloads first: each failure re-opens its scope after invalidating
+    // the failed indexer's coverage (or all coverage when unknown), so this
+    // cycle's derivation already sees it as searchable.
     let dl_snapshot = DownloadClientSnapshot::fetch(app).await;
     check_grabbed_for_failures(app, &dl_snapshot).await;
 
@@ -211,6 +212,10 @@ fn submission_blocks_search_for_wanted_item(
     tracked_state: Option<scryer_domain::TrackedDownloadState>,
 ) -> bool {
     if !submission_blocks_wanted_item(submission, item, episode_collection_id) {
+        return false;
+    }
+
+    if tracked_state == Some(scryer_domain::TrackedDownloadState::Failed) {
         return false;
     }
 
@@ -1678,6 +1683,12 @@ async fn process_single_target(
                         "download submission result is ambiguous; re-opening scope without blocklisting or failover"
                     );
 
+                    app.prune_scope_key_coverage(
+                        &convergence.scope_key,
+                        candidate.indexer_id.as_deref(),
+                    )
+                    .await;
+
                     return Ok(());
                 }
 
@@ -2289,6 +2300,22 @@ mod task_runner_tests {
             None,
             &snapshot,
             None,
+        ));
+    }
+
+    #[test]
+    fn failed_submission_does_not_block_completed_initial_wanted_search() {
+        let item = wanted_episode_item("title-bluey", "Bluey", 1);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-failed");
+        let snapshot = snapshot_with_job("job-failed", true);
+
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &snapshot,
+            Some(scryer_domain::TrackedDownloadState::Failed),
         ));
     }
 
