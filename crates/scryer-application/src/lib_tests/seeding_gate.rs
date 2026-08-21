@@ -332,15 +332,164 @@ async fn a_failed_torrent_is_removed_immediately_so_blocklisting_never_waits_on_
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        // Sonarr's failed-download cleanup deletes the data with the entry
-        // (`RemoveItem(item, deleteData: true)`); nobody is going to import it.
+        // The entry goes immediately, but the payload does not: a failed
+        // download never enters the gate, so with no client verdict to lean on
+        // this stays an entry-only removal. Sonarr is the same shape —
+        // `DownloadEventHub.Handle(DownloadFailedEvent)` returns early unless
+        // `DownloadItem.CanBeRemoved`, which for a torrent client is its own
+        // seed-limit answer.
         vec![(
             Some(config.id.clone()),
             None,
             "torrent-failed-1".to_string(),
             true,
+            false
+        )]
+    );
+}
+
+/// The other half of Sonarr's failed-download rule: once the client itself says
+/// the torrent is free to go, the data goes with the entry.
+#[tokio::test]
+async fn a_failed_torrent_its_client_will_release_takes_its_data_with_it() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Failed But Releasable").await;
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-failed-2",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "torrent-failed-2".to_string(),
+            true,
             true
         )]
+    );
+}
+
+/// A client that can point at an unmet limit is not overruled by a failure.
+#[tokio::test]
+async fn a_failed_torrent_its_client_refuses_to_release_keeps_its_data() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Failed Still Seeding").await;
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-failed-3",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            seed_ratio: Some(0.2),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client
+            .deleted_requests
+            .lock()
+            .await
+            .iter()
+            .map(|(_, _, item_id, _, remove_data)| (item_id.clone(), *remove_data))
+            .collect::<Vec<_>>(),
+        vec![("torrent-failed-3".to_string(), false)]
+    );
+}
+
+/// A blackhole "remove" is `remove_dir_all` on a watch folder an *external*
+/// client is seeding from. The gate refuses it for imported states, but a
+/// failed download skips the gate entirely, so the rule is restated at the
+/// data-removal policy: never, whatever the client says.
+#[tokio::test]
+async fn a_failed_blackhole_entry_never_asks_for_its_watch_folder_to_be_deleted() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config =
+        create_enabled_download_client_config(&app, &user, "Watch Folder", "torrent-blackhole")
+            .await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Blackhole Failure").await;
+
+    let mut tracked = tracked_for(
+        &config.id,
+        "torrent-blackhole",
+        "/downloads/watch/blackhole-failed-1",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client
+            .deleted_requests
+            .lock()
+            .await
+            .iter()
+            .map(|(_, _, item_id, _, remove_data)| (item_id.clone(), *remove_data))
+            .collect::<Vec<_>>(),
+        vec![("/downloads/watch/blackhole-failed-1".to_string(), false)]
     );
 }
 
@@ -427,6 +576,106 @@ async fn a_configured_move_is_downgraded_to_copy_while_a_torrent_may_still_be_se
     .expect("resolve seeding-safe import mode");
 
     assert_eq!(effective, ImportMode::HardlinkOrCopy);
+}
+
+/// What the plugin-host trust floor hands the gate, and what the gate must do
+/// with it.
+///
+/// A pre-audit torrent plugin reports `can_remove: Some(true)` (registry
+/// qBittorrent 1.0.5 hardcodes it) and computes `can_move_files` under the old
+/// "safe to move while seeding" rule. `crates/scryer-plugins/src/seeding_trust.rs`
+/// rewrites that pair into `can_remove: None` while leaving a refusal to move
+/// alone; this is the receiving end of that hand-off — the shape reaches the
+/// gate through the domain snapshot on the client row.
+///
+/// Both halves matter: the unknown verdict must Hold rather than release, and
+/// the surviving `Some(false)` must still force a copy. Erasing that refusal
+/// instead would have made the floor *upgrade* a stale plugin's import to
+/// `Move`, since the gate reads stability as "not explicitly false".
+#[tokio::test]
+async fn the_shape_the_trust_floor_produces_holds_the_entry_and_keeps_the_import_a_copy() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config =
+        create_enabled_download_client_config(&app, &user, "Stale qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Pre-Audit Plugin").await;
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        UpdateMediaSettings {
+            import_mode: Some(ImportMode::Move),
+            ..empty_update_media_settings()
+        },
+    )
+    .await
+    .expect("configure move import mode");
+
+    let item_id = "torrent-below-floor-1";
+    let mut tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        item_id,
+        &title,
+        TrackedDownloadState::Imported,
+        true,
+    );
+    observed(
+        DownloadSeedingSnapshot {
+            // Post-floor: the plugin said `Some(true)`, the host does not
+            // believe it.
+            can_remove: None,
+            // Post-floor: the plugin's own refusal to move, kept verbatim.
+            can_move_files: Some(false),
+            seed_ratio: Some(0.3),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Imported,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        TerminalDownloadCleanupOutcome::HeldForSeeding,
+        "an unknown client verdict holds instead of releasing the entry"
+    );
+    assert_eq!(
+        outcome.seeding.as_ref().map(|report| report.reason),
+        Some("no_resolved_goals_and_client_verdict_unknown")
+    );
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+
+    app.runtime
+        .acquisition
+        .tracked_download_snapshot
+        .write()
+        .await
+        .insert(
+            tracked.id.clone(),
+            crate::tracked_downloads::TrackedDownloadQueueMetadata::from(&tracked),
+        );
+
+    let effective = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        &app,
+        Some(&title.library_id),
+        &title.facet,
+        Some(&completed_for(&config.id, "qbittorrent", item_id)),
+    )
+    .await
+    .expect("resolve seeding-safe import mode");
+
+    assert_eq!(
+        effective,
+        ImportMode::HardlinkOrCopy,
+        "a plugin that says the data is not stable still forces a copy"
+    );
 }
 
 #[tokio::test]

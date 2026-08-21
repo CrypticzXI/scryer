@@ -204,6 +204,12 @@ async fn reconcile_terminal_download_cleanup(
     let observed_seed_time_seconds = observation
         .as_ref()
         .and_then(|observation| observation.seed_time_seconds);
+    // The client's own removal verdict, post-trust-floor — the same value the
+    // gate would read. Captured here because the gate consumes the observation,
+    // and the `Failed` arm below (which never reaches the gate) has to honor it.
+    let observed_can_remove = observation
+        .as_ref()
+        .and_then(|observation| observation.can_remove);
     let report = |reason: &'static str, action: Option<SeedingReleaseAction>| SeedingGateReport {
         reason,
         action,
@@ -307,25 +313,37 @@ async fn reconcile_terminal_download_cleanup(
             | TrackedDownloadState::Ignored
     );
 
-    // Sonarr removes both a completed-and-imported download and a failed one
-    // with `RemoveItem(item, deleteData: true)` (DownloadEventHub
-    // .RemoveFromDownloadClient). Match it for torrents: reaching this line in
-    // `Imported`/`ImportedSeeding` means the gate released the entry with
-    // `RemoveEntry` — the seeding obligation is discharged and nothing is left
-    // to protect — and `Failed` is a download nobody will import. A hardlinked
-    // import keeps the library file either way; a copy import would otherwise
-    // leave the client's copy behind with no owner.
+    // Sonarr removes an imported download's data with its entry
+    // (`RemoveItem(item, deleteData: true)`, DownloadEventHub
+    // .RemoveFromDownloadClient), and does the same on failure — but only after
+    // `Handle(DownloadFailedEvent)` returns early unless
+    // `trackedDownload.DownloadItem.CanBeRemoved`. For torrents that verdict is
+    // the client's seed-limit answer, and only a *manual* failure forces it
+    // (`TrackedDownload.Fail()`); an automatic one leaves it alone. So:
     //
-    // `Ignored` keeps today's behavior on purpose: the operator told Scryer to
-    // stop tracking the download, not to delete what it downloaded. So do the
-    // first-party usenet clients, whose delete semantics are their own — both
-    // are documented as deferred.
-    let remove_data = matches!(
-        state,
-        TrackedDownloadState::Imported
-            | TrackedDownloadState::ImportedSeeding
-            | TrackedDownloadState::Failed
-    ) && crate::seeding_gate::client_type_is_torrent(app, client_type);
+    // - `Imported`/`ImportedSeeding` reaching this line means the gate released
+    //   the entry with `RemoveEntry`: the obligation is discharged, the import
+    //   already produced the library file, and a copy import's client-side copy
+    //   would otherwise be orphaned.
+    // - `Failed` never enters the gate — no private rail, no `never_remove`, no
+    //   HandOff — so the client's own `can_remove` is the only rail there is. A
+    //   torrent it will not release (or cannot answer for) keeps today's
+    //   entry-only removal.
+    // - `Ignored` keeps today's behavior on purpose: the operator told Scryer
+    //   to stop tracking the download, not to delete what it downloaded.
+    //
+    // `torrent-blackhole` is excluded outright. Its "remove" is a
+    // `remove_dir_all` on a watch folder some *other* client is seeding from;
+    // the gate refuses it for imported states, and `Failed` skips the gate, so
+    // the rule has to be restated here.
+    let remove_data = match state {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => true,
+        TrackedDownloadState::Failed => observed_can_remove == Some(true),
+        _ => false,
+    } && crate::seeding_gate::client_type_is_torrent(app, client_type)
+        && !client_type
+            .trim()
+            .eq_ignore_ascii_case(crate::seeding_gate::TORRENT_BLACKHOLE_CLIENT_TYPE);
 
     let delete_result = if client_id.is_empty() {
         app.services
