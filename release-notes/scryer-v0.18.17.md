@@ -22,6 +22,7 @@ AI generated release notes
 
 ## Other Improvements
 
+- The indexer table's seeding-profile picker now names the minimum seeders a Prowlarr-managed indexer imported ("Inherit default · Prowlarr minimum N seeders", or "seeder check off" for 0), so the value that governs admission is visible where it is chosen.
 - The seeding-profile list now calls out a minimum that deviates from the default — "seeders check off" for an explicit `0`, or the threshold itself — alongside the existing hand-off, never-remove, season-pack and tracker-minimum markers.
 - Seed-time fields accept durations such as `90m`, `36h`, `1d 12h` or `2w`; a plain number is still minutes.
 - The minimum-seeders field explains that a profile assigned only through a download-client routing entry does not apply its minimum (the check runs before a client is chosen), and that leaving it blank inherits the *Default minimum seeders* setting rather than a Prowlarr-imported value.
