@@ -251,9 +251,12 @@ fn map_state(state: DownloadItemState) -> DownloadQueueState {
         DownloadItemState::Paused => DownloadQueueState::Paused,
         DownloadItemState::Completed | DownloadItemState::Seeding => DownloadQueueState::Completed,
         DownloadItemState::ImportPending => DownloadQueueState::ImportPending,
-        DownloadItemState::Failed | DownloadItemState::Error | DownloadItemState::Warning => {
-            DownloadQueueState::Failed
-        }
+        // A plugin reports `Warning` for a condition the operator can still
+        // fix, and says so explicitly to keep failed-download handling off the
+        // download. Flattening it into `Failed` here would blocklist and remove
+        // a grab that is only stuck.
+        DownloadItemState::Warning => DownloadQueueState::Warning,
+        DownloadItemState::Failed | DownloadItemState::Error => DownloadQueueState::Failed,
     }
 }
 
@@ -1582,6 +1585,34 @@ mod tests {
         assert!(!retain_queue_item(&queue_filter_item(
             DownloadItemState::Seeding
         )));
+    }
+
+    #[test]
+    fn a_warning_keeps_its_own_state_and_its_message() {
+        // The plugins report `Warning` for recoverable client conditions
+        // (qBittorrent `error` / `missingFiles`) precisely so the host does not
+        // run failed-download handling on them.
+        let mut item = queue_filter_item(DownloadItemState::Warning);
+        item.message = Some("files are missing from the save path".to_string());
+
+        assert!(retain_queue_item(&item));
+        assert!(attention_required(&item));
+
+        let queue_item = map_queue_item(item, "client-1", "qBittorrent", "qbittorrent");
+
+        assert_eq!(queue_item.state, DownloadQueueState::Warning);
+        assert!(queue_item.attention_required);
+        assert_eq!(
+            queue_item.attention_reason.as_deref(),
+            Some("files are missing from the save path")
+        );
+    }
+
+    #[test]
+    fn a_reported_failure_still_maps_to_failed() {
+        for state in [DownloadItemState::Failed, DownloadItemState::Error] {
+            assert_eq!(map_state(state), DownloadQueueState::Failed, "{state:?}");
+        }
     }
 
     #[test]
