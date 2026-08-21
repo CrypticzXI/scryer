@@ -274,44 +274,46 @@ export function SettingsSeedingProfilesSection({
             {t("settings.seedingProfileDefaultTitle")}
           </h2>
         </div>
-        <div className={`${SEEDING_PANEL_BODY_CLASS} space-y-1.5`}>
-          <FieldLabel
-            htmlFor="settings-seeding-profile-default"
-            label={t("settings.seedingProfileDefaultLabel")}
-            info={t("settings.seedingProfileDefaultHelp")}
-          />
-          <Select
-            value={seedingProfileSelectValue(defaultProfileId)}
-            onValueChange={(value) =>
-              setDefaultProfile(seedingProfileSelectValueToId(value))
-            }
-          >
-            <SelectTrigger
-              id="settings-seeding-profile-default"
-              className="w-full max-w-[320px]"
-              disabled={loading || saving}
+        <div className={`${SEEDING_PANEL_BODY_CLASS} grid gap-4 sm:grid-cols-2`}>
+          <div className="space-y-1.5">
+            <FieldLabel
+              htmlFor="settings-seeding-profile-default"
+              label={t("settings.seedingProfileDefaultLabel")}
+              info={t("settings.seedingProfileDefaultHelp")}
+            />
+            <Select
+              value={seedingProfileSelectValue(defaultProfileId)}
+              onValueChange={(value) =>
+                setDefaultProfile(seedingProfileSelectValueToId(value))
+              }
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
-                {t("settings.seedingProfileDefaultNone")}
-              </SelectItem>
-              {defaultProfileMissing && defaultProfileId ? (
-                <SelectItem value={defaultProfileId}>
-                  {t("settings.seedingProfileMissing", {
-                    id: defaultProfileId,
-                  })}
+              <SelectTrigger
+                id="settings-seeding-profile-default"
+                className="w-full max-w-[320px]"
+                disabled={loading || saving}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
+                  {t("settings.seedingProfileDefaultNone")}
                 </SelectItem>
-              ) : null}
-              {profiles.map((profile) => (
-                <SelectItem key={profile.id} value={profile.id}>
-                  {profile.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="space-y-1.5 pt-4">
+                {defaultProfileMissing && defaultProfileId ? (
+                  <SelectItem value={defaultProfileId}>
+                    {t("settings.seedingProfileMissing", {
+                      id: defaultProfileId,
+                    })}
+                  </SelectItem>
+                ) : null}
+                {profiles.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
             <FieldLabel
               htmlFor="settings-seeding-minimum-seeders-floor"
               label={t("settings.seedingMinimumSeedersFloorLabel")}
