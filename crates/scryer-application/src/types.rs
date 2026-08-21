@@ -2024,7 +2024,9 @@ pub struct LoginVerificationSatisfied {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginVerificationRequirement {
     Satisfied(LoginVerificationSatisfied),
-    EnrollmentRequired,
+    EnrollmentRequired {
+        auth_session_version: Option<String>,
+    },
     Challenge(LoginVerificationChallengeRecord),
 }
 
@@ -2118,6 +2120,7 @@ pub enum JwtSessionScope {
     #[default]
     Full,
     MfaEnrollment,
+    PasswordChangeRequired,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2126,6 +2129,8 @@ pub struct AuthenticatedTokenClaims {
     pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
     pub persist_session: bool,
+    pub auth_session_version: Option<String>,
+    pub password_change_required_after_enrollment: bool,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
     pub oauth_authorization_source: OAuthAuthorizationSource,
@@ -2254,6 +2259,10 @@ pub(crate) struct JwtClaims {
     pub auth_scope: JwtSessionScope,
     #[serde(default, rename = "persistSession")]
     pub persist_session: bool,
+    #[serde(default, rename = "authSessionVersion")]
+    pub auth_session_version: Option<String>,
+    #[serde(default, rename = "passwordChangeRequiredAfterEnrollment")]
+    pub password_change_required_after_enrollment: bool,
     #[serde(default, rename = "oauthClientId")]
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]

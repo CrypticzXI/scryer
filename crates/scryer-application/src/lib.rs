@@ -655,6 +655,9 @@ pub enum AppError {
     MfaEnrollmentRequired(String),
 
     #[error("{0}")]
+    PasswordChangeRequired(String),
+
+    #[error("{0}")]
     TotpInvalidCode(String),
 
     #[error("{0}")]

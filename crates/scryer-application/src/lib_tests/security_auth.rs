@@ -112,6 +112,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             app.hash_password(short_password)
                 .expect("hash short password"),
         ),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -318,6 +319,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
         id: "existing-short-v1-password-user".to_string(),
         username: "existing_short_v1_password".to_string(),
         password_hash: Some(legacy_hash.clone()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -379,6 +381,7 @@ async fn local_password_login_requires_exact_spacing() {
         id: "exact-spacing-login-user".to_string(),
         username: "exact_spacing_login".to_string(),
         password_hash: Some(app.hash_password(password).expect("hash spaced password")),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -409,6 +412,7 @@ async fn change_own_password_requires_exact_current_password_spacing() {
         id: "exact-current-password-user".to_string(),
         username: "exact_current_password".to_string(),
         password_hash: Some(app.hash_password(old_password).expect("hash old password")),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -512,6 +516,7 @@ async fn issue_and_authenticate_token_round_trips() {
         id: "user-jwt-1".to_string(),
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -537,6 +542,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         id: "user-jwt-no-session-version".to_string(),
         username: "jwt_no_session_version".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -562,6 +568,8 @@ async fn token_signed_without_auth_session_version_authenticates() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -582,6 +590,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
         id: "user-jwt-mfa-enroll".to_string(),
         username: "jwt_mfa_enroll".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -593,7 +602,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
         .unwrap();
 
     let token = app
-        .issue_mfa_enrollment_token(&user, false)
+        .issue_mfa_enrollment_token(&user, false, false, None)
         .await
         .expect("issue enrollment token");
     let (decoded, claims) = app
@@ -608,7 +617,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
     assert!(!claims.persist_session);
 
     let persistent_token = app
-        .issue_mfa_enrollment_token(&user, true)
+        .issue_mfa_enrollment_token(&user, true, false, None)
         .await
         .expect("issue persistent enrollment token");
     let (_, persistent_claims) = app
@@ -625,6 +634,7 @@ async fn login_mfa_claim_does_not_imply_step_up_claim() {
         id: "user-jwt-login-mfa".to_string(),
         username: "jwt_login_mfa".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -687,6 +697,7 @@ async fn legacy_token_without_scope_claim_defaults_to_full_scope() {
         id: "user-jwt-legacy-scope".to_string(),
         username: "jwt_legacy_scope".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -902,6 +913,7 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         id: "user-oauth-app-permission-claim".to_string(),
         username: "oauth_app_permission_claim".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -931,6 +943,8 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -956,6 +970,7 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         id: "user-oauth-actor-capability-claim".to_string(),
         username: "oauth_actor_capability_claim".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -985,6 +1000,8 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1711,6 +1728,7 @@ async fn expired_token_returns_unauthorized() {
         id: "user-jwt-3".to_string(),
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1737,6 +1755,8 @@ async fn expired_token_returns_unauthorized() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1753,6 +1773,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         id: "user-jwt-4".to_string(),
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1778,6 +1799,8 @@ async fn wrong_issuer_token_returns_unauthorized() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1798,6 +1821,7 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         id: "user-jwt-cache-1".to_string(),
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1864,6 +1888,7 @@ async fn passkey_management_requires_enabled_form_login() {
         id: "passkey-form-login-user".to_string(),
         username: "passkey_form_login".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -2045,6 +2070,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -2074,6 +2100,8 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);

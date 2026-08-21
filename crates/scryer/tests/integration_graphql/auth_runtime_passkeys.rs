@@ -50,6 +50,7 @@ async fn graphql_auth_runtime_state_exposes_config_step_up_without_manage_users(
         id: Id::new().0,
         username: "catalog-settings-manager".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::from_permissions([

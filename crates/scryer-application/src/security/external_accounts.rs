@@ -921,6 +921,7 @@ impl AppUseCase {
             id: scryer_domain::Id::new().0,
             username,
             password_hash: None,
+            password_change_required: false,
             account_kind: scryer_domain::UserAccountKind::ExternalAutoProvisioned,
             authorization: Default::default(),
         };
@@ -1613,13 +1614,55 @@ mod tests {
             Ok(None)
         }
 
-        async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
+        async fn update_password_hash(
+            &self,
+            id: &str,
+            password_hash: String,
+            password_change_required: bool,
+        ) -> AppResult<User> {
             let mut users = self.users.lock().await;
             let user = users
                 .iter_mut()
                 .find(|user| user.id == id)
                 .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
             user.password_hash = Some(password_hash);
+            user.password_change_required = password_change_required;
+            Ok(user.clone())
+        }
+
+        async fn set_temporary_password_and_invalidate_sessions(
+            &self,
+            id: &str,
+            password_hash: String,
+            _auth_session_version: &str,
+        ) -> AppResult<User> {
+            self.update_password_hash(id, password_hash, true).await
+        }
+
+        async fn complete_required_password_change(
+            &self,
+            id: &str,
+            password_hash: String,
+            expected_auth_session_version: &Option<String>,
+            _auth_session_version: &str,
+        ) -> AppResult<User> {
+            if expected_auth_session_version.is_some() {
+                return Err(AppError::Unauthorized(
+                    "authentication session was invalidated".into(),
+                ));
+            }
+            let mut users = self.users.lock().await;
+            let user = users
+                .iter_mut()
+                .find(|user| user.id == id)
+                .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+            if !user.password_change_required {
+                return Err(AppError::Unauthorized(
+                    "password change is no longer required".into(),
+                ));
+            }
+            user.password_hash = Some(password_hash);
+            user.password_change_required = false;
             Ok(user.clone())
         }
 
@@ -1817,6 +1860,7 @@ mod tests {
             id: "admin".to_string(),
             username: "admin".to_string(),
             password_hash: Some("hash".to_string()),
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::from_permissions([
@@ -1837,6 +1881,7 @@ mod tests {
             id: id.to_string(),
             username: id.to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,
@@ -2768,6 +2813,7 @@ mod tests {
             id: "user-1".to_string(),
             username: "local-user".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,
@@ -2849,6 +2895,7 @@ mod tests {
             id: "user-1".to_string(),
             username: "local-user".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,

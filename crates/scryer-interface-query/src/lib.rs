@@ -2343,12 +2343,17 @@ impl SystemQueries {
             .collect())
     }
 
-    /// Return the authenticated user payload, or null for an anonymous session; MFA enrollment sessions are rejected.
+    /// Return the authenticated user payload, or null for an anonymous session; restricted enrollment and password-replacement sessions are rejected.
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
         let auth_context = mfa_verification_from_ctx(ctx);
         if auth_context.session_scope == JwtSessionScope::MfaEnrollment {
             return Err(to_gql_error(AppError::MfaEnrollmentRequired(
                 "MFA enrollment must be completed before accessing Scryer".into(),
+            )));
+        }
+        if auth_context.session_scope == JwtSessionScope::PasswordChangeRequired {
+            return Err(to_gql_error(AppError::PasswordChangeRequired(
+                "password replacement must be completed before accessing Scryer".into(),
             )));
         }
 

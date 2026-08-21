@@ -43,40 +43,57 @@ async fn login_payload_from_user(
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
     persist_session: bool,
     expected_auth_session_version: Option<&Option<String>>,
+    password_change_required: bool,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
-    let token = match expected_auth_session_version {
-        Some(expected_auth_session_version) => {
-            app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
-                &user,
-                mfa_verified_until,
-                mfa_step_up_verified_until,
-                persist_session,
-                expected_auth_session_version,
-            )
-            .await
-        }
-        None => {
-            app.issue_access_token_with_mfa_and_persistence(
-                &user,
-                mfa_verified_until,
-                mfa_step_up_verified_until,
-                persist_session,
-            )
-            .await
+    let token = if password_change_required {
+        app.issue_password_change_required_token(
+            &user,
+            mfa_verified_until,
+            persist_session,
+            expected_auth_session_version,
+        )
+        .await
+    } else {
+        match expected_auth_session_version {
+            Some(expected_auth_session_version) => {
+                app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+                    &user,
+                    mfa_verified_until,
+                    mfa_step_up_verified_until,
+                    persist_session,
+                    expected_auth_session_version,
+                )
+                .await
+            }
+            None => {
+                app.issue_access_token_with_mfa_and_persistence(
+                    &user,
+                    mfa_verified_until,
+                    mfa_step_up_verified_until,
+                    persist_session,
+                )
+                .await
+            }
         }
     }
     .map_err(to_gql_error)?;
-    let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
+    let expires_at = Utc::now()
+        + chrono::Duration::seconds(if password_change_required {
+            app.mfa_enrollment_token_lifetime()
+        } else {
+            app.token_lifetime()
+        });
     Ok(LoginPayload {
         token,
         user: user_payload_from_user(app, user).await?,
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        password_change_required,
         persist_session,
     })
 }
@@ -85,13 +102,20 @@ async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
     persist_session: bool,
+    password_change_required_after_enrollment: bool,
+    expected_auth_session_version: &Option<String>,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user, persist_session)
+        .issue_mfa_enrollment_token(
+            &user,
+            persist_session,
+            password_change_required_after_enrollment,
+            Some(expected_auth_session_version),
+        )
         .await
         .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime());
@@ -101,6 +125,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        password_change_required: false,
         persist_session,
     })
 }
@@ -187,9 +212,12 @@ impl UserMutations {
                     .map_err(to_gql_error)?
             }
         } else {
-            app.set_user_password(&actor, &user_id, input.password)
+            let user = app
+                .set_user_password(&actor, &user_id, input.password)
                 .await
-                .map_err(to_gql_error)?
+                .map_err(to_gql_error)?;
+            auth_runtime_from_ctx(ctx).invalidate_connections();
+            user
         };
         let user = app
             .attach_user_authorization(user)
@@ -459,7 +487,7 @@ impl UserMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None, persist_session, None).await
+        login_payload_from_user(&app, user, None, None, persist_session, None, false).await
     }
 
     /// Authenticates through Jellyfin, applies configured TOTP requirements, and issues a session or MFA-enrollment token.
@@ -528,11 +556,21 @@ impl UserMutations {
                     None,
                     persist_session,
                     expected_auth_session_version,
+                    false,
                 )
                 .await
             }
-            LoginVerificationRequirement::EnrollmentRequired => {
-                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            LoginVerificationRequirement::EnrollmentRequired {
+                auth_session_version,
+            } => {
+                login_mfa_enrollment_payload_from_user(
+                    &app,
+                    user,
+                    persist_session,
+                    false,
+                    &auth_session_version,
+                )
+                .await
             }
             LoginVerificationRequirement::Challenge(challenge) => {
                 Err(login_verification_required_gql_error(
@@ -611,11 +649,21 @@ impl UserMutations {
                     None,
                     persist_session,
                     expected_auth_session_version,
+                    false,
                 )
                 .await
             }
-            LoginVerificationRequirement::EnrollmentRequired => {
-                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            LoginVerificationRequirement::EnrollmentRequired {
+                auth_session_version,
+            } => {
+                login_mfa_enrollment_payload_from_user(
+                    &app,
+                    user,
+                    persist_session,
+                    false,
+                    &auth_session_version,
+                )
+                .await
             }
             LoginVerificationRequirement::Challenge(challenge) => {
                 Err(login_verification_required_gql_error(

@@ -5,6 +5,7 @@ fn ui_settings_test_user(username: &str) -> User {
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,

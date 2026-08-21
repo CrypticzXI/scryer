@@ -42,6 +42,7 @@ async fn seed_user(users: &UserStore, id: &str) {
             id: id.to_string(),
             username: id.to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         })

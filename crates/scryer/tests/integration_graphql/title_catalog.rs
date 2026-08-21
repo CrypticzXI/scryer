@@ -85,6 +85,7 @@ fn catalog_view_actor(library_id: &str) -> User {
         id: Id::new().0,
         username: "catalog-filter-viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,

@@ -20,8 +20,9 @@ use super::{from_plugin_auto_update_settings, from_ui_settings, ui_settings_upda
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
     login_verification_required_gql_error, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, persist_session_or_default, require_config_app_permission,
-    to_gql_error, to_login_gql_error, to_login_gql_error_after_timing,
+    mfa_verification_from_ctx, password_change_required_actor_from_ctx, persist_session_or_default,
+    require_config_app_permission, to_gql_error, to_login_gql_error,
+    to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
     from_download_client_routing_entry, from_indexer_routing_entry, from_library_paths_settings,
@@ -422,30 +423,41 @@ async fn login_payload_from_user(
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
     persist_session: bool,
     expected_auth_session_version: Option<&Option<String>>,
+    password_change_required: bool,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
-    let token = match expected_auth_session_version {
-        Some(expected_auth_session_version) => {
-            app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
-                &user,
-                mfa_verified_until,
-                mfa_step_up_verified_until,
-                persist_session,
-                expected_auth_session_version,
-            )
-            .await
-        }
-        None => {
-            app.issue_access_token_with_mfa_and_persistence(
-                &user,
-                mfa_verified_until,
-                mfa_step_up_verified_until,
-                persist_session,
-            )
-            .await
+    let token = if password_change_required {
+        app.issue_password_change_required_token(
+            &user,
+            mfa_verified_until,
+            persist_session,
+            expected_auth_session_version,
+        )
+        .await
+    } else {
+        match expected_auth_session_version {
+            Some(expected_auth_session_version) => {
+                app.issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+                    &user,
+                    mfa_verified_until,
+                    mfa_step_up_verified_until,
+                    persist_session,
+                    expected_auth_session_version,
+                )
+                .await
+            }
+            None => {
+                app.issue_access_token_with_mfa_and_persistence(
+                    &user,
+                    mfa_verified_until,
+                    mfa_step_up_verified_until,
+                    persist_session,
+                )
+                .await
+            }
         }
     }
     .map_err(to_gql_error)?;
@@ -453,13 +465,19 @@ async fn login_payload_from_user(
         .user_auth_factor_status(&user.id)
         .await
         .map_err(to_gql_error)?;
-    let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
+    let expires_at = Utc::now()
+        + chrono::Duration::seconds(if password_change_required {
+            app.mfa_enrollment_token_lifetime()
+        } else {
+            app.token_lifetime()
+        });
     Ok(LoginPayload {
         token,
         user: from_user_with_auth_factor_status(user, auth_factor_status),
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        password_change_required,
         persist_session,
     })
 }
@@ -468,13 +486,20 @@ async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
     persist_session: bool,
+    password_change_required_after_enrollment: bool,
+    expected_auth_session_version: &Option<String>,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user, persist_session)
+        .issue_mfa_enrollment_token(
+            &user,
+            persist_session,
+            password_change_required_after_enrollment,
+            Some(expected_auth_session_version),
+        )
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -488,6 +513,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        password_change_required: false,
         persist_session,
     })
 }
@@ -1644,7 +1670,8 @@ impl SettingsMutations {
             Some(app.mfa_freshness_verified_until()),
             None,
             mfa.persist_session,
-            None,
+            Some(&mfa.auth_session_version),
+            mfa.password_change_required_after_enrollment,
         )
         .await?;
         Ok(LoginPasskeyEnrollmentCompletePayload {
@@ -1711,7 +1738,8 @@ impl SettingsMutations {
             Some(app.mfa_freshness_verified_until()),
             None,
             mfa.persist_session,
-            None,
+            Some(&mfa.auth_session_version),
+            mfa.password_change_required_after_enrollment,
         )
         .await?;
         Ok(LoginMfaEnrollmentCompletePayload {
@@ -1741,6 +1769,7 @@ impl SettingsMutations {
             Some(mfa_step_up_verified_until),
             true,
             None,
+            false,
         )
         .await
     }
@@ -1854,6 +1883,7 @@ impl SettingsMutations {
             None,
             persist_session,
             Some(&auth_session_version),
+            false,
         )
         .await
     }
@@ -1888,8 +1918,8 @@ impl SettingsMutations {
         let form_login_enabled = auth_runtime_from_ctx(ctx)
             .snapshot()
             .effective_form_login_enabled;
-        let (user, verified_until, persist_session, auth_session_version) = app
-            .login_verification_passkey_complete(
+        let (user, verified_until, persist_session, auth_session_version, password_change_required) =
+            app.login_verification_passkey_complete(
                 input.login_challenge_id.as_ref(),
                 input.webauthn_challenge_id.as_ref(),
                 &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
@@ -1904,6 +1934,7 @@ impl SettingsMutations {
             None,
             persist_session,
             Some(&auth_session_version),
+            password_change_required,
         )
         .await
     }
@@ -1918,10 +1949,10 @@ impl SettingsMutations {
         input: LoginVerificationTotpCompleteInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
-        let (user, verified_until, persist_session, auth_session_version) = app
-            .complete_login_verification_totp(input.login_challenge_id.as_ref(), &input.code)
-            .await
-            .map_err(to_gql_error)?;
+        let (user, verified_until, persist_session, auth_session_version, password_change_required) =
+            app.complete_login_verification_totp(input.login_challenge_id.as_ref(), &input.code)
+                .await
+                .map_err(to_gql_error)?;
         login_payload_from_user(
             &app,
             user,
@@ -1929,6 +1960,7 @@ impl SettingsMutations {
             None,
             persist_session,
             Some(&auth_session_version),
+            password_change_required,
         )
         .await
     }
@@ -2009,22 +2041,29 @@ impl SettingsMutations {
             .map_err(to_gql_error)?
         {
             LoginVerificationRequirement::Satisfied(satisfied) => {
-                let expected_auth_session_version = satisfied
-                    .mfa_verified_until
-                    .is_some()
-                    .then_some(&satisfied.auth_session_version);
+                let password_change_required = user.password_change_required;
                 login_payload_from_user(
                     &app,
                     user,
                     satisfied.mfa_verified_until,
                     None,
                     persist_session,
-                    expected_auth_session_version,
+                    Some(&satisfied.auth_session_version),
+                    password_change_required,
                 )
                 .await
             }
-            LoginVerificationRequirement::EnrollmentRequired => {
-                login_mfa_enrollment_payload_from_user(&app, user, persist_session).await
+            LoginVerificationRequirement::EnrollmentRequired {
+                auth_session_version,
+            } => {
+                login_mfa_enrollment_payload_from_user(
+                    &app,
+                    user.clone(),
+                    persist_session,
+                    user.password_change_required,
+                    &auth_session_version,
+                )
+                .await
             }
             LoginVerificationRequirement::Challenge(challenge) => {
                 Err(login_verification_required_gql_error(
@@ -2035,6 +2074,39 @@ impl SettingsMutations {
                 ))
             }
         }
+    }
+
+    /// Replaces an administrator-provided temporary password and issues the full session.
+    async fn complete_required_password_change(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "New password selected by the authenticated user.")]
+        input: CompleteRequiredPasswordChangeInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let claims = mfa_verification_from_ctx(ctx);
+        let actor = password_change_required_actor_from_ctx(ctx)?;
+        let (user, auth_session_version) = app
+            .complete_required_password_change(&actor, input.password, &claims.auth_session_version)
+            .await
+            .map_err(to_gql_error)?;
+        auth_runtime_from_ctx(ctx).invalidate_connections();
+        let mfa_verified_until = claims
+            .verified_until
+            .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0));
+        let mfa_step_up_verified_until = claims
+            .step_up_verified_until
+            .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0));
+        login_payload_from_user(
+            &app,
+            user,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            claims.persist_session,
+            Some(&auth_session_version),
+            false,
+        )
+        .await
     }
 
     /// Mark the setup wizard as complete.

@@ -9,9 +9,14 @@ import { Input, integerInputProps } from "@/components/ui/input";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import { isVisibleExternalAccountProvider } from "@/lib/constants/integration-providers";
-import { backendClient, mfaEnrollmentClient } from "@/lib/graphql/urql-client";
+import {
+  backendClient,
+  mfaEnrollmentClient,
+  passwordChangeRequiredClient,
+} from "@/lib/graphql/urql-client";
 import { externalAuthRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
+  completeRequiredPasswordChangeMutation,
   completeLoginMfaEnrollmentMutation,
   loginVerificationTotpCompleteMutation,
   loginWithEmbyMutation,
@@ -41,9 +46,15 @@ type LoginPayload = {
   token: string;
   user: AuthUser | null;
   mfaEnrollmentRequired: boolean;
+  passwordChangeRequired?: boolean;
   mfaVerifiedUntil: string | null;
   persistSession: boolean;
 };
+
+type CompletedLoginPayload = Pick<
+  LoginPayload,
+  "token" | "user" | "passwordChangeRequired" | "persistSession"
+>;
 
 type LoginVerificationChallenge = {
   loginChallengeId: string;
@@ -149,6 +160,7 @@ export default function LoginPage() {
     adoptSession,
     logout,
     user,
+    passwordChangeRequired,
     loading: authLoading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
@@ -162,6 +174,11 @@ export default function LoginPage() {
   const [activeMethod, setActiveMethod] = useState<LoginMethod>("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [replacementPassword, setReplacementPassword] = useState("");
+  const [replacementPasswordConfirmation, setReplacementPasswordConfirmation] =
+    useState("");
+  const [showReplacementPassword, setShowReplacementPassword] = useState(false);
+  const replacementPasswordInput = useRef<HTMLInputElement | null>(null);
   const [persistSession, setPersistSession] = useState(false);
   const persistSessionInitialized = useRef(false);
   const conditionalPasskeyAbort = useRef<AbortController | null>(null);
@@ -207,6 +224,12 @@ export default function LoginPage() {
       persistSessionInitialized.current = true;
     }
   }, [authLoading, defaultPersistSession]);
+
+  useEffect(() => {
+    if (passwordChangeRequired) {
+      replacementPasswordInput.current?.focus();
+    }
+  }, [passwordChangeRequired]);
   const jellyfinConnections =
     externalAuthSettings?.loginProviders.includes("JELLYFIN")
       ? externalAuthSettings.connections.filter(
@@ -279,6 +302,20 @@ export default function LoginPage() {
     setError(null);
   }, []);
 
+  const adoptCompletedLogin = useCallback(
+    (result: CompletedLoginPayload): boolean => {
+      adoptSession(result.token, result.user ?? null, result.persistSession);
+      if (result.passwordChangeRequired) {
+        setPassword("");
+        setJellyfinPassword("");
+        setEmbyPassword("");
+        return true;
+      }
+      return false;
+    },
+    [adoptSession],
+  );
+
   useEffect(() => {
     if (!loginVerification) return;
     const delay = new Date(loginVerification.expiresAt).getTime() - Date.now();
@@ -315,8 +352,9 @@ export default function LoginPage() {
           controller.signal,
         );
         if (controller.signal.aborted) return;
-        adoptSession(result.token, result.user, result.persistSession);
-        navigate(redirectTarget, { replace: true });
+        if (!adoptCompletedLogin(result)) {
+          navigate(redirectTarget, { replace: true });
+        }
       } catch (err) {
         if (controller.signal.aborted) return;
         if (err instanceof PasskeyClientError && err.code === "cancelled") {
@@ -331,7 +369,7 @@ export default function LoginPage() {
     })();
     return () => controller.abort();
   }, [
-    adoptSession,
+    adoptCompletedLogin,
     loginVerification,
     navigate,
     redirectTarget,
@@ -344,7 +382,8 @@ export default function LoginPage() {
       !localPasswordAvailable ||
       !passkeyEnabled ||
       !passwordFormVisible ||
-      loginVerification
+      loginVerification ||
+      passwordChangeRequired
     ) {
       return;
     }
@@ -388,6 +427,7 @@ export default function LoginPage() {
     loginVerification,
     navigate,
     passkeyEnabled,
+    passwordChangeRequired,
     passwordFormVisible,
     persistSession,
     redirectTarget,
@@ -414,14 +454,21 @@ export default function LoginPage() {
         throw error ?? new Error("Authenticator verification failed.");
       }
       const result = data.loginVerificationTotpComplete;
-      adoptSession(result.token, result.user ?? null, result.persistSession);
-      navigate(redirectTarget, { replace: true });
+      if (!adoptCompletedLogin(result)) {
+        navigate(redirectTarget, { replace: true });
+      }
     } catch {
       setError("Authenticator or recovery code was not accepted.");
     } finally {
       setSubmitting(false);
     }
-  }, [adoptSession, loginVerification, navigate, redirectTarget, verificationTotpCode]);
+  }, [
+    adoptCompletedLogin,
+    loginVerification,
+    navigate,
+    redirectTarget,
+    verificationTotpCode,
+  ]);
 
   // Redirect to home if already authenticated
   useEffect(() => {
@@ -545,13 +592,11 @@ export default function LoginPage() {
     setLoginEnrollmentPasskeyBusy(true);
     try {
       const result = await registerLoginEnrollmentPasskey(mfaEnrollmentClient);
-      adoptSession(
-        result.login.token,
-        result.login.user ?? null,
-        result.login.persistSession,
-      );
+      const passwordReplacementPending = adoptCompletedLogin(result.login);
       setJellyfinMfaSetupActive(false);
-      navigate(redirectTarget, { replace: true });
+      if (!passwordReplacementPending) {
+        navigate(redirectTarget, { replace: true });
+      }
     } catch (err) {
       if (err instanceof PasskeyClientError && err.code === "cancelled") {
         setError("Passkey enrollment was cancelled. Choose an authenticator app instead or try again.");
@@ -561,7 +606,7 @@ export default function LoginPage() {
     } finally {
       setLoginEnrollmentPasskeyBusy(false);
     }
-  }, [adoptSession, navigate, redirectTarget]);
+  }, [adoptCompletedLogin, navigate, redirectTarget]);
 
   const handleSubmit = useCallback(
     async (e?: React.FormEvent) => {
@@ -575,8 +620,13 @@ export default function LoginPage() {
           persistSession,
         });
         if (result.mfaEnrollmentRequired) {
+          setPassword("");
           setJellyfinMfaSetupActive(true);
           adoptSession(result.token, result.user ?? null, result.persistSession);
+          return;
+        }
+        if (result.passwordChangeRequired) {
+          setPassword("");
           return;
         }
         navigate(redirectTarget, { replace: true });
@@ -628,22 +678,25 @@ export default function LoginPage() {
       setJellyfinMfaRecoveryCodes(data.completeLoginMfaEnrollment.recoveryCodes);
       setJellyfinMfaEnrollment(null);
       setJellyfinMfaEnrollmentCode("");
-      adoptSession(
-        data.completeLoginMfaEnrollment.login.token,
-        data.completeLoginMfaEnrollment.login.user ?? null,
-        data.completeLoginMfaEnrollment.login.persistSession,
-      );
+      adoptCompletedLogin(data.completeLoginMfaEnrollment.login);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.mfaSetupCompleteFailed"));
     } finally {
       setJellyfinMfaBusy(false);
     }
-  }, [adoptSession, jellyfinMfaEnrollment, jellyfinMfaEnrollmentCode, t]);
+  }, [
+    adoptCompletedLogin,
+    jellyfinMfaEnrollment,
+    jellyfinMfaEnrollmentCode,
+    t,
+  ]);
 
   const continueAfterJellyfinMfaEnrollment = useCallback(() => {
     setJellyfinMfaSetupActive(false);
-    navigate(redirectTarget, { replace: true });
-  }, [navigate, redirectTarget]);
+    if (!passwordChangeRequired) {
+      navigate(redirectTarget, { replace: true });
+    }
+  }, [navigate, passwordChangeRequired, redirectTarget]);
 
   const cancelJellyfinMfaEnrollment = useCallback(() => {
     logout();
@@ -804,6 +857,57 @@ export default function LoginPage() {
       }
     },
     [adoptSession, navigate, persistSession, plexConnectionId, redirectTarget, t],
+  );
+
+  const handleRequiredPasswordChange = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault();
+      if (!replacementPassword) {
+        setError("Enter a new password.");
+        replacementPasswordInput.current?.focus();
+        return;
+      }
+      if (replacementPassword !== replacementPasswordConfirmation) {
+        setError("The new passwords do not match.");
+        return;
+      }
+
+      setError(null);
+      setSubmitting(true);
+      try {
+        const { data, error } = await passwordChangeRequiredClient
+          .mutation<{ completeRequiredPasswordChange?: LoginPayload }>(
+            completeRequiredPasswordChangeMutation,
+            { input: { password: replacementPassword } },
+          )
+          .toPromise();
+        if (error || !data?.completeRequiredPasswordChange) {
+          throw error ?? new Error("Password replacement failed.");
+        }
+        const result = data.completeRequiredPasswordChange;
+        adoptSession(result.token, result.user ?? null, result.persistSession);
+        setReplacementPassword("");
+        setReplacementPasswordConfirmation("");
+        navigate(redirectTarget, { replace: true });
+      } catch (err) {
+        if (graphQlErrorCode(err) === "PASSWORD_CHANGE_REQUIRED") {
+          logout();
+          setError("This temporary session has expired. Sign in again to continue.");
+          return;
+        }
+        setError("Your new password could not be saved. Check the requirements and try again.");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [
+      adoptSession,
+      logout,
+      navigate,
+      redirectTarget,
+      replacementPassword,
+      replacementPasswordConfirmation,
+    ],
   );
 
   if (serviceRestarting) {
@@ -1044,6 +1148,84 @@ export default function LoginPage() {
               </button>
             </div>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (passwordChangeRequired) {
+    return (
+      <div className={AUTH_PAGE_CLASS}>
+        <div className={AUTH_PANEL_CLASS}>
+          <div className="space-y-2 text-center">
+            <h1 className={AUTH_HEADING_CLASS}>Choose a new password</h1>
+            <p className={AUTH_MUTED_TEXT_CLASS}>
+              Your administrator supplied a temporary password. Choose a new password that only you know.
+            </p>
+          </div>
+
+          <div aria-live="polite" className="sr-only">
+            {error ?? ""}
+          </div>
+          {error ? <div id="login-error" className={AUTH_ERROR_CLASS}>{error}</div> : null}
+
+          <form onSubmit={handleRequiredPasswordChange} className="space-y-4">
+            <div className="space-y-1.5">
+              <label htmlFor="required-password" className={AUTH_LABEL_CLASS}>
+                New password
+              </label>
+              <Input
+                ref={replacementPasswordInput}
+                id="required-password"
+                type={showReplacementPassword ? "text" : "password"}
+                autoComplete="new-password"
+                required
+                value={replacementPassword}
+                onChange={(event) => setReplacementPassword(event.target.value)}
+                className={AUTH_INPUT_CLASS}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="required-password-confirmation" className={AUTH_LABEL_CLASS}>
+                Confirm new password
+              </label>
+              <Input
+                id="required-password-confirmation"
+                type={showReplacementPassword ? "text" : "password"}
+                autoComplete="new-password"
+                required
+                value={replacementPasswordConfirmation}
+                onChange={(event) => setReplacementPasswordConfirmation(event.target.value)}
+                className={AUTH_INPUT_CLASS}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
+              <input
+                type="checkbox"
+                checked={showReplacementPassword}
+                onChange={(event) => setShowReplacementPassword(event.target.checked)}
+              />
+              Show passwords
+            </label>
+            <button
+              id="complete-required-password-change"
+              type="submit"
+              disabled={submitting}
+              className={AUTH_PRIMARY_BUTTON_CLASS}
+            >
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {submitting ? "Saving password" : "Save new password"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={logout}
+            disabled={submitting}
+            className={AUTH_SECONDARY_BUTTON_CLASS}
+          >
+            Sign out
+          </button>
         </div>
       </div>
     );

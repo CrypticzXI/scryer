@@ -531,18 +531,20 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Login-factor verification then adds five mutations for enrollment and
     // passkey/TOTP completion: mutation 181->186, public types 582->585,
     // OBJECT 300->301, and INPUT_OBJECT 166->168.
+    // Temporary-password replacement adds one mutation and its input object:
+    // mutation 186->187, INPUT_OBJECT 168->169, public types 585->586.
     assert_eq!(
         query_field_count, 125,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 186,
+        mutation_field_count, 187,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 585);
+    assert_eq!(public_types.len(), 586);
     assert_eq!(kind_count("OBJECT"), 301);
-    assert_eq!(kind_count("INPUT_OBJECT"), 168);
+    assert_eq!(kind_count("INPUT_OBJECT"), 169);
     assert_eq!(kind_count("ENUM"), 104);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

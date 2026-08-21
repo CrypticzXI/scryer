@@ -1400,6 +1400,10 @@ impl ResolvedActor {
             step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
             persist_session: self.token_claims.persist_session,
+            auth_session_version: self.token_claims.auth_session_version.clone(),
+            password_change_required_after_enrollment: self
+                .token_claims
+                .password_change_required_after_enrollment,
             oauth_authorization_source: self.token_claims.oauth_authorization_source,
         }
     }
@@ -2219,6 +2223,7 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::MfaStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
         | AppError::MfaEnrollmentRequired(message)
+        | AppError::PasswordChangeRequired(message)
         | AppError::TotpInvalidCode(message)
         | AppError::TotpRecoveryCodeUsed(message) => {
             (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
@@ -2432,7 +2437,7 @@ mod tests {
             .await
             .expect("issue ordinary token");
         let mfa_enrollment_token = app
-            .issue_mfa_enrollment_token(&ordinary, false)
+            .issue_mfa_enrollment_token(&ordinary, false, false, None)
             .await
             .expect("issue MFA enrollment token");
         let manager_token = app
@@ -3465,6 +3470,7 @@ mod tests {
                 id: "authless-ws-user".to_string(),
                 username: "Anonymous".to_string(),
                 password_hash: None,
+                password_change_required: false,
                 account_kind: Default::default(),
                 authorization: Default::default(),
             },

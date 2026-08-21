@@ -3714,6 +3714,8 @@ pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     #[serde(default)]
+    pub password_change_required: bool,
+    #[serde(default)]
     pub account_kind: UserAccountKind,
     #[serde(default)]
     pub authorization: UserAuthorization,
@@ -3940,6 +3942,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
@@ -3950,6 +3953,7 @@ impl User {
             id: Self::SYSTEM_EXECUTION_ID.to_string(),
             username: "System".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
@@ -3967,6 +3971,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }

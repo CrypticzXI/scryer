@@ -44,6 +44,7 @@ pub(super) fn test_user_with_app_permissions(
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };

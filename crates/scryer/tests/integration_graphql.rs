@@ -206,6 +206,7 @@ fn manage_users_actor(username: &str) -> User {
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),

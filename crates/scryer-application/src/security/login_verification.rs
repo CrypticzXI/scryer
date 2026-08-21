@@ -41,12 +41,20 @@ impl AppUseCase {
         }
 
         if !factors.has_mfa && !factors.has_passkey {
+            let auth_session_version = self
+                .services
+                .identity
+                .users
+                .auth_session_version(&user.id)
+                .await?;
             return Ok(if policy_requires_mfa {
-                LoginVerificationRequirement::EnrollmentRequired
+                LoginVerificationRequirement::EnrollmentRequired {
+                    auth_session_version,
+                }
             } else {
                 LoginVerificationRequirement::Satisfied(LoginVerificationSatisfied {
                     mfa_verified_until: None,
-                    auth_session_version: None,
+                    auth_session_version,
                 })
             });
         }
@@ -143,7 +151,13 @@ impl AppUseCase {
         &self,
         challenge_id: &str,
         code: &str,
-    ) -> AppResult<(scryer_domain::User, DateTime<Utc>, bool, Option<String>)> {
+    ) -> AppResult<(
+        scryer_domain::User,
+        DateTime<Utc>,
+        bool,
+        Option<String>,
+        bool,
+    )> {
         let (challenge, user) = self
             .require_login_verification_factor(challenge_id, false)
             .await?;
@@ -162,11 +176,15 @@ impl AppUseCase {
                 "login verification challenge was invalidated".into(),
             ));
         }
+        let password_change_required = consumed.login_method
+            == LoginVerificationMethod::LocalPassword
+            && user.password_change_required;
         Ok((
             user,
             verified_until,
             consumed.persist_session,
             consumed.auth_session_version,
+            password_change_required,
         ))
     }
 
