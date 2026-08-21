@@ -306,6 +306,7 @@ fn unauthorized_actor() -> User {
         id: Id::new().0,
         username: "credits-outsider".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,

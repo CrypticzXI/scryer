@@ -43,7 +43,7 @@ impl UserRepository for UserStore {
     async fn list_all(&self) -> AppResult<Vec<User>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
-            "SELECT id, username, password_hash, account_kind, status FROM users",
+            "SELECT id, username, password_hash, password_change_required, account_kind, status FROM users",
             &[],
         )
         .await?;
@@ -113,7 +113,12 @@ impl UserRepository for UserStore {
         .await
     }
 
-    async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
+    async fn update_password_hash(
+        &self,
+        id: &str,
+        password_hash: String,
+        password_change_required: bool,
+    ) -> AppResult<User> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "update_user_password_hash", move |tx| {
             let id = id.clone();
@@ -121,8 +126,12 @@ impl UserRepository for UserStore {
             Box::pin(async move {
                 let rows = tx
                     .execute(
-                        "UPDATE users SET password_hash = {} WHERE id = {}",
-                        &[SqlArg::Text(password_hash), SqlArg::Text(id.clone())],
+                        "UPDATE users SET password_hash = {}, password_change_required = {} WHERE id = {}",
+                        &[
+                            SqlArg::Text(password_hash),
+                            SqlArg::Bool(password_change_required),
+                            SqlArg::Text(id.clone()),
+                        ],
                     )
                     .await?;
                 if rows == 0 {
@@ -133,6 +142,108 @@ impl UserRepository for UserStore {
                     .ok_or_else(|| AppError::NotFound(format!("user {id}")))
             })
         })
+        .await
+    }
+
+    async fn set_temporary_password_and_invalidate_sessions(
+        &self,
+        id: &str,
+        password_hash: String,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let id = id.to_string();
+        let auth_session_version = auth_session_version.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "set_temporary_password_and_invalidate_sessions",
+            move |tx| {
+                let id = id.clone();
+                let password_hash = password_hash.clone();
+                let auth_session_version = auth_session_version.clone();
+                Box::pin(async move {
+                    let rows = tx
+                        .execute(
+                            "UPDATE users
+                             SET password_hash = {}, password_change_required = {}, auth_session_version = {}
+                             WHERE id = {}",
+                            &[
+                                SqlArg::Text(password_hash),
+                                SqlArg::Bool(true),
+                                SqlArg::Text(auth_session_version),
+                                SqlArg::Text(id.clone()),
+                            ],
+                        )
+                        .await?;
+                    if rows == 0 {
+                        return Err(AppError::NotFound(format!("user {id}")));
+                    }
+                    for table in [
+                        "totp_enrollment_challenges",
+                        "webauthn_challenges",
+                        "login_verification_challenges",
+                    ] {
+                        tx.execute(
+                            &format!("DELETE FROM {table} WHERE user_id = {{}}"),
+                            &[SqlArg::Text(id.clone())],
+                        )
+                        .await?;
+                    }
+                    load_user_by_id_tx(tx, &id)
+                        .await?
+                        .ok_or_else(|| AppError::NotFound(format!("user {id}")))
+                })
+            },
+        )
+        .await
+    }
+
+    async fn complete_required_password_change(
+        &self,
+        id: &str,
+        password_hash: String,
+        expected_auth_session_version: &Option<String>,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let id = id.to_string();
+        let expected_auth_session_version = expected_auth_session_version.clone();
+        let auth_session_version = auth_session_version.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "complete_required_password_change",
+            move |tx| {
+                let id = id.clone();
+                let password_hash = password_hash.clone();
+                let expected_auth_session_version = expected_auth_session_version.clone();
+                let auth_session_version = auth_session_version.clone();
+                Box::pin(async move {
+                    let rows = tx
+                        .execute(
+                            "UPDATE users
+                             SET password_hash = {}, password_change_required = {}, auth_session_version = {}
+                             WHERE id = {} AND password_change_required = {}
+                               AND (auth_session_version = {} OR (auth_session_version IS NULL AND {} IS NULL))",
+                            &[
+                                SqlArg::Text(password_hash),
+                                SqlArg::Bool(false),
+                                SqlArg::Text(auth_session_version),
+                                SqlArg::Text(id.clone()),
+                                SqlArg::Bool(true),
+                                SqlArg::OptText(expected_auth_session_version.clone()),
+                                SqlArg::OptText(expected_auth_session_version),
+                            ],
+                        )
+                        .await?;
+                    if rows == 0 {
+                        return Err(AppError::Unauthorized(
+                            "password change is no longer required".into(),
+                        ));
+                    }
+                    load_user_by_id_tx(tx, &id)
+                        .await?
+                        .ok_or_else(|| AppError::NotFound(format!("user {id}")))
+                })
+            },
+        )
         .await
     }
 
@@ -400,7 +511,7 @@ impl UserExternalAccountRepository for UserStore {
 async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash, account_kind, status FROM users WHERE username = {}",
+        "SELECT id, username, password_hash, password_change_required, account_kind, status FROM users WHERE username = {}",
         &[SqlArg::Text(username.to_string())],
     )
     .await?;
@@ -410,7 +521,7 @@ async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResu
 async fn load_user_by_id(exec: SqlExec<'_, '_>, id: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash, account_kind, status FROM users WHERE id = {}",
+        "SELECT id, username, password_hash, password_change_required, account_kind, status FROM users WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
     )
     .await?;
@@ -423,12 +534,13 @@ async fn load_user_by_id_tx(tx: &mut SqlTx<'_>, id: &str) -> AppResult<Option<Us
 
 async fn insert_user_tx(tx: &mut SqlTx<'_>, user: &User) -> AppResult<()> {
     tx.execute(
-        "INSERT INTO users (id, username, password_hash, account_kind, status)
-         VALUES ({}, {}, {}, {}, {})",
+        "INSERT INTO users (id, username, password_hash, password_change_required, account_kind, status)
+         VALUES ({}, {}, {}, {}, {}, {})",
         &[
             SqlArg::Text(user.id.clone()),
             SqlArg::Text(user.username.clone()),
             SqlArg::OptText(user.password_hash.clone()),
+            SqlArg::Bool(user.password_change_required),
             SqlArg::Text(user.account_kind.as_str().to_string()),
             SqlArg::Text(user.login_status().as_storage_str().to_string()),
         ],
@@ -496,6 +608,7 @@ fn row_to_user(row: &SqlRow) -> AppResult<User> {
         id: row.text("id")?,
         username: row.text("username")?,
         password_hash: row.opt_text("password_hash")?,
+        password_change_required: row.bool("password_change_required")?,
         account_kind: UserAccountKind::parse(&row.text("account_kind")?).ok_or_else(|| {
             AppError::Repository(format!(
                 "invalid user account kind for user {}",
@@ -932,6 +1045,7 @@ mod tests {
             id: id.to_string(),
             username: format!("{id}_name"),
             password_hash: Some("hash".to_string()),
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,

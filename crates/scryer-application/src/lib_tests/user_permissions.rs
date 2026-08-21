@@ -455,6 +455,7 @@ async fn form_login_transition_requires_usable_admin_and_repairs_default_identit
         .update_password_hash(
             &default_admin.id,
             app.hash_password("admin").expect("hash bootstrap password"),
+            false,
         )
         .await
         .expect("seed bootstrap password");

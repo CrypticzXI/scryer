@@ -731,6 +731,7 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
         id: "ghost-search-user".to_string(),
         username: "ghost".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };

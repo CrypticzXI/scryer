@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ChevronRight, KeyRound, Plus, Power, PowerOff, ShieldOff, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import {
   PermissionDropdowns,
   type LibraryPermissionDrafts,
@@ -163,6 +164,8 @@ export function SettingsUsersSection({
 }: SettingsUsersSectionProps) {
   const t = useTranslate();
   const [isCreateUserOpen, setIsCreateUserOpen] = React.useState(false);
+  const [passwordResetUser, setPasswordResetUser] =
+    React.useState<UserRecord | null>(null);
   return (
     <div id="settings-users-section" className="space-y-4 text-sm">
       <div className={USERS_PANEL_CLASS}>
@@ -190,7 +193,7 @@ export function SettingsUsersSection({
                       {t("settings.passkey")}
                     </TableHead>
                     <TableHead className={cn("w-72", USERS_TABLE_HEADER_CELL_CLASS)}>
-                      {t("settings.newPassword")}
+                      {t("settings.temporaryPassword")}
                     </TableHead>
                     <TableHead className={cn("w-44 text-right", USERS_TABLE_HEADER_CELL_CLASS)}>
                       {t("label.actions")}
@@ -241,6 +244,11 @@ export function SettingsUsersSection({
                       <div className="mt-1">
                         <UserLoginStatusBadge enabled={user.loginEnabled} />
                       </div>
+                      {user.passwordChangeRequired ? (
+                        <div className="mt-1 text-xs text-[var(--scry-warning-text)]">
+                          {t("settings.passwordChangeRequired")}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell className="align-middle">
                       <CollapsiblePermissionSection
@@ -279,7 +287,7 @@ export function SettingsUsersSection({
                       {canSetPassword ? (
                         <div className="flex items-center gap-2">
                           <label className="sr-only" htmlFor={`new-password-${user.id}`}>
-                            {t("settings.newPassword")}
+                            {t("settings.temporaryPassword")}
                           </label>
                           <Input
                             id={`new-password-${user.id}`}
@@ -288,7 +296,7 @@ export function SettingsUsersSection({
                             placeholder={t("form.newPasswordPlaceholder")}
                             type="password"
                             autoComplete="new-password"
-                            aria-label={t("settings.newPassword")}
+                            aria-label={t("settings.temporaryPassword")}
                             disabled={isOwnUser}
                           />
                           <Button
@@ -296,13 +304,13 @@ export function SettingsUsersSection({
                             variant="primary"
                             size="sm"
                             className="min-w-24 px-2"
-                            onClick={() => void setUserPassword(user.id)}
+                            onClick={() => setPasswordResetUser(user)}
                             disabled={mutatingUserId === user.id || isOwnUser}
                           >
                             <KeyRound className="h-3.5 w-3.5" />
                             {mutatingUserId === user.id
                               ? t("label.saving")
-                              : t("settings.updatePassword")}
+                              : t("settings.setTemporaryPassword")}
                           </Button>
                         </div>
                       ) : (
@@ -392,7 +400,7 @@ export function SettingsUsersSection({
                 </div>
                 <div>
                   <Label htmlFor="settings-user-password" className="mb-2 block">
-                    {t("settings.password")}
+                    {t("settings.temporaryPassword")}
                   </Label>
                   <Input
                     id="settings-user-password"
@@ -403,6 +411,9 @@ export function SettingsUsersSection({
                     autoComplete="new-password"
                     required
                   />
+                  <p className="mt-1 text-xs text-[var(--scry-muted)]">
+                    {t("settings.temporaryPasswordHelp")}
+                  </p>
                 </div>
               </div>
               {canManagePermissions ? (
@@ -448,6 +459,27 @@ export function SettingsUsersSection({
           />
         </div>
       )}
+
+      <ConfirmDialog
+        open={passwordResetUser !== null}
+        contentId="settings-user-temporary-password-dialog"
+        title={t("settings.temporaryPasswordResetTitle")}
+        description={t("settings.temporaryPasswordResetDescription", {
+          name: passwordResetUser?.username ?? "",
+        })}
+        confirmLabel={t("settings.setTemporaryPassword")}
+        cancelLabel={t("label.cancel")}
+        confirmButtonVariant="destructive"
+        isBusy={
+          passwordResetUser !== null && mutatingUserId === passwordResetUser.id
+        }
+        onConfirm={async () => {
+          if (!passwordResetUser) return;
+          await setUserPassword(passwordResetUser.id);
+          setPasswordResetUser(null);
+        }}
+        onCancel={() => setPasswordResetUser(null)}
+      />
 
       {externalAccountInvitesPanel}
     </div>

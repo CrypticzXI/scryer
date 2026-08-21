@@ -363,6 +363,7 @@ fn is_login_mutation_field(name: &str) -> bool {
             | "loginVerificationTotpComplete"
             | "webauthnLoginEnrollmentStart"
             | "webauthnLoginEnrollmentComplete"
+            | "completeRequiredPasswordChange"
     )
 }
 

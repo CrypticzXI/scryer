@@ -13,6 +13,7 @@ pub fn from_user_with_auth_factor_status(
         id,
         username,
         password_hash,
+        password_change_required,
         account_kind,
         authorization,
         ..
@@ -48,6 +49,7 @@ pub fn from_user_with_auth_factor_status(
         username,
         login_enabled: login_status.is_enabled(),
         has_password: password_hash.is_some(),
+        password_change_required,
         has_mfa: auth_factor_status.has_mfa,
         has_passkey: auth_factor_status.has_passkey,
         account_kind: UserAccountKindValue::from_domain(account_kind),

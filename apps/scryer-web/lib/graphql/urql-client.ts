@@ -9,6 +9,7 @@ import {
   clearClientAuthSession,
   getAuthToken,
   getMfaEnrollmentToken,
+  getPasswordChangeRequiredToken,
 } from "@/lib/hooks/use-auth";
 import { getRuntimeBasePath, getRuntimeGraphqlUrl } from "@/lib/runtime-config";
 import { wsClient } from "@/lib/graphql/ws-client";
@@ -291,6 +292,24 @@ export const mfaEnrollmentClient = new Client({
     const token = getMfaEnrollmentToken();
     if (token) {
       headers["authorization"] = `Bearer ${token}`;
+    }
+    return { headers };
+  },
+});
+
+export const passwordChangeRequiredClient = new Client({
+  url: getRuntimeGraphqlUrl(),
+  preferGetMethod: false,
+  requestPolicy: "network-only",
+  fetch: scryerFetch,
+  exchanges: [fetchExchange],
+  fetchOptions: () => {
+    const headers: Record<string, string> = {
+      "x-scryer-language": currentLanguage,
+    };
+    const token = getPasswordChangeRequiredToken();
+    if (token) {
+      headers.authorization = `Bearer ${token}`;
     }
     return { headers };
   },

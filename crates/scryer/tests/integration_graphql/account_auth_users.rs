@@ -227,6 +227,7 @@ async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other
         "self password reset without current password should fail: {self_without_current_password}"
     );
 
+    let previous_epoch = ctx.auth_runtime.snapshot().epoch;
     let reset_admin = gql_with_token(
         &ctx,
         r#"
@@ -245,6 +246,7 @@ async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other
     .await;
     assert_no_errors(&reset_admin);
     assert_eq!(reset_admin["data"]["setUserPassword"]["username"], "admin");
+    assert_eq!(ctx.auth_runtime.snapshot().epoch, previous_epoch + 1);
     ctx.app
         .authenticate_credentials("admin", "admin-recovery-new-pass1")
         .await
@@ -329,7 +331,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 
     let token = ctx
         .app
-        .issue_mfa_enrollment_token(&admin, false)
+        .issue_mfa_enrollment_token(&admin, false, false, None)
         .await
         .expect("issue enrollment token");
 
@@ -1630,6 +1632,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
             id: Id::new().0,
             username: "not-a-manager".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: UserAuthorization {
                 app: AppPermissionMask::NONE,
@@ -1785,6 +1788,7 @@ async fn graphql_external_account_invites_expose_last_login() {
         id: "viewer".to_string(),
         username: "viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,
@@ -2099,6 +2103,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         id: Id::new().0,
         username: "scoped-delete-user".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: scryer_domain::AppPermissionMask::NONE,
@@ -2532,9 +2537,8 @@ async fn tampered_token_is_rejected_by_authenticate_token() {
     );
 }
 
-/// Creating a user with `createUser` and then logging in as that user must
-/// succeed end-to-end — confirming that the password is stored and validated
-/// consistently.
+/// An administrator-created password is valid only for the short-lived
+/// replacement flow, which must issue the full session after completion.
 #[tokio::test]
 async fn newly_created_user_can_login() {
     let ctx = TestContext::new().await;
@@ -2559,7 +2563,7 @@ async fn newly_created_user_can_login() {
     // Log in as the newly created user.
     let login_body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!!" }) { token user { username } } }"#,
+        r#"mutation { login(input: { username: "newuser", password: "s3cr3t!!" }) { token passwordChangeRequired user { username } } }"#,
         None,
     )
     .await;
@@ -2570,6 +2574,58 @@ async fn newly_created_user_can_login() {
     let token = login_body["data"]["login"]["token"].as_str().unwrap();
     assert!(!token.is_empty());
     assert_eq!(login_body["data"]["login"]["user"]["username"], "newuser");
+    assert_eq!(login_body["data"]["login"]["passwordChangeRequired"], true);
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("temporary-password token should authenticate");
+    assert_eq!(
+        claims.session_scope,
+        JwtSessionScope::PasswordChangeRequired
+    );
+
+    let blocked = gql_with_token(&ctx, "{ me { id } }", json!({}), token).await;
+    assert_eq!(
+        blocked["errors"][0]["extensions"]["code"],
+        "PASSWORD_CHANGE_REQUIRED"
+    );
+
+    let reused_temporary_password = gql_with_token(
+        &ctx,
+        r#"mutation { completeRequiredPasswordChange(input: { password: "s3cr3t!!" }) { token } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_eq!(
+        reused_temporary_password["errors"][0]["message"],
+        "validation: new password must differ from the temporary password"
+    );
+
+    let previous_epoch = ctx.auth_runtime.snapshot().epoch;
+    let replacement = gql_with_token(
+        &ctx,
+        r#"mutation { completeRequiredPasswordChange(input: { password: "user-owned-password1" }) { token passwordChangeRequired } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&replacement);
+    assert_eq!(
+        replacement["data"]["completeRequiredPasswordChange"]["passwordChangeRequired"],
+        false
+    );
+    assert_eq!(ctx.auth_runtime.snapshot().epoch, previous_epoch + 1);
+    let full_token = replacement["data"]["completeRequiredPasswordChange"]["token"]
+        .as_str()
+        .expect("full token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
+        .await
+        .expect("replacement should issue a full token");
+    assert_eq!(claims.session_scope, JwtSessionScope::Full);
 }
 
 #[tokio::test]
@@ -2590,6 +2646,7 @@ async fn graphql_local_password_login_masks_account_disclosure() {
             id: "masked-no-password-user".to_string(),
             username: "maskednopass".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         })
@@ -2754,6 +2811,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
             login {
               token
               mfaEnrollmentRequired
+              passwordChangeRequired
               mfaVerifiedUntil
               persistSession
               user { username }
@@ -2780,10 +2838,36 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     );
     let login_payload = &complete_payload["login"];
     assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert_eq!(login_payload["passwordChangeRequired"], true);
     assert_eq!(login_payload["persistSession"], true);
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "localmfa");
-    let full_token = login_payload["token"].as_str().expect("full token");
+    let password_change_token = login_payload["token"]
+        .as_str()
+        .expect("password-replacement token");
+    let (_user, password_change_claims) = ctx
+        .app
+        .authenticate_token_with_claims(password_change_token)
+        .await
+        .expect("authenticate password-replacement token");
+    assert_eq!(
+        password_change_claims.session_scope,
+        JwtSessionScope::PasswordChangeRequired
+    );
+    assert!(password_change_claims.persist_session);
+    assert!(password_change_claims.mfa_verified_until.is_some());
+
+    let replacement = gql_with_token(
+        &ctx,
+        r#"mutation { completeRequiredPasswordChange(input: { password: "required-enrollment-password1" }) { token passwordChangeRequired } }"#,
+        json!({}),
+        password_change_token,
+    )
+    .await;
+    assert_no_errors(&replacement);
+    let full_token = replacement["data"]["completeRequiredPasswordChange"]["token"]
+        .as_str()
+        .expect("full token");
     let (_user, full_claims) = ctx
         .app
         .authenticate_token_with_claims(full_token)
@@ -3477,6 +3561,7 @@ async fn graphql_local_password_login_with_voluntary_totp_requires_and_accepts_c
               loginVerificationTotpComplete(input: {{ loginChallengeId: "{login_challenge_id}", code: "{valid_code}" }}) {{
                 token
                 mfaEnrollmentRequired
+                passwordChangeRequired
                 mfaVerifiedUntil
                 user {{ username }}
               }}
@@ -3489,12 +3574,45 @@ async fn graphql_local_password_login_with_voluntary_totp_requires_and_accepts_c
     assert_no_errors(&valid_login);
     let payload = &valid_login["data"]["loginVerificationTotpComplete"];
     assert_eq!(payload["mfaEnrollmentRequired"], false);
+    assert_eq!(payload["passwordChangeRequired"], true);
     assert!(payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(payload["user"]["username"], "localmfa_totp");
-    let token = payload["token"].as_str().expect("full token");
+    let token = payload["token"]
+        .as_str()
+        .expect("password-replacement token");
     let (_user, claims) = ctx
         .app
         .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate password-replacement token");
+    assert_eq!(
+        claims.session_scope,
+        JwtSessionScope::PasswordChangeRequired
+    );
+    assert!(claims.mfa_verified_until.is_some());
+
+    let replacement = gql_with_token(
+        &ctx,
+        r#"
+        mutation {
+          completeRequiredPasswordChange(input: { password: "changed-password1" }) {
+            token
+            passwordChangeRequired
+            mfaVerifiedUntil
+          }
+        }
+        "#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&replacement);
+    let replacement = &replacement["data"]["completeRequiredPasswordChange"];
+    assert_eq!(replacement["passwordChangeRequired"], false);
+    let full_token = replacement["token"].as_str().expect("full token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
         .await
         .expect("authenticate full token");
     assert_eq!(claims.session_scope, JwtSessionScope::Full);

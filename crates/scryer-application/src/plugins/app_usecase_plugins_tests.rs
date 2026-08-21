@@ -871,6 +871,7 @@ fn viewer() -> User {
         id: scryer_domain::Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
@@ -888,6 +889,7 @@ fn config_admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "config-admin".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([

@@ -779,7 +779,7 @@ impl AppUseCase {
         webauthn_challenge_id: &str,
         response_json: &str,
         form_login_enabled: bool,
-    ) -> AppResult<(User, chrono::DateTime<Utc>, bool, Option<String>)> {
+    ) -> AppResult<(User, chrono::DateTime<Utc>, bool, Option<String>, bool)> {
         let (_expected_verification, expected_user) = self
             .require_login_verification_factor(login_verification_challenge_id, true)
             .await?;
@@ -800,11 +800,15 @@ impl AppUseCase {
         let verification = self
             .consume_login_verification_challenge(login_verification_challenge_id, &user.id)
             .await?;
+        let password_change_required = verification.login_method
+            == LoginVerificationMethod::LocalPassword
+            && user.password_change_required;
         Ok((
             user,
             self.mfa_freshness_verified_until(),
             verification.persist_session,
             verification.auth_session_version,
+            password_change_required,
         ))
     }
 

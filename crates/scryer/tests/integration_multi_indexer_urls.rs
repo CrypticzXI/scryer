@@ -363,6 +363,7 @@ where
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };

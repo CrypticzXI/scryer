@@ -228,7 +228,7 @@ pub struct WebauthnRegisterCompleteInput {
     pub friendly_name: Option<String>,
 }
 
-/// Session or MFA-enrollment result returned after authentication.
+/// Session or restricted authentication result returned after authentication.
 #[derive(SimpleObject, Clone)]
 pub struct LoginPayload {
     /// Access token or short-lived MFA-enrollment token; clients must treat it as secret.
@@ -241,6 +241,8 @@ pub struct LoginPayload {
     pub mfa_verified_until: Option<DateTime<Utc>>,
     /// True when the token can only complete MFA enrollment.
     pub mfa_enrollment_required: bool,
+    /// True when the token can only replace an administrator-provided temporary password.
+    pub password_change_required: bool,
     /// Whether the session was requested to persist.
     pub persist_session: bool,
 }
@@ -259,6 +261,13 @@ pub struct TotpEnrollmentCompleteInput {
 pub struct TotpVerifyInput {
     /// Current TOTP code; never returned in a payload.
     pub code: String,
+}
+
+/// New password selected after signing in with an administrator-provided temporary password.
+#[derive(InputObject)]
+pub struct CompleteRequiredPasswordChangeInput {
+    /// New password; stored securely and never returned.
+    pub password: String,
 }
 
 /// TOTP enrollment and usage status without exposing the shared secret.
@@ -384,6 +393,8 @@ pub struct UserPayload {
     pub is_default_admin: bool,
     /// Whether a password is configured, without revealing it.
     pub has_password: bool,
+    /// Whether a local password must be replaced before the next local-password session is full.
+    pub password_change_required: bool,
     /// Whether MFA is configured, without revealing its secret.
     pub has_mfa: bool,
     /// Whether a passkey is configured.
@@ -441,7 +452,7 @@ pub struct UserLibraryPermissionGrantPayload {
 pub struct CreateUserInput {
     /// Login username.
     pub username: String,
-    /// Initial password; stored securely and never returned.
+    /// Temporary password; the user must replace it after local-password sign-in.
     pub password: String,
     /// Application permissions granted to the user.
     pub app_permissions: Vec<AppPermissionValue>,
@@ -459,7 +470,7 @@ pub struct SetUserLoginEnabledInput {
 }
 
 #[derive(InputObject)]
-/// Password replacement for a user account.
+/// Password replacement for a user account. Administrator-provided passwords are temporary.
 pub struct SetUserPasswordInput {
     /// User identity whose password changes.
     pub user_id: ID,

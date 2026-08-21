@@ -1134,14 +1134,68 @@ impl UserRepository for MockUserRepo {
             .cloned())
     }
 
-    async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
+    async fn update_password_hash(
+        &self,
+        id: &str,
+        password_hash: String,
+        password_change_required: bool,
+    ) -> AppResult<User> {
         let mut users = self.store.lock().await;
         let user = users
             .iter_mut()
             .find(|entry| entry.id == id)
             .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
         user.password_hash = Some(password_hash);
+        user.password_change_required = password_change_required;
         Ok(user.clone())
+    }
+
+    async fn set_temporary_password_and_invalidate_sessions(
+        &self,
+        id: &str,
+        password_hash: String,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let user = self.update_password_hash(id, password_hash, true).await?;
+        self.auth_session_versions
+            .lock()
+            .await
+            .insert(id.to_string(), auth_session_version.to_string());
+        Ok(user)
+    }
+
+    async fn complete_required_password_change(
+        &self,
+        id: &str,
+        password_hash: String,
+        expected_auth_session_version: &Option<String>,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        if self.auth_session_versions.lock().await.get(id).cloned()
+            != *expected_auth_session_version
+        {
+            return Err(AppError::Unauthorized(
+                "authentication session was invalidated".into(),
+            ));
+        }
+        let mut users = self.store.lock().await;
+        let user = users
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+        if !user.password_change_required {
+            return Err(AppError::Unauthorized(
+                "password change is no longer required".into(),
+            ));
+        }
+        user.password_hash = Some(password_hash);
+        user.password_change_required = false;
+        let user = user.clone();
+        self.auth_session_versions
+            .lock()
+            .await
+            .insert(id.to_string(), auth_session_version.to_string());
+        Ok(user)
     }
 
     async fn update_login_status_and_rotate_session(

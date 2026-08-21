@@ -30,10 +30,17 @@ const LOGIN_PAYLOAD_FIELDS = `
     expiresAt
     mfaVerifiedUntil
     mfaEnrollmentRequired
+    passwordChangeRequired
     persistSession`;
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const completeRequiredPasswordChangeMutation = `mutation CompleteRequiredPasswordChange($input: CompleteRequiredPasswordChangeInput!) {
+  completeRequiredPasswordChange(input: $input) {
 ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;

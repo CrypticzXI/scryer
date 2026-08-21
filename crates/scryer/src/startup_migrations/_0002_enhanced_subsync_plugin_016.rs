@@ -107,6 +107,7 @@ fn startup_plugin_migration_actor() -> scryer_domain::User {
         id: STARTUP_PLUGIN_MIGRATION_ACTOR_ID.to_string(),
         username: "system".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: scryer_domain::UserAccountKind::Local,
         authorization: scryer_domain::UserAuthorization::full_admin(),
     }

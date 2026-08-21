@@ -72,6 +72,7 @@ fn dashboard_view_actor(library_ids: &[&str]) -> User {
         id: Id::new().0,
         username: "dashboard-viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,

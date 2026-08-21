@@ -1261,6 +1261,16 @@ enum CollectionTypeValue {
 }
 
 """
+New password selected after signing in with an administrator-provided temporary password.
+"""
+input CompleteRequiredPasswordChangeInput {
+	"""
+	New password; stored securely and never returned.
+	"""
+	password: String!
+}
+
+"""
 Result of completing initial application setup.
 """
 type CompleteSetupPayload {
@@ -1791,7 +1801,7 @@ input CreateUserInput {
 	"""
 	username: String!
 	"""
-	Initial password; stored securely and never returned.
+	Temporary password; the user must replace it after local-password sign-in.
 	"""
 	password: String!
 	"""
@@ -7939,7 +7949,7 @@ type LoginPasskeyEnrollmentCompletePayload {
 }
 
 """
-Session or MFA-enrollment result returned after authentication.
+Session or restricted authentication result returned after authentication.
 """
 type LoginPayload {
 	"""
@@ -7962,6 +7972,10 @@ type LoginPayload {
 	True when the token can only complete MFA enrollment.
 	"""
 	mfaEnrollmentRequired: Boolean!
+	"""
+	True when the token can only replace an administrator-provided temporary password.
+	"""
+	passwordChangeRequired: Boolean!
 	"""
 	Whether the session was requested to persist.
 	"""
@@ -10284,6 +10298,15 @@ type MutationRoot {
 		Username, password, and optional TOTP code for local authentication.
 		"""
 		input: LoginInput!
+	): LoginPayload!
+	"""
+	Replaces an administrator-provided temporary password and issues the full session.
+	"""
+	completeRequiredPasswordChange(
+		"""
+		New password selected by the authenticated user.
+		"""
+		input: CompleteRequiredPasswordChangeInput!
 	): LoginPayload!
 	"""
 	Mark the setup wizard as complete.
@@ -13704,7 +13727,7 @@ type QueryRoot {
 		limit: Int
 	): [ImportRecordPayload!]!
 	"""
-	Return the authenticated user payload, or null for an anonymous session; MFA enrollment sessions are rejected.
+	Return the authenticated user payload, or null for an anonymous session; restricted enrollment and password-replacement sessions are rejected.
 	"""
 	me: UserPayload
 	"""
@@ -15755,7 +15778,7 @@ input SetUserLoginEnabledInput {
 }
 
 """
-Password replacement for a user account.
+Password replacement for a user account. Administrator-provided passwords are temporary.
 """
 input SetUserPasswordInput {
 	"""
@@ -19149,6 +19172,10 @@ type UserPayload {
 	Whether a password is configured, without revealing it.
 	"""
 	hasPassword: Boolean!
+	"""
+	Whether a local password must be replaced before the next local-password session is full.
+	"""
+	passwordChangeRequired: Boolean!
 	"""
 	Whether MFA is configured, without revealing its secret.
 	"""

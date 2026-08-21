@@ -195,6 +195,7 @@ async fn user_crud_queries_work() {
             id: "u-1".to_string(),
             username: "editor".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         },
@@ -212,10 +213,14 @@ async fn user_crud_queries_work() {
         scryer_domain::UserLoginStatus::Enabled
     );
 
-    let updated =
-        UserRepository::update_password_hash(&users, &created.id, "hashed-password".to_string())
-            .await
-            .expect("update password hash");
+    let updated = UserRepository::update_password_hash(
+        &users,
+        &created.id,
+        "hashed-password".to_string(),
+        false,
+    )
+    .await
+    .expect("update password hash");
     assert_eq!(updated.password_hash.as_deref(), Some("hashed-password"));
 
     let disabled = UserRepository::update_login_status_and_rotate_session(

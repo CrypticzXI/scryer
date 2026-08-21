@@ -2031,6 +2031,7 @@ export const usersQuery = `query Users {
     loginEnabled
     isDefaultAdmin
     hasPassword
+    passwordChangeRequired
     hasMfa
     hasPasskey
     accountKind

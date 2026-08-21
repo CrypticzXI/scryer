@@ -11,7 +11,7 @@ export type JwtPayload = {
   }[];
   mfaVerifiedUntil?: number | string | null;
   mfaStepUpVerifiedUntil?: number | string | null;
-  authScope?: "full" | "mfa_enrollment";
+  authScope?: "full" | "mfa_enrollment" | "password_change_required";
 };
 
 /** Decode a JWT payload without signature verification. Returns null if malformed. */

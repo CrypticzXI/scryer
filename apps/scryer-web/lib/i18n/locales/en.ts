@@ -1473,6 +1473,14 @@ const en: LocaleDictionary = {
   "settings.permissions": "Permissions",
   "settings.noUsers": "No users loaded.",
   "settings.updatePassword": "Update",
+  "settings.temporaryPassword": "Temporary password",
+  "settings.setTemporaryPassword": "Set temporary password",
+  "settings.temporaryPasswordHelp":
+    "The user must replace this password after local sign-in. Send it through a safe out-of-band channel.",
+  "settings.passwordChangeRequired": "Password change required",
+  "settings.temporaryPasswordResetTitle": "Set a temporary password?",
+  "settings.temporaryPasswordResetDescription":
+    "This revokes {{name}}’s active sessions and requires them to choose a new password after local sign-in.",
   "settings.apiKey": "API Key",
   "settings.existingIndexers": "Existing indexers",
   "settings.indexerProvider": "Provider",

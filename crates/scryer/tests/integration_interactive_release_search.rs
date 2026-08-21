@@ -400,6 +400,7 @@ async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -875,6 +876,7 @@ async fn graphql_start_poll_and_cancel_after_completion() {
         id: "interactive-search-user".into(),
         username: "interactive".into(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
