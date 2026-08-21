@@ -632,6 +632,7 @@ function MainContent({
       canManageSystemSettings={canManageSystemSettings}
       canManageCatalogSettings={canManageCatalogSettings}
       canManageLibrarySettings={canManageLibrarySettings}
+      canViewCatalog={canViewCatalog}
       canManageTitle={canManageTitle}
       canManageTitlesInLibrary={canManageTitlesInLibrary}
       canRequestMedia={canRequestMedia}

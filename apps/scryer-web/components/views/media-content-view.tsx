@@ -1947,6 +1947,7 @@ export function MediaContentView({
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
     catalogDiscoveryGroups: CatalogDiscoveryGroup[];
+    canViewCatalog: boolean;
     canManageTitle: boolean;
     canRequestMedia: boolean;
     canManageCatalogDiscovery: boolean;
@@ -2222,6 +2223,7 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
+    canViewCatalog,
     canManageTitle,
     canManageCatalogDiscovery,
     canRequestCatalogDiscovery,
@@ -2683,7 +2685,7 @@ export function MediaContentView({
   // deliberately sits outside the catalog's own paging/sorting/title queries so
   // it can't perturb them.
   const activeDownloadTitleIds = useActiveDownloadTitleIds({
-    enabled: isTitleCatalogView && canManageTitle,
+    enabled: isTitleCatalogView && canViewCatalog,
   });
   const selectedTitleCompactDrawerActive =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;

@@ -1,6 +1,17 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { Eye, Loader2, Search } from "lucide-react";
+import {
+  BadgeCheck,
+  Database,
+  Eye,
+  Folder,
+  Folders,
+  Languages,
+  Loader2,
+  Popcorn,
+  RotateCcw,
+  Search,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -278,7 +289,8 @@ export function TitleSettingsPanel({
     <div id="series-overview-title-settings" className="p-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="min-w-0">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <BadgeCheck aria-hidden="true" className="size-3.5" />
             {t("title.qualityProfile")}
           </label>
           <Select
@@ -303,7 +315,8 @@ export function TitleSettingsPanel({
         </div>
 
         <div className="min-w-0">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Folder aria-hidden="true" className="size-3.5" />
             {t("title.rootFolder")}
           </label>
           <Select
@@ -329,7 +342,8 @@ export function TitleSettingsPanel({
         </div>
 
         <div className="min-w-0">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Folders aria-hidden="true" className="size-3.5" />
             {t("search.addConfigSeasonFolder")}
           </label>
           <Select
@@ -348,7 +362,8 @@ export function TitleSettingsPanel({
         </div>
 
         <div className="min-w-0 xl:max-w-72">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Languages aria-hidden="true" className="size-3.5" />
             {t("title.requiredAudioLanguages")}
           </label>
           <div id="series-overview-settings-required-audio-languages">
@@ -373,7 +388,8 @@ export function TitleSettingsPanel({
         </div>
 
         <div className="min-w-0">
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Database aria-hidden="true" className="size-3.5" />
             {t("settings.libraryMetadataLanguageLabel")}
           </label>
           <Select
@@ -403,7 +419,8 @@ export function TitleSettingsPanel({
         {title.facet === "ANIME" ? (
           <>
             <div className="min-w-0">
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Popcorn aria-hidden="true" className="size-3.5" />
                 {t("settings.fillerPolicyLabel")}
               </label>
               <Select
@@ -423,7 +440,8 @@ export function TitleSettingsPanel({
             </div>
 
             <div className="min-w-0">
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <RotateCcw aria-hidden="true" className="size-3.5" />
                 {t("settings.recapPolicyLabel")}
               </label>
               <Select

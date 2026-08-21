@@ -226,6 +226,7 @@ type MediaContentContainerProps = {
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
+  canViewCatalog: boolean;
   canManageTitle: boolean;
   canManageTitlesInLibrary: (libraryId: string | null | undefined) => boolean;
   canRequestMedia: boolean;
@@ -742,6 +743,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageSystemSettings,
   canManageCatalogSettings,
   canManageLibrarySettings,
+  canViewCatalog,
   canManageTitle,
   canManageTitlesInLibrary,
   canRequestMedia,
@@ -5299,6 +5301,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
           catalogDiscoveryGroups: activeCatalogDiscoveryGroups,
+          canViewCatalog,
           canManageTitle,
           canRequestMedia,
           canManageCatalogDiscovery,
