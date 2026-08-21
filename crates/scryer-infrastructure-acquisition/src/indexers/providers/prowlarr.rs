@@ -273,6 +273,11 @@ struct ProwlarrAppProfile {
     enable_automatic_search: bool,
     #[serde(default = "default_true", rename = "enableInteractiveSearch")]
     enable_interactive_search: bool,
+    /// `AppSyncProfile.MinimumSeeders`, the app-wide fallback behind an
+    /// indexer's `appMinimumSeeders`. Non-nullable upstream, so a real Prowlarr
+    /// always sends it; `Option` covers a version that predates the field.
+    #[serde(default, rename = "minimumSeeders")]
+    minimum_seeders: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1049,8 +1054,15 @@ fn build_managed_child_plan(
         season_pack_seed_time_minutes: is_torrent
             .then(|| prowlarr_seed_minutes(&indexer.fields, "torrentBaseSettings.packSeedTime"))
             .flatten(),
+        // Prowlarr's own rule for the value it pushes to an app:
+        // `TorrentBaseSettings.AppMinimumSeeders ?? AppProfile.MinimumSeeders`
+        // (`Applications/Sonarr/Sonarr.cs:282`). A null check, not a truthiness
+        // one — an indexer-level zero wins over a positive profile value.
         minimum_seeders: is_torrent
-            .then(|| prowlarr_minimum_seeders(&indexer.fields))
+            .then(|| {
+                prowlarr_minimum_seeders(&indexer.fields)
+                    .or_else(|| app_profile.and_then(|profile| profile.minimum_seeders))
+            })
             .flatten(),
     })
     .ok();
@@ -1591,20 +1603,31 @@ mod tests {
         }
     }
 
+    /// An app profile that carries no minimum of its own, so a child's own
+    /// `appMinimumSeeders` is the only source in play.
+    fn app_profile(id: i64, minimum_seeders: Option<i32>) -> ProwlarrAppProfile {
+        ProwlarrAppProfile {
+            id,
+            enable_rss: true,
+            enable_automatic_search: true,
+            enable_interactive_search: true,
+            minimum_seeders,
+        }
+    }
+
     fn child_metadata(indexer: ProwlarrIndexerResource) -> ManagedChildMetadata {
+        child_metadata_with_app_profile(indexer, app_profile(12, None))
+    }
+
+    fn child_metadata_with_app_profile(
+        indexer: ProwlarrIndexerResource,
+        profile: ProwlarrAppProfile,
+    ) -> ManagedChildMetadata {
         let config = ProwlarrConfig {
             base_url: "https://prowlarr.example".to_string(),
             api_key: "secret".to_string(),
         };
-        let app_profiles = HashMap::from([(
-            12,
-            ProwlarrAppProfile {
-                id: 12,
-                enable_rss: true,
-                enable_automatic_search: true,
-                enable_interactive_search: true,
-            },
-        )]);
+        let app_profiles = HashMap::from([(profile.id, profile)]);
         let child =
             build_managed_child_plan(&config, indexer, &app_profiles, None).expect("child plan");
         serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap()
@@ -1636,14 +1659,117 @@ mod tests {
         )
         .expect("real Prowlarr payload should deserialize");
 
-        let metadata = child_metadata(indexer);
+        // Verbatim `/api/v1/appprofile` entry from the same container. Prowlarr
+        // declares `MinimumSeeders` as a plain int, so a real deployment always
+        // sends one — the default profile's 1.
+        let profile: ProwlarrAppProfile = serde_json::from_str(
+            r#"{
+              "name": "Standard",
+              "enableRss": true,
+              "enableAutomaticSearch": true,
+              "enableInteractiveSearch": true,
+              "minimumSeeders": 1,
+              "id": 1
+            }"#,
+        )
+        .expect("real Prowlarr app profile should deserialize");
+        assert_eq!(profile.minimum_seeders, Some(1));
+
+        let metadata = child_metadata_with_app_profile(indexer, profile);
         assert_eq!(metadata.seed_ratio, Some(1.5));
         assert_eq!(metadata.seed_time_minutes, Some(4320));
         assert_eq!(metadata.season_pack_seed_time_minutes, Some(10080));
         assert_eq!(
-            metadata.minimum_seeders, None,
-            "the probe left appMinimumSeeders unset, which must read as inherit"
+            metadata.minimum_seeders,
+            Some(1),
+            "the probe left appMinimumSeeders unset, so the app profile answers"
         );
+    }
+
+    /// Prowlarr computes the minimum it pushes to an app as
+    /// `TorrentBaseSettings.AppMinimumSeeders ?? AppProfile.MinimumSeeders`
+    /// (`Applications/Sonarr/Sonarr.cs:282`). Scryer synthesizes the same value
+    /// so a Prowlarr-managed child admits releases the way Prowlarr's own Sonarr
+    /// sync would.
+    #[test]
+    fn the_app_profile_minimum_stands_in_when_the_indexer_leaves_the_field_blank() {
+        let metadata = child_metadata_with_app_profile(
+            indexer_with_fields(
+                "torrent",
+                vec![seed_field(
+                    "torrentBaseSettings.appMinimumSeeders",
+                    serde_json::Value::Null,
+                )],
+            ),
+            app_profile(12, Some(5)),
+        );
+        assert_eq!(metadata.minimum_seeders, Some(5));
+
+        // The field omitted entirely reads the same way as an explicit null.
+        let omitted = child_metadata_with_app_profile(
+            indexer_with_fields("torrent", Vec::new()),
+            app_profile(12, Some(5)),
+        );
+        assert_eq!(omitted.minimum_seeders, Some(5));
+    }
+
+    #[test]
+    fn the_indexer_field_overrides_the_app_profile_minimum() {
+        let metadata = child_metadata_with_app_profile(
+            indexer_with_fields(
+                "torrent",
+                vec![seed_field(
+                    "torrentBaseSettings.appMinimumSeeders",
+                    serde_json::json!(3),
+                )],
+            ),
+            app_profile(12, Some(5)),
+        );
+        assert_eq!(metadata.minimum_seeders, Some(3));
+
+        // Including when the indexer's answer is "do not enforce": Prowlarr's
+        // `??` is a null check, not a truthiness check.
+        let disabled = child_metadata_with_app_profile(
+            indexer_with_fields(
+                "torrent",
+                vec![seed_field(
+                    "torrentBaseSettings.appMinimumSeeders",
+                    serde_json::json!(0),
+                )],
+            ),
+            app_profile(12, Some(5)),
+        );
+        assert_eq!(disabled.minimum_seeders, Some(0));
+    }
+
+    #[test]
+    fn an_app_profile_minimum_of_zero_also_survives_as_an_explicit_disable() {
+        let metadata = child_metadata_with_app_profile(
+            indexer_with_fields("torrent", Vec::new()),
+            app_profile(12, Some(0)),
+        );
+        assert_eq!(metadata.minimum_seeders, Some(0));
+    }
+
+    #[test]
+    fn a_child_whose_app_profile_is_unknown_falls_back_to_scryers_own_floor() {
+        // The profile list did not contain this child's `appProfileId`, so there
+        // is nothing to inherit and the metadata stays silent — which reads
+        // downstream as "use the Scryer floor".
+        let config = ProwlarrConfig {
+            base_url: "https://prowlarr.example".to_string(),
+            api_key: "secret".to_string(),
+        };
+        let child = build_managed_child_plan(
+            &config,
+            indexer_with_fields("torrent", Vec::new()),
+            &HashMap::from([(99, app_profile(99, Some(5)))]),
+            None,
+        )
+        .expect("child plan");
+        let metadata: ManagedChildMetadata =
+            serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
+        assert_eq!(metadata.minimum_seeders, None);
     }
 
     #[test]
@@ -1681,13 +1807,18 @@ mod tests {
 
     #[test]
     fn usenet_children_ignore_a_stray_minimum_seeders_field() {
-        let metadata = child_metadata(indexer_with_fields(
-            "usenet",
-            vec![seed_field(
-                "torrentBaseSettings.appMinimumSeeders",
-                serde_json::json!(5),
-            )],
-        ));
+        // Neither source applies: usenet has no swarm, so an indexer field and
+        // an app-profile fallback are both ignored.
+        let metadata = child_metadata_with_app_profile(
+            indexer_with_fields(
+                "usenet",
+                vec![seed_field(
+                    "torrentBaseSettings.appMinimumSeeders",
+                    serde_json::json!(5),
+                )],
+            ),
+            app_profile(12, Some(7)),
+        );
         assert_eq!(metadata.minimum_seeders, None);
     }
 
@@ -1786,6 +1917,7 @@ mod tests {
                 enable_rss: true,
                 enable_automatic_search: false,
                 enable_interactive_search: true,
+                minimum_seeders: None,
             },
         )]);
 
@@ -1838,6 +1970,7 @@ mod tests {
                 enable_rss: false,
                 enable_automatic_search: false,
                 enable_interactive_search: true,
+                minimum_seeders: None,
             },
         )]);
 
