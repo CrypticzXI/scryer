@@ -568,6 +568,42 @@ impl TitlePayload {
         self.facet == MediaFacetValue::Movie || self.use_season_folders.is_none()
     }
 
+    /// Filler policy after applying the title override or library/facet default.
+    async fn effective_filler_policy(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<FillerPolicyValue>> {
+        if self.facet != MediaFacetValue::Anime {
+            return Ok(None);
+        }
+        if let Some(policy) = self.filler_policy {
+            return Ok(Some(policy));
+        }
+        app_from_ctx(ctx)?
+            .effective_filler_policy_for_title(self.id.as_ref())
+            .await
+            .map(|policy| policy.and_then(|policy| FillerPolicyValue::from_app_str(&policy)))
+            .map_err(to_gql_error)
+    }
+
+    /// Recap policy after applying the title override or library/facet default.
+    async fn effective_recap_policy(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<RecapPolicyValue>> {
+        if self.facet != MediaFacetValue::Anime {
+            return Ok(None);
+        }
+        if let Some(policy) = self.recap_policy {
+            return Ok(Some(policy));
+        }
+        app_from_ctx(ctx)?
+            .effective_recap_policy_for_title(self.id.as_ref())
+            .await
+            .map(|policy| policy.and_then(|policy| RecapPolicyValue::from_app_str(&policy)))
+            .map_err(to_gql_error)
+    }
+
     /// Title-specific required audio-language override, or null when the facet setting is inherited.
     async fn required_audio_languages_override(
         &self,

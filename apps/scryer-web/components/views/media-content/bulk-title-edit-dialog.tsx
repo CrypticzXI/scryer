@@ -42,15 +42,14 @@ type BulkTitleEditDialogProps = {
   onOpenChange: (open: boolean) => void;
   view: string;
   selectedTitles: TitleRecord[];
-  directTitle?: TitleRecord | null;
   qualityProfiles: ParsedQualityProfile[];
   rootFolders: LibraryRootRecord[];
   busy: boolean;
   onSubmit: (changes: TitleOptionUpdates) => Promise<void> | void;
 };
 
-function initialDraftState(directTitle: TitleRecord | null): TitleEditDraft {
-  return initialTitleEditDraft(directTitle);
+function initialDraftState(): TitleEditDraft {
+  return initialTitleEditDraft();
 }
 
 export function BulkTitleEditDialog({
@@ -58,7 +57,6 @@ export function BulkTitleEditDialog({
   onOpenChange,
   view,
   selectedTitles,
-  directTitle = null,
   qualityProfiles,
   rootFolders,
   busy,
@@ -66,8 +64,8 @@ export function BulkTitleEditDialog({
 }: BulkTitleEditDialogProps) {
   const t = useTranslate();
   const initialDraft = React.useMemo(
-    () => initialDraftState(directTitle),
-    [directTitle],
+    () => initialDraftState(),
+    [],
   );
   const [draft, setDraft] = React.useState<TitleEditDraft>(initialDraft);
 
@@ -146,13 +144,9 @@ export function BulkTitleEditDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>
-            {directTitle ? t("title.editOptionsTitle") : t("title.bulkEditTitle")}
-          </DialogTitle>
+          <DialogTitle>{t("title.bulkEditTitle")}</DialogTitle>
           <DialogDescription>
-            {directTitle
-              ? t("title.editOptionsDescription", { name: directTitle.name })
-              : t("title.bulkEditDescription", { count: selectedTitles.length })}
+            {t("title.bulkEditDescription", { count: selectedTitles.length })}
           </DialogDescription>
         </DialogHeader>
 
@@ -248,15 +242,9 @@ export function BulkTitleEditDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {directTitle ? (
-                  <SelectItem value={INHERIT_VALUE}>
-                    {t("settings.libraryInheritGlobal")}
-                  </SelectItem>
-                ) : (
-                  <SelectItem value={UNCHANGED_VALUE}>
-                    {t("label.unchanged")}
-                  </SelectItem>
-                )}
+                <SelectItem value={UNCHANGED_VALUE}>
+                  {t("label.unchanged")}
+                </SelectItem>
                 {AVAILABLE_LANGUAGES.map((language) => (
                   <SelectItem key={language.code} value={language.code}>
                     {language.label}
@@ -282,15 +270,9 @@ export function BulkTitleEditDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {directTitle ? (
-                    <SelectItem value={INHERIT_VALUE}>
-                      {t("title.inheritDefault")}
-                    </SelectItem>
-                  ) : (
-                    <SelectItem value={UNCHANGED_VALUE}>
-                      {t("label.unchanged")}
-                    </SelectItem>
-                  )}
+                  <SelectItem value={UNCHANGED_VALUE}>
+                    {t("label.unchanged")}
+                  </SelectItem>
                   <SelectItem value={ENABLED_VALUE}>
                     {t("search.seasonFolder.enabled")}
                   </SelectItem>

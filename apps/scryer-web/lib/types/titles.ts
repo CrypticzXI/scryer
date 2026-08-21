@@ -199,6 +199,9 @@ export type TitleRecord = {
   metadataLanguageOverride?: string | null;
   effectiveMetadataLanguage?: string | null;
   inheritsMetadataLanguage?: boolean;
+  requiredAudioLanguagesOverride?: string[] | null;
+  effectiveRequiredAudioLanguages?: string[];
+  inheritsRequiredAudioLanguages?: boolean;
   metadataFetchedAt?: string | null;
   minAvailability?: string | null;
   qualityProfileId?: string | null;

@@ -207,6 +207,68 @@ impl AppUseCase {
         self.resolve_use_season_folders(&title).await
     }
 
+    pub async fn effective_filler_policy_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if title.facet != MediaFacet::Anime {
+            return Ok(None);
+        }
+
+        let policy = extract_tag_string(&title.tags, "scryer:filler-policy:")
+            .filter(|value| matches!(*value, "download_all" | "skip_filler"))
+            .map(str::to_owned);
+        Ok(Some(match policy {
+            Some(policy) => policy,
+            None => self
+                .resolve_library_string_setting(
+                    "anime.filler_policy",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    "download_all",
+                )
+                .await?,
+        }))
+    }
+
+    pub async fn effective_recap_policy_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if title.facet != MediaFacet::Anime {
+            return Ok(None);
+        }
+
+        let policy = extract_tag_string(&title.tags, "scryer:recap-policy:")
+            .filter(|value| matches!(*value, "download_all" | "skip_recap"))
+            .map(str::to_owned);
+        Ok(Some(match policy {
+            Some(policy) => policy,
+            None => self
+                .resolve_library_string_setting(
+                    "anime.recap_policy",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    "download_all",
+                )
+                .await?,
+        }))
+    }
+
     pub async fn set_title_metadata_language_override(
         &self,
         actor: &User,

@@ -17579,6 +17579,14 @@ type TitlePayload {
 	"""
 	inheritsUseSeasonFolders: Boolean!
 	"""
+	Filler policy after applying the title override or library/facet default.
+	"""
+	effectiveFillerPolicy: FillerPolicyValue
+	"""
+	Recap policy after applying the title override or library/facet default.
+	"""
+	effectiveRecapPolicy: RecapPolicyValue
+	"""
 	Title-specific required audio-language override, or null when the facet setting is inherited.
 	"""
 	requiredAudioLanguagesOverride: [String!]

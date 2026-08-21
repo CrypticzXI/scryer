@@ -1201,9 +1201,6 @@ function StoragePanel({ overview }: { overview: DashboardOverview | null }) {
               ? t("dashboard.rootCountOne")
               : t("dashboard.rootCount", { count: roots.length })}
           </Badge>
-          <span className="hidden whitespace-nowrap text-[10px] text-[var(--scry-muted2)] min-[561px]:inline">
-            {t("dashboard.storageLegend")}
-          </span>
         </>
       }
     >

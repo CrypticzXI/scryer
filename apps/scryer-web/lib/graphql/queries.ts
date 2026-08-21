@@ -601,6 +601,7 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     network
     metadataFetchedAt
     qualityProfileId
+    qualityTier
     effectiveRequiredAudioLanguages
     inheritsRequiredAudioLanguages
     rootFolderId
@@ -610,6 +611,8 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     inheritsUseSeasonFolders
     fillerPolicy
     recapPolicy
+    effectiveFillerPolicy
+    effectiveRecapPolicy
     createdAt
     collections {${SERIES_SIDE_PANEL_COLLECTION_FIELDS}
     }

@@ -11,6 +11,7 @@ import {
   renameTitlesMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
+  updateTitleMutation,
   createLibraryMutation,
   deleteMediaFileMutation,
   deleteLibraryMutation,
@@ -46,7 +47,6 @@ import {
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
 import { selectedOverviewUsesMovieRecord } from "@/lib/utils/selected-overview-policy";
-import { editDialogTargets } from "@/lib/utils/title-edit-dialog";
 import {
   CATEGORY_SCOPE_MAP,
   QUALITY_PROFILE_INHERIT_VALUE,
@@ -1208,8 +1208,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
-  const [titleEditTarget, setTitleEditTarget] =
-    React.useState<TitleRecord | null>(null);
   const shouldLoadMediaSettings =
     shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
@@ -1613,10 +1611,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
-  const editDialogTitles = React.useMemo(
-    () => editDialogTargets(titleEditTarget, selectedTitles),
-    [selectedTitles, titleEditTarget],
-  );
+  const editDialogTitles = selectedTitles;
   const selectedTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
     [selectedTitles],
@@ -2731,7 +2726,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
 
   React.useEffect(() => {
-    if (selectedTitles.length > 0 || titleEditTarget !== null) {
+    if (selectedTitles.length > 0) {
       return;
     }
     setBulkEditDialogOpen(false);
@@ -2744,7 +2739,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     closeBulkRenameDialog();
   }, [
     selectedTitles.length,
-    titleEditTarget,
     closeBulkRenameDialog,
     setBulkDeleteDialogOpen,
     setBulkDeleteFilesOnDisk,
@@ -3010,6 +3004,35 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       }
     },
     [applyRefreshedTitleRecord, client],
+  );
+
+  const refreshMovieTitleOptions = React.useCallback(
+    async (title: TitleRecord) => {
+      await Promise.all([
+        refreshMovieSidePanelOverview(title.id),
+        reloadTitles(),
+      ]);
+    },
+    [refreshMovieSidePanelOverview, reloadTitles],
+  );
+
+  const updateMovieTitleOptions = React.useCallback(
+    async (title: TitleRecord, options: TitleOptionUpdates) => {
+      if (title.facet !== "MOVIE") {
+        return;
+      }
+      recordCriticalCatalogMutation();
+      const { error } = await client
+        .mutation(updateTitleMutation, {
+          input: { titleId: title.id, options },
+        })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      await refreshMovieTitleOptions(title);
+    },
+    [client, recordCriticalCatalogMutation, refreshMovieTitleOptions],
   );
 
   // Movie overviews use the selected-title panel. When a slug deep link selects
@@ -4049,9 +4072,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             }
           });
         }
-        if (titleEditTarget === null) {
-          setSelectedTitleIds(new Set(failedIds));
-        }
+        setSelectedTitleIds(new Set(failedIds));
 
         const detail = batchFailureDetail(result.error);
         if (succeededIds.length === 0) {
@@ -4062,7 +4083,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         setBulkEditDialogOpen(false);
-        setTitleEditTarget(null);
         if (failedIds.length > 0) {
           setGlobalStatus(
             withFailureDetail(
@@ -4097,7 +4117,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       reloadTitles,
       setGlobalStatus,
       t,
-      titleEditTarget,
     ],
   );
 
@@ -4186,7 +4205,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setGlobalStatus("Bulk actions require titles from one library.");
       return;
     }
-    setTitleEditTarget(null);
     setBulkEditDialogOpen(true);
   }, [
     bulkActionBusy,
@@ -4194,17 +4212,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedTitles.length,
     setGlobalStatus,
   ]);
-
-  const openTitleEdit = React.useCallback(
-    (title: TitleRecord) => {
-      if (bulkActionBusy) {
-        return;
-      }
-      setTitleEditTarget(title);
-      setBulkEditDialogOpen(true);
-    },
-    [bulkActionBusy],
-  );
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -5369,7 +5376,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           deleteLibrary,
           onOpenOverview,
           onCloseOverview: handleCloseOverview,
-          onEditTitle: openTitleEdit,
+          updateMovieTitleOptions,
+          refreshMovieTitleOptions,
           selectedOverviewTitleId,
           selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,
@@ -5453,15 +5461,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ) : null}
       <BulkTitleEditDialog
         open={bulkEditDialogOpen}
-        onOpenChange={(open) => {
-          setBulkEditDialogOpen(open);
-          if (!open) {
-            setTitleEditTarget(null);
-          }
-        }}
+        onOpenChange={setBulkEditDialogOpen}
         view={view}
         selectedTitles={editDialogTitles}
-        directTitle={titleEditTarget}
         qualityProfiles={qualityProfiles}
         rootFolders={editDialogRootFolders}
         busy={bulkActionBusy}

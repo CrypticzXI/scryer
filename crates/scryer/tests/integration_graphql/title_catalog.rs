@@ -964,6 +964,161 @@ async fn graphql_add_title_with_structured_options() {
 }
 
 #[tokio::test]
+async fn graphql_title_effective_anime_policies_inherit_defaults() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Inherited Anime Policies",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                fillerPolicy
+                recapPolicy
+                effectiveFillerPolicy
+                effectiveRecapPolicy
+            }
+        }"#,
+        json!({ "id": title.id }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    let title = &body["data"]["title"];
+    assert!(title["fillerPolicy"].is_null());
+    assert!(title["recapPolicy"].is_null());
+    assert_eq!(title["effectiveFillerPolicy"], "DOWNLOAD_ALL");
+    assert_eq!(title["effectiveRecapPolicy"], "DOWNLOAD_ALL");
+}
+
+#[tokio::test]
+async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_default() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let title_id = add_test_title(&ctx, "Movie Audio Override", "MOVIE").await;
+
+    let default_audio = gql(
+        &ctx,
+        r#"mutation($input: UpdateMediaSettingsInput!) {
+            updateMediaSettings(input: $input) { requiredAudioLanguages }
+        }"#,
+        json!({
+            "input": {
+                "scope": "MOVIE",
+                "requiredAudioLanguages": ["eng"]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&default_audio);
+    assert_eq!(
+        default_audio["data"]["updateMediaSettings"]["requiredAudioLanguages"],
+        json!(["eng"])
+    );
+
+    let set_override = gql(
+        &ctx,
+        r#"mutation($input: SetTitleRequiredAudioInput!) {
+            setTitleRequiredAudio(input: $input) {
+                titleId
+                facet
+                languages
+                updated
+            }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "facet": "MOVIE",
+                "languages": ["jpn"]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&set_override);
+    assert_eq!(
+        set_override["data"]["setTitleRequiredAudio"]["facet"],
+        "MOVIE"
+    );
+    assert_eq!(
+        set_override["data"]["setTitleRequiredAudio"]["languages"],
+        json!(["jpn"])
+    );
+
+    let title = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                requiredAudioLanguagesOverride
+                effectiveRequiredAudioLanguages
+                inheritsRequiredAudioLanguages
+            }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&title);
+    assert_eq!(
+        title["data"]["title"]["requiredAudioLanguagesOverride"],
+        json!(["jpn"])
+    );
+    assert_eq!(
+        title["data"]["title"]["effectiveRequiredAudioLanguages"],
+        json!(["jpn"])
+    );
+    assert_eq!(
+        title["data"]["title"]["inheritsRequiredAudioLanguages"],
+        false
+    );
+
+    let clear_override = gql(
+        &ctx,
+        r#"mutation($input: SetTitleRequiredAudioInput!) {
+            setTitleRequiredAudio(input: $input) { updated }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "facet": "MOVIE",
+                "languages": null
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&clear_override);
+
+    let inherited_title = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                requiredAudioLanguagesOverride
+                effectiveRequiredAudioLanguages
+                inheritsRequiredAudioLanguages
+            }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&inherited_title);
+    assert!(inherited_title["data"]["title"]["requiredAudioLanguagesOverride"].is_null());
+    assert_eq!(
+        inherited_title["data"]["title"]["effectiveRequiredAudioLanguages"],
+        json!(["eng"])
+    );
+    assert_eq!(
+        inherited_title["data"]["title"]["inheritsRequiredAudioLanguages"],
+        true
+    );
+}
+
+#[tokio::test]
 async fn graphql_movie_rejects_season_folder_options_and_ignores_legacy_tags() {
     let ctx = TestContext::new().await;
     let rejected_add = gql(

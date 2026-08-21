@@ -1,12 +1,5 @@
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
 
-export function editDialogTargets<T>(
-  directTarget: T | null,
-  bulkTargets: readonly T[],
-): T[] {
-  return directTarget === null ? [...bulkTargets] : [directTarget];
-}
-
 export const UNCHANGED_TITLE_EDIT_VALUE = "__unchanged__";
 export const INHERIT_TITLE_EDIT_VALUE = "__inherit__";
 export const ENABLED_TITLE_EDIT_VALUE = "enabled";
@@ -24,65 +17,17 @@ export type TitleEditDraft = {
   recapPolicy: string;
 };
 
-type TitleEditSource = {
-  metadataLanguageOverride?: string | null;
-  qualityProfileId?: string | null;
-  rootFolderId?: string | null;
-  monitorType?: string | null;
-  useSeasonFoldersOverride?: boolean | null;
-  monitorSpecials?: boolean | null;
-  interSeasonMovies?: boolean | null;
-  fillerPolicy?: string | null;
-  recapPolicy?: string | null;
-};
-
-function booleanDraftValue(value: boolean | null | undefined): string {
-  if (value === true) {
-    return ENABLED_TITLE_EDIT_VALUE;
-  }
-  if (value === false) {
-    return DISABLED_TITLE_EDIT_VALUE;
-  }
-  return UNCHANGED_TITLE_EDIT_VALUE;
-}
-
-function seasonFolderDraftValue(value: boolean | null | undefined): string {
-  return value === null || value === undefined
-    ? INHERIT_TITLE_EDIT_VALUE
-    : booleanDraftValue(value);
-}
-
-function inheritedDraftValue(value: string | null | undefined): string {
-  return value?.trim() ? value : INHERIT_TITLE_EDIT_VALUE;
-}
-
-export function initialTitleEditDraft(
-  directTarget: TitleEditSource | null,
-): TitleEditDraft {
-  if (directTarget === null) {
-    return {
-      metadataLanguage: UNCHANGED_TITLE_EDIT_VALUE,
-      qualityProfileId: UNCHANGED_TITLE_EDIT_VALUE,
-      rootFolderId: UNCHANGED_TITLE_EDIT_VALUE,
-      monitorType: UNCHANGED_TITLE_EDIT_VALUE,
-      useSeasonFolders: UNCHANGED_TITLE_EDIT_VALUE,
-      monitorSpecials: UNCHANGED_TITLE_EDIT_VALUE,
-      interSeasonMovies: UNCHANGED_TITLE_EDIT_VALUE,
-      fillerPolicy: UNCHANGED_TITLE_EDIT_VALUE,
-      recapPolicy: UNCHANGED_TITLE_EDIT_VALUE,
-    };
-  }
-
+export function initialTitleEditDraft(): TitleEditDraft {
   return {
-    metadataLanguage: inheritedDraftValue(directTarget.metadataLanguageOverride),
-    qualityProfileId: inheritedDraftValue(directTarget.qualityProfileId),
-    rootFolderId: directTarget.rootFolderId ?? UNCHANGED_TITLE_EDIT_VALUE,
-    monitorType: directTarget.monitorType ?? UNCHANGED_TITLE_EDIT_VALUE,
-    useSeasonFolders: seasonFolderDraftValue(directTarget.useSeasonFoldersOverride),
-    monitorSpecials: booleanDraftValue(directTarget.monitorSpecials),
-    interSeasonMovies: booleanDraftValue(directTarget.interSeasonMovies),
-    fillerPolicy: inheritedDraftValue(directTarget.fillerPolicy),
-    recapPolicy: inheritedDraftValue(directTarget.recapPolicy),
+    metadataLanguage: UNCHANGED_TITLE_EDIT_VALUE,
+    qualityProfileId: UNCHANGED_TITLE_EDIT_VALUE,
+    rootFolderId: UNCHANGED_TITLE_EDIT_VALUE,
+    monitorType: UNCHANGED_TITLE_EDIT_VALUE,
+    useSeasonFolders: UNCHANGED_TITLE_EDIT_VALUE,
+    monitorSpecials: UNCHANGED_TITLE_EDIT_VALUE,
+    interSeasonMovies: UNCHANGED_TITLE_EDIT_VALUE,
+    fillerPolicy: UNCHANGED_TITLE_EDIT_VALUE,
+    recapPolicy: UNCHANGED_TITLE_EDIT_VALUE,
   };
 }
 
