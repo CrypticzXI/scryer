@@ -144,6 +144,7 @@ async fn seed_pending_release(
         published_at: None,
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: None,
     };
     scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
@@ -323,6 +324,7 @@ async fn pending_release_roundtrips_indexer_provenance() {
         published_at: None,
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: None,
     };
     scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),

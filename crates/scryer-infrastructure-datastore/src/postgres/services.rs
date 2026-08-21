@@ -1268,6 +1268,8 @@ mod tests {
                 "minimum_seed_time_minutes".to_string(),
                 "season_pack_seed_ratio".to_string(),
                 "season_pack_seed_time_minutes".to_string(),
+                // Reported seeders, re-judged at promotion (migration 0169).
+                "seeders".to_string(),
             ]);
         columns
             .entry("rule_sets".to_string())

@@ -1368,6 +1368,7 @@ async fn process_single_target(
                         .get("info_hash")
                         .and_then(|value| value.as_str()),
                     crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
+                    crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
                 )
                 .await;
                 return Ok(());

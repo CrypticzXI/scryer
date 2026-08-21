@@ -1269,6 +1269,15 @@ pub struct PendingRelease {
     /// clamp — the immediate-grab paths read them straight off the release.
     /// Rows parked before migration 0165 read back as all-`None`.
     pub seed_minimums: ReleaseSeedMinimums,
+    /// Seeders the indexer reported when the row was parked (migration 0169).
+    ///
+    /// Kept so automatic promotion can re-judge the swarm against the threshold
+    /// in force *now* rather than the one that applied at park time. Sonarr does
+    /// the same: `RssSyncService` re-runs every specification over the pending
+    /// list using the seeders stored on the original release. `None` is unknown
+    /// — for a row parked before this column existed, or an indexer that reports
+    /// nothing — and unknown always stays eligible.
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

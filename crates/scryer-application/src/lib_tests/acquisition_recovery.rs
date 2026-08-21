@@ -219,6 +219,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: Some(info_hash.to_string()),
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed standby");
@@ -559,6 +560,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed standby");
@@ -3942,6 +3944,7 @@ async fn insert_pending_release_normalizes_source_password_flags() {
             Some("2024-01-01T00:00:00Z"),
             None,
             Default::default(),
+            None,
         )
         .await;
 
@@ -4143,6 +4146,7 @@ async fn tracker_minimums_survive_the_pending_release_park_and_reach_the_grab() 
         Some("2024-01-01T00:00:00Z"),
         None,
         crate::ReleaseSeedMinimums::from_release_extra(&extra),
+        crate::acquisition::seed_goals::seeders_from_extra(&extra),
     )
     .await;
 
@@ -4283,6 +4287,7 @@ async fn non_positive_or_absent_release_minimums_are_not_parked() {
         Some("2024-01-01T00:00:00Z"),
         None,
         crate::ReleaseSeedMinimums::from_release_extra(&extra),
+        crate::acquisition::seed_goals::seeders_from_extra(&extra),
     )
     .await;
 
@@ -4353,6 +4358,7 @@ async fn pending_release_submit_unavailable_records_pending_without_failed_signa
             published_at: Some(now),
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed pending release");
@@ -4812,6 +4818,211 @@ async fn expired_pending_release_non_unavailable_error_expires_release() {
         "a movie-scoped failure carries no episode/collection attribution: {:?}",
         blocklist[0].data_json
     );
+}
+
+/// Park one torrent release with `seeders` reported, then promote it with the
+/// floor set to `floor`. Returns the app, the pending id, and what the promoter
+/// did with the row.
+async fn promote_pending_torrent_with_seeders(
+    release_title: &str,
+    seeders: Option<i64>,
+    floor: &str,
+) -> (
+    AppUseCase,
+    User,
+    Arc<TrackingPendingReleaseRepo>,
+    Arc<TrackingDownloadSubmissionRepo>,
+    String,
+    u32,
+) {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Swarm Health Movie", 2024)
+            .await;
+
+    let mut pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    pending.source_kind = Some(DownloadSourceKind::MagnetUri);
+    pending.indexer_id = Some("acquisition-indexer".to_string());
+    pending.seeders = seeders;
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+
+    // Raised *after* the release was parked: the whole point is that promotion
+    // judges against the threshold in force now, not the one that applied then.
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+            None,
+            floor.to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed minimum-seeders floor");
+
+    let grabbed = app
+        .process_expired_pending_releases()
+        .await
+        .expect("process expired pending releases");
+
+    (
+        app,
+        user,
+        pending_releases,
+        download_submissions,
+        pending_id,
+        grabbed,
+    )
+}
+
+#[tokio::test]
+async fn automatic_promotion_rejects_a_pending_release_below_the_current_minimum_seeders() {
+    // Sonarr re-runs every specification over the pending list on each RSS sync
+    // (RssSyncService.cs:42-46) using the seeders stored with the original
+    // release; a swarm that died during the delay must not be grabbed.
+    let (_app, _user, pending_releases, download_submissions, pending_id, grabbed) =
+        promote_pending_torrent_with_seeders("Swarm.Dead.2024.1080p.WEB-DL-GRP", Some(2), "5")
+            .await;
+
+    assert_eq!(grabbed, 0);
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Expired,
+        "the automatic path expires what it will not grab, the same as every \
+         other rejection it makes"
+    );
+    assert!(
+        download_submissions.store.lock().await.is_empty(),
+        "nothing may reach the download client"
+    );
+}
+
+#[tokio::test]
+async fn automatic_promotion_grabs_a_pending_release_at_the_current_minimum_seeders() {
+    let (_app, _user, pending_releases, download_submissions, pending_id, grabbed) =
+        promote_pending_torrent_with_seeders("Swarm.Exact.2024.1080p.WEB-DL-GRP", Some(5), "5")
+            .await;
+
+    assert_eq!(grabbed, 1);
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+    assert!(!download_submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn automatic_promotion_grabs_a_pending_release_whose_seeders_are_unknown() {
+    // Rows parked before migration 0169, and indexers that report no seeder
+    // count, both read as unknown — and unknown is always eligible, exactly as
+    // `TorrentSeedingSpecification` accepts on every ambiguity.
+    let (_app, _user, pending_releases, _submissions, pending_id, grabbed) =
+        promote_pending_torrent_with_seeders("Swarm.Unknown.2024.1080p.WEB-DL-GRP", None, "5")
+            .await;
+
+    assert_eq!(grabbed, 1);
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending_id)
+            .await
+            .expect("load pending release")
+            .expect("pending release exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+}
+
+#[tokio::test]
+async fn an_operator_force_grab_bypasses_the_minimum_seeder_re_judge() {
+    // Sonarr's manual grab runs no specifications at all: an operator who asks
+    // for a release by name has overruled the automatic verdict.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Force Grab Swarm Movie",
+        2024,
+    )
+    .await;
+    let mut pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        "Swarm.Forced.2024.1080p.WEB-DL-GRP",
+        PendingReleaseStatus::Waiting,
+    );
+    pending.source_kind = Some(DownloadSourceKind::MagnetUri);
+    pending.indexer_id = Some("acquisition-indexer".to_string());
+    pending.seeders = Some(0);
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+            None,
+            "5".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed minimum-seeders floor");
+
+    assert!(
+        app.force_grab_pending_release(&user, &pending_id)
+            .await
+            .expect("force grab should succeed"),
+        "the operator path must not re-judge the swarm"
+    );
+    assert!(!download_submissions.store.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -6107,6 +6318,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             published_at: Some(Utc::now().to_rfc3339()),
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed standby");
@@ -6231,6 +6443,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
             published_at: None,
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed stale standby");
@@ -6513,6 +6726,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
             published_at: None,
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed stale standby");
@@ -8124,6 +8338,7 @@ async fn assert_pending_release_submit_decision(
             published_at: Some(now),
             info_hash: None,
             seed_minimums: Default::default(),
+            seeders: None,
         })
         .await
         .expect("seed pending release");

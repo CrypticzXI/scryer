@@ -1186,8 +1186,16 @@ async fn recover_from_standby_candidates(
             "attempting standby reacquisition"
         );
 
+        // Automatic: no operator asked for this release, so it is judged against
+        // current policy the same way the delay-expiry promoter judges its rows.
+        // Reacquiring into a swarm too small to finish would just fail again.
         match app
-            .try_grab_pending_release(&effective_wanted, &standby, now)
+            .try_grab_pending_release(
+                &effective_wanted,
+                &standby,
+                now,
+                super::pending::PendingGrabTrigger::Automatic,
+            )
             .await
         {
             Ok(super::pending::PendingGrabOutcome::Grabbed) => {
@@ -1370,6 +1378,7 @@ async fn persist_standby_candidates(
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
             seed_minimums: crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
+            seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
         };
 
         if app

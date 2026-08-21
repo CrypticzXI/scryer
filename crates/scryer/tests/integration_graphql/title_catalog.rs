@@ -3401,6 +3401,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         published_at: None,
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: None,
     })
     .await
     .expect("seed pending release");

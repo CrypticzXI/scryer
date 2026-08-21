@@ -19,6 +19,19 @@ pub(crate) enum PendingGrabOutcome {
     Deferred,
 }
 
+/// Which path is promoting a pending release.
+///
+/// The two are not interchangeable: the automatic path re-judges the release
+/// against current policy before grabbing it, while an operator's explicit
+/// grab-now has already overruled that verdict. Sonarr draws the same line — its
+/// RSS sync re-runs every specification over the pending list, and its manual
+/// grab runs none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingGrabTrigger {
+    Automatic,
+    Operator,
+}
+
 impl AppUseCase {
     /// Load delay profiles from settings.
     pub(crate) async fn load_delay_profiles(&self) -> Vec<DelayProfile> {
@@ -54,6 +67,7 @@ impl AppUseCase {
         published_at: Option<&str>,
         info_hash: Option<&str>,
         seed_minimums: ReleaseSeedMinimums,
+        seeders: Option<i64>,
     ) {
         let now = Utc::now();
         let delay_until = now + Duration::minutes(delay_minutes);
@@ -79,6 +93,7 @@ impl AppUseCase {
             published_at: published_at.map(str::to_string),
             info_hash: info_hash.map(str::to_string),
             seed_minimums,
+            seeders,
         };
 
         // Supersede any existing waiting releases for this wanted item with a lower score
@@ -202,6 +217,9 @@ impl AppUseCase {
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
             seed_minimums: ReleaseSeedMinimums::from_release_extra(&candidate.extra),
+            // Same map the admission gate read when the candidate was offered,
+            // so promotion can re-judge the swarm against the current threshold.
+            seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
         };
 
         match self
@@ -300,7 +318,10 @@ impl AppUseCase {
             // Try to grab the best release
             let mut grabbed = false;
             for pr in &releases {
-                match self.try_grab_pending_release(&wanted, pr, &now).await {
+                match self
+                    .try_grab_pending_release(&wanted, pr, &now, PendingGrabTrigger::Automatic)
+                    .await
+                {
                     Ok(PendingGrabOutcome::Grabbed) => {
                         // Mark this one as grabbed
                         let _ = self
@@ -588,7 +609,8 @@ impl AppUseCase {
                 AppError::Repository(format!("wanted item {} not found", pr.wanted_item_id))
             })?;
         Ok(matches!(
-            self.try_grab_pending_release(&wanted, &pr, &now).await?,
+            self.try_grab_pending_release(&wanted, &pr, &now, PendingGrabTrigger::Operator)
+                .await?,
             PendingGrabOutcome::Grabbed
         ))
     }
@@ -699,6 +721,7 @@ impl AppUseCase {
         wanted: &AcquisitionScopeState,
         pr: &PendingRelease,
         now: &chrono::DateTime<Utc>,
+        trigger: PendingGrabTrigger,
     ) -> AppResult<PendingGrabOutcome> {
         // Load title
         let Some(title) = self.services.catalog.titles.get_by_id(&pr.title_id).await? else {
@@ -729,6 +752,38 @@ impl AppUseCase {
                 "pending release: skipping, already active in download client"
             );
             return Ok(PendingGrabOutcome::Rejected);
+        }
+
+        // Swarm health, re-judged against the threshold in force *now*. The row
+        // carries the count the indexer reported when it was parked (migration
+        // 0169) and the threshold may have moved since — a raised floor, a new
+        // profile, a fresh Prowlarr import. A delayed grab must not land in a
+        // swarm too small to finish it just because it was healthy an hour ago.
+        // Same shape as Sonarr's RSS sync, which re-runs every specification
+        // over the pending list against the release's originally stored seeders;
+        // an unknown count stays eligible there and here.
+        if trigger == PendingGrabTrigger::Automatic {
+            let minimum_seeders = self
+                .minimum_seeders_for_indexer(pr.indexer_id.as_deref())
+                .await;
+            if !crate::acquisition::seed_goals::meets_minimum_seeders(
+                pr.source_kind,
+                pr.indexer_id.as_deref(),
+                pr.seeders,
+                minimum_seeders,
+            ) {
+                info!(
+                    release = pr.release_title.as_str(),
+                    indexer_id = pr.indexer_id.as_deref().unwrap_or("unknown"),
+                    seeders = ?pr.seeders,
+                    minimum_seeders,
+                    reason =
+                        crate::acquisition_release_search::ReleaseAutoDecisionCode::MinimumSeeders
+                            .as_str(),
+                    "pending release: rejecting, too few seeders for this indexer's seeding profile"
+                );
+                return Ok(PendingGrabOutcome::Rejected);
+            }
         }
 
         let existing_files = self

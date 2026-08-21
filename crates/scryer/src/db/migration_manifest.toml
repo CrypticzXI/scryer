@@ -1049,6 +1049,23 @@ file = "postgres/migrations/0168_temporary_password_replacement.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 169
+description = "persist reported seeders on pending releases"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0169_pending_release_seeders.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0169_pending_release_seeders.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

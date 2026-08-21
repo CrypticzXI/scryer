@@ -1,9 +1,11 @@
 use super::*;
 
 /// Migration 0163 gave `pending_releases` the four tracker-minimum columns a
-/// delayed grab needs. Proves both directions through the real migrated schema:
-/// a parked row keeps its minimums, and a row written without them (the shape
-/// every pre-0165 row has) reads back as `None` rather than failing the map.
+/// delayed grab needs, and 0169 added the seeder count promotion re-judges
+/// against. Proves both directions through the real migrated schema: a parked
+/// row keeps its minimums and its seeders, and a row written without them (the
+/// shape every pre-0165 row has) reads back as `None` rather than failing the
+/// map.
 #[tokio::test]
 async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_as_none() {
     let (services, db) = temp_services("scryer_pending_release_seed_minimums").await;
@@ -32,6 +34,7 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
         published_at: None,
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: Some(37),
     };
     parked.seed_minimums = scryer_application::ReleaseSeedMinimums {
         min_seed_ratio: Some(1.5),
@@ -49,6 +52,11 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
             .expect("pending release should load")
             .expect("pending release should exist");
     assert_eq!(loaded.seed_minimums, parked.seed_minimums);
+    assert_eq!(
+        loaded.seeders,
+        Some(37),
+        "promotion re-judges the swarm against the count captured at park time"
+    );
 
     // Written the way every row parked before 0165 was: the four columns absent
     // from the INSERT, so the migration's defaults (NULL) apply.
@@ -89,6 +97,10 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
     assert_eq!(
         legacy.seed_minimums,
         scryer_application::ReleaseSeedMinimums::default()
+    );
+    assert_eq!(
+        legacy.seeders, None,
+        "a row parked before 0169 reads as unknown, which stays eligible"
     );
 
     let _ = std::fs::remove_file(db);

@@ -1579,6 +1579,7 @@ async fn graphql_traverses_core_graph_relationships() {
         published_at: None,
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: None,
     };
     scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),

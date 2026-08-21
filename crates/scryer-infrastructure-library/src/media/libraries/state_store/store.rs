@@ -1495,7 +1495,7 @@ const PENDING_RELEASE_COLUMNS: &str =
     source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
     added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
     minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
-    season_pack_seed_time_minutes";
+    season_pack_seed_time_minutes, seeders";
 
 /// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
 /// so the paged read can JOIN `titles` for library scoping without ambiguous
@@ -1505,7 +1505,7 @@ const PENDING_RELEASE_COLUMNS_PR: &str =
     pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.indexer_id, pr.release_guid,
     pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash,
     pr.minimum_seed_ratio, pr.minimum_seed_time_minutes, pr.season_pack_seed_ratio,
-    pr.season_pack_seed_time_minutes";
+    pr.season_pack_seed_time_minutes, pr.seeders";
 
 fn pending_release_row_to_item(
     row: &SqlRow,
@@ -1547,6 +1547,9 @@ fn pending_release_row_to_item(
             season_pack_seed_ratio: row.opt_f64("season_pack_seed_ratio")?,
             season_pack_seed_time_minutes: row.opt_i64("season_pack_seed_time_minutes")?,
         },
+        // Rows parked before migration 0169 read back as `None`, which the
+        // promotion re-judge treats as unknown — and unknown stays eligible.
+        seeders: row.opt_i64("seeders")?,
     })
 }
 
@@ -1595,6 +1598,7 @@ fn pending_release_insert_args(
         SqlArg::OptI64(release.seed_minimums.min_seed_time_minutes),
         SqlArg::OptF64(release.seed_minimums.season_pack_seed_ratio),
         SqlArg::OptI64(release.seed_minimums.season_pack_seed_time_minutes),
+        SqlArg::OptI64(release.seeders),
     ])
 }
 
@@ -1624,9 +1628,9 @@ impl PendingReleaseRepository for PendingReleaseStore {
               source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
               added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
               minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
-              season_pack_seed_time_minutes)
+              season_pack_seed_time_minutes, seeders)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-                     {}, {}, {}, {})",
+                     {}, {}, {}, {}, {})",
             pending_release_insert_args(&self.datastore, release, encryption_key.as_ref())?,
         )
         .await?;

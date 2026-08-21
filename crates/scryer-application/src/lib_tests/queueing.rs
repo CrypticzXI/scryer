@@ -1859,6 +1859,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
                 published_at: Some(now.clone()),
                 info_hash: None,
                 seed_minimums: Default::default(),
+                seeders: None,
             })
             .await
             .expect("seed pending release");

@@ -1930,6 +1930,7 @@ pub(super) fn pending_movie_release(
         published_at: Some(now.to_rfc3339()),
         info_hash: None,
         seed_minimums: Default::default(),
+        seeders: None,
     }
 }
 
