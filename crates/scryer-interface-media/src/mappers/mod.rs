@@ -55,8 +55,8 @@ mod tests {
     use super::discovery::{discovery_surface_value, preferred_discovery_poster_source};
     use super::{
         discovery_home_query_from_input, from_download_queue_item, from_import_record,
-        from_title_history_record, from_wanted_item, provider_config_values_from_json_with_fields,
-        provider_config_values_to_json,
+        from_indexer_config_with_fields, from_title_history_record, from_wanted_item,
+        provider_config_values_from_json_with_fields, provider_config_values_to_json,
     };
     use crate::types::{
         BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
@@ -64,10 +64,11 @@ mod tests {
         PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
         SecretConfigValuePayload,
     };
+    use chrono::Utc;
     use scryer_application::{AcquisitionScopeState, AcquisitionScopeStatus};
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
-        ImportStatus, ImportType, TitleHistoryEventType, TitleHistoryRecord,
+        ImportStatus, ImportType, IndexerConfig, TitleHistoryEventType, TitleHistoryRecord,
     };
     use serde_json::{Value, json};
 
@@ -544,5 +545,60 @@ mod tests {
         assert_eq!(payload.seed_time_goal_seconds.map(|value| value.0), None);
         assert_eq!(payload.is_private, None);
         assert!(payload.seeding_state.is_none());
+    }
+
+    fn prowlarr_child_indexer(managed_metadata: serde_json::Value) -> IndexerConfig {
+        let now = Utc::now();
+        IndexerConfig {
+            id: "idx-managed".to_string(),
+            name: "Managed child".to_string(),
+            provider_type: "torznab".to_string(),
+            base_url: "https://example.invalid".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            download_client_id: None,
+            seeding_profile_id: None,
+            managed_parent_config_id: Some("prowlarr-parent".to_string()),
+            managed_child_key: Some("7".to_string()),
+            managed_metadata_json: Some(managed_metadata.to_string()),
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn managed_by_prowlarr_is_claimed_for_goals_only() {
+        // The indexer dropdown reads this flag to say "Managed by Prowlarr" and
+        // lock the seeding-profile picker. An imported `appMinimumSeeders` is an
+        // admission threshold, not a seed goal, so on its own it must leave the
+        // picker free.
+        let goals = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7, "seed_ratio": 1.5 })),
+            &[],
+        );
+        assert!(goals.has_prowlarr_seed_criteria);
+
+        let minimum_only = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7, "minimum_seeders": 4 })),
+            &[],
+        );
+        assert!(!minimum_only.has_prowlarr_seed_criteria);
+
+        let nothing = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7 })),
+            &[],
+        );
+        assert!(!nothing.has_prowlarr_seed_criteria);
     }
 }

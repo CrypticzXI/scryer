@@ -554,9 +554,11 @@ pub fn from_indexer_config_with_fields(
     let is_managed = config.managed_parent_config_id.is_some();
     let managed_parent_config_id = config.managed_parent_config_id.clone();
     let supports_managed_children_sync = config.provider_type.eq_ignore_ascii_case("prowlarr");
-    // Computed before `config` is picked apart below.
+    // Computed before `config` is picked apart below. Goals only: the dropdown
+    // says "Managed by Prowlarr" about *seed goals*, so a child carrying nothing
+    // but an imported `appMinimumSeeders` must not claim them.
     let has_prowlarr_seed_criteria =
-        scryer_application::prowlarr_managed_profile(&config).is_some();
+        scryer_application::prowlarr_managed_goal_profile(&config).is_some();
     let (config_json, stored_secret_keys) =
         redact_indexer_config_json(config.config_json, config_fields);
     let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")

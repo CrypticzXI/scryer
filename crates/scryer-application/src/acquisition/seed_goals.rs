@@ -20,8 +20,8 @@ use serde_json::Value;
 
 use crate::{
     AppResult, DEFAULT_SEEDING_PROFILE_SETTING_KEY, IndexerConfigRepository,
-    MINIMUM_SEEDERS_FLOOR_SETTING_KEY, SETTINGS_SCOPE_SYSTEM, SeedingProfileRepository,
-    SettingsRepository,
+    MINIMUM_SEEDERS_FLOOR_DEFAULT, MINIMUM_SEEDERS_FLOOR_SETTING_KEY, SETTINGS_SCOPE_SYSTEM,
+    SeedingProfileRepository, SettingsRepository,
 };
 
 /// Which assignment level supplied the profile. Persisted with the resolution
@@ -189,7 +189,10 @@ impl SeedGoalResolver {
             {
                 return Ok(Some((profile, SeedGoalResolutionSource::Indexer)));
             }
-            if let Some(profile) = prowlarr_managed_profile(&indexer) {
+            // Goals only: a child whose Prowlarr criteria are just an
+            // `appMinimumSeeders` supplies nothing to this walk and falls
+            // through to the tiers below.
+            if let Some(profile) = prowlarr_managed_goal_profile(&indexer) {
                 return Ok(Some((profile, SeedGoalResolutionSource::ProwlarrManaged)));
             }
         }
@@ -224,13 +227,11 @@ impl SeedGoalResolver {
     /// adjacent is what makes that divergence readable as a decision.
     ///
     /// Precedence: indexer profile → Prowlarr-managed → global default
-    /// profile → system floor. A resolved profile whose `minimum_seeders` is
+    /// profile → system floor. A resolved *profile* whose `minimum_seeders` is
     /// `None` inherits the floor rather than falling through to the next tier,
     /// matching "first profile wins" everywhere else in this module.
     pub async fn resolve_minimum_seeders(&self, indexer_id: Option<&str>) -> AppResult<i32> {
-        if let Some(profile) = self.admission_profile(indexer_id).await?
-            && let Some(minimum) = profile.minimum_seeders
-        {
+        if let Some(minimum) = self.admission_minimum_seeders(indexer_id).await? {
             return Ok(minimum.max(0));
         }
         self.minimum_seeders_floor().await
@@ -238,10 +239,15 @@ impl SeedGoalResolver {
 
     /// The routing-free half of the precedence walk. See
     /// [`Self::resolve_minimum_seeders`] for why routing is excluded.
-    async fn admission_profile(
-        &self,
-        indexer_id: Option<&str>,
-    ) -> AppResult<Option<SeedingProfile>> {
+    ///
+    /// A tier answers with `Some` only when it has something to say about swarm
+    /// health — the mirror of [`prowlarr_managed_goal_profile`] answering only
+    /// about goals. The one asymmetry is deliberate: a *profile row* answers as
+    /// a unit, so an assigned profile that leaves `minimum_seeders` blank ends
+    /// the walk at the floor (assigning it is how an operator overrides what
+    /// Prowlarr holds), while Prowlarr's imported criteria are a bag of
+    /// independent fields and only speak for the field they carry.
+    async fn admission_minimum_seeders(&self, indexer_id: Option<&str>) -> AppResult<Option<i32>> {
         if let Some(indexer_id) = trimmed(indexer_id)
             && let Some(repository) = self.indexer_configs.as_ref()
             && let Some(indexer) = repository.get_by_id(&indexer_id).await?
@@ -249,26 +255,26 @@ impl SeedGoalResolver {
             if let Some(profile_id) = trimmed(indexer.seeding_profile_id.as_deref())
                 && let Some(profile) = self.load_profile(&profile_id).await?
             {
-                return Ok(Some(profile));
+                return Ok(profile.minimum_seeders);
             }
-            if let Some(profile) = prowlarr_managed_profile(&indexer) {
-                return Ok(Some(profile));
+            if let Some(minimum) = prowlarr_managed_minimum_seeders(&indexer) {
+                return Ok(Some(minimum));
             }
         }
 
         if let Some(profile_id) = self.default_seeding_profile_id().await?
             && let Some(profile) = self.load_profile(&profile_id).await?
         {
-            return Ok(Some(profile));
+            return Ok(profile.minimum_seeders);
         }
         Ok(None)
     }
 
-    /// System floor. Bootstrap seeds this at 1, but a missing or unparseable
-    /// row still resolves to 1: losing the setting must not silently turn the
-    /// protection off.
+    /// System floor. Bootstrap seeds this from the same constant, but a missing
+    /// or unparseable row still resolves to it: losing the setting must not
+    /// silently turn the protection off.
     async fn minimum_seeders_floor(&self) -> AppResult<i32> {
-        const DEFAULT_FLOOR: i32 = 1;
+        const DEFAULT_FLOOR: i32 = MINIMUM_SEEDERS_FLOOR_DEFAULT;
         let Some(raw_value) = self
             .settings
             .get_setting_json(
@@ -377,15 +383,30 @@ pub fn meets_minimum_seeders(
     }
 }
 
-/// Builds the throwaway profile that carries Prowlarr's criteria through the
-/// normal resolution path. The id is empty because no such profile exists;
-/// callers key the resolution off `SeedGoalResolutionSource::ProwlarrManaged`.
-pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfile> {
-    // Only a Prowlarr-managed child can carry these; a standalone indexer with
-    // a stray blob is not Prowlarr's to speak for.
+/// The seed criteria Prowlarr holds for one indexer, or `None` when this
+/// indexer is not Prowlarr's to speak for.
+///
+/// Only a Prowlarr-managed child can carry these; a standalone indexer with a
+/// stray managed-metadata blob is not Prowlarr's to interpret.
+fn prowlarr_managed_criteria(indexer: &IndexerConfig) -> Option<ProwlarrManagedSeedCriteria> {
     indexer.managed_parent_config_id.as_deref()?;
-    let criteria: ProwlarrManagedSeedCriteria =
-        serde_json::from_str(indexer.managed_metadata_json.as_deref()?).ok()?;
+    serde_json::from_str(indexer.managed_metadata_json.as_deref()?).ok()
+}
+
+/// Builds the throwaway profile that carries Prowlarr's seed **goals** through
+/// the normal resolution path. The id is empty because no such profile exists;
+/// callers key the resolution off `SeedGoalResolutionSource::ProwlarrManaged`.
+///
+/// Goals only. `minimum_seeders` is an admission question — how dead a swarm may
+/// be, not how long to seed — and is answered by
+/// [`prowlarr_managed_minimum_seeders`]. A child that carries only a minimum
+/// therefore supplies *no* goals and must fall through to the routing entry and
+/// the global default rather than short-circuiting the walk with an empty
+/// profile. That is Sonarr's shape too: `SeedConfigProvider` returns `null` when
+/// the indexer has no seed criteria, leaving the client's own limit regime in
+/// charge (`Indexers/SeedConfigProvider.cs`).
+pub fn prowlarr_managed_goal_profile(indexer: &IndexerConfig) -> Option<SeedingProfile> {
+    let criteria = prowlarr_managed_criteria(indexer)?;
     let ratio = criteria
         .seed_ratio
         .filter(|value| value.is_finite() && *value > 0.0);
@@ -393,17 +414,7 @@ pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfil
     let season_pack_seed_time_minutes = criteria
         .season_pack_seed_time_minutes
         .filter(|value| *value > 0);
-    // Deliberately NOT filtered to `> 0` like its siblings above. For a goal,
-    // zero and unset both mean "no goal", so collapsing them is harmless. Here
-    // Prowlarr's zero is a decision — disable the check — and it must not read
-    // as "inherit the floor". Prowlarr's own validator only warns on a
-    // non-positive value, so zero really does arrive.
-    let minimum_seeders = criteria.minimum_seeders.filter(|value| *value >= 0);
-    if ratio.is_none()
-        && seed_time_minutes.is_none()
-        && season_pack_seed_time_minutes.is_none()
-        && minimum_seeders.is_none()
-    {
+    if ratio.is_none() && seed_time_minutes.is_none() && season_pack_seed_time_minutes.is_none() {
         return None;
     }
 
@@ -427,11 +438,28 @@ pub fn prowlarr_managed_profile(indexer: &IndexerConfig) -> Option<SeedingProfil
         honor_tracker_minimums: true,
         goal_met_action: SeedGoalMetAction::default(),
         never_remove: false,
-        minimum_seeders,
+        // Deliberately blank: this profile speaks for the goals walk only, and
+        // leaving the field populated would invite a reader to answer admission
+        // from it and re-merge the two tiers.
+        minimum_seeders: None,
         post_import_tracking: PostImportTracking::default(),
         created_at: now,
         updated_at: now,
     })
+}
+
+/// Prowlarr's imported `appMinimumSeeders` for a managed child — the admission
+/// half of the split above.
+///
+/// Deliberately NOT filtered to `> 0` the way the goal fields are. For a goal,
+/// zero and unset both mean "no goal", so collapsing them is harmless. Here
+/// Prowlarr's zero is a decision — disable the check — and it must not read as
+/// "inherit the floor". Prowlarr's own validator only warns on a non-positive
+/// value, so zero really does arrive.
+pub(crate) fn prowlarr_managed_minimum_seeders(indexer: &IndexerConfig) -> Option<i32> {
+    prowlarr_managed_criteria(indexer)?
+        .minimum_seeders
+        .filter(|value| *value >= 0)
 }
 
 fn apply_profile(
@@ -1028,29 +1056,227 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_managed_child_carrying_only_a_minimum_still_yields_a_profile() {
+    #[test]
+    fn a_managed_child_carrying_only_a_minimum_supplies_admission_but_no_goals() {
         let indexer = prowlarr_child(
             "idx-managed",
             None,
             serde_json::json!({ "indexer_id": 7, "minimum_seeders": 4 }),
         );
-        let managed = prowlarr_managed_profile(&indexer)
-            .expect("a minimum alone is enough to speak for the tracker");
-        assert_eq!(managed.minimum_seeders, Some(4));
-        assert!(managed.ratio.is_none());
+        assert!(
+            prowlarr_managed_goal_profile(&indexer).is_none(),
+            "a minimum is not a seed goal: the goals walk must keep going"
+        );
+        assert_eq!(prowlarr_managed_minimum_seeders(&indexer), Some(4));
     }
 
-    #[tokio::test]
-    async fn a_managed_child_minimum_of_zero_survives_as_an_explicit_disable() {
+    #[test]
+    fn a_managed_child_minimum_of_zero_survives_as_an_explicit_disable() {
         let indexer = prowlarr_child(
             "idx-managed",
             None,
             serde_json::json!({ "indexer_id": 7, "minimum_seeders": 0 }),
         );
-        let managed =
-            prowlarr_managed_profile(&indexer).expect("zero is a decision, not an absent field");
-        assert_eq!(managed.minimum_seeders, Some(0));
+        assert_eq!(
+            prowlarr_managed_minimum_seeders(&indexer),
+            Some(0),
+            "zero is a decision, not an absent field"
+        );
+    }
+
+    #[test]
+    fn only_a_managed_child_speaks_for_prowlarr_on_either_axis() {
+        let mut standalone = indexer("idx-standalone", None);
+        standalone.managed_metadata_json =
+            Some(serde_json::json!({ "seed_ratio": 9.0, "minimum_seeders": 9 }).to_string());
+        assert!(prowlarr_managed_goal_profile(&standalone).is_none());
+        assert_eq!(prowlarr_managed_minimum_seeders(&standalone), None);
+    }
+
+    #[tokio::test]
+    async fn a_managed_child_with_only_a_minimum_still_inherits_the_global_default_goals() {
+        // The regression this split fixes: a child carrying nothing but
+        // `appMinimumSeeders` used to short-circuit the goals walk with an empty
+        // ProwlarrManaged profile, so the operator's global default was silently
+        // not applied. Sonarr's shape is `seedCriteria == null` → next regime.
+        let resolver = resolver_with_floor(
+            vec![profile("global-profile", Some(2.0), Some(60))],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({ "indexer_id": 7, "minimum_seeders": 4 }),
+            )],
+            Some("global-profile"),
+            Some("1"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::GlobalDefault
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(2.0));
+        assert_eq!(resolved.seed_goal_seconds, Some(3600));
+        assert_eq!(
+            resolver
+                .resolve_minimum_seeders(Some("idx-managed"))
+                .await
+                .unwrap(),
+            4,
+            "admission still uses the minimum Prowlarr imported"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_managed_child_with_only_a_minimum_still_inherits_the_routing_entry_goals() {
+        let resolver = resolver_with_floor(
+            vec![profile("routing-profile", Some(1.0), None)],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({ "indexer_id": 7, "minimum_seeders": 4 }),
+            )],
+            None,
+            Some("1"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), Some("routing-profile")))
+            .await
+            .expect("resolution should succeed");
+
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::RoutingEntry
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn a_private_torrent_on_a_minimum_only_child_is_not_held_by_the_private_rail() {
+        // The operator-visible harm behind the split: with no goals resolved, an
+        // observed private torrent hits the hard private rail and is held
+        // forever — the opposite of what the default profile was configured to
+        // do. Wired through the real gate so the two halves cannot drift.
+        use crate::import::seeding_gate::{
+            SeedingGateInput, SeedingGateOutcome, TorrentSeedingObservation, evaluate_seeding_gate,
+            reason,
+        };
+
+        let resolver = resolver_with_floor(
+            vec![profile("global-profile", Some(2.0), None)],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({ "indexer_id": 7, "minimum_seeders": 4 }),
+            )],
+            Some("global-profile"),
+            Some("1"),
+        );
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+        assert!(resolved.has_goals(), "the default profile supplies goals");
+
+        // Field for field the way the router persists a resolution
+        // (`downloads/clients/router.rs`), so the gate sees production's shape.
+        let decision = evaluate_seeding_gate(&SeedingGateInput {
+            client_type: "qbittorrent".to_string(),
+            observation: Some(TorrentSeedingObservation {
+                is_private: Some(true),
+                seed_ratio: Some(3.0),
+                ..TorrentSeedingObservation::default()
+            }),
+            goals: Some(crate::PersistedSeedGoals {
+                seeding_profile_id: resolved.seeding_profile_id.clone(),
+                seed_goal_ratio: resolved.seed_goal_ratio,
+                seed_goal_seconds: resolved.seed_goal_seconds,
+                never_remove: resolved.never_remove,
+                goal_met_action: resolved.goal_met_action,
+                post_import_tracking: resolved.post_import_tracking,
+                resolution_source: resolved.resolution_source,
+                info_hash: None,
+            }),
+            ..SeedingGateInput::default()
+        });
+
+        assert_ne!(decision.reason, reason::PRIVATE_WITHOUT_GOALS);
+        assert_eq!(
+            decision.outcome,
+            SeedingGateOutcome::Released {
+                action: SeedGoalMetAction::RemoveEntry
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn prowlarr_goals_without_a_minimum_leave_admission_to_the_next_tier() {
+        // The mirror image of the split: Prowlarr supplies goals but says
+        // nothing about swarm health, so the operator's default profile answers
+        // the admission question rather than the bare floor.
+        let resolver = resolver_with_floor(
+            vec![SeedingProfile {
+                minimum_seeders: Some(6),
+                ..profile("global-profile", Some(2.0), None)
+            }],
+            vec![prowlarr_child(
+                "idx-managed",
+                None,
+                serde_json::json!({ "indexer_id": 7, "seed_ratio": 1.5 }),
+            )],
+            Some("global-profile"),
+            Some("1"),
+        );
+
+        let resolved = resolver
+            .resolve(&request(Some("idx-managed"), None))
+            .await
+            .expect("resolution should succeed");
+        assert_eq!(
+            resolved.resolution_source,
+            SeedGoalResolutionSource::ProwlarrManaged
+        );
+        assert_eq!(resolved.seed_goal_ratio, Some(1.5));
+        assert_eq!(
+            resolver
+                .resolve_minimum_seeders(Some("idx-managed"))
+                .await
+                .unwrap(),
+            6
+        );
+    }
+
+    #[tokio::test]
+    async fn an_assigned_profile_without_a_minimum_inherits_the_floor_not_the_next_tier() {
+        // First profile wins on the admission walk too: assigning a Scryer
+        // profile is how an operator overrides what Prowlarr holds, so one that
+        // leaves the field blank must not reach past itself to the default.
+        let resolver = resolver_with_floor(
+            vec![
+                profile_with_minimum("assigned", None),
+                profile_with_minimum("global-profile", Some(9)),
+            ],
+            vec![prowlarr_child(
+                "idx-managed",
+                Some("assigned"),
+                serde_json::json!({ "indexer_id": 7, "minimum_seeders": 8 }),
+            )],
+            Some("global-profile"),
+            Some("2"),
+        );
+
+        assert_eq!(
+            resolver
+                .resolve_minimum_seeders(Some("idx-managed"))
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]

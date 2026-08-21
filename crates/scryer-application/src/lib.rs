@@ -211,7 +211,7 @@ pub use acquisition::delay_profile::{
 pub use acquisition::policy::AcquisitionThresholds;
 pub use acquisition::seed_goals::{
     ReleaseSeedMinimums, ResolvedSeedGoals, SeedGoalRequest, SeedGoalResolutionSource,
-    SeedGoalResolver, prowlarr_managed_profile, release_extra_f64, release_extra_i64,
+    SeedGoalResolver, prowlarr_managed_goal_profile, release_extra_f64, release_extra_i64,
 };
 pub use acquisition::wanted_views::{
     AcquisitionSearchJobView, AcquisitionSearchProgress, AcquisitionSearchRequest,
@@ -509,6 +509,7 @@ pub use settings::keys::{
     IMAGE_CACHE_MAX_SIZE_MB_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
     LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
     METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    MINIMUM_SEEDERS_FLOOR_DEFAULT, MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON,
     MINIMUM_SEEDERS_FLOOR_SETTING_KEY, MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,

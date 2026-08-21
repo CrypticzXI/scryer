@@ -18,6 +18,15 @@ pub const DEFAULT_SEEDING_PROFILE_SETTING_KEY: &str = "download_client.default_s
 /// resolves. Sonarr defaults every torrent indexer to 1; this is the same
 /// guarantee expressed once instead of per indexer.
 pub const MINIMUM_SEEDERS_FLOOR_SETTING_KEY: &str = "download_client.minimum_seeders_floor";
+/// Value [`MINIMUM_SEEDERS_FLOOR_SETTING_KEY`] falls back to. Bootstrap seeds
+/// the row with it and the resolver reads it when the row is missing or
+/// unparseable, so losing the setting cannot silently turn the protection off.
+pub const MINIMUM_SEEDERS_FLOOR_DEFAULT: i32 = 1;
+/// The same number in the JSON encoding a settings row stores. Rust cannot
+/// stringify a constant at compile time without a dependency, so the pair lives
+/// here — one place, side by side — and `the_floor_default_json_is_the_floor_default`
+/// keeps the two encodings from drifting.
+pub const MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON: &str = "1";
 pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
@@ -147,3 +156,19 @@ pub const DEFAULT_RENAME_MISSING_METADATA_POLICY: &str = "fallback_title";
 pub const DEFAULT_FILLER_POLICY: &str = "download_all";
 pub const DEFAULT_RECAP_POLICY: &str = "download_all";
 pub const DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL: &str = "03:00";
+
+#[cfg(test)]
+mod tests {
+    use super::{MINIMUM_SEEDERS_FLOOR_DEFAULT, MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON};
+
+    #[test]
+    fn the_floor_default_json_is_the_floor_default() {
+        // The bootstrap seed stores the JSON form and the resolver falls back to
+        // the number; if these ever disagree, a fresh install and a lost
+        // settings row would enforce different floors.
+        assert_eq!(
+            serde_json::from_str::<i32>(MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON).unwrap(),
+            MINIMUM_SEEDERS_FLOOR_DEFAULT
+        );
+    }
+}
