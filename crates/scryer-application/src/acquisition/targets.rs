@@ -51,6 +51,14 @@ pub struct AcquisitionTarget {
     /// Recent air/release/add → hot lane (high candidate value); long-tail and
     /// upgrades → cold lane (low value, drained under scheduler backpressure).
     pub is_hot: bool,
+    /// Whether a primary file already occupies this scope.
+    ///
+    /// The two derivations differ by exactly this: `derive_missing_targets`
+    /// yields scopes with nothing on disk, `derive_cutoff_targets` yields scopes
+    /// that have a file but sit below cutoff. Recording it here replaces reading
+    /// `wanted_items.current_score.is_some()` as a proxy for "something landed",
+    /// which was true in only one of that column's five lifecycle states.
+    pub occupied: bool,
 }
 
 /// Whether `date` (RFC3339 or `YYYY-MM-DD`) falls within the trailing
@@ -264,6 +272,7 @@ impl AppUseCase {
                 HOT_RECENTLY_ADDED_WINDOW_DAYS,
             );
             targets.push(AcquisitionTarget {
+                occupied: false,
                 scope_key,
                 title_id: episode.title_id,
                 library_id: episode.library_id,
@@ -315,6 +324,7 @@ impl AppUseCase {
                     HOT_RECENTLY_ADDED_WINDOW_DAYS,
                 );
             targets.push(AcquisitionTarget {
+                occupied: false,
                 scope_key,
                 title_id: title.title_id,
                 library_id: title.library_id,
@@ -373,6 +383,7 @@ impl AppUseCase {
                 HOT_RECENTLY_ADDED_WINDOW_DAYS,
             );
             targets.push(AcquisitionTarget {
+                occupied: false,
                 scope_key,
                 title_id: link.title_id,
                 library_id: link.library_id,
@@ -395,7 +406,7 @@ impl AppUseCase {
     /// file already plays, so upgrades drain at scheduler leisure.
     pub(crate) async fn derive_cutoff_targets(&self) -> AppResult<Vec<AcquisitionTarget>> {
         let items = self.compute_cutoff_unmet_items(None, None).await?;
-        Ok(items
+        let mut targets: Vec<AcquisitionTarget> = items
             .into_iter()
             .filter_map(|item| {
                 let scope = SubmissionScope::from_persisted(
@@ -412,6 +423,7 @@ impl AppUseCase {
                     "movie"
                 };
                 Some(AcquisitionTarget {
+                    occupied: true,
                     scope_key,
                     title_id: item.title_id,
                     library_id: item.library_id,
@@ -425,7 +437,139 @@ impl AppUseCase {
                     is_hot: false,
                 })
             })
-            .collect())
+            .collect();
+
+        // D19's second half: a scope whose *quality* is at cutoff but whose
+        // score is below the profile's `cutoff_score` is still an upgrade
+        // target. Appended rather than folded into `compute_cutoff_unmet_items`
+        // — that function also backs the operator-facing "cutoff unmet" listing,
+        // which is about quality tiers and would start reporting scopes whose
+        // tier is fine.
+        let mut seen: HashSet<String> = targets
+            .iter()
+            .map(|target| target.scope_key.clone())
+            .collect();
+        for target in self.derive_format_cutoff_targets().await? {
+            if seen.insert(target.scope_key.clone()) {
+                targets.push(target);
+            }
+        }
+        Ok(targets)
+    }
+
+    /// Occupied scopes whose re-derived bar sits below their profile's
+    /// `cutoff_score` (D19).
+    ///
+    /// **The one library-wide re-scoring pass in the design**, so it is gated:
+    /// unless some profile actually sets `cutoff_score` it does no work at all,
+    /// which is the state every existing install is in. When it does run it
+    /// reuses `landed_bars_for_scopes` — the same batched derivation the Wanted
+    /// page uses and, since MA4, the same number the grab gate compares against
+    /// — in pages, so a large library re-scores in bounded chunks rather than
+    /// all at once.
+    async fn derive_format_cutoff_targets(&self) -> AppResult<Vec<AcquisitionTarget>> {
+        /// How many scopes are re-scored per batch. Each page is one media-file
+        /// query plus one scoring context per distinct title on it.
+        const PAGE: usize = 200;
+
+        let libraries = self.services.catalog.libraries.list(None).await?;
+        let library_ids: Vec<String> = libraries.iter().map(|library| library.id.clone()).collect();
+        let titles = self
+            .monitored_titles_with_profiles(None, &library_ids)
+            .await?;
+        let scored: Vec<(scryer_domain::Title, i32)> = titles
+            .into_iter()
+            .filter(|(_, profile)| profile.criteria.allow_upgrades)
+            .filter_map(|(title, profile)| {
+                profile
+                    .criteria
+                    .cutoff_score
+                    .map(|cutoff_score| (title, cutoff_score))
+            })
+            .collect();
+        if scored.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let cutoff_by_title: HashMap<&str, i32> = scored
+            .iter()
+            .map(|(title, cutoff)| (title.id.as_str(), *cutoff))
+            .collect();
+        let title_by_id: HashMap<&str, &scryer_domain::Title> = scored
+            .iter()
+            .map(|(title, _)| (title.id.as_str(), title))
+            .collect();
+        let title_ids: Vec<String> = scored.iter().map(|(title, _)| title.id.clone()).collect();
+
+        // The same enumeration the quality sweep uses: one row per occupied
+        // scope, already narrowed to titles whose profile asks the question.
+        let summaries = self
+            .services
+            .library
+            .media_files
+            .list_cutoff_unmet_quality_summaries(&title_ids)
+            .await?;
+
+        let mut targets = Vec::new();
+        for page in summaries.chunks(PAGE) {
+            let scopes: Vec<crate::acquisition_workflow::LandedBarScope> = page
+                .iter()
+                .map(|summary| crate::acquisition_workflow::LandedBarScope {
+                    title_id: summary.title_id.clone(),
+                    episode_id: summary.episode_id.clone(),
+                    collection_id: None,
+                    series_movie_link_id: None,
+                })
+                .collect();
+            let bars = self.landed_bars_for_scopes(&scopes).await;
+            for (summary, bar) in page.iter().zip(bars) {
+                // No bar means nothing scored for this scope; a scope with no
+                // number is not evidence that the number is low.
+                let Some(bar) = bar else { continue };
+                let Some(cutoff_score) = cutoff_by_title.get(summary.title_id.as_str()).copied()
+                else {
+                    continue;
+                };
+                if bar >= cutoff_score {
+                    continue;
+                }
+                let Some(title) = title_by_id.get(summary.title_id.as_str()) else {
+                    continue;
+                };
+                if summary.episode_id.is_none() && title.facet != MediaFacet::Movie {
+                    continue;
+                }
+                let scope = SubmissionScope::from_persisted(
+                    &title.id,
+                    summary.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                let Some(scope_key) = convergence_scope_key(&scope, &title.id) else {
+                    continue;
+                };
+                targets.push(AcquisitionTarget {
+                    occupied: true,
+                    scope_key,
+                    title_id: title.id.clone(),
+                    library_id: title.library_id.clone(),
+                    facet: title.facet.clone(),
+                    media_type: if summary.episode_id.is_some() {
+                        "episode".to_string()
+                    } else {
+                        "movie".to_string()
+                    },
+                    episode_id: summary.episode_id.clone(),
+                    collection_id: None,
+                    series_movie_link_id: None,
+                    season_number: summary.season_number.clone(),
+                    episode_number: summary.episode_number.clone(),
+                    is_hot: false,
+                });
+            }
+        }
+        Ok(targets)
     }
 
     /// The full derived target set the convergence cursor rotates over:
@@ -476,6 +620,7 @@ mod tests {
 
     fn cursor_target(scope_key: &str, is_hot: bool) -> AcquisitionTarget {
         AcquisitionTarget {
+            occupied: false,
             scope_key: scope_key.to_string(),
             title_id: "t1".to_string(),
             library_id: "lib".to_string(),

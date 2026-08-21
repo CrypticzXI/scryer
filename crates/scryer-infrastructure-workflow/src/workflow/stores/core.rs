@@ -24,7 +24,7 @@ use crate::queries::sql_runtime::{
 use crate::types::WorkflowOperationRecord;
 
 pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
-pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
+pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
 pub const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
@@ -156,12 +156,11 @@ pub async fn commit_successful_grab_tx(
             SqlExec::Tx(tx),
             "UPDATE wanted_items
              SET status = {}, last_search_at = {},
-                 current_score = {}, grabbed_release = {}, updated_at = {}
+                 grabbed_release = {}, updated_at = {}
              WHERE id = {}",
             &[
                 SqlArg::Text(AcquisitionScopeStatus::Grabbed.as_str().to_string()),
                 opt_timestamp_arg(commit.last_search_at.as_deref()),
-                SqlArg::OptI32(commit.current_score),
                 SqlArg::Text(commit.grabbed_release.clone()),
                 SqlArg::Timestamp(Utc::now()),
                 SqlArg::Text(wanted_item_id.clone()),
@@ -236,6 +235,7 @@ pub async fn record_download_submission_tx(
              source_provider_name = excluded.source_provider_name,
              source_kind = excluded.source_kind,
              source_title = excluded.source_title,
+             release_size_bytes = excluded.release_size_bytes,
              request_signature = excluded.request_signature,
              purpose = excluded.purpose,
              episode_id = excluded.episode_id,
@@ -244,8 +244,8 @@ pub async fn record_download_submission_tx(
     };
     let sql = [
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         conflict_clause,
     ]
     .join(" ");
@@ -268,6 +268,7 @@ pub async fn record_download_submission_tx(
                     .map(|value| value.as_str().to_string()),
             ),
             SqlArg::OptText(submission.source_title.clone()),
+            SqlArg::OptI64(submission.release_size_bytes),
             SqlArg::OptText(submission.request_signature.clone()),
             SqlArg::Text(submission.purpose.as_str().to_string()),
             SqlArg::OptText(episode_id.map(str::to_string)),
@@ -1243,6 +1244,7 @@ pub fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmissio
         source_provider_name: row.opt_text("source_provider_name")?,
         source_kind,
         source_title: row.opt_text("source_title")?,
+        release_size_bytes: row.opt_i64("release_size_bytes")?,
         request_signature: row.opt_text("request_signature")?,
         purpose: row
             .opt_text("purpose")?

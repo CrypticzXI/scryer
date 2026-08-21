@@ -260,113 +260,64 @@ fn title_external_id<'a>(title: &'a Title, source: &str) -> Option<&'a str> {
         .map(|external_id| external_id.value.trim())
 }
 
-fn media_analysis_from_title_media_file(file: &TitleMediaFile) -> MediaFileAnalysis {
-    MediaFileAnalysis {
-        video_codec: file.video_codec,
-        video_width: file.video_width,
-        video_height: file.video_height,
-        video_bitrate_kbps: file.video_bitrate_kbps,
-        video_bit_depth: file.video_bit_depth,
-        video_hdr_format: file.video_hdr_format.clone(),
-        video_frame_rate: file.video_frame_rate.clone(),
-        video_profile: file.video_profile.clone(),
-        audio_codec: file.audio_codec.clone(),
-        audio_profile: file.audio_profile.clone(),
-        audio_channels: file.audio_channels,
-        audio_bitrate_kbps: file.audio_bitrate_kbps,
-        audio_languages: file.audio_languages.clone(),
-        audio_streams: file.audio_streams.clone(),
-        subtitle_languages: file.subtitle_languages.clone(),
-        subtitle_codecs: file.subtitle_codecs.clone(),
-        subtitle_streams: file.subtitle_streams.clone(),
-        has_multiaudio: file.has_multiaudio,
-        duration_seconds: file.duration_seconds,
-        num_chapters: file.num_chapters,
-        container_format: file.container_format.clone(),
-    }
-}
-
-fn audio_channels_label(channels: i32) -> String {
-    match channels {
-        8 => "7.1".to_string(),
-        7 | 6 => "5.1".to_string(),
-        3 | 2 => "2.0".to_string(),
-        1 => "1.0".to_string(),
-        value => value.to_string(),
-    }
-}
-
-fn parsed_release_for_movie_media_file(file: &TitleMediaFile) -> crate::ParsedReleaseMetadata {
-    let file_path = stored_path_to_path_buf(&file.file_path);
-    let fallback_name = file_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    let raw_title = file
-        .grabbed_release_title
-        .as_deref()
-        .or(file.scene_name.as_deref())
-        .unwrap_or(fallback_name);
-    let mut parsed = parse_release_metadata(raw_title);
-
-    if let Some(quality) = file
-        .quality_label
-        .as_ref()
-        .or(file.resolution.as_ref())
-        .filter(|value| !value.trim().is_empty())
-    {
-        parsed.quality = Some(quality.clone());
-    }
-    if let Some(codec) = file.video_codec_parsed {
-        parsed.video_codec = Some(codec);
-    }
-    if let Some(codec) = file
-        .audio_codec_parsed
-        .as_deref()
-        .or(file.audio_codec.as_deref())
-        .and_then(crate::release_parser::AudioCodec::parse)
-    {
-        parsed.audio = Some(codec);
-    }
-    if let Some(channels) = file
-        .audio_channels_parsed
-        .clone()
-        .or_else(|| file.audio_channels.map(audio_channels_label))
-        .filter(|value| !value.trim().is_empty())
-    {
-        parsed.audio_channels = Some(channels);
-    }
-
-    let acceptance = crate::post_download_gate::ImportedFileAcceptance {
-        analysis: Some(media_analysis_from_title_media_file(file)),
-        scan_error: None,
-        rule_file_doc: None,
-        audio_language_warning: None,
-    };
-    crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance).0
-}
-
-fn score_movie_media_file_for_primary(
-    title: &Title,
-    profile: &crate::QualityProfile,
-    required_audio_languages: &[String],
-    persona: &crate::ScoringPersona,
-    category: &str,
+/// Rank a scanned movie file for the primary role, exactly the way admission
+/// would: **tier first, then bar**.
+///
+/// Scan is not exempt from invariant I1, and it is not exempt from I3 either.
+/// The file the scan promotes to primary is the file every later upgrade
+/// decision measures against, so it has to be the one
+/// [`crate::admission::AdmissionSubject::best_incumbent`] would name. Ranking on
+/// the score alone was safe only while the quality tier was worth 3200/900/300
+/// *inside* it; with the tier out of the number (D11) a 720p file at +300 sorts
+/// above a 2160p one at +100, and the scan would elect the 720p file as the bar
+/// — after which the 2160p file on disk reads as an upgrade candidate.
+///
+/// [`crate::AppUseCase::incumbent_bar`] is the same derivation the grab path
+/// uses, so the pair this returns is the pair the gate will see for that file.
+/// It also keeps the ranking number free of `BLOCK_SCORE`: a veto is a verdict,
+/// never a −10 000 comparison term (I5).
+fn rank_movie_media_file_for_primary(
+    app: &AppUseCase,
+    context: &crate::quality::canonical_context::ResolvedScoringContext,
     file: &TitleMediaFile,
-) -> i32 {
-    let parsed = parsed_release_for_movie_media_file(file);
-    let mut decision = crate::post_download_gate::build_import_profile_decision(
-        profile,
-        required_audio_languages,
-        persona,
-        &parsed,
-        category,
-        title.runtime_minutes,
-        Some(file.size_bytes),
-        false,
-    );
-    crate::quality_profile::apply_min_score_gate(profile, &mut decision);
-    decision.preference_score
+) -> (usize, i32) {
+    let bar = app.incumbent_bar(file, context, None);
+    (crate::admission::tier_sort_key(bar.tier_index), bar.score)
+}
+
+/// One candidate for the primary role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RankedMovieFile {
+    /// Profile tier position, ascending; [`crate::admission::tier_sort_key`].
+    tier_key: usize,
+    /// The file's canonical bar, descending.
+    score: i32,
+    size_bytes: i64,
+    file_path: String,
+    file_id: String,
+}
+
+impl RankedMovieFile {
+    /// Best-first ordering key: tier, then bar, then the long-standing
+    /// size / path / id tie-breaks that keep the election deterministic when
+    /// two files are genuinely equivalent.
+    fn sort_key(
+        &self,
+    ) -> (
+        usize,
+        std::cmp::Reverse<i32>,
+        std::cmp::Reverse<i64>,
+        &str,
+        &str,
+    ) {
+        (
+            self.tier_key,
+            std::cmp::Reverse(self.score),
+            std::cmp::Reverse(self.size_bytes),
+            self.file_path.as_str(),
+            self.file_id.as_str(),
+        )
+    }
 }
 
 async fn normalize_movie_file_roles_after_scan(
@@ -437,45 +388,26 @@ async fn normalize_movie_file_roles_after_scan(
                 crate::builtin_default_quality_profile()
             }
         };
-        let required_audio_languages = app
-            .resolve_required_audio_languages(
-                Some(&title.id),
-                Some(&title.library_id),
-                Some(category),
-            )
-            .await
-            .unwrap_or_default();
-        let persona = app
-            .resolve_scoring_persona(Some(&title.library_id), Some(category))
-            .await
-            .unwrap_or_default();
+        let context = app.resolve_canonical_scoring_context(title, &profile).await;
 
         let mut ranked = Vec::with_capacity(media_files.len());
         for file in &media_files {
-            let score = score_movie_media_file_for_primary(
-                title,
-                &profile,
-                &required_audio_languages,
-                &persona,
-                category,
-                file,
-            );
-            ranked.push((
-                file.id.clone(),
-                file.file_path.clone(),
-                file.size_bytes,
+            let (tier_key, score) = rank_movie_media_file_for_primary(app, &context, file);
+            ranked.push(RankedMovieFile {
+                tier_key,
                 score,
-            ));
+                size_bytes: file.size_bytes,
+                file_path: file.file_path.clone(),
+                file_id: file.id.clone(),
+            });
         }
-        ranked.sort_by(|left, right| {
-            right
-                .3
-                .cmp(&left.3)
-                .then_with(|| right.2.cmp(&left.2))
-                .then_with(|| left.1.cmp(&right.1))
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        ranked[0].0.clone()
+        ranked.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+        ranked
+            .first()
+            .map(|ranked| ranked.file_id.clone())
+            // `media_files` is non-empty above, so this is unreachable; a
+            // rejection beats a panic on a bulk scan pass (D14).
+            .unwrap_or_default()
     } else if let [file] = primary_files.as_slice() {
         file.id.clone()
     } else {
@@ -2935,5 +2867,63 @@ mod tests {
         assert_eq!(parsed.parsed_release.normalized_title, "13");
         assert_eq!(episode.season, Some(2));
         assert_eq!(episode.episode_numbers, vec![1]);
+    }
+
+    fn ranked(file_id: &str, tier_key: usize, score: i32) -> RankedMovieFile {
+        RankedMovieFile {
+            tier_key,
+            score,
+            size_bytes: 1_000,
+            file_path: format!("/movies/{file_id}.mkv"),
+            file_id: file_id.to_string(),
+        }
+    }
+
+    fn elect(mut candidates: Vec<RankedMovieFile>) -> String {
+        candidates.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+        candidates
+            .first()
+            .map(|candidate| candidate.file_id.clone())
+            .expect("fixture is non-empty")
+    }
+
+    /// The scan must elect the file the admission gate would call the bar:
+    /// **tier before score**. With the quality tier out of the number (D11) a
+    /// 720p file can out-score a 2160p one, and electing it as primary would
+    /// make the 2160p file already on disk look like an upgrade candidate.
+    #[test]
+    fn the_scan_elects_the_better_tier_even_when_it_scores_lower() {
+        assert_eq!(
+            elect(vec![ranked("uhd", 0, 100), ranked("hd", 2, 300)]),
+            "uhd"
+        );
+    }
+
+    /// A quality the profile does not list sorts last, matching
+    /// `admission::tier_cmp` — it is only a candidate at all because some other
+    /// gate let it through.
+    #[test]
+    fn an_untiered_file_never_wins_the_primary_role_over_a_tiered_one() {
+        assert_eq!(
+            elect(vec![
+                ranked("unlisted", crate::admission::tier_sort_key(None), 9_000),
+                ranked("listed", 3, -50),
+            ]),
+            "listed"
+        );
+    }
+
+    /// Within one tier the bar decides, and the size / path / id tie-breaks keep
+    /// the election deterministic below that.
+    #[test]
+    fn within_a_tier_the_bar_then_the_tie_breaks_decide() {
+        assert_eq!(
+            elect(vec![ranked("weak", 1, 100), ranked("strong", 1, 400)]),
+            "strong"
+        );
+
+        let mut bigger = ranked("bigger", 1, 400);
+        bigger.size_bytes = 5_000;
+        assert_eq!(elect(vec![ranked("smaller", 1, 400), bigger]), "bigger");
     }
 }

@@ -1,3 +1,12 @@
+pub(crate) mod canonical;
+pub(crate) mod canonical_context;
+
+/// Canonicality invariants for [`canonical`]: one term set, two evidence
+/// levels, no incumbent state. They live beside the module they pin.
+#[cfg(test)]
+#[path = "canonical_tests.rs"]
+mod canonical_tests;
+
 pub(crate) mod profile;
 pub mod release_dedup;
 pub(crate) mod release_group_db;

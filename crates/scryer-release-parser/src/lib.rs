@@ -24,6 +24,7 @@ pub use model::{
     StreamingService, TargetScoredAnalysis, TargetedReleaseParseAnalysis, TitleSegment,
     TitleSegmentKind, TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
+pub use parse::SCORING_MODEL_VERSION;
 pub use trash_guides::TRASH_GUIDES_SOURCE_REVISION;
 pub use trash_guides::detect_blocked_title as detect_trash_guides_blocked_title;
 

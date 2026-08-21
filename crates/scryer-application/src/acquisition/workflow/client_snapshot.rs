@@ -386,7 +386,7 @@ impl DownloadClientSnapshot {
                 == Some(&1)
     }
 }
-fn submission_is_active(
+pub(crate) fn submission_is_active(
     submission: &DownloadSubmission,
     dl_snapshot: &DownloadClientSnapshot,
 ) -> bool {
@@ -395,6 +395,38 @@ fn submission_is_active(
         &submission.download_client_item_id,
     )
 }
+/// Whether a submission is in flight for admission purposes (D18 liveness).
+///
+/// Sonarr's `QueueSpecification` boundary, stated once so the filter and its
+/// tests cannot drift:
+///
+/// - `Downloading | ImportPending | Importing` — in the client, obviously live.
+/// - `ImportBlocked` — **live**. The bytes exist and are a real claim on the
+///   scope, so an equal or worse release must not be fetched beside them. A
+///   *better* one still may, which is what makes a stuck import stop freezing
+///   its scope permanently.
+/// - `FailedPending` — **not** live, exactly as Sonarr excludes it, so a
+///   replacement can be grabbed. The convergence lane keeps its own hard skip
+///   for that state until the failure handler has run.
+/// - `Imported | ImportedSeeding | Failed | Ignored` — over.
+/// - No tracked row at all: fall back to what the client says.
+pub(crate) fn submission_is_queued(
+    tracked_state: Option<scryer_domain::TrackedDownloadState>,
+    snapshot_active: bool,
+) -> bool {
+    use scryer_domain::TrackedDownloadState;
+    match tracked_state {
+        Some(
+            TrackedDownloadState::Downloading
+            | TrackedDownloadState::ImportPending
+            | TrackedDownloadState::Importing
+            | TrackedDownloadState::ImportBlocked,
+        ) => true,
+        Some(_) => false,
+        None => snapshot_active,
+    }
+}
+
 fn submission_is_completed(
     submission: &DownloadSubmission,
     dl_snapshot: &DownloadClientSnapshot,
@@ -1328,12 +1360,20 @@ async fn persist_standby_candidates(
         let decision_code =
             effective_auto_decision_code_for_route(candidate, failed_routes, db_blocklist);
         if !decision_code.is_eligible() {
-            if matches!(
-                decision_code,
-                ReleaseAutoDecisionCode::NegativeScore
-                    | ReleaseAutoDecisionCode::UpgradeRejected
-                    | ReleaseAutoDecisionCode::CutoffReached
-            ) {
+            // A fact about the *scope*, not about this candidate: the ranked
+            // order is (tier, revision, score) and admission compares the same
+            // three in the same order, so nothing below a rejected candidate
+            // can do better either.
+            //
+            // `CutoffReached` used to be listed here and no longer is. Since
+            // D15 it is candidate-aware — a same-tier revision upgrade escapes
+            // it — and a better-*tier* candidate refused by the cutoff sorts
+            // *above* the same-tier PROPER that would pass, so breaking on it
+            // would skip the one release worth having. (`NegativeScore` was
+            // also listed once; nothing emits it any more — the hardcoded zero
+            // floor is gone — and the variant survives only so historical
+            // decision rows still decode.)
+            if matches!(decision_code, ReleaseAutoDecisionCode::UpgradeRejected) {
                 break;
             }
             continue;
@@ -1476,5 +1516,41 @@ mod client_snapshot_tests {
         // With history observable, the same entry is reported.
         snap.history_listing_failed = false;
         assert!(snap.failed_item(Some("client-1"), "nzo_1").is_some());
+    }
+
+    /// **D18 liveness.** Which tracked states make a submission a queued
+    /// pseudo-incumbent, stated once so the filter and Sonarr's
+    /// `QueueSpecification` cannot drift apart.
+    #[test]
+    fn queued_liveness_counts_held_imports_and_excludes_failures() {
+        use scryer_domain::TrackedDownloadState as State;
+
+        for state in [
+            State::Downloading,
+            State::ImportPending,
+            State::Importing,
+            // A held import is a real claim on the scope: an equal or worse
+            // release must not be fetched beside it.
+            State::ImportBlocked,
+        ] {
+            assert!(
+                submission_is_queued(Some(state), false),
+                "{state:?} must count as queued"
+            );
+        }
+
+        // Sonarr skips `FailedPending` precisely so a replacement can be
+        // grabbed while the failure handler runs.
+        assert!(!submission_is_queued(Some(State::FailedPending), false));
+        for state in [State::Imported, State::ImportedSeeding, State::Failed] {
+            assert!(
+                !submission_is_queued(Some(state), false),
+                "{state:?} is over"
+            );
+        }
+
+        // No tracked row: the client is the only witness.
+        assert!(submission_is_queued(None, true));
+        assert!(!submission_is_queued(None, false));
     }
 }

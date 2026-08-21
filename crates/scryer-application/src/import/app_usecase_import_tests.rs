@@ -127,9 +127,15 @@ fn assert_score_bearing_facts_match(
 ) {
     assert_eq!(actual.quality, expected.quality, "quality");
     assert_eq!(actual.source, expected.source, "source");
-    assert_eq!(actual.release_group, expected.release_group, "release group");
+    assert_eq!(
+        actual.release_group, expected.release_group,
+        "release group"
+    );
     assert_eq!(actual.edition, expected.edition, "edition");
-    assert_eq!(actual.languages_audio, expected.languages_audio, "audio languages");
+    assert_eq!(
+        actual.languages_audio, expected.languages_audio,
+        "audio languages"
+    );
     assert_eq!(actual.video_codec, expected.video_codec, "video codec");
     assert_eq!(actual.audio, expected.audio, "audio codec");
     assert_eq!(actual.is_remux, expected.is_remux, "remux");
@@ -479,8 +485,7 @@ fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("[SubsPlease] Harbor Pals S3.-.01 (1080p) [F00DBABE].mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed =
-        test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
+    let completed = test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
 
     let parsed = build_augmented_episode_import_metadata_for_title(
         &file_path,
@@ -1092,6 +1097,8 @@ fn test_media_analysis(video_height: Option<i32>) -> crate::MediaFileAnalysis {
         video_bitrate_kbps: None,
         video_bit_depth: None,
         video_hdr_format: None,
+        dovi_profile: None,
+        dovi_bl_compat_id: None,
         video_frame_rate: None,
         video_profile: None,
         audio_codec: Some("aac".to_string()),
@@ -1202,23 +1209,31 @@ async fn post_download_score_uses_rescored_quality_and_records_negative_audit() 
         audio_language_warning: None,
     };
 
-    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
-        &app,
-        &parsed,
-        &acceptance,
-        &profile,
-        &title,
-        title.runtime_minutes,
-        5 * 1024 * 1024,
-        false,
-        None,
-        &[],
-        false,
-    )
-    .await;
+    let result = {
+        let context = app
+            .resolve_canonical_scoring_context(&title, &profile)
+            .await;
+        crate::post_download_gate::compute_post_download_acquisition_decision(
+            &context,
+            &title,
+            &parsed,
+            &acceptance,
+            title.runtime_minutes,
+            5 * 1024 * 1024,
+            &[],
+            false,
+        )
+    };
 
     assert_eq!(result.parsed.quality.as_deref(), Some("720p"));
     assert!(result.score < 0);
+    // The resolution the file actually has contradicts the one it advertised.
+    // The score reflects the truth; the verdict names the disagreement.
+    assert!(
+        !result.truth_verdict.is_consistent(),
+        "a 720p file sold as 1080p must be recorded as contradicted, got {:?}",
+        result.truth_verdict
+    );
     let scoring_log = result.scoring_log.expect("scoring log should serialize");
     let scoring_log: serde_json::Value =
         serde_json::from_str(&scoring_log).expect("scoring log should be JSON");
@@ -1261,20 +1276,21 @@ async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_alre
             .any(|change| change.contains("resolution"))
     );
 
-    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
-        &app,
-        &prepared_parsed,
-        &acceptance,
-        &profile,
-        &title,
-        title.runtime_minutes,
-        5 * 1024 * 1024,
-        false,
-        None,
-        &first_pass_changes,
-        false,
-    )
-    .await;
+    let result = {
+        let context = app
+            .resolve_canonical_scoring_context(&title, &profile)
+            .await;
+        crate::post_download_gate::compute_post_download_acquisition_decision(
+            &context,
+            &title,
+            &prepared_parsed,
+            &acceptance,
+            title.runtime_minutes,
+            5 * 1024 * 1024,
+            &first_pass_changes,
+            false,
+        )
+    };
 
     let scoring_log = result.scoring_log.expect("scoring log should serialize");
     let scoring_log: serde_json::Value =
@@ -1330,20 +1346,21 @@ score_entry["dv_profile_bonus"] := 123 if {
         audio_language_warning: None,
     };
 
-    let result = crate::post_download_gate::compute_post_download_acquisition_decision(
-        &app,
-        &parsed,
-        &acceptance,
-        &profile,
-        &title,
-        title.runtime_minutes,
-        5 * 1024 * 1024,
-        false,
-        None,
-        &[],
-        false,
-    )
-    .await;
+    let result = {
+        let context = app
+            .resolve_canonical_scoring_context(&title, &profile)
+            .await;
+        crate::post_download_gate::compute_post_download_acquisition_decision(
+            &context,
+            &title,
+            &parsed,
+            &acceptance,
+            title.runtime_minutes,
+            5 * 1024 * 1024,
+            &[],
+            false,
+        )
+    };
 
     let scoring_log = result.scoring_log.expect("scoring log should serialize");
     let scoring_log: serde_json::Value =
@@ -1721,6 +1738,8 @@ fn scoped_media_file(
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
@@ -1764,8 +1783,35 @@ fn scoped_media_file(
     }
 }
 
+/// The comparison half of [`crate::import_decide::decide_import`], driven with
+/// episode-scoped rows. Pure: no app, no probe, no filesystem.
+fn episode_import_admission(
+    incumbents: &[crate::EpisodeScopedMediaFile],
+    target_episode_ids: &[&str],
+    candidate: crate::admission::CandidateFacts,
+    operator_intent: bool,
+) -> Result<
+    (Vec<crate::EpisodeScopedMediaFile>, i32),
+    (
+        crate::post_download_gate::ImportedFileRejection,
+        crate::import_decide::RejectionDisposition,
+    ),
+> {
+    let admitted = crate::import_decide::evaluate_import_admission(
+        &test_admission_subject(incumbents, target_episode_ids),
+        candidate,
+        operator_intent,
+        &crate::import_decide::IncumbentRows::Episodes(incumbents),
+        "this episode",
+    )?;
+    let crate::import_decide::SupersededIncumbents::Episodes(rows) = admitted.superseded else {
+        panic!("episode rows in, episode rows out");
+    };
+    Ok((rows, admitted.previous_best_score))
+}
+
 #[test]
-fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_higher() {
+fn decide_import_replaces_a_different_filename_when_the_new_score_is_higher() {
     let incumbents = vec![scoped_media_file(
         "file-1",
         "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 720p.mkv",
@@ -1773,16 +1819,21 @@ fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_high
         &["ep-1"],
     )];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
-        .expect("upgrade plan should accept higher-scored replacement");
+    let (superseded, previous_best_score) = episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
+        false,
+    )
+    .expect("import admission should accept a higher-scored replacement");
 
-    assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
-    assert_eq!(plan.previous_best_score, 510);
-    assert!(plan.additional_superseded.is_empty());
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0].media_file.id, "file-1");
+    assert_eq!(previous_best_score, 510);
 }
 
 #[test]
-fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher() {
+fn decide_import_skips_when_the_existing_episode_file_scores_higher() {
     let incumbents = vec![scoped_media_file(
         "file-1",
         "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 1080p.mkv",
@@ -1790,14 +1841,24 @@ fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher()
         &["ep-1"],
     )];
 
-    let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700, false).unwrap_err();
+    let (rejection, disposition) = episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 700),
+        false,
+    )
+    .unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
         Some(ImportSkipReason::AlreadyImported)
     );
     assert!(rejection.message.contains("equal or better"));
+    // A release that merely lost the comparison is not burned (D17).
+    assert_eq!(
+        disposition,
+        crate::import_decide::RejectionDisposition::Skip
+    );
 }
 
 #[test]
@@ -1809,25 +1870,42 @@ fn manual_replacement_bypasses_equal_or_lower_score_comparison() {
         &["ep-1"],
     )];
 
-    // Without force, a lower-scored release is rejected as a non-upgrade.
-    assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, false).is_err());
-    assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 820, false).is_err());
+    // Without operator intent, a *downgrade* is still rejected.
+    assert!(
+        episode_import_admission(
+            &incumbents,
+            &["ep-1"],
+            crate::admission::CandidateFacts::new(Some(0), 0, 600),
+            false
+        )
+        .is_err()
+    );
 
-    // A manual replacement (force) lands at an equal score, matching an
-    // operator-selected release whose extra audio track is score-neutral.
-    let equal_plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 820, true)
-        .expect("manual replacement should replace an equally scored incumbent");
-    assert_eq!(equal_plan.primary_incumbent.media_file.id, "file-1");
+    // An equal score no longer needs force. The download already happened;
+    // refusing a tie is what produced "existing file is equal or better" on a
+    // release Scryer itself queued.
+    episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 820),
+        false,
+    )
+    .expect("an equally scored import is not a downgrade");
 
-    // It also lands at a lower score.
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, true)
-        .expect("manual replacement should replace a higher-scored incumbent");
-    assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
-    assert!(plan.additional_superseded.is_empty());
+    // Operator intent is what lets something genuinely lower land.
+    let (superseded, _) = episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 600),
+        true,
+    )
+    .expect("manual replacement should replace a higher-scored incumbent");
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0].media_file.id, "file-1");
 }
 
 #[test]
-fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_set() {
+fn decide_import_holds_when_the_existing_file_covers_a_broader_episode_set() {
     let incumbents = vec![scoped_media_file(
         "file-pack",
         "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01-E02.mkv",
@@ -1835,14 +1913,25 @@ fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_
         &["ep-1", "ep-2"],
     )];
 
-    let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false).unwrap_err();
+    let (rejection, disposition) = episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
+        false,
+    )
+    .unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
         Some(ImportSkipReason::PolicyMismatch)
     );
     assert!(rejection.message.contains("broader episode set"));
+    // The release is fine; it just cannot be placed here. That is an operator
+    // decision, not a comparison the release lost (D8's bounded I4 exception).
+    assert_eq!(
+        disposition,
+        crate::import_decide::RejectionDisposition::Hold
+    );
 }
 
 #[test]
@@ -1863,7 +1952,7 @@ fn parsed_with_quality_override_replaces_parsed_quality() {
 }
 
 #[test]
-fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_target_set() {
+fn decide_import_supersedes_all_duplicate_incumbents_for_the_same_target_set() {
     let incumbents = vec![
         scoped_media_file(
             "file-1",
@@ -1879,16 +1968,21 @@ fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_targe
         ),
     ];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
-        .expect("higher score should supersede all incumbents");
+    let (superseded, _) = episode_import_admission(
+        &incumbents,
+        &["ep-1"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
+        false,
+    )
+    .expect("higher score should supersede all incumbents");
 
-    assert_eq!(plan.primary_incumbent.media_file.id, "file-2");
-    assert_eq!(plan.additional_superseded.len(), 1);
-    assert_eq!(plan.additional_superseded[0].media_file.id, "file-1");
+    assert_eq!(superseded.len(), 2);
+    assert_eq!(superseded[0].media_file.id, "file-2");
+    assert_eq!(superseded[1].media_file.id, "file-1");
 }
 
 #[test]
-fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_of_them() {
+fn decide_import_allows_a_pack_to_replace_singles_when_it_beats_all_of_them() {
     let incumbents = vec![
         scoped_media_file(
             "file-1",
@@ -1904,16 +1998,187 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
         ),
     ];
 
-    let plan = build_episode_upgrade_plan(
+    let (superseded, previous_best_score) = episode_import_admission(
         &incumbents,
-        &["ep-1".to_string(), "ep-2".to_string()],
-        900,
+        &["ep-1", "ep-2"],
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
         false,
     )
     .expect("season pack should replace lower-scored singles");
 
-    assert_eq!(plan.previous_best_score, 450);
-    assert_eq!(plan.additional_superseded.len(), 1);
+    assert_eq!(previous_best_score, 450);
+    assert_eq!(superseded.len(), 2);
+}
+
+// ── series-movie link incumbents (D14) ────────────────────────────────────────
+
+fn linked_media_file(
+    id: &str,
+    file_path: &str,
+    link_id: &str,
+    score: i32,
+) -> crate::TitleMediaFile {
+    let mut file = scoped_media_file(id, file_path, score, &[]).media_file;
+    file.episode_id = None;
+    file.series_movie_link_ids = vec![link_id.to_string()];
+    file
+}
+
+fn series_movie_subject(
+    link_id: &str,
+    files: &[crate::TitleMediaFile],
+) -> crate::admission::AdmissionSubject {
+    crate::admission::AdmissionSubject::new(
+        crate::admission::AdmissionScope::SeriesMovieLink(link_id.to_string()),
+        files
+            .iter()
+            .filter(|file| {
+                file.series_movie_link_ids
+                    .iter()
+                    .any(|candidate| candidate == link_id)
+            })
+            .map(|file| {
+                (
+                    crate::admission::Incumbent {
+                        tier_index: Some(0),
+                        revision: 0,
+                        file_id: file.id.clone(),
+                        file_path: file.file_path.clone(),
+                        release_group: file.release_group.clone(),
+                        score: file.acquisition_score.unwrap_or(0),
+                        covers: Vec::new(),
+                        created_at: file.created_at.clone(),
+                    },
+                    file.role.is_primary(),
+                )
+            }),
+    )
+}
+
+/// The comparison half of the decision for a series-movie link, over the
+/// title's whole primary-file list.
+fn link_import_admission(
+    link_id: &str,
+    existing_files: &[crate::TitleMediaFile],
+    subject_files: &[crate::TitleMediaFile],
+    candidate: crate::admission::CandidateFacts,
+) -> Result<
+    (Vec<crate::TitleMediaFile>, i32),
+    (
+        crate::post_download_gate::ImportedFileRejection,
+        crate::import_decide::RejectionDisposition,
+    ),
+> {
+    let admitted = crate::import_decide::evaluate_import_admission(
+        &series_movie_subject(link_id, subject_files),
+        candidate,
+        false,
+        &crate::import_decide::IncumbentRows::Title(existing_files),
+        "this series-movie link",
+    )?;
+    let crate::import_decide::SupersededIncumbents::Title(rows) = admitted.superseded else {
+        panic!("title rows in, title rows out");
+    };
+    Ok((rows, admitted.previous_best_score))
+}
+
+/// The crash regression. A linked incumbent lives at whatever path it was
+/// imported under — rename disabled, a changed template, `.mp4` → `.mkv` — so an
+/// upgrade whose destination differs must still find the row it displaces.
+/// Resolving by path found nothing while admission said the scope was occupied,
+/// and the `.expect` panicked the import task.
+#[test]
+fn a_linked_incumbent_at_another_path_still_resolves_for_the_upgrade_branch() {
+    let dest_path = "/data/TV/Quiet Orbit/Season 00/Quiet Orbit - S00E00 - The Film.mkv";
+    let existing_files = vec![linked_media_file(
+        "file-1",
+        "/data/TV/Quiet Orbit/Season 00/preserved.original.name.mp4",
+        "link-1",
+        400,
+    )];
+
+    // Precondition: the old path filter really does come up empty here.
+    assert!(
+        !existing_files
+            .iter()
+            .any(|file| file.file_path == dest_path),
+        "fixture must model an incumbent that is NOT at the import destination"
+    );
+    assert!(!series_movie_subject("link-1", &existing_files).is_unoccupied());
+
+    let (superseded, previous_best_score) = link_import_admission(
+        "link-1",
+        &existing_files,
+        &existing_files,
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
+    )
+    .expect("a better linked file is an upgrade, and its row must resolve");
+
+    assert_eq!(superseded.len(), 1);
+    assert_eq!(superseded[0].id, "file-1");
+    assert_eq!(previous_best_score, 400);
+}
+
+/// A refused linked upgrade names the incumbent that blocked it, and does not
+/// burn the release for losing a fair comparison.
+#[test]
+fn a_refused_linked_upgrade_still_names_the_blocking_incumbent() {
+    let existing_files = vec![linked_media_file(
+        "file-1",
+        "/data/TV/Quiet Orbit/Season 00/preserved.original.name.mp4",
+        "link-1",
+        900,
+    )];
+
+    let (rejection, disposition) = link_import_admission(
+        "link-1",
+        &existing_files,
+        &existing_files,
+        crate::admission::CandidateFacts::new(Some(0), 0, 100),
+    )
+    .unwrap_err();
+
+    assert!(
+        rejection.message.contains("preserved.original.name.mp4"),
+        "the refusal must name the row that blocked it, got {}",
+        rejection.message
+    );
+    assert_eq!(
+        disposition,
+        crate::import_decide::RejectionDisposition::Skip
+    );
+}
+
+/// And when the subject and the file list genuinely disagree, that is a
+/// rejection rather than an assertion (D14) — and a *hold*, because nothing was
+/// judged about the release.
+#[test]
+fn an_unresolvable_linked_incumbent_is_a_rejection_not_a_panic() {
+    let subject_files = vec![linked_media_file(
+        "file-gone",
+        "/data/gone.mkv",
+        "link-1",
+        400,
+    )];
+
+    let (rejection, disposition) = link_import_admission(
+        "link-1",
+        &[],
+        &subject_files,
+        crate::admission::CandidateFacts::new(Some(0), 0, 900),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        rejection.skip_reason,
+        Some(ImportSkipReason::PolicyMismatch)
+    );
+    assert_eq!(rejection.recycle_reason, "policy_mismatch");
+    assert!(rejection.message.contains("this series-movie link"));
+    assert_eq!(
+        disposition,
+        crate::import_decide::RejectionDisposition::Hold
+    );
 }
 
 #[derive(Default)]
@@ -2285,7 +2550,10 @@ impl crate::ImportRepository for RecoveryImportRepo {
         &self,
         source_identity: &crate::DownloadSourceIdentity,
     ) -> AppResult<()> {
-        self.deleted_sources.lock().await.push(source_identity.clone());
+        self.deleted_sources
+            .lock()
+            .await
+            .push(source_identity.clone());
         Ok(())
     }
 
@@ -2294,7 +2562,10 @@ impl crate::ImportRepository for RecoveryImportRepo {
     }
 }
 
-fn completed_manual_import_record_for(import_id: &str, item_id: &str) -> scryer_domain::ImportRecord {
+fn completed_manual_import_record_for(
+    import_id: &str,
+    item_id: &str,
+) -> scryer_domain::ImportRecord {
     let result = ManualImportExecutionResult {
         import_id: import_id.to_string(),
         client_type: "qbittorrent".to_string(),
@@ -2340,11 +2611,13 @@ fn completed_manual_import_record_for(import_id: &str, item_id: &str) -> scryer_
 /// A scripted tracked-download runtime: answers `MarkImportedIfAwaitingImport`
 /// per item id from `script` (falling back to `Unchanged`) and records every
 /// (item id, record completion time) it was asked about.
-type TrackedDownloadImportRequests =
-    Arc<Mutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>;
+type TrackedDownloadImportRequests = Arc<Mutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>;
 
 fn scripted_tracked_download_runtime(
-    script: Vec<(&'static str, Vec<crate::tracked_downloads::ManualImportRecoveryOutcome>)>,
+    script: Vec<(
+        &'static str,
+        Vec<crate::tracked_downloads::ManualImportRecoveryOutcome>,
+    )>,
 ) -> (
     crate::tracked_downloads::TrackedDownloadHandle,
     TrackedDownloadImportRequests,
@@ -2380,11 +2653,15 @@ fn scripted_tracked_download_runtime(
             let _ = reply.send(Ok(outcome));
         }
     });
-    (crate::tracked_downloads::TrackedDownloadHandle::new(tx), asked)
+    (
+        crate::tracked_downloads::TrackedDownloadHandle::new(tx),
+        asked,
+    )
 }
 
 #[tokio::test]
-async fn completed_manual_import_recovery_decides_each_record_once_and_only_marks_eligible_sources() {
+async fn completed_manual_import_recovery_decides_each_record_once_and_only_marks_eligible_sources()
+{
     use crate::tracked_downloads::ManualImportRecoveryOutcome;
 
     let repo = Arc::new(RecoveryImportRepo {
@@ -2528,22 +2805,23 @@ async fn completed_manual_import_recovery_retries_busy_and_untracked_sources_on_
         tokio_util::sync::CancellationToken::new(),
     );
     let mut memo = std::collections::HashMap::new();
-    let rewind_untracked = |memo: &mut std::collections::HashMap<String, ManualImportRecoveryMemo>,
-                            expected_attempts: u32| {
-        // The loop backs off untracked records (30 s, 2 m, …); the tests do not
-        // wait, they move the clock: the deferral must exist with the expected
-        // attempt count, then it is made due.
-        let Some(ManualImportRecoveryMemo::RetryAfter {
-            next_check_at,
-            attempts,
-        }) = memo.get_mut("import-untracked")
-        else {
-            panic!("untracked record must be deferred, got {memo:?}");
+    let rewind_untracked =
+        |memo: &mut std::collections::HashMap<String, ManualImportRecoveryMemo>,
+         expected_attempts: u32| {
+            // The loop backs off untracked records (30 s, 2 m, …); the tests do not
+            // wait, they move the clock: the deferral must exist with the expected
+            // attempt count, then it is made due.
+            let Some(ManualImportRecoveryMemo::RetryAfter {
+                next_check_at,
+                attempts,
+            }) = memo.get_mut("import-untracked")
+            else {
+                panic!("untracked record must be deferred, got {memo:?}");
+            };
+            assert_eq!(*attempts, expected_attempts);
+            assert!(*next_check_at > chrono::Utc::now());
+            *next_check_at = chrono::Utc::now() - chrono::Duration::seconds(1);
         };
-        assert_eq!(*attempts, expected_attempts);
-        assert!(*next_check_at > chrono::Utc::now());
-        *next_check_at = chrono::Utc::now() - chrono::Duration::seconds(1);
-    };
 
     recover_completed_manual_imports(&app, &worker, &mut memo).await;
     assert!(
@@ -2678,4 +2956,38 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
         ],
         "series previews keep every video for explicit mapping"
     );
+}
+
+/// Build the admission subject a plan-builder test needs.
+///
+/// Production resolves the incumbent bar canonically; these tests are about
+/// ranking and span guards, so they take the stored score as the bar and keep
+/// the fixtures readable.
+fn test_admission_subject(
+    incumbents: &[crate::EpisodeScopedMediaFile],
+    target_episode_ids: &[&str],
+) -> crate::admission::AdmissionSubject {
+    crate::admission::AdmissionSubject::new(
+        crate::admission::AdmissionScope::Episodes(
+            target_episode_ids
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+        ),
+        incumbents.iter().map(|incumbent| {
+            (
+                crate::admission::Incumbent {
+                    tier_index: Some(0),
+                    revision: 0,
+                    file_id: incumbent.media_file.id.clone(),
+                    file_path: incumbent.media_file.file_path.clone(),
+                    release_group: incumbent.media_file.release_group.clone(),
+                    score: incumbent.media_file.acquisition_score.unwrap_or(0),
+                    covers: incumbent.episode_ids.clone(),
+                    created_at: incumbent.media_file.created_at.clone(),
+                },
+                incumbent.media_file.role.is_primary(),
+            )
+        }),
+    )
 }

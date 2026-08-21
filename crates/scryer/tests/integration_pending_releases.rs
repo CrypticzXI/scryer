@@ -99,7 +99,7 @@ async fn seed_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -537,7 +537,6 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            current_score: None,
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
@@ -551,6 +550,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Best.Release.1080p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Title,
@@ -645,7 +645,6 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            current_score: None,
             grabbed_release: serde_json::json!({
                 "title": claimed.release_title,
                 "score": claimed.release_score,
@@ -665,6 +664,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(claimed.release_title.clone()),
+                release_size_bytes: None,
                 request_signature: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Title,
@@ -715,6 +715,7 @@ async fn download_submission_roundtrips_episode_scope() {
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: Some("episode-scope-signature".to_string()),
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Episode {
@@ -819,7 +820,6 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         .transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
             id: wanted.id.clone(),
             last_search_at: Some(Utc::now().to_rfc3339()),
-            current_score: Some(120),
             grabbed_release: Some(
                 serde_json::json!({
                     "title": "Completed.Release.1080p.WEB-DL",
@@ -851,7 +851,7 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -908,7 +908,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),

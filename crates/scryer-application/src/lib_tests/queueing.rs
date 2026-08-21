@@ -1066,6 +1066,7 @@ async fn queue_existing_title_download_conflicts_for_state(state: DownloadQueueS
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Blocked.Queue.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1177,6 +1178,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Additional.Queue.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1288,6 +1290,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Additional.Series.Movie.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: scope.clone(),
         })
@@ -1669,6 +1672,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Replace.Queue.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1752,6 +1756,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
                 source_provider_name: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(format!("Replace.All.Queue.{job_id}.2026.1080p.WEB-DL")),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             })
@@ -1829,7 +1834,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.clone(),
@@ -1906,7 +1911,6 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
     repo.commit_successful_grab(&SuccessfulGrabCommit {
         wanted_item_id: wanted_a.id.clone(),
         covered_wanted_item_ids: vec![wanted_b.id.clone()],
-        current_score: Some(100),
         grabbed_release: "{\"title\":\"Covered.Release.1080p.WEB-DL\"}".to_string(),
         last_search_at: Some(now.clone()),
         download_submission: DownloadSubmission {
@@ -1921,6 +1925,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Covered.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::EpisodeSet {
                 episode_ids: vec!["episode-a".to_string(), "episode-b".to_string()],
@@ -2014,6 +2019,7 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Blocked.Wanted.Movie.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -2124,6 +2130,7 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Blocked.Wanted.Series.S01E01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Episode {
                 episode_id: episode.id.clone(),
@@ -2782,7 +2789,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.clone(),
@@ -3093,7 +3100,7 @@ async fn convergence_test_title_and_subject(
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.clone(),

@@ -822,6 +822,16 @@ fn any_vetoed_release_ranks_below_every_allowed_one() {
             .sum()
     };
 
+    // The veto must be what demotes these, not arithmetic. Proving that needs at
+    // least one vetoed release that still out-stacks an allowed one on raw
+    // positives — otherwise the ranking below would be satisfied by the release
+    // simply being worse, and the veto could rot unnoticed.
+    //
+    // It is asserted over the set rather than every pair: quality tier no longer
+    // contributes points, so a 2160p CAM no longer carries 3200 points into the
+    // comparison and does not out-stack every allowed release any more.
+    let mut veto_is_load_bearing = false;
+
     for raw in vetoed {
         let blocked = corpus_decision(raw, Some("movie"));
         assert!(
@@ -832,12 +842,9 @@ fn any_vetoed_release_ranks_below_every_allowed_one() {
         for other in allowed {
             let ok = corpus_decision(other, Some("movie"));
             assert!(ok.allowed, "`{other}`: {:?}", scoring_log(&ok));
-            assert!(
-                positive_subtotal(&blocked) > positive_subtotal(&ok),
-                "`{raw}` is supposed to out-stack `{other}` on positives: {} vs {}",
-                positive_subtotal(&blocked),
-                positive_subtotal(&ok),
-            );
+            if positive_subtotal(&blocked) > positive_subtotal(&ok) {
+                veto_is_load_bearing = true;
+            }
             assert!(
                 blocked.preference_score < ok.preference_score,
                 "vetoed `{raw}` ({}) must rank below allowed `{other}` ({})\n  vetoed: {:?}",
@@ -847,6 +854,12 @@ fn any_vetoed_release_ranks_below_every_allowed_one() {
             );
         }
     }
+
+    assert!(
+        veto_is_load_bearing,
+        "no vetoed release out-stacked an allowed one on positives, so this test \
+         would still pass with the veto removed"
+    );
 }
 
 /// A managed locale pack's veto has the same dominance, which is the veto

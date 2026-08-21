@@ -25,11 +25,17 @@ pub struct AcquisitionSettings {
     pub long_tail_reconverge_days: i32,
 }
 impl AcquisitionSettings {
+    /// The subset of these settings the acquisition gates actually read.
+    ///
+    /// `cross_tier_min_delta` is deliberately absent: since the quality tier
+    /// left the score, a better tier admits outright in [`crate::admission`] and
+    /// no delta threshold ever sees a cross-tier comparison. The setting and its
+    /// GraphQL field are retained so stored values and clients keep working;
+    /// nothing reads them.
     pub fn thresholds(&self) -> AcquisitionThresholds {
         AcquisitionThresholds {
             upgrade_cooldown_hours: self.upgrade_cooldown_hours as i64,
             same_tier_min_delta: self.same_tier_min_delta,
-            cross_tier_min_delta: self.cross_tier_min_delta,
             forced_upgrade_delta_bypass: self.forced_upgrade_delta_bypass,
         }
     }

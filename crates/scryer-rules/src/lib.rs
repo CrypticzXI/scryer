@@ -397,6 +397,21 @@ impl UserRulesEngine {
         self.rules.len()
     }
 
+    /// A stable description of which rules are loaded, in policy order.
+    ///
+    /// Scores produced under one rule set must not be compared against scores
+    /// produced under another, so callers fold this into the fingerprint they
+    /// store alongside a persisted score. Rule *bodies* are not included —
+    /// changing a rule's expression without changing its identity is covered by
+    /// the caller's own algorithm version.
+    pub fn rule_identity(&self) -> String {
+        self.rules
+            .iter()
+            .map(|(id, _, facets, origin)| format!("{id}:{origin:?}:{}", facets.join("+")))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
     /// Create an evaluator for a single search batch.
     pub fn evaluator(&self) -> UserRulesEvaluator {
         UserRulesEvaluator {

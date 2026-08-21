@@ -1132,6 +1132,7 @@ mod tests {
                 scoring_overrides: crate::ScoringOverrides::default(),
                 cutoff_tier: None,
                 min_score_to_grab: None,
+                cutoff_score: None,
                 facet_persona_overrides: std::collections::HashMap::new(),
             },
         }
@@ -1157,6 +1158,7 @@ mod tests {
                 allowed: true,
                 block_codes: vec![],
                 preference_score: 1000,
+                tier_index: Some(0),
             },
             crate::rules::user_rule_input::ReleaseRuntimeInfo {
                 size_bytes: Some(4_000_000_000),

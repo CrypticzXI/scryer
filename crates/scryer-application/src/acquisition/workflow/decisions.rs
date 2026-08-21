@@ -46,12 +46,24 @@ fn effective_auto_decision_code_for_route(
 
     annotated_auto_decision_code(candidate)
 }
-async fn record_release_decision(
+/// Record what the gate compared, and against what.
+///
+/// `incumbent_bar` is the bar the admission gate actually used — the canonical
+/// score of the primary file in the way — not the scope ledger's remembered
+/// number. The ledger's `current_score` was frequently the score of a release
+/// that never landed, so a decision row could claim a comparison that never
+/// happened, which is precisely what made the original defect so hard to see.
+///
+/// `None` is honest, not missing: decisions recorded before the gate runs (a
+/// quality-blocked candidate, a pack considered and skipped) genuinely had no
+/// bar to compare against.
+pub(crate) async fn record_release_decision(
     app: &AppUseCase,
     item: &AcquisitionScopeState,
     title: &Title,
     candidate: &IndexerSearchResult,
     decision_code: ReleaseAutoDecisionCode,
+    incumbent_bar: Option<i32>,
     now: &DateTime<Utc>,
 ) {
     let candidate_score = candidate
@@ -72,10 +84,8 @@ async fn record_release_decision(
         release_size_bytes: decision_candidate.size_bytes,
         decision_code: decision_code.as_str().to_string(),
         candidate_score,
-        current_score: item.current_score,
-        score_delta: item
-            .current_score
-            .map(|current_score| candidate_score - current_score),
+        current_score: incumbent_bar,
+        score_delta: incumbent_bar.map(|bar| candidate_score - bar),
         explanation_json: serialize_decision_explanation(&decision_candidate),
         created_at: now.to_rfc3339(),
     };

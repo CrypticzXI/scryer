@@ -658,6 +658,8 @@ pub struct TitleMediaFile {
     pub video_bitrate_kbps: Option<i32>,
     pub video_bit_depth: Option<i32>,
     pub video_hdr_format: Option<String>,
+    pub dovi_profile: Option<u8>,
+    pub dovi_bl_compat_id: Option<u8>,
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
@@ -1111,7 +1113,6 @@ impl AcquisitionScopeStatus {
 pub struct AcquisitionScopeGrabTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: String,
 }
 
@@ -1119,7 +1120,6 @@ pub struct AcquisitionScopeGrabTransition {
 pub struct AcquisitionScopeCompleteTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
 
@@ -1127,7 +1127,6 @@ pub struct AcquisitionScopeCompleteTransition {
 pub struct AcquisitionScopePauseTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
 
@@ -1190,7 +1189,9 @@ pub struct AcquisitionScopeState {
     pub last_search_at: Option<String>,
     pub status: AcquisitionScopeStatus,
     pub grabbed_release: Option<String>,
-    pub current_score: Option<i32>,
+    /// The bar this scope's landed file sets, resolved from the library rather
+    /// than stored. `None` when nothing occupies the scope.
+    pub landed_bar: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecision>,
     pub mismatch_recovery_eligible: bool,
     pub created_at: String,
@@ -1610,6 +1611,17 @@ pub struct IndexerSearchResult {
     pub provenance: Option<ReleaseCandidateProvenance>,
     pub candidate_token: Option<String>,
     pub queue_scope: Option<SubmissionScope>,
+    /// What this release actually covers, as resolved against the catalog while
+    /// it was scored.
+    ///
+    /// Deliberately not `queue_scope`, which means something else — the scope a
+    /// *queued grab* will use — and is only populated on the interactive
+    /// annotation path. This one is the release's own coverage, and it exists so
+    /// the auto evaluator can refuse a multi-episode release that reaches into
+    /// an episode nobody is monitoring (D21). `resolve_release_coverage` already
+    /// computed it during scoring; before this it was dropped on the floor and
+    /// only its `coverage_distance` survived into the search rank.
+    pub coverage_scope: Option<SubmissionScope>,
     pub auto_eligible: Option<bool>,
     pub auto_decision_code: Option<String>,
     pub auto_decision_summary: Option<String>,
@@ -1770,6 +1782,7 @@ mod canonical_download_source_tests {
             provenance: None,
             candidate_token: None,
             queue_scope: None,
+            coverage_scope: None,
             auto_eligible: None,
             auto_decision_code: None,
             auto_decision_summary: None,

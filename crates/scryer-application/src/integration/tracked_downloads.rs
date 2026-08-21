@@ -699,6 +699,8 @@ impl TrackedDownloadService {
                         .filter(|value| !value.is_empty()),
                     download_client_type: td.client_type.clone(),
                     download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    // Adopted from the client, so there is no announced size.
+                    release_size_bytes: None,
                     source_hint: None,
                     source_provider_id: None,
                     source_provider_name: None,
@@ -3055,6 +3057,7 @@ mod tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Paperman.2012.720p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
@@ -3102,6 +3105,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Orphan,
         };
@@ -3117,6 +3121,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Title,
         };
@@ -3214,6 +3219,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Title,
         });
@@ -3316,6 +3322,7 @@ mod tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Restart Recovery Show".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),

@@ -142,6 +142,7 @@ async fn record_movie_grab_submission(
             source_provider_name: None,
             source_kind: None,
             source_title: Some(source_title.to_string()),
+            release_size_bytes: None,
             request_signature: None,
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Title,
@@ -358,7 +359,6 @@ async fn seed_movie_wanted_item(
     ctx: &TestContext,
     title_id: &str,
     status: scryer_application::AcquisitionScopeStatus,
-    current_score: Option<i32>,
 ) -> scryer_application::AcquisitionScopeState {
     let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
@@ -378,7 +378,7 @@ async fn seed_movie_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -475,7 +475,7 @@ async fn seed_episode_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -1338,7 +1338,6 @@ async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_
         &ctx,
         &title.id,
         scryer_application::AcquisitionScopeStatus::Grabbed,
-        None,
     )
     .await;
 
@@ -2165,7 +2164,6 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
         &ctx,
         &title.id,
         scryer_application::AcquisitionScopeStatus::Grabbed,
-        Some(100),
     )
     .await;
 
