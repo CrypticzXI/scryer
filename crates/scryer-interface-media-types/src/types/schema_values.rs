@@ -448,6 +448,9 @@ pub enum DownloadQueueStateValue {
     Completed,
     /// Download awaits import.
     ImportPending,
+    /// The client reports a recoverable problem; the download is untouched by
+    /// failed-download handling.
+    Warning,
     /// Download failed.
     Failed,
 }
@@ -463,6 +466,7 @@ impl DownloadQueueStateValue {
             DownloadQueueState::Paused => Self::Paused,
             DownloadQueueState::Completed => Self::Completed,
             DownloadQueueState::ImportPending => Self::ImportPending,
+            DownloadQueueState::Warning => Self::Warning,
             DownloadQueueState::Failed => Self::Failed,
         }
     }
@@ -484,6 +488,9 @@ pub enum DownloadDisplayStateValue {
     Completed,
     /// Download or processing failed.
     Failed,
+    /// The client reports a recoverable problem on a download that is still
+    /// live.
+    Warning,
     /// Import is running.
     Importing,
     /// Import is waiting to run.

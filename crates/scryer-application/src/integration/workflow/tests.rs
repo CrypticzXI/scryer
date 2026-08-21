@@ -737,6 +737,57 @@ mod tests {
     }
 
     #[test]
+    fn warning_state_stays_in_the_activity_bucket_with_its_message() {
+        let mut queue_item = item("job-warning", DownloadQueueState::Warning);
+        queue_item.attention_required = true;
+        queue_item.attention_reason = Some("files are missing from the save path".to_string());
+
+        let classified = classify_download_queue_item(&queue_item);
+
+        assert_eq!(
+            derive_download_queue_display_state(&queue_item),
+            DownloadDisplayState::Warning
+        );
+        assert_eq!(classified.bucket, DownloadQueueBucket::Activity);
+        assert_eq!(
+            queue_item.attention_reason.as_deref(),
+            Some("files are missing from the save path"),
+            "the client's message is what makes the warning actionable"
+        );
+    }
+
+    #[test]
+    fn warning_state_never_preempts_an_import_overlay() {
+        let mut queue_item = item("job-warning-importing", DownloadQueueState::Warning);
+        queue_item.import_status = Some(ImportStatus::Running);
+
+        assert_eq!(
+            derive_download_queue_display_state(&queue_item),
+            DownloadDisplayState::Importing
+        );
+
+        let mut blocked = item("job-warning-blocked", DownloadQueueState::Warning);
+        blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+
+        assert_eq!(
+            derive_download_queue_display_state(&blocked),
+            DownloadDisplayState::ImportBlocked
+        );
+    }
+
+    #[test]
+    fn a_terminal_failure_outranks_a_warning_when_observations_disagree() {
+        let warned = item("job-1", DownloadQueueState::Warning);
+        let mut failed = item("job-1", DownloadQueueState::Failed);
+        failed.progress_percent = 0;
+
+        let merged = dedupe_download_queue_items(vec![warned, failed]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].state, DownloadQueueState::Failed);
+    }
+
+    #[test]
     fn ignored_state_overrides_a_stale_failed_import_overlay() {
         let mut queue_item = item("job-ignored", DownloadQueueState::Failed);
         queue_item.import_status = Some(ImportStatus::Failed);

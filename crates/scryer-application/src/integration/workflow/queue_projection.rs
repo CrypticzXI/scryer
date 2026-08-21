@@ -101,6 +101,10 @@ fn base_download_queue_display_state(item: &DownloadQueueItem) -> DownloadDispla
         DownloadQueueState::Paused => DownloadDisplayState::Paused,
         DownloadQueueState::Completed => DownloadDisplayState::Completed,
         DownloadQueueState::ImportPending => DownloadDisplayState::ImportPending,
+        // Warning is checked last on purpose: an import overlay or a tracked
+        // block is the more specific answer, and the client's recoverable
+        // problem must not preempt it the way `Failed` does above.
+        DownloadQueueState::Warning => DownloadDisplayState::Warning,
         DownloadQueueState::Failed => DownloadDisplayState::Failed,
     }
 }
@@ -109,7 +113,10 @@ fn bucket_for_base_display_state(state: DownloadDisplayState) -> DownloadQueueBu
         DownloadDisplayState::Queued
         | DownloadDisplayState::Downloading
         | DownloadDisplayState::Paused
-        | DownloadDisplayState::PostProcessing => DownloadQueueBucket::Activity,
+        | DownloadDisplayState::PostProcessing
+        // A warned download is still live in the client and still recoverable,
+        // so it belongs with the activity it is part of, not in history.
+        | DownloadDisplayState::Warning => DownloadQueueBucket::Activity,
         DownloadDisplayState::Importing
         | DownloadDisplayState::ImportPending
         | DownloadDisplayState::ImportBlocked

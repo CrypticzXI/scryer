@@ -921,7 +921,7 @@ async fn process_tracked_download_snapshot(
 
     if emit_metrics {
         // Emit download queue gauge by state.
-        let mut counts = [0u64; 9];
+        let mut counts = [0u64; 10];
         for item in &items {
             match item.state {
                 scryer_domain::DownloadQueueState::Queued => counts[0] += 1,
@@ -933,6 +933,7 @@ async fn process_tracked_download_snapshot(
                 scryer_domain::DownloadQueueState::Verifying => counts[6] += 1,
                 scryer_domain::DownloadQueueState::Repairing => counts[7] += 1,
                 scryer_domain::DownloadQueueState::Extracting => counts[8] += 1,
+                scryer_domain::DownloadQueueState::Warning => counts[9] += 1,
             }
         }
         let labels = [
@@ -945,6 +946,7 @@ async fn process_tracked_download_snapshot(
             "verifying",
             "repairing",
             "extracting",
+            "warning",
         ];
         for (label, &count) in labels.iter().zip(&counts) {
             metrics::gauge!("scryer_download_queue_items", "state" => *label).set(count as f64);

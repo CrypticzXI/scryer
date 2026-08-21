@@ -741,6 +741,9 @@ pub enum DownloadDisplayState {
     PostProcessing,
     Completed,
     Failed,
+    /// The client reports a recoverable problem; the row stays in the activity
+    /// list with its message instead of being presented as a dead grab.
+    Warning,
     Importing,
     ImportPending,
     ImportBlocked,

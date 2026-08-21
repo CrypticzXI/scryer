@@ -4392,6 +4392,58 @@ mod tests {
     }
 
     #[test]
+    fn warning_client_state_never_enters_failed_download_handling() {
+        // A recoverable client condition (disk full, files moved, tracker
+        // error) must keep the download where it is: no FailedPending, so no
+        // blocklist, no removal and no re-search.
+        for state in [
+            TrackedDownloadState::Downloading,
+            TrackedDownloadState::ImportPending,
+            TrackedDownloadState::ImportBlocked,
+        ] {
+            let mut client_item = build_client_item();
+            client_item.state = DownloadQueueState::Warning;
+            client_item.attention_required = true;
+            client_item.attention_reason = Some("files are missing".to_string());
+            let mut tracked = TrackedDownload {
+                id: "client-1:warned".to_string(),
+                client_id: "client-1".to_string(),
+                client_type: "qbittorrent".to_string(),
+                client_item,
+                completed_source: None,
+                state,
+                status: TrackedDownloadStatus::Ok,
+                status_messages: Vec::new(),
+                title_id: Some("title-1".to_string()),
+                facet: Some("movie".to_string()),
+                source_title: None,
+                indexer: None,
+                added_at: None,
+                notified_manual_interaction: false,
+                match_type: TitleMatchType::Submission,
+                is_trackable: true,
+                import_attempted: false,
+                waiting_for_completed_history: false,
+                path_missing_since: None,
+                no_video_import_retry: None,
+                import_execution_retry: None,
+                import_hold: None,
+                skip_reacquire_on_failure: false,
+                snapshot_missing_since: None,
+            };
+
+            crate::failed_download_handler::check(&mut tracked);
+
+            assert_eq!(tracked.state, state, "{state:?} must survive a warning");
+            assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+            assert_eq!(
+                tracked.client_item.attention_reason.as_deref(),
+                Some("files are missing")
+            );
+        }
+    }
+
+    #[test]
     fn failed_download_check_skips_parse_matched_downloader_observation() {
         let mut client_item = build_client_item();
         client_item.state = DownloadQueueState::Failed;

@@ -3846,6 +3846,11 @@ enum DownloadDisplayStateValue {
 	"""
 	FAILED
 	"""
+	The client reports a recoverable problem on a download that is still
+	live.
+	"""
+	WARNING
+	"""
 	Import is running.
 	"""
 	IMPORTING
@@ -4365,6 +4370,11 @@ enum DownloadQueueStateValue {
 	Download awaits import.
 	"""
 	IMPORT_PENDING
+	"""
+	The client reports a recoverable problem; the download is untouched by
+	failed-download handling.
+	"""
+	WARNING
 	"""
 	Download failed.
 	"""

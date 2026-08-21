@@ -1723,9 +1723,15 @@ fn queue_state_merge_rank(state: &DownloadQueueState) -> u8 {
         | DownloadQueueState::Extracting => 3,
         DownloadQueueState::Completed => 4,
         DownloadQueueState::ImportPending => 5,
-        DownloadQueueState::Failed => 6,
+        DownloadQueueState::Warning => 6,
+        // A terminal failure outranks a recoverable warning: if two
+        // observations of the same item disagree, the one that ends the grab is
+        // the one to keep.
+        DownloadQueueState::Failed => 7,
     }
 }
+/// `Warning` is deliberately absent: the download is still live in the client,
+/// so the row is activity that needs a look, not a finished grab.
 fn is_history_download_state(state: &DownloadQueueState) -> bool {
     matches!(
         state,

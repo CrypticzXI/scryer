@@ -536,6 +536,30 @@ mod tests {
     }
 
     #[test]
+    fn a_warned_row_reaches_the_api_as_warning_and_not_as_a_failure() {
+        let mut item = torrent_queue_item();
+        item.state = scryer_domain::DownloadQueueState::Warning;
+        item.progress_percent = 42;
+        item.attention_required = true;
+        item.attention_reason = Some("files are missing from the save path".to_string());
+
+        let payload = from_download_queue_item(item);
+
+        assert!(matches!(
+            payload.state,
+            crate::types::DownloadQueueStateValue::Warning
+        ));
+        assert!(matches!(
+            payload.display_state,
+            crate::types::DownloadDisplayStateValue::Warning
+        ));
+        assert_eq!(
+            payload.attention_reason.as_deref(),
+            Some("files are missing from the save path")
+        );
+    }
+
+    #[test]
     fn a_row_without_seeding_information_leaves_every_new_field_null() {
         let payload = from_download_queue_item(torrent_queue_item());
 

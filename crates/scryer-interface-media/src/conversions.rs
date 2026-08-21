@@ -131,6 +131,7 @@ impl FromApplication<scryer_application::DownloadDisplayState> for DownloadDispl
             scryer_application::DownloadDisplayState::PostProcessing => Self::PostProcessing,
             scryer_application::DownloadDisplayState::Completed => Self::Completed,
             scryer_application::DownloadDisplayState::Failed => Self::Failed,
+            scryer_application::DownloadDisplayState::Warning => Self::Warning,
             scryer_application::DownloadDisplayState::Importing => Self::Importing,
             scryer_application::DownloadDisplayState::ImportPending => Self::ImportPending,
             scryer_application::DownloadDisplayState::ImportBlocked => Self::ImportBlocked,

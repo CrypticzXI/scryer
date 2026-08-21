@@ -264,6 +264,9 @@ impl DownloadClientSnapshot {
                             .entry(item.download_client_item_id.clone())
                             .or_insert(0) += 1;
                     } else if item.state == DownloadQueueState::Failed {
+                        // `Warning` is not a failure: it stays out of this map
+                        // so failure recovery never fires on a download the
+                        // client can still finish.
                         let reason = item
                             .attention_reason
                             .as_deref()

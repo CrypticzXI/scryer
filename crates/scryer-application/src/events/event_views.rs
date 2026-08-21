@@ -1315,7 +1315,9 @@ fn queue_state_sort_rank(state: &DownloadQueueState) -> u8 {
         DownloadQueueState::Queued => 1,
         DownloadQueueState::Paused => 2,
         DownloadQueueState::ImportPending | DownloadQueueState::Completed => 3,
-        DownloadQueueState::Failed => 4,
+        // Both states want the operator's attention, so they sort together at
+        // the end; only their handling differs.
+        DownloadQueueState::Warning | DownloadQueueState::Failed => 4,
     }
 }
 

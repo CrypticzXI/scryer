@@ -1401,6 +1401,15 @@ pub enum DownloadQueueState {
     Paused,
     Completed,
     ImportPending,
+    /// The client reports a problem the operator can still fix — a disk that
+    /// filled up, a permission error, files moved out from under the torrent,
+    /// a tracker that stopped answering.
+    ///
+    /// Deliberately distinct from [`DownloadQueueState::Failed`]: the entry
+    /// stays visible with its message and must never enter failed-download
+    /// handling (no blocklist, no removal, no re-search). Only `Failed` means
+    /// "this grab is over".
+    Warning,
     Failed,
 }
 
