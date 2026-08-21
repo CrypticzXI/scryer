@@ -6329,6 +6329,7 @@ dependencies = [
  "scryer-outbound-http",
  "scryer-plugin-sdk",
  "scryer-rules",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

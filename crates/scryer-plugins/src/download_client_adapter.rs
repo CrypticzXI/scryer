@@ -26,6 +26,7 @@ use tracing::debug;
 use crate::blocking::run_blocking_plugin_call;
 use crate::legacy_runtime::LegacyPlugin;
 use crate::runtime_backing::PluginInstanceSpec;
+use crate::seeding_trust::apply_seeding_trust_floor;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
@@ -945,8 +946,9 @@ impl DownloadClient for WasmDownloadClient {
                     "download-client command returned the wrong result for list_queue".to_string(),
                 ));
             };
-            let items: Vec<PluginDownloadItem> =
+            let mut items: Vec<PluginDownloadItem> =
                 decode_command_result(result, "download list_queue")?;
+            apply_seeding_trust_floor(&self.descriptor, &mut items);
             self.seeding_observations.record(&items);
             return Ok(items
                 .into_iter()
@@ -976,8 +978,9 @@ impl DownloadClient for WasmDownloadClient {
         )
         .await?;
 
-        let items: Vec<PluginDownloadItem> =
+        let mut items: Vec<PluginDownloadItem> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_QUEUE)?;
+        apply_seeding_trust_floor(&self.descriptor, &mut items);
         self.seeding_observations.record(&items);
 
         Ok(items
@@ -1036,26 +1039,29 @@ impl DownloadClient for WasmDownloadClient {
 
         match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY)
         {
-            Ok(items) => Ok(items
-                .into_iter()
-                .filter(|item| {
-                    matches!(
-                        item.state,
-                        DownloadItemState::Completed
-                            | DownloadItemState::Seeding
-                            | DownloadItemState::Failed
-                            | DownloadItemState::Error
-                    )
-                })
-                .map(|item| {
-                    map_queue_item(
-                        item,
-                        &self.client_id,
-                        &self.client_name,
-                        self.descriptor.provider_type(),
-                    )
-                })
-                .collect()),
+            Ok(mut items) => {
+                apply_seeding_trust_floor(&self.descriptor, &mut items);
+                Ok(items
+                    .into_iter()
+                    .filter(|item| {
+                        matches!(
+                            item.state,
+                            DownloadItemState::Completed
+                                | DownloadItemState::Seeding
+                                | DownloadItemState::Failed
+                                | DownloadItemState::Error
+                        )
+                    })
+                    .map(|item| {
+                        map_queue_item(
+                            item,
+                            &self.client_id,
+                            &self.client_name,
+                            self.descriptor.provider_type(),
+                        )
+                    })
+                    .collect())
+            }
             Err(primary_error) => {
                 let items: Vec<PluginCompletedDownload> =
                     decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_HISTORY).map_err(
@@ -2147,6 +2153,73 @@ mod tests {
         assert_eq!(seeding.seed_goal_ratio, None);
         assert_eq!(seeding.seed_goal_seconds, None);
         assert!(!seeding.never_remove);
+    }
+
+    /// The whole point of the floor: what the gate reads for a stale plugin.
+    ///
+    /// A pre-audit qBittorrent reports `can_remove: Some(true)` on every item;
+    /// the observation that reaches the domain queue row — and from there the
+    /// seeding gate — must carry `None` instead, which is the gate's
+    /// `no_resolved_goals_and_client_verdict_unknown` hold. Everything the
+    /// client actually measured (ratio, seed time, private flag) still comes
+    /// through: the floor distrusts the *verdicts*, not the observations.
+    #[test]
+    fn a_below_floor_plugins_verdicts_never_reach_the_domain_observation() {
+        let descriptor = crate::seeding_trust::descriptor("qbittorrent", "1.0.5");
+        let mut items = vec![PluginDownloadItem {
+            torrent: Some(PluginTorrentItem {
+                seed_ratio: Some(0.1),
+                seed_time_seconds: Some(30),
+                is_private: Some(false),
+                ..PluginTorrentItem::default()
+            }),
+            can_move_files: Some(true),
+            can_remove: Some(true),
+            ..queue_filter_item(DownloadItemState::Seeding)
+        }];
+
+        apply_seeding_trust_floor(&descriptor, &mut items);
+        let queue_item = map_queue_item(
+            items.remove(0),
+            "client-1",
+            "Stale qBit",
+            descriptor.provider_type(),
+        );
+
+        let seeding = queue_item
+            .seeding
+            .expect("the measured observation still stands");
+        assert_eq!(seeding.can_remove, None);
+        assert_eq!(seeding.can_move_files, None);
+        assert_eq!(seeding.seed_ratio, Some(0.1));
+        assert_eq!(seeding.seed_time_seconds, Some(30));
+        assert_eq!(seeding.is_private, Some(false));
+    }
+
+    /// The same item from the audited build keeps its verdicts, so the floor
+    /// cannot be read as "never trust a plugin".
+    #[test]
+    fn an_at_floor_plugins_verdicts_reach_the_domain_observation_intact() {
+        let descriptor = crate::seeding_trust::descriptor("qbittorrent", "1.1.0");
+        let mut items = vec![PluginDownloadItem {
+            can_move_files: Some(true),
+            can_remove: Some(true),
+            ..queue_filter_item(DownloadItemState::Seeding)
+        }];
+
+        apply_seeding_trust_floor(&descriptor, &mut items);
+        let queue_item = map_queue_item(
+            items.remove(0),
+            "client-1",
+            "Current qBit",
+            descriptor.provider_type(),
+        );
+
+        let seeding = queue_item
+            .seeding
+            .expect("client verdicts are an observation");
+        assert_eq!(seeding.can_remove, Some(true));
+        assert_eq!(seeding.can_move_files, Some(true));
     }
 
     #[test]
