@@ -46,6 +46,136 @@ async fn run_import(
     result
 }
 
+/// Carry out a refused import.
+///
+/// One place, shared by the title and series-movie-link paths (the episode path
+/// does the same thing through `EpisodeImportOutcome`), because *what a refusal
+/// costs the release* is a property of the decision, not of the scope. The
+/// judgement itself was made in [`crate::import_decide::decide_import`]; this
+/// only executes the disposition it returned.
+///
+/// - [`RejectionDisposition::Blocklist`] recycles the bytes, burns the release
+///   for this title and reopens the scope's search, so the retry seeks a
+///   different candidate instead of the same lie.
+/// - [`RejectionDisposition::Skip`] records `already_present`: the release lost
+///   a fair comparison and there is nothing to look for.
+/// - [`RejectionDisposition::Hold`] records `skipped`: nobody can decide this
+///   without an operator.
+///
+/// All three leave the download in `ImportBlocked` — `result_state.rs` maps
+/// every non-`Imported` decision there — so the dispositions differ only in
+/// their side effects (design §9, D17 restated).
+async fn carry_out_import_rejection(
+    app: &AppUseCase,
+    actor: &User,
+    title: &scryer_domain::Title,
+    import_id: &str,
+    completed: &CompletedDownload,
+    context: ImportRejectionContext<'_>,
+    started_at: chrono::DateTime<Utc>,
+) -> AppResult<ImportResult> {
+    let ImportRejectionContext {
+        rejection,
+        disposition,
+        release_title,
+        source_title,
+        source_video,
+        dest_path,
+        source_size,
+        quality,
+        episode_ids,
+        series_movie_link_id,
+        episode_artifacts,
+    } = context;
+
+    tracing::info!(
+        title_id = %title.id,
+        code = rejection.recycle_reason,
+        ?disposition,
+        "{}",
+        rejection.message
+    );
+
+    let (artifact_result, decision) = match disposition {
+        crate::import_decide::RejectionDisposition::Blocklist => {
+            crate::post_download_gate::reject_source_file_before_import(
+                app,
+                crate::domain_events::DomainEventActor::from(actor),
+                title,
+                release_title,
+                source_video,
+                crate::post_download_gate::BlocklistAttribution {
+                    episode_ids,
+                    collection_id: None,
+                    series_movie_link_id,
+                },
+                None,
+                &rejection,
+            )
+            .await;
+            ("rejected", ImportDecision::Rejected)
+        }
+        crate::import_decide::RejectionDisposition::Skip => {
+            ("already_present", ImportDecision::Skipped)
+        }
+        crate::import_decide::RejectionDisposition::Hold => ("skipped", ImportDecision::Skipped),
+    };
+
+    persist_file_import_artifact(
+        app,
+        import_id,
+        completed,
+        title.id.as_str(),
+        source_video,
+        "movie",
+        artifact_result,
+        Some(rejection.recycle_reason),
+        None,
+        episode_artifacts,
+    )
+    .await;
+    let result = ImportResult {
+        import_id: import_id.to_string(),
+        decision,
+        skip_reason: rejection.skip_reason.clone(),
+        title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: source_title.map(str::to_string),
+        source_path: path_to_stored_string(source_video),
+        dest_path: Some(path_to_stored_string(dest_path)),
+        quality,
+        episode_ids: episode_ids.to_vec(),
+        file_size_bytes: Some(source_size),
+        link_type: None,
+        error_message: Some(rejection.message),
+        started_at,
+        completed_at: Utc::now(),
+    };
+    let result_json = serde_json::to_string(&result).ok();
+    app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
+        .await?;
+    Ok(result)
+}
+
+/// The per-import facts [`carry_out_import_rejection`] needs, bundled so the two
+/// call sites cannot swap two `Option<&str>` arguments.
+struct ImportRejectionContext<'a> {
+    rejection: crate::post_download_gate::ImportedFileRejection,
+    disposition: crate::import_decide::RejectionDisposition,
+    release_title: &'a str,
+    source_title: Option<&'a str>,
+    source_video: &'a Path,
+    dest_path: &'a Path,
+    source_size: i64,
+    quality: Option<String>,
+    episode_ids: &'a [String],
+    /// Set on the series-movie-link path, so a rejection files under the link
+    /// rather than only under the episode it happens to be tied to.
+    series_movie_link_id: Option<&'a str>,
+    episode_artifacts: &'a [scryer_domain::Episode],
+}
+
 struct CompletedImportTarget {
     title: scryer_domain::Title,
     is_series: bool,
@@ -139,7 +269,12 @@ async fn archive_extraction_destination_for_completed_facet(
     app: &AppUseCase,
     import_id: &str,
     completed: &CompletedDownload,
-) -> AppResult<Option<(crate::archive_extractor::ArchiveExtractionDestination, MediaFacet)>> {
+) -> AppResult<
+    Option<(
+        crate::archive_extractor::ArchiveExtractionDestination,
+        MediaFacet,
+    )>,
+> {
     let Some(facet) = archive_probe_facet_from_completed(completed) else {
         return Ok(None);
     };
@@ -262,12 +397,9 @@ async fn try_match_titleless_archive_from_inner_video(
                         return Err(error);
                     }
                 };
-            let relocation = relocate_titleless_archive_workspace_for_title(
-                &title,
-                destination,
-                extracted_dir,
-            )
-            .await?;
+            let relocation =
+                relocate_titleless_archive_workspace_for_title(&title, destination, extracted_dir)
+                    .await?;
             let extracted_dir = match relocation {
                 TitlelessArchiveRelocation::Ready(extracted_dir) => extracted_dir,
                 TitlelessArchiveRelocation::ReextractUnderMatchedTitle => {
@@ -318,7 +450,12 @@ async fn resolve_completed_import_target(
                 "manual title {manual_title_id:?} is outside the durable Scryer submission title {submission_title_id:?}"
             )));
         }
-        title = app.services.catalog.titles.get_by_id(manual_title_id).await?;
+        title = app
+            .services
+            .catalog
+            .titles
+            .get_by_id(manual_title_id)
+            .await?;
     } else if let Some(title_id) = release_evidence.title_id() {
         title = app.services.catalog.titles.get_by_id(title_id).await?;
     }
@@ -341,7 +478,8 @@ async fn resolve_completed_import_target(
             release_evidence.release_title(Some(&file))
         });
         if let Some(release_title) = release_title {
-            let parsed_release_title = normalize_release_title_signal(parse_release_metadata(&release_title));
+            let parsed_release_title =
+                normalize_release_title_signal(parse_release_metadata(&release_title));
             title = resolve_title_from_release_candidate(
                 &titles,
                 &parsed_release_title,
@@ -514,6 +652,15 @@ async fn dispatch_completed_import_target(
     target: &CompletedImportTarget,
 ) -> AppResult<ImportResult> {
     // Branch on facet: movies import the single largest file, series import all episode files.
+    //
+    // The automatic lane's operator-intent signal is the submission purpose; the
+    // manual lane passes the bypass mode directly (see
+    // `operator_initiated_import`).
+    let runtime_sample_mode = if release_evidence.purpose().is_manual_replacement() {
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
+    } else {
+        crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic
+    };
     if let Some(ref series_movie_link_id) = target.series_movie_link_id {
         Box::pin(import_series_movie_download(
             app,
@@ -525,6 +672,7 @@ async fn dispatch_completed_import_target(
             &target.video_files,
             started_at,
             series_movie_link_id,
+            runtime_sample_mode,
         ))
         .await
     } else if target.is_series {
@@ -549,9 +697,42 @@ async fn dispatch_completed_import_target(
             release_evidence,
             &target.video_files,
             started_at,
+            runtime_sample_mode,
         ))
         .await
     }
+}
+
+/// Did an operator choose this file, rather than the acquisition loop?
+///
+/// The runtime-sample bypass is that signal in practice — the manual lane has
+/// always passed it, and it means exactly "a person picked this, do not apply
+/// the automatic safety rails". The two paths that reach here read it from one
+/// place so they cannot disagree about what "manual" means.
+///
+/// **What this actually changed**, stated precisely because the reading matters
+/// for how much the predicate can be trusted: on the *automatic* lane it is
+/// byte-identical to what it replaced. `dispatch_completed_import_target`
+/// derives `runtime_sample_mode` from
+/// `release_evidence.purpose().is_manual_replacement()`, and the movie and link
+/// paths previously read `release_evidence.purpose()` themselves — the same bit,
+/// spelled twice. The behaviour change is confined to the manual **movie** path
+/// (`manual.rs`), which passes `BypassRuntimeSampleCheck` directly and whose
+/// operator-chosen file was therefore eligible to be refused and its release
+/// blocklisted for the title.
+///
+/// The manual *link* path does not reach here at all:
+/// `execute_manual_series_movie_import` never calls
+/// `import_series_movie_download`, so it has always been outside the verdict
+/// gate. Pinned by
+/// `a_manual_series_movie_link_import_never_reaches_the_verdict_gate`.
+fn operator_initiated_import(
+    runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
+) -> bool {
+    matches!(
+        runtime_sample_mode,
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
+    )
 }
 // ---------------------------------------------------------------------------
 // Movie import: pick largest file, single import
@@ -923,6 +1104,7 @@ async fn import_movie_download(
     release_evidence: &ReleaseEvidence,
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
+    runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
 ) -> AppResult<ImportResult> {
     let source_video = pick_largest_file(video_files)?;
     let source_title = release_evidence.release_title(Some(&source_video));
@@ -973,7 +1155,7 @@ async fn import_movie_download(
         )
         .await;
     }
-    let manual_replacement = import_purpose.is_manual_replacement();
+    let manual_replacement = operator_initiated_import(runtime_sample_mode);
     let existing_files = existing_files
         .into_iter()
         .filter(|file| file.role.is_primary())
@@ -1025,13 +1207,35 @@ async fn import_movie_download(
                 )
                 .await;
             }
+            // A user/system rule veto on the file is operator policy, not a
+            // lie: held like the band miss, never burned
+            // (`import_decide::prepare_rejection_disposition`).
+            if crate::import_decide::prepare_rejection_disposition(&rejection)
+                == crate::import_decide::RejectionDisposition::Hold
+            {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    release_evidence,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    rejection.recycle_reason,
+                    rejection.message.clone(),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
-                &[],
+                crate::post_download_gate::BlocklistAttribution::default(),
+                None,
                 &rejection,
             )
             .await;
@@ -1153,7 +1357,7 @@ async fn import_movie_download(
             runtime_sample_validation,
             prepared.accepted.as_ref(),
             crate::post_download_gate::incumbent_replace_runtime_seconds([
-                replaced_file.duration_seconds,
+                replaced_file.duration_seconds
             ]),
         )
     {
@@ -1181,158 +1385,190 @@ async fn import_movie_download(
     )
     .await?;
 
-    if let Some(existing_file) = existing_files
-        .iter()
-        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
-    {
-        let old_score = existing_file.acquisition_score.unwrap_or(0);
-        let post_download_score =
-            crate::post_download_gate::compute_post_download_acquisition_decision(
-                app,
-                &prepared.parsed,
-                prepared.accepted.as_ref(),
-                &quality_profile,
-                title,
-                title.runtime_minutes,
-                source_size,
-                true,
-                Some(old_score),
-                &prepared.rescore_changes,
-                false,
-            )
-            .await;
-        let new_score = post_download_score.score
-            + if manual_replacement {
-                crate::post_download_gate::MANUAL_GRAB_BOOST
-            } else {
-                0
-            };
-        if new_score > old_score || manual_replacement {
-            let old_file_recycle_context =
-                crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file).await?;
-
-            persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
-            match crate::upgrade::execute_upgrade(
+    // **The one import decision** (design §3): subject, landed score, truth
+    // verdict and admission in one call, over the same incumbents and the same
+    // comparator the grab path consulted. This used to be a bare
+    // `new_score > old_score` against a stored `acquisition_score`, and — until
+    // `decide_import` made it unrepresentable — a *refused* admission here fell
+    // straight through to the first-import insert below, writing a second
+    // primary file for the movie it had just refused.
+    let scoring_context = app
+        .resolve_canonical_scoring_context(title, &quality_profile)
+        .await;
+    let title_scope = crate::SubmissionScope::Title;
+    let decision_input = crate::import_decide::ImportDecisionInput {
+        title,
+        scoring_context: &scoring_context,
+        scope: &title_scope,
+        scope_runtime_minutes: title.runtime_minutes,
+        // The announced half of the evidence: the parse as it came off the
+        // release name. `prepared.parsed` already carries the probe's findings,
+        // so passing it would make both scoring passes identical.
+        parsed: &parsed,
+        accepted: prepared.accepted.as_ref(),
+        prior_rescore_changes: &prepared.rescore_changes,
+        landed_size_bytes: source_size,
+        is_filler: false,
+        operator_intent: manual_replacement,
+        incumbent_rows: crate::import_decide::IncumbentRows::Title(&existing_files),
+        scope_label: "this title",
+    };
+    let plan = match crate::import_decide::decide_import(app, &decision_input).await {
+        crate::import_decide::ImportDecisionOutcome::Admit(plan) => plan,
+        crate::import_decide::ImportDecisionOutcome::Reject {
+            rejection,
+            disposition,
+        } => {
+            return carry_out_import_rejection(
                 app,
                 actor,
-                import_id,
                 title,
-                existing_file,
-                &source_video,
-                &dest_path,
-                &prepared,
-                post_download_score.parsed.quality.as_deref(),
-                new_score,
-                old_score,
-                post_download_score.scoring_log.clone(),
-                &[],
-                Some(&media_root),
-                Some(old_file_recycle_context.media_root.as_str()),
-                &old_file_recycle_context.recycle_config,
-                import_mode,
+                import_id,
+                completed,
+                ImportRejectionContext {
+                    rejection,
+                    disposition,
+                    release_title: &prepared.parsed.raw_title,
+                    source_title: source_title.as_deref(),
+                    source_video: &source_video,
+                    dest_path: &dest_path,
+                    source_size,
+                    quality: prepared.parsed.quality.clone(),
+                    episode_ids: &[],
+                    series_movie_link_id: None,
+                    episode_artifacts: &[],
+                },
+                started_at,
             )
-            .await
-            {
-                Ok(crate::upgrade::UpgradeResult::Upgraded(outcome)) => {
-                    persist_file_import_artifact(
-                        app,
-                        import_id,
-                        completed,
-                        title.id.as_str(),
-                        &source_video,
-                        "movie",
-                        "imported",
-                        Some("upgrade"),
-                        None,
-                        &[],
-                    )
-                    .await;
-                    let result = ImportResult {
-                        import_id: import_id.to_string(),
-                        decision: ImportDecision::Imported,
-                        skip_reason: None,
-                        title_id: Some(title.id.clone()),
-                        source_system: Some(completed.client_type.clone()),
-                        source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: source_title.clone(),
-                        source_path: path_to_stored_string(&source_video),
-                        dest_path: Some(path_to_stored_string(&dest_path)),
+            .await;
+        }
+    };
+    if let Some(directive) = plan.blocklist_after_import.as_ref() {
+        tracing::info!(title_id = %title.id, code = directive.code, "{}", directive.reason);
+        crate::post_download_gate::blocklist_release_for_title(
+            app,
+            title,
+            &prepared.parsed.raw_title,
+            Some(directive.reason.clone()),
+            crate::post_download_gate::BlocklistAttribution::default(),
+        )
+        .await;
+    }
+    let new_score = plan.score;
+
+    if let crate::import_decide::SupersededIncumbents::Title(superseded) = &plan.superseded
+        && let Some(existing_file) = superseded.first()
+    {
+        let old_score = plan.previous_best_score;
+        let old_file_recycle_context =
+            crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file).await?;
+
+        persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
+        match crate::upgrade::execute_upgrade(
+            app,
+            actor,
+            import_id,
+            title,
+            existing_file,
+            &source_video,
+            &dest_path,
+            &prepared,
+            plan.parsed.quality.as_deref(),
+            new_score,
+            old_score,
+            plan.scoring_log.clone(),
+            &[],
+            Some(&media_root),
+            Some(old_file_recycle_context.media_root.as_str()),
+            &old_file_recycle_context.recycle_config,
+            import_mode,
+        )
+        .await
+        {
+            Ok(crate::upgrade::UpgradeResult::Upgraded(outcome)) => {
+                persist_file_import_artifact(
+                    app,
+                    import_id,
+                    completed,
+                    title.id.as_str(),
+                    &source_video,
+                    "movie",
+                    "imported",
+                    Some("upgrade"),
+                    None,
+                    &[],
+                )
+                .await;
+                let result = ImportResult {
+                    import_id: import_id.to_string(),
+                    decision: ImportDecision::Imported,
+                    skip_reason: None,
+                    title_id: Some(title.id.clone()),
+                    source_system: Some(completed.client_type.clone()),
+                    source_ref: Some(completed.download_client_item_id.clone()),
+                    source_title: source_title.clone(),
+                    source_path: path_to_stored_string(&source_video),
+                    dest_path: Some(path_to_stored_string(&dest_path)),
+                    quality: prepared.parsed.quality.clone(),
+                    episode_ids: Vec::new(),
+                    file_size_bytes: Some(source_size),
+                    link_type: (import_mode == scryer_domain::ImportMode::Move)
+                        .then_some(scryer_domain::ImportStrategy::Move),
+                    error_message: None,
+                    started_at,
+                    completed_at: Utc::now(),
+                };
+                tracing::info!(
+                    title = %title.name,
+                    old_score = outcome.old_score,
+                    new_score = outcome.new_score,
+                    "movie file upgraded"
+                );
+                mark_wanted_completed(app, &title.id, None, true).await;
+                let result_json = serde_json::to_string(&result).ok();
+                app.update_import_status_and_notify(
+                    import_id,
+                    ImportStatus::Completed,
+                    result_json,
+                )
+                .await?;
+                return Ok(result);
+            }
+            Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
+                // The transfer itself failed a safety check; nothing was judged
+                // about the release, so it is held rather than burned.
+                return carry_out_import_rejection(
+                    app,
+                    actor,
+                    title,
+                    import_id,
+                    completed,
+                    ImportRejectionContext {
+                        rejection,
+                        disposition: crate::import_decide::RejectionDisposition::Hold,
+                        release_title: &prepared.parsed.raw_title,
+                        source_title: source_title.as_deref(),
+                        source_video: &source_video,
+                        dest_path: &dest_path,
+                        source_size,
                         quality: prepared.parsed.quality.clone(),
-                        episode_ids: Vec::new(),
-                        file_size_bytes: Some(source_size),
-                        link_type: (import_mode == scryer_domain::ImportMode::Move)
-                            .then_some(scryer_domain::ImportStrategy::Move),
-                        error_message: None,
-                        started_at,
-                        completed_at: Utc::now(),
-                    };
-                    tracing::info!(
-                        title = %title.name,
-                        old_score = outcome.old_score,
-                        new_score = outcome.new_score,
-                        "movie file upgraded"
-                    );
-                    mark_wanted_completed(app, &title.id, None, Some(outcome.new_score)).await;
-                    let result_json = serde_json::to_string(&result).ok();
-                    app.update_import_status_and_notify(
-                        import_id,
-                        ImportStatus::Completed,
-                        result_json,
-                    )
-                    .await?;
-                    return Ok(result);
+                        episode_ids: &[],
+                        series_movie_link_id: None,
+                        episode_artifacts: &[],
+                    },
+                    started_at,
+                )
+                .await;
+            }
+            Err(err) => {
+                if import_mode == scryer_domain::ImportMode::Move {
+                    tracing::error!(error = %err, "movie upgrade failed in move mode");
+                    return Err(err);
                 }
-                Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
-                    persist_file_import_artifact(
-                        app,
-                        import_id,
-                        completed,
-                        title.id.as_str(),
-                        &source_video,
-                        "movie",
-                        "rejected",
-                        rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
-                        None,
-                        &[],
-                    )
-                    .await;
-                    let result = ImportResult {
-                        import_id: import_id.to_string(),
-                        decision: ImportDecision::Rejected,
-                        skip_reason: rejection.skip_reason.clone(),
-                        title_id: Some(title.id.clone()),
-                        source_system: Some(completed.client_type.clone()),
-                        source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: source_title.clone(),
-                        source_path: path_to_stored_string(&source_video),
-                        dest_path: Some(path_to_stored_string(&dest_path)),
-                        quality: prepared.parsed.quality.clone(),
-                        episode_ids: Vec::new(),
-                        file_size_bytes: Some(source_size),
-                        link_type: None,
-                        error_message: Some(rejection.message),
-                        started_at,
-                        completed_at: Utc::now(),
-                    };
-                    let result_json = serde_json::to_string(&result).ok();
-                    app.update_import_status_and_notify(
-                        import_id,
-                        ImportStatus::Skipped,
-                        result_json,
-                    )
-                    .await?;
-                    return Ok(result);
-                }
-                Err(err) => {
-                    if import_mode == scryer_domain::ImportMode::Move {
-                        tracing::error!(error = %err, "movie upgrade failed in move mode");
-                        return Err(err);
-                    }
-                    tracing::error!(
-                        error = %err,
-                        "upgrade failed, falling through to normal import"
-                    );
-                }
+                tracing::error!(
+                    error = %err,
+                    "upgrade failed, falling through to normal import"
+                );
             }
         }
     }
@@ -1365,24 +1601,11 @@ async fn import_movie_download(
         }
     }
 
+    // The persisted bar must be the score of the bytes that actually landed
+    // (I7), and the transfer can change the size. Same context, same pipeline,
+    // one number different — no second profile resolution.
     let post_download_score =
-        crate::post_download_gate::compute_post_download_acquisition_decision(
-            app,
-            &prepared.parsed,
-            prepared.accepted.as_ref(),
-            &quality_profile,
-            title,
-            title.runtime_minutes,
-            file_result.size_bytes as i64,
-            !existing_files.is_empty(),
-            existing_files
-                .iter()
-                .max_by_key(|file| file.acquisition_score.unwrap_or(0))
-                .and_then(|file| file.acquisition_score),
-            &prepared.rescore_changes,
-            false,
-        )
-        .await;
+        crate::import_decide::rescore_landed_size(&decision_input, file_result.size_bytes as i64);
     let acq_score = post_download_score.score;
 
     let media_file_input = crate::InsertMediaFileInput {
@@ -1521,7 +1744,7 @@ async fn import_movie_download(
         quality: prepared.parsed.quality.clone(),
     });
 
-    mark_wanted_completed(app, &title.id, None, Some(acq_score)).await;
+    mark_wanted_completed(app, &title.id, None, true).await;
 
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -1587,6 +1810,7 @@ async fn import_series_movie_download(
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
     series_movie_link_id: &str,
+    runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
 ) -> AppResult<ImportResult> {
     let link = match app
         .services
@@ -1718,6 +1942,21 @@ async fn import_series_movie_download(
         .filter(|file| file.file_path == path_to_stored_string(&dest_path))
         .cloned()
         .collect();
+    // What actually occupies this link, wherever it lives. The path-scoped list
+    // above only ever sees a file already sitting at the name this import would
+    // write; every other incumbent — rename disabled, a changed template, a
+    // container change — was invisible to the gate that has to displace it.
+    let series_movie_link_files: Vec<_> = existing_files
+        .iter()
+        .filter(|file| {
+            file.role.is_primary()
+                && file
+                    .series_movie_link_ids
+                    .iter()
+                    .any(|link_id| link_id == series_movie_link_id)
+        })
+        .cloned()
+        .collect();
     let import_purpose = release_evidence.purpose();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
@@ -1745,9 +1984,9 @@ async fn import_series_movie_download(
         )
         .await;
     }
-    let manual_replacement = import_purpose.is_manual_replacement();
+    let manual_replacement = operator_initiated_import(runtime_sample_mode);
     let quality_profile = resolve_import_quality_profile(app, title).await?;
-    let existing_score = series_movie_files
+    let existing_score = series_movie_link_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
@@ -1769,7 +2008,7 @@ async fn import_series_movie_download(
         &quality_profile,
         &source_video,
         source_size,
-        !series_movie_files.is_empty(),
+        !series_movie_link_files.is_empty(),
         existing_score,
         false,
         runtime_sample_validation,
@@ -1797,13 +2036,38 @@ async fn import_series_movie_download(
                 )
                 .await;
             }
+            // A user/system rule veto on the file is operator policy, not a
+            // lie: held like the band miss, never burned
+            // (`import_decide::prepare_rejection_disposition`).
+            if crate::import_decide::prepare_rejection_disposition(&rejection)
+                == crate::import_decide::RejectionDisposition::Hold
+            {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    release_evidence,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    rejection.recycle_reason,
+                    rejection.message.clone(),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
-                &[],
+                crate::post_download_gate::BlocklistAttribution {
+                    series_movie_link_id: Some(series_movie_link_id),
+                    ..Default::default()
+                },
+                None,
                 &rejection,
             )
             .await;
@@ -1847,14 +2111,14 @@ async fn import_series_movie_download(
 
     // Replace guard: with no catalog runtime the band could not run at the gate,
     // so an automatic overwrite is measured against the incumbent file instead.
-    if let Some(replaced_file) = series_movie_files
+    if let Some(replaced_file) = series_movie_link_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         && let Some(message) = crate::post_download_gate::replace_runtime_band_block(
             runtime_sample_validation,
             prepared.accepted.as_ref(),
             crate::post_download_gate::incumbent_replace_runtime_seconds([
-                replaced_file.duration_seconds,
+                replaced_file.duration_seconds
             ]),
         )
     {
@@ -1883,33 +2147,86 @@ async fn import_series_movie_download(
     )
     .await?;
 
-    if let Some(existing_file) = series_movie_files
-        .iter()
-        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
-    {
-        let old_score = existing_file.acquisition_score.unwrap_or(0);
-        let post_download_score =
-            crate::post_download_gate::compute_post_download_acquisition_decision(
+    // **The one import decision** (design §3). A linked movie is a scope like
+    // any other; hand-rolling its comparison is what let it disagree with the
+    // grab that fetched the file.
+    let scoring_context = app
+        .resolve_canonical_scoring_context(title, &quality_profile)
+        .await;
+    let link_scope = crate::SubmissionScope::SeriesMovie {
+        series_movie_link_id: series_movie_link_id.to_string(),
+    };
+    let decision_input = crate::import_decide::ImportDecisionInput {
+        title,
+        scoring_context: &scoring_context,
+        scope: &link_scope,
+        scope_runtime_minutes: movie.runtime_minutes,
+        // The announced half of the evidence; see the title path above.
+        parsed: &parsed,
+        accepted: prepared.accepted.as_ref(),
+        prior_rescore_changes: &prepared.rescore_changes,
+        landed_size_bytes: source_size,
+        is_filler: false,
+        operator_intent: manual_replacement,
+        // Every primary file of the title, not the handful that happen to sit at
+        // this import's destination path: the subject holds *every* file linked
+        // to this series-movie link, wherever it lives, so a path filter here
+        // used to leave the lookup empty and panic (D14/A1).
+        incumbent_rows: crate::import_decide::IncumbentRows::Title(&existing_files),
+        scope_label: "this series-movie link",
+    };
+    let plan = match crate::import_decide::decide_import(app, &decision_input).await {
+        crate::import_decide::ImportDecisionOutcome::Admit(plan) => plan,
+        crate::import_decide::ImportDecisionOutcome::Reject {
+            rejection,
+            disposition,
+        } => {
+            return carry_out_import_rejection(
                 app,
-                &prepared.parsed,
-                prepared.accepted.as_ref(),
-                &quality_profile,
+                actor,
                 title,
-                movie.runtime_minutes,
-                source_size,
-                true,
-                Some(old_score),
-                &prepared.rescore_changes,
-                false,
+                import_id,
+                completed,
+                ImportRejectionContext {
+                    rejection,
+                    disposition,
+                    release_title: &prepared.parsed.raw_title,
+                    source_title: source_title.as_deref(),
+                    source_video: &source_video,
+                    dest_path: &dest_path,
+                    source_size,
+                    quality: prepared.parsed.quality.clone(),
+                    episode_ids: &linked_episode_ids,
+                    series_movie_link_id: Some(series_movie_link_id),
+                    episode_artifacts: &linked_episode_artifacts,
+                },
+                started_at,
             )
             .await;
-        let new_score = post_download_score.score
-            + if manual_replacement {
-                crate::post_download_gate::MANUAL_GRAB_BOOST
-            } else {
-                0
-            };
-        if new_score > old_score || manual_replacement {
+        }
+    };
+    if let Some(directive) = plan.blocklist_after_import.as_ref() {
+        tracing::info!(title_id = %title.id, code = directive.code, "{}", directive.reason);
+        crate::post_download_gate::blocklist_release_for_title(
+            app,
+            title,
+            &prepared.parsed.raw_title,
+            Some(directive.reason.clone()),
+            crate::post_download_gate::BlocklistAttribution {
+                episode_ids: &linked_episode_ids,
+                collection_id: None,
+                series_movie_link_id: Some(series_movie_link_id),
+            },
+        )
+        .await;
+    }
+    let new_score = plan.score;
+
+    if let crate::import_decide::SupersededIncumbents::Title(superseded) = &plan.superseded
+        && let Some(existing_file) = superseded.first()
+    {
+        let old_score = plan.previous_best_score;
+        {
             let old_file_recycle_context =
                 crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file).await?;
 
@@ -1923,10 +2240,10 @@ async fn import_series_movie_download(
                 &source_video,
                 &dest_path,
                 &prepared,
-                post_download_score.parsed.quality.as_deref(),
+                plan.parsed.quality.as_deref(),
                 new_score,
                 old_score,
-                post_download_score.scoring_log.clone(),
+                plan.scoring_log.clone(),
                 &[],
                 Some(&media_root),
                 Some(old_file_recycle_context.media_root.as_str()),
@@ -2010,7 +2327,7 @@ async fn import_series_movie_download(
                         app,
                         &title.id,
                         series_movie_link_id,
-                        Some(outcome.new_score),
+                        true,
                     )
                     .await;
                     let result = ImportResult {
@@ -2093,45 +2410,6 @@ async fn import_series_movie_download(
                     );
                 }
             }
-        } else {
-            // New file is not better — skip
-            persist_file_import_artifact(
-                app,
-                import_id,
-                completed,
-                title.id.as_str(),
-                &source_video,
-                "movie",
-                "already_present",
-                Some("existing_better_or_equal"),
-                None,
-                &linked_episode_artifacts,
-            )
-            .await;
-            let result = ImportResult {
-                import_id: import_id.to_string(),
-                decision: ImportDecision::Skipped,
-                skip_reason: Some(ImportSkipReason::PolicyMismatch),
-                title_id: Some(title.id.clone()),
-                source_system: Some(completed.client_type.clone()),
-                source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: source_title.clone(),
-                source_path: path_to_stored_string(&source_video),
-                dest_path: Some(path_to_stored_string(&dest_path)),
-                quality: prepared.parsed.quality.clone(),
-                episode_ids: linked_episode_ids.clone(),
-                file_size_bytes: Some(source_size),
-                link_type: None,
-                error_message: Some(format!(
-                    "new score {new_score} not better than existing {old_score}"
-                )),
-                started_at,
-                completed_at: Utc::now(),
-            };
-            let result_json = serde_json::to_string(&result).ok();
-            app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
-                .await?;
-            return Ok(result);
         }
     }
 
@@ -2156,24 +2434,11 @@ async fn import_series_movie_download(
     )
     .await?;
 
+    // The persisted bar must be the score of the bytes that actually landed
+    // (I7), and the transfer can change the size. Same context, same pipeline,
+    // one number different — no second profile resolution.
     let post_download_score =
-        crate::post_download_gate::compute_post_download_acquisition_decision(
-            app,
-            &prepared.parsed,
-            prepared.accepted.as_ref(),
-            &quality_profile,
-            title,
-            movie.runtime_minutes,
-            file_result.size_bytes as i64,
-            !series_movie_files.is_empty(),
-            series_movie_files
-                .iter()
-                .max_by_key(|file| file.acquisition_score.unwrap_or(0))
-                .and_then(|file| file.acquisition_score),
-            &prepared.rescore_changes,
-            false,
-        )
-        .await;
+        crate::import_decide::rescore_landed_size(&decision_input, file_result.size_bytes as i64);
     let acq_score = post_download_score.score;
 
     let imported_media_file_id = match app
@@ -2329,13 +2594,7 @@ async fn import_series_movie_download(
         }
     }
 
-    mark_wanted_completed_for_series_movie_link(
-        app,
-        &title.id,
-        series_movie_link_id,
-        Some(acq_score),
-    )
-    .await;
+    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, true).await;
 
     // Spawn post-processing
     spawn_post_processing(PostProcessingContext {
@@ -2410,7 +2669,7 @@ async fn mark_wanted_completed_for_series_movie_link(
     app: &AppUseCase,
     title_id: &str,
     series_movie_link_id: &str,
-    imported_score: Option<i32>,
+    landed_import: bool,
 ) {
     match app
         .services
@@ -2433,16 +2692,17 @@ async fn mark_wanted_completed_for_series_movie_link(
                         .services
                         .workflow
                         .acquisition_scope_states
-                        .transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
-                            id: item.id.clone(),
-                            last_search_at: Some(now),
-                            current_score: imported_score.or(item.current_score),
-                            grabbed_release: if imported_score.is_some() {
-                                None
-                            } else {
-                                item.grabbed_release.clone()
+                        .transition_acquisition_scope_to_completed(
+                            &AcquisitionScopeCompleteTransition {
+                                id: item.id.clone(),
+                                last_search_at: Some(now),
+                                grabbed_release: if landed_import {
+                                    None
+                                } else {
+                                    item.grabbed_release.clone()
+                                },
                             },
-                        })
+                        )
                         .await;
                     return;
                 }

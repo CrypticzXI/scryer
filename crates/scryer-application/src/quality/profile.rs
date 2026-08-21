@@ -36,7 +36,25 @@ pub struct QualityProfileCriteria {
     pub scoring_persona: ScoringPersona,
     pub scoring_overrides: ScoringOverrides,
     pub cutoff_tier: Option<String>,
+    /// Sonarr's `MinFormatScore`: the absolute floor a release must clear to be
+    /// grabbed at all, applied by `apply_min_score_gate` as a veto. Nothing
+    /// else reads it.
     pub min_score_to_grab: Option<i32>,
+    /// Sonarr's `CutoffFormatScore`: the score past which a file is good enough
+    /// and same-tier improvements stop earning bandwidth.
+    ///
+    /// Split out from `min_score_to_grab`, which was doing both jobs (D19). One
+    /// is a floor on the *candidate* and one is a ceiling on the *incumbent*;
+    /// tying them meant a profile could not say "grab nothing under 100" without
+    /// also saying "stop upgrading at 100".
+    ///
+    /// `#[serde(skip_serializing_if)]` is load-bearing, not tidiness:
+    /// `convergence::profile_criteria_version` hashes this struct's JSON, and
+    /// that hash decides whether a scope's convergence coverage is still valid.
+    /// A new key would invalidate every scope in the library on upgrade and
+    /// trigger a full re-search. Omitted when unset, it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutoff_score: Option<i32>,
     pub facet_persona_overrides: HashMap<String, ScoringPersona>,
 }
 
@@ -52,6 +70,8 @@ pub struct ScoringConfig {
     pub cutoff_tier: Option<String>,
     #[serde(default)]
     pub min_score_to_grab: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutoff_score: Option<i32>,
     #[serde(default)]
     pub facet_persona_overrides: HashMap<String, ScoringPersona>,
 }
@@ -102,6 +122,15 @@ pub struct QualityProfileDecision {
     pub block_codes: Vec<String>,
     /// Kept equal to `release_score` so existing sort logic works without changes.
     pub preference_score: i32,
+    /// Where this release's quality sits in the profile's ordering; lower is
+    /// better, `None` when the profile does not list it.
+    ///
+    /// Carried on the decision so that **every** place results are ordered can
+    /// compare tier before score without re-resolving the profile. The tier
+    /// stopped contributing points when it became a comparison step, so a
+    /// comparator that only sees `preference_score` will happily list a 720p
+    /// release above a 2160p one (D11).
+    pub tier_index: Option<usize>,
 }
 
 impl QualityProfileDecision {
@@ -112,6 +141,7 @@ impl QualityProfileDecision {
             allowed: true,
             block_codes: Vec::new(),
             preference_score: 0,
+            tier_index: None,
         }
     }
 
@@ -181,6 +211,8 @@ struct RawQualityProfileCriteria {
     #[serde(default)]
     min_score_to_grab: Option<i32>,
     #[serde(default)]
+    cutoff_score: Option<i32>,
+    #[serde(default)]
     facet_persona_overrides: HashMap<String, ScoringPersona>,
 }
 
@@ -246,6 +278,7 @@ pub fn builtin_4k_profile() -> QualityProfile {
             scoring_overrides: ScoringOverrides::default(),
             cutoff_tier: None,
             min_score_to_grab: None,
+            cutoff_score: None,
             facet_persona_overrides: HashMap::new(),
         },
     }
@@ -282,6 +315,7 @@ pub fn builtin_8k_profile() -> QualityProfile {
             scoring_overrides: ScoringOverrides::default(),
             cutoff_tier: None,
             min_score_to_grab: None,
+            cutoff_score: None,
             facet_persona_overrides: HashMap::new(),
         },
     }
@@ -313,6 +347,7 @@ pub fn builtin_1080p_profile() -> QualityProfile {
             scoring_overrides: ScoringOverrides::default(),
             cutoff_tier: None,
             min_score_to_grab: None,
+            cutoff_score: None,
             facet_persona_overrides: HashMap::new(),
         },
     }
@@ -370,6 +405,7 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, se
             scoring_overrides: criteria.scoring_overrides,
             cutoff_tier: criteria.cutoff_tier,
             min_score_to_grab: criteria.min_score_to_grab,
+            cutoff_score: criteria.cutoff_score,
             facet_persona_overrides: criteria.facet_persona_overrides,
         },
     })
@@ -405,6 +441,7 @@ impl Default for QualityProfile {
                 scoring_overrides: ScoringOverrides::default(),
                 cutoff_tier: None,
                 min_score_to_grab: None,
+                cutoff_score: None,
                 facet_persona_overrides: HashMap::new(),
             },
         }
@@ -435,6 +472,7 @@ impl Default for QualityProfileCriteria {
             scoring_overrides: ScoringOverrides::default(),
             cutoff_tier: None,
             min_score_to_grab: None,
+            cutoff_score: None,
             facet_persona_overrides: HashMap::new(),
         }
     }
@@ -547,6 +585,58 @@ pub(crate) fn normalize_quality_tier(raw: Option<&str>) -> Option<String> {
     })
 }
 
+/// The vertical resolution a quality label names, if it names one.
+///
+/// Deliberately more forgiving than [`normalize_quality_tier`], which is an
+/// *exact* key into the profile's tier list and must stay one: this reads the
+/// number out of the label, so `1080p`, `1080i`, `Bluray-1080p` and a bare
+/// `1080` all report 1080. Anything that names no resolution reports `None`.
+///
+/// It exists so that ordering by resolution and looking a quality up in the
+/// profile share one notion of what a label says. They did not: the cutoff
+/// election ranked `1080i` and every compound Sonarr-style label as worse than
+/// 480p, so a scope holding one could elect the wrong file as its cutoff
+/// quality.
+pub(crate) fn resolution_lines(raw: Option<&str>) -> Option<u32> {
+    let value = raw?.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    let plausible = |lines: u32| (100..=10_000).contains(&lines).then_some(lines);
+    // A bare number is a resolution on its own ("1080").
+    if let Ok(lines) = value.parse::<u32>() {
+        return plausible(lines);
+    }
+    // Otherwise take the largest `<digits>p` / `<digits>i` token in the label,
+    // so a compound `bluray-1080p` reads as 1080 rather than as nothing.
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter_map(|token| {
+            let digits = token
+                .strip_suffix('p')
+                .or_else(|| token.strip_suffix('i'))?;
+            digits.parse::<u32>().ok().and_then(plausible)
+        })
+        .max()
+}
+
+/// Where a quality sits in the profile's ordering, or `None` when the profile
+/// does not list it.
+///
+/// This is Sonarr's `QualityProfile.GetIndex`: the single source of "is this
+/// better than that" for quality, used by the admission gate and by search
+/// ordering so the two can never disagree about what outranks what.
+pub(crate) fn quality_tier_index(
+    criteria: &QualityProfileCriteria,
+    quality: Option<&str>,
+) -> Option<usize> {
+    let quality = normalize_quality_tier(quality)?;
+    criteria
+        .quality_tiers
+        .iter()
+        .position(|tier| tier == &quality)
+}
+
 pub fn resolve_profile_id_for_title(
     title_profile_id: Option<&str>,
     library_profile_id: Option<&str>,
@@ -594,55 +684,6 @@ pub fn quality_meets_or_exceeds_cutoff(
     }
 }
 
-pub fn has_reached_cutoff_from_quality_or_release(
-    analyzed_quality: Option<&str>,
-    grabbed_release: Option<&str>,
-    cutoff_tier: Option<&str>,
-    quality_tiers: &[String],
-) -> bool {
-    if let Some(current_quality) = analyzed_quality
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let Some(cutoff) = cutoff_tier else {
-            return false;
-        };
-        return quality_meets_or_exceeds_cutoff(current_quality, cutoff, quality_tiers);
-    }
-
-    has_reached_cutoff(grabbed_release, cutoff_tier, quality_tiers)
-}
-
-/// Check whether the currently grabbed release has reached the cutoff quality tier.
-///
-/// Returns `true` when the existing file's quality is at or above the cutoff tier
-/// in the profile's tier ordering. When true, callers should skip upgrade consideration.
-///
-/// `grabbed_release` is the raw release title stored on the wanted item.
-/// `cutoff_tier` and `quality_tiers` come from the quality profile criteria.
-pub fn has_reached_cutoff(
-    grabbed_release: Option<&str>,
-    cutoff_tier: Option<&str>,
-    quality_tiers: &[String],
-) -> bool {
-    let Some(release_title) = grabbed_release else {
-        return false;
-    };
-    let Some(cutoff) = cutoff_tier else {
-        return false;
-    };
-    if quality_tiers.is_empty() {
-        return false;
-    }
-
-    let parsed = crate::release_parser::parse_release_metadata(release_title);
-    let Some(current_quality) = parsed.quality.as_deref() else {
-        return false;
-    };
-
-    quality_meets_or_exceeds_cutoff(current_quality, cutoff, quality_tiers)
-}
-
 pub fn evaluate_against_profile(
     profile: &QualityProfile,
     release: &ParsedReleaseMetadata,
@@ -661,6 +702,10 @@ pub fn evaluate_against_profile_for_category(
 ) -> QualityProfileDecision {
     let mut d = QualityProfileDecision::new();
     let c = &profile.criteria;
+    // Recorded once, here, so every consumer of a decision — the search rank,
+    // the interactive merge, the admission gate — reads the same tier without
+    // re-resolving the profile (D11).
+    d.tier_index = quality_tier_index(c, release.quality.as_deref());
 
     // ── Upgrade guard ────────────────────────────────────────────────────────
     if !c.allow_upgrades && has_existing_file {
@@ -668,17 +713,20 @@ pub fn evaluate_against_profile_for_category(
     }
 
     // ── Quality tier ─────────────────────────────────────────────────────────
+    //
+    // Membership only. The tier no longer contributes points.
+    //
+    // It used to add 3200/900/300 by position, which made the tier just another
+    // summand — so a size penalty or a custom-format bonus could out-argue a
+    // whole resolution step, and a WEB-DL could lose to a WEBRip over a −700
+    // size cliff. Rank is decided by tier *before* score now, in
+    // [`crate::admission`] for upgrades and in [`crate::acquisition::scoring`]
+    // for search ordering, exactly as Sonarr's `QualityModelComparer` runs ahead
+    // of its custom-format comparison. A quality outside the profile is still a
+    // hard block, because that is a verdict rather than a preference.
     match normalize_quality_tier(release.quality.as_deref()) {
         Some(q) if !c.quality_tiers.is_empty() => {
-            if let Some(idx) = c.quality_tiers.iter().position(|t| t == &q) {
-                let bonus = match idx {
-                    0 => 3200,
-                    1 => 900,
-                    2 => 300,
-                    _ => (300_i32 - (idx as i32 - 2) * 125).max(50),
-                };
-                d.log(&format!("quality_tier_{idx}"), bonus);
-            } else {
+            if !c.quality_tiers.iter().any(|t| t == &q) {
                 d.log("quality_not_in_profile_tiers", BLOCK_SCORE);
             }
         }
@@ -1183,7 +1231,69 @@ struct SizeRatioThresholds {
     slightly_small: f64,
     small: f64,
     very_small: f64,
+    /// Floor below which the file cannot be the release it claims to be.
+    ///
+    /// A veto, not a penalty (D21): a step, never interpolated, the mirror of
+    /// [`SizeRatioThresholds::implausible`] at the other end of the curve.
+    ///
+    /// **Calibrated against Sonarr's shipped `QualityDefinition.MinSize`**, which
+    /// is the only published number for "too small to be this quality":
+    /// `Quality.cs:158-181` (v5-develop `e27c1f47a`) ships 2 MB/min for SD,
+    /// 3 for 720p, 4 for 1080p and 35 for 2160p, and
+    /// `AcceptableSizeSpecification` rejects below `MinSize × runtime`. Scryer's
+    /// floor has to sit **at or below** that, because Sonarr's is an operator's
+    /// per-quality constant while `expected_gib` here is *modelled* from
+    /// bitrate × runtime × codec × source, and a model that is wrong by 2× on an
+    /// efficient encode must not veto it.
+    ///
+    /// The implied floor is `bitrate × codec × source × 7.5 MB/min × factor`.
+    /// The binding case for episodic content is a 1080p Bluray H.264 episode
+    /// (8.5 × 1.10 × 1.35 × 7.5 ≈ 94.7 MB/min): at the old 0.10 the floor was
+    /// 9.5 MB/min, more than twice Sonarr's 4, and it refused perfectly ordinary
+    /// releases — a 1080p WEB-DL episode at 4.5 MB/min was vetoed on every
+    /// cycle. **0.04** puts it at 3.8 MB/min, just under Sonarr, and every other
+    /// episodic combination lands further below (720p WEB-DL H.264 → 0.9 vs 3;
+    /// 2160p Bluray remux → 14.2 vs 35).
+    ///
+    /// **Movies keep 0.10**, because there is no parity number to match: Radarr
+    /// ships `MinSize = 0` for every movie quality (`Quality.cs:170-204`), so the
+    /// floor here is Scryer's own protection rather than a port of anyone's. A
+    /// feature's runtime is also nearly always known, which is what made the
+    /// episodic floor unsafe.
+    ///
+    /// Everything between this and `very_small` still takes the full `size_tiny`
+    /// penalty, so a merely tiny release is refused on the numbers rather than
+    /// vetoed. Specials skip the veto entirely (`release_is_a_special`).
+    ///
+    /// Not scaled by [`SizeRatioThresholds::with_upper_multiplier`]: AV1's
+    /// headroom is about large encodes, and the whole low half of the curve is
+    /// already codec-corrected through `codec_efficiency_factor`.
+    implausibly_small: f64,
 }
+
+/// Below this the minimum-size veto does not apply, whatever the ratio says.
+///
+/// It is the boundary between two different statements. "Too small for what it
+/// claims" is a judgement about media bytes and belongs to the size curve.
+/// "Not media at all" — a stream pointer (`.strm` holds a URL), a sample, a
+/// promo, a zero-length placeholder — belongs to the import pipeline's sample
+/// filter, which already knows things the scorer cannot (that a `.strm` is
+/// exempt, that a small file beside large ones in a pack is a promo). Letting
+/// the veto reach down there would put the two rules in contradiction, and would
+/// make a stream-pointer import fail on the size of its own URL.
+///
+/// The value is the import pipeline's own sample threshold
+/// (`import::workflow::completed::SAMPLE_SIZE_THRESHOLD`), duplicated rather
+/// than imported because scoring must not depend on the import module. The
+/// import side asserts the two are equal at compile time (a `const _: () =
+/// assert!(..)` next to `SAMPLE_SIZE_THRESHOLD`), so the duplication cannot
+/// drift — the dependency runs one way only.
+pub(crate) const MINIMUM_SIZE_VETO_FLOOR_BYTES: i64 = 50 * 1024 * 1024;
+
+/// The minimum-size veto ratio for episodic content, where Sonarr publishes a
+/// number to match. See [`SizeRatioThresholds::implausibly_small`] for the
+/// arithmetic behind it.
+const EPISODIC_MINIMUM_SIZE_VETO_RATIO: f64 = 0.04;
 
 impl SizeRatioThresholds {
     fn with_upper_multiplier(mut self, multiplier: f64) -> Self {
@@ -1199,7 +1309,7 @@ impl SizeRatioThresholds {
 
 fn size_ratio_thresholds(media_category: MediaSizeCategory) -> SizeRatioThresholds {
     match media_category {
-        MediaSizeCategory::Movie | MediaSizeCategory::Series => SizeRatioThresholds {
+        MediaSizeCategory::Movie => SizeRatioThresholds {
             implausible: 8.0,
             excessive: 4.0,
             massive: 2.4,
@@ -1209,6 +1319,19 @@ fn size_ratio_thresholds(media_category: MediaSizeCategory) -> SizeRatioThreshol
             slightly_small: 0.75,
             small: 0.55,
             very_small: 0.35,
+            implausibly_small: 0.10,
+        },
+        MediaSizeCategory::Series => SizeRatioThresholds {
+            implausible: 8.0,
+            excessive: 4.0,
+            massive: 2.4,
+            very_large: 1.8,
+            large: 1.35,
+            expected: 1.0,
+            slightly_small: 0.75,
+            small: 0.55,
+            very_small: 0.35,
+            implausibly_small: EPISODIC_MINIMUM_SIZE_VETO_RATIO,
         },
         MediaSizeCategory::Anime => SizeRatioThresholds {
             implausible: 6.0,
@@ -1220,8 +1343,116 @@ fn size_ratio_thresholds(media_category: MediaSizeCategory) -> SizeRatioThreshol
             slightly_small: 0.65,
             small: 0.5,
             very_small: 0.3,
+            implausibly_small: EPISODIC_MINIMUM_SIZE_VETO_RATIO,
         },
     }
+}
+
+/// One point on the size curve: a size ratio and the delta the curve takes there.
+#[derive(Debug, Clone, Copy)]
+struct SizeAnchor {
+    ratio: f64,
+    delta: i32,
+}
+
+/// The band's log mid-point — the geometric mean of the ratios that bound it.
+///
+/// A band's weight was chosen to describe a release *in* that band, so the
+/// honest place to pin it is the band's centre. In log space (which is where
+/// size ratios live: 2× larger and 2× smaller are the same distance from
+/// expected) that centre is the geometric mean.
+fn size_band_anchor(low: f64, high: f64, delta: i32) -> SizeAnchor {
+    SizeAnchor {
+        ratio: (low * high).sqrt(),
+        delta,
+    }
+}
+
+/// The nine preference bands as a continuous curve, ordered by ratio.
+///
+/// Excludes both blocks: a veto is a verdict, not the end of a gradient.
+fn size_curve(thresholds: &SizeRatioThresholds, weights: &ScoringWeights) -> [SizeAnchor; 9] {
+    [
+        size_band_anchor(
+            thresholds.implausibly_small,
+            thresholds.very_small,
+            weights.size_tiny,
+        ),
+        size_band_anchor(
+            thresholds.very_small,
+            thresholds.small,
+            weights.size_very_small,
+        ),
+        size_band_anchor(
+            thresholds.small,
+            thresholds.slightly_small,
+            weights.size_small,
+        ),
+        size_band_anchor(
+            thresholds.slightly_small,
+            thresholds.expected,
+            weights.size_slightly_small,
+        ),
+        size_band_anchor(thresholds.expected, thresholds.large, weights.size_expected),
+        size_band_anchor(thresholds.large, thresholds.very_large, weights.size_large),
+        size_band_anchor(
+            thresholds.very_large,
+            thresholds.massive,
+            weights.size_very_large,
+        ),
+        size_band_anchor(
+            thresholds.massive,
+            thresholds.excessive,
+            weights.size_massive,
+        ),
+        size_band_anchor(
+            thresholds.excessive,
+            thresholds.implausible,
+            weights.size_excessive,
+        ),
+    ]
+}
+
+/// Read the size curve at `ratio`: linear in log(ratio) between anchors,
+/// constant beyond the outermost pair.
+///
+/// The step function this replaces changed the score by a whole bucket weight
+/// the instant a ratio crossed a threshold — up to 700 points on the Balanced
+/// curve. Announced and landed sizes routinely differ by 5-10% (par2 and RAR
+/// overhead in the NZB size, a short episode), so a release grabbed just above a
+/// boundary landed just below it and read as a downgrade at import. That is the
+/// grab/import disagreement this whole change set exists to remove; the fix is
+/// for the term to be continuous, so drift moves the number by a proportional
+/// amount instead of a cliff.
+fn interpolate_size_delta(ratio: f64, curve: &[SizeAnchor; 9]) -> i32 {
+    let position = ratio.max(f64::MIN_POSITIVE).ln();
+
+    let first = &curve[0];
+    let last = &curve[curve.len() - 1];
+    if position <= first.ratio.ln() {
+        return first.delta;
+    }
+    if position >= last.ratio.ln() {
+        return last.delta;
+    }
+
+    for pair in curve.windows(2) {
+        let (low, high) = (&pair[0], &pair[1]);
+        let high_position = high.ratio.ln();
+        if position <= high_position {
+            let low_position = low.ratio.ln();
+            let span = high_position - low_position;
+            if span <= 0.0 {
+                return high.delta;
+            }
+            let travelled = (position - low_position) / span;
+            let delta =
+                f64::from(low.delta) + travelled * f64::from(high.delta.saturating_sub(low.delta));
+            return delta.round() as i32;
+        }
+    }
+
+    last.delta
 }
 
 fn size_ratio_thresholds_for_codec(
@@ -1289,23 +1520,67 @@ pub fn apply_size_scoring_for_category(
     let ratio = size_gib / expected_gib.max(0.5);
     let thresholds = size_ratio_thresholds_for_codec(media_category, release.video_codec.as_ref());
 
-    let (code, delta) = match ratio {
-        r if r >= thresholds.implausible => ("size_implausible_for_quality", BLOCK_SCORE),
-        r if r >= thresholds.excessive => ("size_excessive_for_quality", weights.size_excessive),
-        r if r >= thresholds.massive => ("size_massive_for_quality", weights.size_massive),
-        r if r >= thresholds.very_large => ("size_very_large_for_quality", weights.size_very_large),
-        r if r >= thresholds.large => ("size_large_for_quality", weights.size_large),
-        r if r >= thresholds.expected => ("size_expected_for_quality", weights.size_expected),
-        r if r >= thresholds.slightly_small => (
-            "size_slightly_small_for_quality",
-            weights.size_slightly_small,
-        ),
-        r if r >= thresholds.small => ("size_small_for_quality", weights.size_small),
-        r if r >= thresholds.very_small => ("size_very_small_for_quality", weights.size_very_small),
-        _ => ("size_tiny_for_quality", weights.size_tiny),
+    // The band still names itself in the scoring log — the code is what an
+    // operator reads and what tests pin — while the delta comes from the curve,
+    // so two releases in the same band no longer score identically and a release
+    // that drifts across a boundary no longer jumps.
+    let code = match ratio {
+        r if r >= thresholds.excessive => "size_excessive_for_quality",
+        r if r >= thresholds.massive => "size_massive_for_quality",
+        r if r >= thresholds.very_large => "size_very_large_for_quality",
+        r if r >= thresholds.large => "size_large_for_quality",
+        r if r >= thresholds.expected => "size_expected_for_quality",
+        r if r >= thresholds.slightly_small => "size_slightly_small_for_quality",
+        r if r >= thresholds.small => "size_small_for_quality",
+        r if r >= thresholds.very_small => "size_very_small_for_quality",
+        _ => "size_tiny_for_quality",
     };
+    let delta = interpolate_size_delta(ratio, &size_curve(&thresholds, weights));
 
+    // **The band is logged before the veto, always.** `total` — the bar a file
+    // is compared by — is the pass's score with every `BLOCK_SCORE` entry
+    // stripped out (I5, `preference_score_without_blocks`). If the veto
+    // *replaced* the band entry, stripping it would leave a vetoed file with no
+    // size term at all: at import both passes see the same bytes, so both are
+    // blocked, nothing is "introduced", the verdict is `Consistent` — and the
+    // file lands with a bar 2500 points **above** the same file one byte the
+    // other side of the threshold, then refuses every real upgrade as
+    // `NotAnUpgrade`. A veto is a verdict *on top of* the honest number, not
+    // instead of it.
     decision.log(code, delta);
+
+    // The two vetoes stay steps: a file far larger or far smaller than anything
+    // its quality and runtime could produce is not a release that scored badly,
+    // it is not that release at all. Everything between them is one continuous
+    // curve, read at `ratio` (D3, D21).
+    if ratio >= thresholds.implausible {
+        decision.log("size_implausible_for_quality", BLOCK_SCORE);
+        return;
+    }
+    if ratio < thresholds.implausibly_small
+        && raw_size_bytes >= MINIMUM_SIZE_VETO_FLOOR_BYTES
+        && !release_is_a_special(release)
+    {
+        decision.log("size_implausibly_small_for_quality", BLOCK_SCORE);
+    }
+}
+
+/// Whether the release announces itself as a special, in which case the
+/// minimum-size veto does not apply.
+///
+/// Sonarr's `AcceptableSizeSpecification.cs:29-33` — "Special release found,
+/// skipping size check" — and for the same reason: a special's runtime is
+/// whatever the studio felt like, the catalog rarely records it, so the modelled
+/// expectation is the series average and a genuine seven-minute short reads as a
+/// fraction of it. The *penalty* side of the curve still fires; only the veto is
+/// skipped, so a short is refused on the numbers if it deserves to be and never
+/// on a runtime nobody knew.
+fn release_is_a_special(release: &ParsedReleaseMetadata) -> bool {
+    release.episode.as_ref().is_some_and(|episode| {
+        episode.special_kind.is_some()
+            || !episode.special_absolute_episode_numbers.is_empty()
+            || episode.season == Some(0)
+    })
 }
 
 #[cfg(test)]
@@ -1318,30 +1593,6 @@ mod tests {
     use scryer_release_parser::{
         ContextEpisode, ContextFacetHint, ContextTitle, ReleaseParseContext,
     };
-
-    #[test]
-    fn cutoff_prefers_analyzed_quality_over_grabbed_release_text() {
-        let tiers = vec!["1080P".to_string(), "720P".to_string()];
-
-        assert!(!has_reached_cutoff_from_quality_or_release(
-            Some("720p"),
-            Some("Example.S01E01.1080p.WEB-DL"),
-            Some("1080P"),
-            &tiers,
-        ));
-        assert!(has_reached_cutoff_from_quality_or_release(
-            Some("1080p"),
-            Some("Example.S01E01.720p.WEB-DL"),
-            Some("1080P"),
-            &tiers,
-        ));
-        assert!(has_reached_cutoff_from_quality_or_release(
-            None,
-            Some("Example.S01E01.1080p.WEB-DL"),
-            Some("1080P"),
-            &tiers,
-        ));
-    }
 
     #[test]
     fn parse_profile_json() {
@@ -1899,7 +2150,19 @@ mod tests {
             &w,
         );
 
-        assert!(plausible_uhd_decision.preference_score > strong_1080_decision.preference_score);
+        // Tier no longer lives in the score, so these two are compared on their
+        // within-tier merits and the 1080p BluRay may well win on points. What
+        // must hold is that the profile still ranks UHD above 1080p — that
+        // ordering is consulted first, before either score is looked at.
+        assert!(
+            quality_tier_index(&profile.criteria, Some("2160p"))
+                < quality_tier_index(&profile.criteria, Some("1080p")),
+            "the profile must still rank UHD above 1080p"
+        );
+        let _ = (
+            plausible_uhd_decision.preference_score,
+            strong_1080_decision.preference_score,
+        );
     }
 }
 

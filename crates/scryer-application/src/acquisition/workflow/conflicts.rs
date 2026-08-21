@@ -185,6 +185,7 @@ impl AppUseCase {
     ) -> AcquisitionScopeState {
         let now = Utc::now().to_rfc3339();
         AcquisitionScopeState {
+            landed_bar: None,
             id: Id::new().0,
             title_id: title.id.clone(),
             title_name: None,
@@ -202,7 +203,6 @@ impl AppUseCase {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: now.clone(),

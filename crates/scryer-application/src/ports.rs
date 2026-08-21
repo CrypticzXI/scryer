@@ -4093,7 +4093,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()>;
 
@@ -4113,7 +4112,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Grabbed.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             Some(&transition.grabbed_release),
         )
         .await
@@ -4127,18 +4125,24 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Completed.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             transition.grabbed_release.as_deref(),
         )
         .await
     }
 
+    /// Mark a scope completed.
+    ///
+    /// `landed_import` says whether a file actually landed for this scope, which
+    /// is the only thing the old `current_score` argument was ever used for
+    /// here: a landed import clears the in-flight grab, while a passive scan or
+    /// manual completion leaves it alone. It used to be inferred from
+    /// `current_score.is_some()`, which read a score as a flag.
     async fn complete_acquisition_scope_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
+        landed_import: bool,
     ) -> AppResult<bool> {
         let Some(wanted) = self
             .get_acquisition_scope_state_for_title(title_id, episode_id)
@@ -4150,8 +4154,7 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         self.transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
             id: wanted.id,
             last_search_at: last_search_at.map(str::to_string),
-            current_score: current_score.or(wanted.current_score),
-            grabbed_release: if current_score.is_some() {
+            grabbed_release: if landed_import {
                 None
             } else {
                 wanted.grabbed_release
@@ -4170,7 +4173,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Paused.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             transition.grabbed_release.as_deref(),
         )
         .await
@@ -4189,7 +4191,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             id,
             AcquisitionScopeStatus::Wanted.as_str(),
             existing.last_search_at.as_deref(),
-            existing.current_score,
             None,
         )
         .await

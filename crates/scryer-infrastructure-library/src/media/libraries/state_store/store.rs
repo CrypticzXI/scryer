@@ -321,7 +321,8 @@ fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
         status: AcquisitionScopeStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
-        current_score: row.opt_i32("current_score")?,
+        // Resolved from the library by the caller, never stored.
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: required_timestamp_text(row, "created_at")?,
@@ -400,7 +401,8 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
         status: AcquisitionScopeStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
-        current_score: row.opt_i32("current_score")?,
+        // Resolved from the library by the caller, never stored.
+        landed_bar: None,
         latest_release_decision,
         mismatch_recovery_eligible: row.bool("mismatch_recovery_eligible")?,
         created_at: required_timestamp_text(row, "created_at")?,
@@ -415,7 +417,6 @@ fn wanted_item_select_sql() -> &'static str {
             w.episode_id, w.collection_id, w.series_movie_link_id,
             e.season_number, e.episode_number, w.media_type,
             w.last_search_at, w.status, w.grabbed_release,
-            w.current_score,
             latest_decision.id AS latest_decision_id,
             latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
             latest_decision.title_id AS latest_decision_title_id,
@@ -543,9 +544,9 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &AcquisitionScopeState) -
     format!(
         "INSERT INTO wanted_items
          (id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
-          last_search_at, status, grabbed_release, current_score,
+          last_search_at, status, grabbed_release,
           created_at, updated_at)
-         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
+         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
          ON CONFLICT{conflict_target} DO UPDATE SET
             status = CASE
                 WHEN wanted_items.status IN ('completed', 'paused') AND excluded.status = 'wanted'
@@ -571,7 +572,6 @@ fn wanted_upsert_args(
         opt_timestamp_arg_for_datastore(datastore, item.last_search_at.as_deref())?,
         SqlArg::Text(item.status.as_str().to_string()),
         SqlArg::OptText(item.grabbed_release.clone()),
-        SqlArg::OptI32(item.current_score),
         timestamp_arg_for_datastore(datastore, &now)?,
         timestamp_arg_for_datastore(datastore, &now)?,
     ])
@@ -610,7 +610,7 @@ async fn fetch_seed_target_tx(
     let columns =
         "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
                           last_search_at, status,
-                          grabbed_release, current_score, created_at, updated_at
+                          grabbed_release, created_at, updated_at
                      FROM wanted_items";
     let (sql, args) = if let Some(collection_id) = item.collection_id.as_deref() {
         (
@@ -701,7 +701,6 @@ impl AcquisitionScopeStateRepository for WantedStore {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         let now = Utc::now().to_rfc3339();
@@ -711,14 +710,12 @@ impl AcquisitionScopeStateRepository for WantedStore {
             "UPDATE wanted_items
                 SET status = {},
                     last_search_at = {},
-                    current_score = {},
                     grabbed_release = {},
                     updated_at = {}
               WHERE id = {}",
             vec![
                 SqlArg::Text(status.to_string()),
                 opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
-                SqlArg::OptI32(current_score),
                 SqlArg::OptText(grabbed_release.map(str::to_string)),
                 timestamp_arg_for_datastore(&self.datastore, &now)?,
                 SqlArg::Text(id.to_string()),
@@ -812,7 +809,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
         title_id: &str,
         episode_id: Option<&str>,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
+        landed_import: bool,
     ) -> AppResult<bool> {
         let now = Utc::now().to_rfc3339();
         let (sql, args) = if let Some(episode_id) = episode_id {
@@ -820,16 +817,14 @@ impl AcquisitionScopeStateRepository for WantedStore {
                 "UPDATE wanted_items
                     SET status = {},
                         last_search_at = {},
-                        current_score = COALESCE({}, current_score),
-                        grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
+                        grabbed_release = CASE WHEN {} THEN NULL ELSE grabbed_release END,
                         updated_at = {}
                   WHERE title_id = {} AND episode_id = {}"
                     .to_string(),
                 vec![
                     SqlArg::Text(AcquisitionScopeStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
-                    SqlArg::OptI32(current_score),
-                    SqlArg::OptI32(current_score),
+                    SqlArg::Bool(landed_import),
                     timestamp_arg_for_datastore(&self.datastore, &now)?,
                     SqlArg::Text(title_id.to_string()),
                     SqlArg::Text(episode_id.to_string()),
@@ -840,8 +835,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
                 "UPDATE wanted_items
                     SET status = {},
                         last_search_at = {},
-                        current_score = COALESCE({}, current_score),
-                        grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
+                        grabbed_release = CASE WHEN {} THEN NULL ELSE grabbed_release END,
                         updated_at = {}
                   WHERE title_id = {}
                     AND episode_id IS NULL
@@ -851,8 +845,7 @@ impl AcquisitionScopeStateRepository for WantedStore {
                 vec![
                     SqlArg::Text(AcquisitionScopeStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
-                    SqlArg::OptI32(current_score),
-                    SqlArg::OptI32(current_score),
+                    SqlArg::Bool(landed_import),
                     timestamp_arg_for_datastore(&self.datastore, &now)?,
                     SqlArg::Text(title_id.to_string()),
                 ],

@@ -1,26 +1,24 @@
 #[cfg(test)]
 mod tests {
-    use super::{
-        CompletedDownloadSubmissionMatch,
-        CompletedDownloadSubmissionResolution, CompletedImportEvidenceInputs,
-        CompletedImportEvidenceSource, CompletedImportIdentityPolicy,
-        CompletedImportRequestPayload, ReleaseEvidence, SelectedCompletedImportEvidence,
-        StoredCompletedImportRequestPayload,
-        IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping,
-        completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
-        manual_episode_suggestion_for_grabbed_scope, resolved_episode_ids_are_within_expected,
-        stamp_scryer_submission_origin, submission_has_scryer_origin,
-        sanitized_title_folder_component, select_completed_import_evidence,
-        should_persist_import_transfer_heartbeat,
-        skip_reason_for_import_check_code,
-        validate_manual_import_candidate_mapping_targets,
-        validate_manual_import_source_under_trusted_root,
-    };
     #[cfg(unix)]
     use super::is_sample_file;
+    use super::{
+        CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
+        CompletedImportEvidenceInputs, CompletedImportEvidenceSource,
+        CompletedImportIdentityPolicy, CompletedImportRequestPayload,
+        IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping, ReleaseEvidence,
+        SelectedCompletedImportEvidence, StoredCompletedImportRequestPayload,
+        completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
+        manual_episode_suggestion_for_grabbed_scope, parse_import_release_for_title,
+        resolved_episode_ids_are_within_expected, sanitized_title_folder_component,
+        select_completed_import_evidence, should_persist_import_transfer_heartbeat,
+        skip_reason_for_import_check_code, stamp_scryer_submission_origin,
+        submission_has_scryer_origin, validate_manual_import_candidate_mapping_targets,
+        validate_manual_import_source_under_trusted_root,
+    };
     use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
-    use scryer_domain::MediaFacet;
     use chrono::Utc;
+    use scryer_domain::MediaFacet;
     use scryer_domain::{
         CompletedDownload, ImportDecision, ImportResult, ImportSkipReason, ImportStatus,
     };
@@ -44,9 +42,10 @@ mod tests {
             CompletedDownloadSubmissionResolution::Matched(matched)
                 if submission_has_scryer_origin(&matched.submission) =>
             {
-                CompletedDownloadOriginResolution::Ready(Box::new(
-                    stamp_scryer_submission_origin(completed, &matched.submission),
-                ))
+                CompletedDownloadOriginResolution::Ready(Box::new(stamp_scryer_submission_origin(
+                    completed,
+                    &matched.submission,
+                )))
             }
             _ => CompletedDownloadOriginResolution::NoScryerOrigin,
         }
@@ -257,26 +256,25 @@ mod tests {
         scope: SubmissionScope,
         source_title: Option<&str>,
     ) -> CompletedDownloadSubmissionResolution {
-        CompletedDownloadSubmissionResolution::Matched(Box::new(
-            CompletedDownloadSubmissionMatch {
-                submission: DownloadSubmission {
-                    title_id: title_id.to_string(),
-                    facet: facet.to_string(),
-                    download_client_id: Some("client-1".to_string()),
-                    download_client_type: "sabnzbd".to_string(),
-                    download_client_item_id: "item-1".to_string(),
-                    source_hint: None,
-                    source_provider_id: None,
-                    source_provider_name: None,
-                    source_kind: None,
-                    source_title: source_title.map(str::to_string),
-                    request_signature: None,
-                    purpose: DownloadSubmissionPurpose::Standard,
-                    scope,
-                },
-                identity: None,
+        CompletedDownloadSubmissionResolution::Matched(Box::new(CompletedDownloadSubmissionMatch {
+            submission: DownloadSubmission {
+                title_id: title_id.to_string(),
+                facet: facet.to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "sabnzbd".to_string(),
+                download_client_item_id: "item-1".to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: None,
+                source_title: source_title.map(str::to_string),
+                release_size_bytes: None,
+                request_signature: None,
+                purpose: DownloadSubmissionPurpose::Standard,
+                scope,
             },
-        ))
+            identity: None,
+        }))
     }
 
     fn parameter_value<'a>(parameters: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -481,7 +479,12 @@ mod tests {
         assert_eq!(parsed.quality.as_deref(), Some("1080p"));
     }
 
-    fn series_title(id: &str, name: &str, aliases: &[&str], year: Option<i32>) -> scryer_domain::Title {
+    fn series_title(
+        id: &str,
+        name: &str,
+        aliases: &[&str],
+        year: Option<i32>,
+    ) -> scryer_domain::Title {
         scryer_domain::Title {
             id: id.to_string(),
             name: name.to_string(),
@@ -751,7 +754,10 @@ mod tests {
             selected.release_evidence.release_title(None).as_deref(),
             Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
-        assert_eq!(selected.target_title_id, None, "the submission is the target");
+        assert_eq!(
+            selected.target_title_id, None,
+            "the submission is the target"
+        );
     }
 
     #[test]
@@ -829,7 +835,10 @@ mod tests {
             None,
             &completed,
         );
-        assert_eq!(selected.source, CompletedImportEvidenceSource::FreshObservation);
+        assert_eq!(
+            selected.source,
+            CompletedImportEvidenceSource::FreshObservation
+        );
         assert!(matches!(
             selected.release_evidence,
             ReleaseEvidence::DownloaderObservation { ref release_name }
@@ -841,8 +850,7 @@ mod tests {
     #[test]
     fn requested_target_is_the_import_target_for_observation_evidence() {
         let completed = completed_download_with_parameters(vec![]);
-        let stub_row =
-            matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
+        let stub_row = matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
 
         // The tracked download's validated title outranks a persisted target.
         let selected = select(
@@ -944,8 +952,7 @@ mod tests {
         assert_eq!(selected.target_title_id.as_deref(), Some("title-persisted"));
 
         // A stub orphan row names nothing, so the stamp still applies.
-        let stub_row =
-            matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
+        let stub_row = matched_submission_with_source_title("", "", SubmissionScope::Orphan, None);
         let selected = select(
             CompletedImportIdentityPolicy::RequireSubmission,
             Some(&stub_row),
@@ -969,7 +976,10 @@ mod tests {
             None,
             &stamped,
         );
-        assert_eq!(selected.release_evidence.title_id(), Some("title-submission"));
+        assert_eq!(
+            selected.release_evidence.title_id(),
+            Some("title-submission")
+        );
         assert_eq!(selected.target_title_id, None);
         let persisted = scryer_evidence("title-a", "Old.Grab.Release");
         let selected = select(
@@ -1024,7 +1034,10 @@ mod tests {
             Some("title-tracked"),
             &completed,
         );
-        assert_eq!(selected.release_evidence.title_id(), Some("title-submission"));
+        assert_eq!(
+            selected.release_evidence.title_id(),
+            Some("title-submission")
+        );
         assert_eq!(selected.target_title_id, None);
 
         // Manual review: the operator's choice is passed through so the
@@ -1079,7 +1092,8 @@ mod tests {
             Instant::now()
         )));
 
-        let stale_emit = Instant::now() - IMPORT_TRANSFER_HEARTBEAT_INTERVAL - Duration::from_secs(1);
+        let stale_emit =
+            Instant::now() - IMPORT_TRANSFER_HEARTBEAT_INTERVAL - Duration::from_secs(1);
         assert!(should_persist_import_transfer_heartbeat(Some(stale_emit)));
     }
 
@@ -1194,13 +1208,20 @@ mod tests {
         // Environmental skips clear on their own and are retried.
         result.decision = ImportDecision::Skipped;
         result.error_message = Some("not enough room".to_string());
-        for environmental in [ImportSkipReason::DiskFull, ImportSkipReason::PermissionDenied] {
+        for environmental in [
+            ImportSkipReason::DiskFull,
+            ImportSkipReason::PermissionDenied,
+        ] {
             result.skip_reason = Some(environmental);
             assert_eq!(
                 completed_import_status_for_result(&result, ImportStatus::Skipped),
                 ImportStatus::Pending,
                 "{}",
-                result.skip_reason.as_ref().map(ImportSkipReason::as_str).unwrap_or("none")
+                result
+                    .skip_reason
+                    .as_ref()
+                    .map(ImportSkipReason::as_str)
+                    .unwrap_or("none")
             );
         }
 
@@ -1291,7 +1312,8 @@ mod tests {
     }
 
     #[test]
-    fn manual_import_candidate_mapping_validation_requires_unique_candidate_and_exactly_one_target() {
+    fn manual_import_candidate_mapping_validation_requires_unique_candidate_and_exactly_one_target()
+    {
         let neither = ManualImportCandidateMapping {
             candidate_id: "candidate-1".to_string(),
             episode_id: None,
@@ -1337,9 +1359,11 @@ mod tests {
             episode_id: Some("episode-1".to_string()),
             series_movie_link_id: Some("series-movie-link-1".to_string()),
         };
-        let err =
-            validate_manual_import_candidate_mapping_targets(&[movie_with_both], &MediaFacet::Movie)
-                .expect_err("ambiguous target should still be rejected for movies");
+        let err = validate_manual_import_candidate_mapping_targets(
+            &[movie_with_both],
+            &MediaFacet::Movie,
+        )
+        .expect_err("ambiguous target should still be rejected for movies");
         assert!(err.to_string().contains("cannot include both"));
 
         let duplicate = ManualImportCandidateMapping {
@@ -1365,7 +1389,333 @@ mod tests {
         let path = Path::new(OsStr::from_bytes(b"/tmp/\xFFsample-clip.mkv"));
         assert!(is_sample_file(path));
     }
+
+    // ── Parse parity: grab and import must read the same release ────────────
+
+    /// A title with everything the canonical parse context is built from.
+    fn parity_title(name: &str, facet: MediaFacet, year: Option<i32>) -> scryer_domain::Title {
+        scryer_domain::Title {
+            id: "parity-title".to_string(),
+            name: name.to_string(),
+            library_id: scryer_domain::default_library_id_for_facet(&facet),
+            root_folder_id: scryer_domain::root_folder_id_for_path("/data/parity"),
+            facet,
+            monitored: true,
+            tags: vec![],
+            canonical_tags: vec![],
+            external_ids: vec![],
+            created_by: None,
+            created_at: Utc::now(),
+            year,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: String::new(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            popularity: None,
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: vec![],
+            tagged_aliases: vec![],
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    /// The score-relevant projection of a parse. Two lanes that agree on this
+    /// cannot score the same release differently.
+    fn score_relevant_fields(parsed: &crate::ParsedReleaseMetadata) -> Vec<(&'static str, String)> {
+        vec![
+            ("quality", format!("{:?}", parsed.quality)),
+            ("source", format!("{:?}", parsed.source)),
+            ("video_codec", format!("{:?}", parsed.video_codec)),
+            ("audio", format!("{:?}", parsed.audio)),
+            ("audio_codecs", format!("{:?}", parsed.audio_codecs)),
+            ("audio_channels", format!("{:?}", parsed.audio_channels)),
+            ("release_group", format!("{:?}", parsed.release_group)),
+            ("edition", format!("{:?}", parsed.edition)),
+            ("is_proper_upload", parsed.is_proper_upload.to_string()),
+            ("is_repack", parsed.is_repack.to_string()),
+            ("is_remux", parsed.is_remux.to_string()),
+            ("is_bd_disk", parsed.is_bd_disk.to_string()),
+            ("is_dolby_vision", parsed.is_dolby_vision.to_string()),
+            ("detected_hdr", parsed.detected_hdr.to_string()),
+            ("is_hdr10plus", parsed.is_hdr10plus.to_string()),
+            ("is_hlg", parsed.is_hlg.to_string()),
+            ("has_hdr_fallback", parsed.has_hdr_fallback.to_string()),
+            ("is_10bit", parsed.is_10bit.to_string()),
+            ("is_atmos", parsed.is_atmos.to_string()),
+            ("is_dual_audio", parsed.is_dual_audio.to_string()),
+            (
+                "streaming_service",
+                format!("{:?}", parsed.streaming_service),
+            ),
+            ("anime_version", format!("{:?}", parsed.anime_version)),
+            ("is_ai_enhanced", parsed.is_ai_enhanced.to_string()),
+            ("is_hardcoded_subs", parsed.is_hardcoded_subs.to_string()),
+            ("is_uncensored", parsed.is_uncensored.to_string()),
+            ("is_dubs_only", parsed.is_dubs_only.to_string()),
+            ("languages_audio", format!("{:?}", parsed.languages_audio)),
+        ]
+    }
+
+    /// **Parse parity.** The grab lane parses a candidate with
+    /// `parse_release_metadata_for_target` against the title's canonical parse
+    /// context; import parses the same name with `parse_import_release_for_title`.
+    /// Every field that can move a score must come out identical, or the two
+    /// sides are scoring different releases and no amount of sharing the scorer
+    /// will make them agree.
+    #[test]
+    fn grab_and_import_read_the_same_score_relevant_facts() {
+        let corpus: &[(&str, MediaFacet, Option<i32>, &[&str])] = &[
+            (
+                "Portmere",
+                MediaFacet::Movie,
+                Some(2024),
+                &[
+                    "Portmere.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR10Plus.H.265-GRP",
+                    "Portmere.2024.1080p.BluRay.REMUX.AVC.TrueHD.7.1-FraMeSToR",
+                    "Portmere.2024.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb",
+                    "Portmere.2024.REPACK.1080p.WEB-DL.x265-GRP",
+                    "Portmere.2024.PROPER.2160p.NF.WEB-DL.DV.HEVC-FLUX",
+                    "Portmere.2024.Extended.Cut.1080p.BluRay.x264-SPARKS",
+                    "Portmere.2024.COMPLETE.UHD.BLURAY-TERMiNAL",
+                    "Portmere.2024.1080p.WEBRip.AV1.Opus.5.1-GRP",
+                ],
+            ),
+            (
+                "Glass Harbor",
+                MediaFacet::Series,
+                Some(2021),
+                &[
+                    "Glass.Harbor.S02E04.1080p.WEB-DL.DDP5.1.H.264-GRP",
+                    "Glass.Harbor.S02E04.REPACK.2160p.DSNP.WEB-DL.DV.HDR.H.265-FLUX",
+                    "Glass.Harbor.S01E01.720p.HDTV.x264-GRP",
+                    "Glass.Harbor.S03.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-NOGRP",
+                    "Glass.Harbor.S02E04.PROPER.1080p.AMZN.WEBRip.DDP2.0.x264-NTb",
+                ],
+            ),
+            (
+                "Umibe Signal",
+                MediaFacet::Anime,
+                Some(2019),
+                &[
+                    "[SubsPlease] Umibe Signal - 11 (1080p) [A1B2C3D4].mkv",
+                    "Umibe.Signal.S01E11.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+                    "[Erai-raws] Umibe Signal - 11v2 [1080p][HEVC][Multiple Subtitle]",
+                    "Umibe.Signal.S01E11.UNCENSORED.1080p.BluRay.x265.10bit.FLAC-GRP",
+                ],
+            ),
+        ];
+
+        for (name, facet, year, releases) in corpus {
+            let title = parity_title(name, facet.clone(), *year);
+            let grab_context =
+                crate::acquisition_release_search::canonical_title_evidence(&title).parse_context;
+
+            for release in releases.iter() {
+                let at_grab = crate::parse_release_metadata_for_target(release, &grab_context);
+                let at_import = parse_import_release_for_title(release, &title);
+
+                for ((field, grab_value), (_, import_value)) in score_relevant_fields(&at_grab)
+                    .into_iter()
+                    .zip(score_relevant_fields(&at_import))
+                {
+                    assert_eq!(
+                        grab_value, import_value,
+                        "`{release}` parsed differently at grab and at import: \
+                         {field} is {grab_value} vs {import_value}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The one field that genuinely differed: `languages_audio`.
+    ///
+    /// The parse itself agrees, but the grab lane *enriches* it before scoring —
+    /// inferring the title's original language when the name says nothing and
+    /// the profile requires one. Import did not, so
+    /// `required_audio_language_missing` fired on every release for such a
+    /// profile. Both sides go through `announced_metadata_for_title` now.
+    #[test]
+    fn both_lanes_enrich_audio_languages_the_same_way() {
+        let mut title = parity_title("Umibe Signal", MediaFacet::Anime, Some(2019));
+        title.language = Some("ja".to_string());
+
+        let profile = crate::QualityProfile::parse(
+            r#"{"id":"p","name":"P","criteria":{"quality_tiers":["1080P"],"required_audio_languages":["jpn"]}}"#,
+        )
+        .expect("profile fixture parses");
+
+        let release = "Umibe.Signal.S01E11.1080p.WEB-DL.H.264-GRP";
+        let at_grab = crate::parse_release_metadata_for_target(
+            release,
+            &crate::acquisition_release_search::canonical_title_evidence(&title).parse_context,
+        );
+        let at_import = parse_import_release_for_title(release, &title);
+
+        assert!(
+            at_grab.languages_audio.is_empty(),
+            "fixture precondition: the name says nothing about audio"
+        );
+
+        let grab_enriched = crate::quality::canonical_context::announced_metadata_for_title(
+            &title, &at_grab, &profile, None,
+        );
+        let import_enriched = crate::quality::canonical_context::announced_metadata_for_title(
+            &title, &at_import, &profile, None,
+        );
+
+        assert_eq!(
+            grab_enriched.languages_audio,
+            import_enriched.languages_audio
+        );
+        assert!(
+            grab_enriched
+                .languages_audio
+                .iter()
+                .any(|code| code == "jpn"),
+            "the title's original language must be inferred: {:?}",
+            grab_enriched.languages_audio
+        );
+    }
 }
+#[cfg(test)]
+mod pack_blocklist_ledger_tests {
+    use super::{DownloadBlocklistLedger, ImportSkipReason};
+    use std::path::Path;
+
+    fn rejection(message: &str) -> crate::post_download_gate::ImportedFileRejection {
+        crate::post_download_gate::ImportedFileRejection {
+            message: message.to_string(),
+            recycle_reason: "truth_blocked",
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: vec!["quality_contradicted:1080P->720P".to_string()],
+        }
+    }
+
+    /// Twelve members of one pack that all trip the same verdict used to write
+    /// twelve identical blocklist rows, each naming one episode. The release is
+    /// the unit being burned, so it is one row — attributed to every episode the
+    /// download covered (review m9).
+    #[test]
+    fn a_pack_writes_one_row_for_the_union_of_its_members() {
+        let mut ledger = DownloadBlocklistLedger {
+            collection_id: Some("season-1".to_string()),
+            ..DownloadBlocklistLedger::default()
+        };
+        for (index, episode) in ["ep-1", "ep-2", "ep-3"].iter().enumerate() {
+            ledger.record_rejection(
+                "Show.S01.1080p.WEB-DL-GRP",
+                Path::new("/downloads/pack/file.mkv"),
+                &[(*episode).to_string()],
+                &rejection(&format!("member {index} lied")),
+            );
+        }
+        // A duplicate episode id from a second file covering the same member.
+        ledger.record_rejection(
+            "Show.S01.1080p.WEB-DL-GRP",
+            Path::new("/downloads/pack/other.mkv"),
+            &["ep-2".to_string()],
+            &rejection("member 1 lied again"),
+        );
+
+        let write = ledger.planned_write().expect("the download earned a write");
+        assert_eq!(write.release_title, "Show.S01.1080p.WEB-DL-GRP");
+        assert_eq!(
+            write.attribution.episode_ids,
+            ["ep-1".to_string(), "ep-2".to_string(), "ep-3".to_string()]
+        );
+        assert_eq!(write.attribution.collection_id, Some("season-1"));
+        assert_eq!(
+            write
+                .rejection
+                .expect("a refusal is what the row records")
+                .message,
+            "member 0 lied",
+            "the first refusal stands for the download"
+        );
+    }
+
+    /// A refusal outranks an imported-but-mis-advertised member: it carries the
+    /// recycle reason and it is what reopens the scopes.
+    #[test]
+    fn a_refusal_outranks_an_import_and_blocklist_in_the_same_download() {
+        let mut ledger = DownloadBlocklistLedger::default();
+        ledger.record_import_blocklist(
+            "Show.S01E01.1080p-GRP",
+            Path::new("/downloads/a.mkv"),
+            &["ep-1".to_string()],
+            "imported at its real quality".to_string(),
+        );
+        ledger.record_rejection(
+            "Show.S01E01.1080p-GRP",
+            Path::new("/downloads/b.mkv"),
+            &["ep-2".to_string()],
+            &rejection("this one lied"),
+        );
+
+        let write = ledger.planned_write().expect("the download earned a write");
+        assert!(write.rejection.is_some());
+        assert_eq!(
+            write.attribution.episode_ids,
+            ["ep-1".to_string(), "ep-2".to_string()]
+        );
+        // …but only the refused member is reopened: ep-1 imported (and was
+        // marked completed), so flipping it back to `wanted` would leave a
+        // wanted row with a file on disk.
+        assert_eq!(write.reopen_episode_ids, ["ep-2".to_string()]);
+    }
+
+    /// A download where nothing was burned writes nothing.
+    #[test]
+    fn a_clean_download_earns_no_row() {
+        assert!(DownloadBlocklistLedger::default().planned_write().is_none());
+    }
+
+    /// **Final review B1.** A user/system rule veto raised by the probe gate is
+    /// operator policy on the file, not the release lying: held, never burned —
+    /// the gate half of the promise `classify_truth`'s `Vetoed` verdict keeps
+    /// for the scorer half. Bytes that are not what was claimed still burn.
+    #[test]
+    fn a_probe_gate_rule_veto_is_held_not_blocklisted() {
+        let rule_veto = crate::post_download_gate::ImportedFileRejection {
+            message: "operator rule refused the file".to_string(),
+            recycle_reason: "post_download_rule_blocked",
+            skip_reason: Some(scryer_domain::ImportSkipReason::PostDownloadRuleBlocked),
+            blocking_rule_codes: vec!["no_eight_bit".to_string()],
+        };
+        assert_eq!(
+            crate::import_decide::prepare_rejection_disposition(&rule_veto),
+            crate::import_decide::RejectionDisposition::Hold
+        );
+
+        let corrupt = crate::post_download_gate::ImportedFileRejection {
+            message: "container could not be read".to_string(),
+            recycle_reason: "probe_failed",
+            skip_reason: Some(scryer_domain::ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: Vec::new(),
+        };
+        assert_eq!(
+            crate::import_decide::prepare_rejection_disposition(&corrupt),
+            crate::import_decide::RejectionDisposition::Blocklist
+        );
+    }
+}
+
 #[cfg(test)]
 #[path = "../app_usecase_import_tests.rs"]
 mod app_usecase_import_tests;

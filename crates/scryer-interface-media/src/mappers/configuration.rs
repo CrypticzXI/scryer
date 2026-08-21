@@ -245,6 +245,7 @@ pub fn from_quality_profile_criteria(
         scoring_overrides: from_scoring_overrides(criteria.scoring_overrides),
         cutoff_tier: criteria.cutoff_tier,
         min_score_to_grab: criteria.min_score_to_grab,
+        cutoff_score: criteria.cutoff_score,
     }
 }
 

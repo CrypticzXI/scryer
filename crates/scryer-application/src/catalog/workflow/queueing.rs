@@ -25,7 +25,7 @@ fn wanted_item_candidates_for_submission_scope(
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: String::new(),
@@ -102,7 +102,7 @@ fn wanted_item_candidates_for_submission_scope(
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: String::new(),
@@ -127,6 +127,7 @@ fn wanted_item_candidate_for_episode_id(
     season_number: Option<String>,
 ) -> AcquisitionScopeState {
     AcquisitionScopeState {
+        landed_bar: None,
         id: String::new(),
         title_id: title_id.to_string(),
         title_name: None,
@@ -144,7 +145,6 @@ fn wanted_item_candidate_for_episode_id(
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: String::new(),
@@ -154,6 +154,8 @@ fn wanted_item_candidate_for_episode_id(
 fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
     DownloadSubmission {
         title_id: title_id.to_string(),
+        // Scope matching only; this submission is never persisted.
+        release_size_bytes: None,
         facet: String::new(),
         download_client_id: None,
         download_client_type: String::new(),
@@ -600,6 +602,10 @@ impl AppUseCase {
                             source_provider_name: source_provider_name.clone(),
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
+                            // An operator's selection carries no announced
+                            // size, so this submission compares size-less if it
+                            // is ever read back as a queued pseudo-incumbent.
+                            release_size_bytes: None,
                             request_signature: request_signature.clone(),
                             purpose,
                             scope: scope.clone(),

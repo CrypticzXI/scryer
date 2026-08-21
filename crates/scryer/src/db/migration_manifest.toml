@@ -1032,6 +1032,91 @@ file = "postgres/migrations/0167_login_verification_challenges.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 168
+description = "temporary password replacement"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0168_temporary_password_replacement.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0168_temporary_password_replacement.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 169
+description = "persist reported seeders on pending releases"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0169_pending_release_seeders.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0169_pending_release_seeders.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 170
+description = "retire the wanted-item score ledger"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0170_wanted_items_drop_current_score.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0170_wanted_items_drop_current_score.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 171
+description = "reset quality-profile min_score_to_grab for the re-baselined score"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0171_quality_profile_reset_min_score_to_grab.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0171_quality_profile_reset_min_score_to_grab.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 172
+description = "persist the announced release size on download submissions"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0172_download_submission_release_size.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0172_download_submission_release_size.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

@@ -977,6 +977,7 @@ mod seed_goal_tests {
                  download_client_type TEXT NOT NULL,
                  download_client_item_id TEXT NOT NULL,
                  source_title TEXT,
+                 release_size_bytes INTEGER,
                  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                  collection_id TEXT,
                  tracked_state TEXT,
@@ -1164,6 +1165,7 @@ mod seed_goal_tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: None,
+                release_size_bytes: None,
                 request_signature: None,
                 purpose: DownloadSubmissionPurpose::Standard,
             })
@@ -1247,6 +1249,7 @@ mod seed_goal_tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Test Release".to_string()),
+                release_size_bytes: None,
                 request_signature: Some("sig".to_string()),
                 purpose: DownloadSubmissionPurpose::Standard,
             })

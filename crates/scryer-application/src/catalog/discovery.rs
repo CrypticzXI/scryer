@@ -1,8 +1,6 @@
 use super::*;
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::ports::IndexerSearchLearningContext;
-use crate::quality_profile::ScoringSource;
-use crate::quality_profile::evaluate_against_profile_for_category;
 use crate::settings::keys::default_indexer_routing_categories_for_scope;
 use scryer_domain::{MediaFacet, TaggedAlias};
 use serde::Deserialize;
@@ -376,43 +374,29 @@ fn auto_mode_enabled_for_structured_collapse(config: &IndexerConfig) -> bool {
     metadata.enable_automatic_search.unwrap_or(true)
 }
 
-/// Presentation order for scored release results: profile-allowed releases
-/// first, then preference score descending. Shared by the one-shot search path
-/// and the interactive job's incremental merge so a truncated snapshot keeps
-/// the same global top-N as `searchReleases`.
+/// Presentation order for scored release results: **allowed, then tier, then
+/// revision, then score** — the head of the search rank, shared with it
+/// (`RankHead`) so the two orderings cannot drift apart.
+///
+/// Used by the interactive job's incremental merge, and only there: it re-sorts
+/// a partial snapshot as batches arrive, and the GraphQL payload truncates to
+/// the requested limit, so a comparator that disagreed with the rank would cut
+/// the wrong releases. It compared allowed → score only, and with the tier no
+/// longer inside the score that listed a 720p release above a 2160p one (D11).
+/// The one-shot path sorts with the full [`SearchRank`]
+/// (`compare_ranked_results`), so the two surfaces agree on the head of the key
+/// and differ below it — a deferred follow-on, not a claim this doc should make.
+///
+/// [`SearchRank`]: crate::acquisition::scoring::SearchRank
+///
+/// The listing steps (indexer priority, seeders, age, coverage) are deliberately
+/// absent: a merge sees results from several indexers arriving at different
+/// times, and nothing here may depend on when a batch landed.
 pub(crate) fn compare_release_search_results(
     left: &IndexerSearchResult,
     right: &IndexerSearchResult,
 ) -> std::cmp::Ordering {
-    let left_allowed = left
-        .quality_profile_decision
-        .as_ref()
-        .map(|decision| decision.allowed)
-        .unwrap_or(true);
-    let right_allowed = right
-        .quality_profile_decision
-        .as_ref()
-        .map(|decision| decision.allowed)
-        .unwrap_or(true);
-
-    match (left_allowed, right_allowed) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => {
-            let left_score = left
-                .quality_profile_decision
-                .as_ref()
-                .map(|decision| decision.preference_score)
-                .unwrap_or(0);
-            let right_score = right
-                .quality_profile_decision
-                .as_ref()
-                .map(|decision| decision.preference_score)
-                .unwrap_or(0);
-
-            right_score.cmp(&left_score)
-        }
-    }
+    crate::acquisition::scoring::RankHead::compare(left, right)
 }
 
 pub(crate) fn dedupe_cross_indexer_release_results(
@@ -563,17 +547,20 @@ impl AppUseCase {
         mut raw_results: Vec<IndexerSearchResult>,
         quality_profile: &QualityProfile,
         title_id: &str,
-        library_id: Option<&str>,
-        scope_id: Option<&str>,
+        // The library and settings scope used to be resolved here; the canonical
+        // scoring context resolves them from the title, the same way import
+        // does, so passing them separately could only make the two disagree.
         indexer_routing: Option<&IndexerRoutingPlan>,
-        category: Option<&str>,
-        title_tags: &[String],
+        // The search `category` and the title's tags used to be read here for
+        // audio-language inference; that now lives in
+        // `canonical_context::announced_metadata_for_title`, keyed on the
+        // title's own facet and tags so every lane infers identically.
         runtime_minutes: Option<i32>,
         parse_context: &ReleaseParseContext,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
-    ) -> Vec<IndexerSearchResult> {
+    ) -> AppResult<Vec<IndexerSearchResult>> {
         // Search-time exclusion reads the per-title blocklist only: an entry
         // for one title never hides the same release from another title, and
         // removing the entry re-allows the release immediately. The
@@ -594,82 +581,26 @@ impl AppUseCase {
             None => true,
         });
 
-        let user_rules_engine = self
-            .services
-            .customization
-            .user_rules
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|_| scryer_rules::UserRulesEngine::empty());
-        let mut user_evaluator = user_rules_engine.evaluator();
-        let resolved_persona = self
-            .resolve_scoring_persona(library_id, scope_id)
-            .await
-            .unwrap_or_else(|error| {
-                warn!(error = %error, "failed to resolve scoring persona, using canonical default");
-                crate::ScoringPersona::default()
-            });
-        let required_audio_languages = self
-            .resolve_required_audio_languages(Some(title_id), library_id, scope_id)
-            .await
-            .unwrap_or_else(|error| {
-                warn!(
-                    error = %error,
-                    "failed to resolve required audio languages, using canonical default"
-                );
-                Vec::new()
-            });
-        let mut resolved_profile = quality_profile.clone();
-        resolved_profile.criteria.required_audio_languages = required_audio_languages;
-        resolved_profile.criteria.scoring_persona = resolved_persona.clone();
-        resolved_profile.criteria.facet_persona_overrides.clear();
-        let title_language_metadata = match self.services.catalog.titles.get_by_id(title_id).await {
-            Ok(Some(title)) => Some((title.language, title.country, title.facet)),
-            Ok(None) => None,
-            Err(error) => {
-                warn!(
-                    error = %error,
-                    title_id = title_id,
-                    "failed to resolve title language metadata for release scoring"
-                );
-                None
-            }
+        // A failure here is a failure, not an empty search (D12). Swallowing it
+        // returned zero results from a "successful" pass, and the caller then
+        // recorded the fired indexers as convergence coverage — so the scope was
+        // marked searched and skipped until the next cycle, on the strength of a
+        // transient store error. A title that is genuinely missing is not a
+        // normal search outcome either: nothing can be scored for it.
+        let scored_title = self.services.catalog.titles.get_by_id(title_id).await?;
+        // The scoring inputs, resolved exactly once and exactly the way import
+        // resolves them. Sharing this resolver — not just the term pipeline — is
+        // what makes the two sides agree; a persona or language set resolved
+        // differently would reintroduce the split this change set removes.
+        let Some(scored_title) = scored_title else {
+            return Err(AppError::NotFound(format!(
+                "title {title_id} for release scoring"
+            )));
         };
-        let title_original_language = title_language_metadata
-            .as_ref()
-            .and_then(|(language, _, _)| language.as_deref());
-        let title_original_country = title_language_metadata
-            .as_ref()
-            .and_then(|(_, country, _)| country.as_deref());
-        // Prefer the owning title's facet for anime detection: the search facet
-        // (and thus `category`) collapses anime movies and series-movie links to
-        // "movie", which would otherwise hide their anime origin and break
-        // dual-audio language inference (e.g. eng+jpn).
-        let audio_context_category = title_language_metadata
-            .as_ref()
-            .map(|(_, _, facet)| facet.as_str())
-            .or(category);
-        let title_language_context = crate::title_audio_language_context(
-            title_original_language,
-            title_original_country,
-            audio_context_category,
-            title_tags,
-        );
-        let library_name = match library_id {
-            Some(library_id) => match self.services.catalog.libraries.get_by_id(library_id).await {
-                Ok(Some(library)) => Some(library.name),
-                Ok(None) => None,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        library_id = library_id,
-                        "failed to resolve library name for custom rule context"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
+        let canonical_context = self
+            .resolve_canonical_scoring_context(&scored_title, quality_profile)
+            .await;
+        let resolved_profile = canonical_context.profile().clone();
 
         let catalog_episodes = self
             .services
@@ -689,6 +620,10 @@ impl AppUseCase {
             resolve_requested_episode(&catalog_episodes, season, episode, absolute_episode);
         let mut scored = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let mut rank_by_key: HashMap<String, crate::acquisition::scoring::SearchRank> =
+            HashMap::new();
+        let indexer_priority_by_name = self.build_indexer_priority_by_name(indexer_routing).await;
+        let now = chrono::Utc::now();
 
         for result in raw_results {
             let key = release_search_key(&result);
@@ -706,16 +641,13 @@ impl AppUseCase {
 
             let parsed_release_metadata =
                 parse_release_metadata_for_target(&result.title, parse_context);
-            let mut scored_release_metadata = parsed_release_metadata.clone();
-            scored_release_metadata.languages_audio = crate::release_audio_language_hints_for_title(
-                &parsed_release_metadata,
-                result.indexer_languages.as_deref(),
-                Some(&title_language_context),
-                !resolved_profile
-                    .criteria
-                    .required_audio_languages
-                    .is_empty(),
-            );
+            let scored_release_metadata =
+                crate::quality::canonical_context::announced_metadata_for_title(
+                    &scored_title,
+                    &parsed_release_metadata,
+                    &resolved_profile,
+                    result.indexer_languages.as_deref(),
+                );
 
             let release_coverage = crate::acquisition_coverage::resolve_release_coverage(
                 &scored_release_metadata,
@@ -762,113 +694,87 @@ impl AppUseCase {
                 }
             }
 
-            let weights = crate::scoring_weights::build_weights_for_category(
-                &resolved_persona,
-                &resolved_profile.criteria.scoring_overrides,
-                category,
+            // One canonical score, from the same function and the same resolved
+            // context the import path uses. Everything that used to be added
+            // here and nowhere else — the freshness bonus, the single-episode
+            // pack penalty, the listing-metadata rule inputs — is gone from the
+            // number; what survives of it orders the results, in
+            // `acquisition::scoring`, and never crosses a comparison.
+            let scored_release = crate::canonical_scoring::score_release(
+                &crate::canonical_scoring::ReleaseEvidence::announced(
+                    scored_release_metadata.clone(),
+                    result.size_bytes,
+                ),
+                &canonical_context.view(candidate_runtime_minutes, false),
             );
-            let mut decision = evaluate_against_profile_for_category(
-                &resolved_profile,
-                &scored_release_metadata,
-                false,
-                &weights,
-                category,
-            );
-            apply_age_scoring(&mut decision, result.published_at.as_deref());
-            crate::quality_profile::apply_size_scoring_for_category(
-                &mut decision,
-                &scored_release_metadata,
-                result.size_bytes,
-                category,
-                candidate_runtime_minutes,
-                &weights,
-            );
-            let pack_penalty =
-                release_coverage.single_episode_preference_penalty(requested_episode);
-            if pack_penalty != 0 {
-                decision.log_with_source(
-                    "coverage:single_episode_pack_fallback",
-                    pack_penalty,
-                    ScoringSource::Builtin,
-                );
-            }
+            let decision = scored_release.announced_decision;
 
-            if !user_rules_engine.is_empty() {
-                let user_input = crate::app_usecase_discovery::build_user_rule_input(
-                    &scored_release_metadata,
-                    &resolved_profile,
-                    &result,
-                    &decision,
-                    crate::user_rule_input::SearchRuleInputContext {
-                        category,
-                        library_name: library_name.as_deref(),
-                        original_language: title_language_context.original_language.as_deref(),
-                        original_country: title_language_context.original_country.as_deref(),
-                        title_tags,
-                        runtime_minutes: candidate_runtime_minutes,
+            // Rank is built here, where the listing and the coverage are still
+            // in hand, and dropped when the search ends. It is keyed by release
+            // rather than carried on the result so it cannot leak into anything
+            // that gets stored or compared later.
+            rank_by_key.insert(
+                release_search_key(&result),
+                crate::acquisition::scoring::SearchRank {
+                    head: crate::acquisition::scoring::RankHead {
+                        blocked: !decision.allowed,
+                        tier_index: decision.tier_index.unwrap_or(usize::MAX),
+                        negated_revision: -(i32::from(scored_release_metadata.is_proper_upload)
+                            + i32::from(scored_release_metadata.is_repack)),
+                        negated_score: decision.preference_score.saturating_neg(),
                     },
-                );
-                let facet = category.unwrap_or("movie");
-                match user_evaluator.evaluate(&user_input, facet) {
-                    Ok(eval_result) => {
-                        for entry in eval_result.entries {
-                            let source = match entry.origin {
-                                scryer_rules::PolicyOrigin::User => ScoringSource::UserRule {
-                                    id: entry.rule_set_id,
-                                    name: entry.rule_set_name,
-                                },
-                                scryer_rules::PolicyOrigin::System => ScoringSource::SystemRule {
-                                    id: entry.rule_set_id,
-                                    name: entry.rule_set_name,
-                                },
-                            };
-                            decision.log_with_source(&entry.code, entry.delta, source);
-                        }
-                        for err in eval_result.errors {
-                            let (code, source) = match err.origin {
-                                scryer_rules::PolicyOrigin::User => (
-                                    "user_rule_error",
-                                    ScoringSource::UserRule {
-                                        id: err.rule_set_id,
-                                        name: err.rule_set_name,
-                                    },
-                                ),
-                                scryer_rules::PolicyOrigin::System => (
-                                    "system_rule_error",
-                                    ScoringSource::SystemRule {
-                                        id: err.rule_set_id,
-                                        name: err.rule_set_name,
-                                    },
-                                ),
-                            };
-                            decision.log_with_source(code, 0, source);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "user rule evaluation failed for release");
-                    }
-                }
-            }
-
-            crate::quality_profile::apply_min_score_gate(&resolved_profile, &mut decision);
+                    indexer_priority: indexer_priority_by_name
+                        .get(&result.source)
+                        .copied()
+                        .unwrap_or(i64::MAX),
+                    negated_seeders: crate::acquisition::scoring::listing_negated_seeders(&result),
+                    age_hours: crate::acquisition::scoring::listing_age_hours(
+                        result.published_at.as_deref(),
+                        now,
+                    ),
+                    coverage_distance: release_coverage.coverage_distance(requested_episode),
+                    episode_number: scored_release_metadata
+                        .episode
+                        .as_ref()
+                        .and_then(|episode| episode.episode_numbers.iter().min().copied())
+                        .unwrap_or(0),
+                },
+            );
 
             scored.push(IndexerSearchResult {
                 parsed_release_metadata: Some(scored_release_metadata),
                 quality_profile_decision: Some(decision),
+                // Carry the coverage the scoring pass already resolved (D21);
+                // the auto evaluator has no catalog of its own and cannot
+                // recompute it.
+                coverage_scope: match release_coverage {
+                    // `Title` and `Unknown` both map to `SubmissionScope::Title`,
+                    // which would read as "this release covers the whole title"
+                    // — an assertion neither of them makes. Absent is honest.
+                    crate::acquisition_coverage::ReleaseCoverage::Title
+                    | crate::acquisition_coverage::ReleaseCoverage::Unknown => None,
+                    resolved => Some(resolved.submission_scope()),
+                },
                 ..result
             });
         }
 
-        let indexer_priority_by_name = self.build_indexer_priority_by_name(indexer_routing).await;
         let mut scored = dedupe_cross_indexer_release_results(
             scored,
             &indexer_priority_by_name,
             preferred_source_kind.as_str(),
         );
 
-        scored.sort_by(compare_release_search_results);
+        scored.sort_by(|left, right| {
+            crate::acquisition::scoring::compare_ranked_results(
+                left,
+                right,
+                &rank_by_key,
+                release_search_key,
+            )
+        });
 
-        scored
+        Ok(scored)
     }
 
     /// Internal search+score pipeline shared by both user-facing search and background acquisition.
@@ -1177,18 +1083,14 @@ impl AppUseCase {
                 raw_results,
                 &quality_profile,
                 title_id,
-                library_id,
-                scope_id.as_deref(),
                 indexer_routing.as_ref(),
-                category.as_deref(),
-                title_tags,
                 runtime_minutes,
                 parse_context,
                 season,
                 episode,
                 absolute_episode,
             )
-            .await;
+            .await?;
         Ok((scored, fired_indexers.into_iter().collect()))
     }
 
@@ -2083,16 +1985,6 @@ impl AppUseCase {
         );
         Some(IndexerRoutingPlan { entries })
     }
-}
-
-pub(crate) fn build_user_rule_input(
-    parsed: &ParsedReleaseMetadata,
-    profile: &QualityProfile,
-    result: &IndexerSearchResult,
-    decision: &QualityProfileDecision,
-    context: crate::user_rule_input::SearchRuleInputContext<'_>,
-) -> scryer_rules::UserRuleInput {
-    crate::user_rule_input::build_search_rule_input(parsed, profile, result, decision, context)
 }
 
 #[cfg(test)]

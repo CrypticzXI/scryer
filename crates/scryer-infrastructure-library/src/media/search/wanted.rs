@@ -33,7 +33,7 @@ pub async fn list_wanted_items_query(
                 w.episode_id, w.collection_id, w.series_movie_link_id,
                 e.season_number, e.episode_number, w.media_type,
                 w.last_search_at, w.status,
-                w.grabbed_release, w.current_score,
+                w.grabbed_release,
                 latest_decision.id AS latest_decision_id,
                 latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
                 latest_decision.title_id AS latest_decision_title_id,
@@ -308,7 +308,8 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<AcquisitionScopeState> {
             scryer_application::AcquisitionScopeStatus::parse(&s).unwrap_or_default()
         },
         grabbed_release: row.try_get("grabbed_release").unwrap_or(None),
-        current_score: row.try_get("current_score").unwrap_or(None),
+        // Resolved from the library by the caller, never stored.
+        landed_bar: None,
         latest_release_decision,
         mismatch_recovery_eligible: row
             .try_get::<i64, _>("mismatch_recovery_eligible")

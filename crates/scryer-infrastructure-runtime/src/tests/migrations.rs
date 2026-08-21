@@ -2705,3 +2705,86 @@ async fn quarantined_0157_is_recorded_without_running_and_0160_normalizes_withou
     drop(pool);
     let _ = std::fs::remove_file(db);
 }
+
+/// Migration 0171: clear the score floor users calibrated against the old,
+/// tier-inclusive scale.
+///
+/// A floor of a few thousand used to exclude the bottom of the barrel; with the
+/// tier out of the number it excludes everything, as a hard block with no error
+/// anywhere. The value lives inside the `scoring_config` JSON blob, so the key is
+/// removed rather than set to null — `ScoringConfig` reads an absent key as
+/// `None`. Profiles that never set it, and every other key in the blob, must be
+/// left exactly as they were.
+#[tokio::test]
+async fn migration_0171_clears_only_the_configured_score_floor() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("migration test database should open");
+    sqlx::raw_sql(
+        r#"CREATE TABLE quality_profiles (
+               id TEXT PRIMARY KEY,
+               scoring_config TEXT NOT NULL DEFAULT '{}'
+           );
+           INSERT INTO quality_profiles (id, scoring_config) VALUES
+             ('configured', '{"scoring_persona":"efficient","cutoff_tier":"1080P","min_score_to_grab":2500}'),
+             ('explicit-null', '{"scoring_persona":"balanced","min_score_to_grab":null}'),
+             ('untouched', '{"scoring_persona":"balanced","cutoff_tier":"2160P"}'),
+             ('empty', '{}');"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("quality-profile fixture should initialize");
+
+    sqlx::raw_sql(include_str!(
+        "../../../scryer/src/db/migrations/0171_quality_profile_reset_min_score_to_grab.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("migration 0171 should apply");
+
+    let floors: Vec<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT id, json_extract(scoring_config, '$.min_score_to_grab')
+           FROM quality_profiles ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("score floors should load");
+    assert_eq!(
+        floors,
+        vec![
+            ("configured".to_string(), None),
+            ("empty".to_string(), None),
+            ("explicit-null".to_string(), None),
+            ("untouched".to_string(), None),
+        ],
+        "no profile may keep an old-scale score floor"
+    );
+
+    // Everything else in the blob survives untouched.
+    let persona: Option<String> = sqlx::query_scalar(
+        "SELECT json_extract(scoring_config, '$.scoring_persona')
+           FROM quality_profiles WHERE id = 'configured'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("persona should load");
+    assert_eq!(persona.as_deref(), Some("efficient"));
+    let cutoff: Option<String> = sqlx::query_scalar(
+        "SELECT json_extract(scoring_config, '$.cutoff_tier')
+           FROM quality_profiles WHERE id = 'configured'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cutoff should load");
+    assert_eq!(cutoff.as_deref(), Some("1080P"));
+
+    // Re-applying is a no-op rather than an error.
+    sqlx::raw_sql(include_str!(
+        "../../../scryer/src/db/migrations/0171_quality_profile_reset_min_score_to_grab.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("migration 0171 should be re-runnable");
+}

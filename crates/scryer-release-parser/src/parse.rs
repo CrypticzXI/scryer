@@ -30,7 +30,12 @@ const ALT_ROLE_SECOND_DEBT: i32 = -6;
 const TITLE_WORD_AMBIGUITY_DEBT: i32 = -8;
 const MAX_ALIAS_BRANCH_FANOUT: usize = 3;
 const ALIAS_AUTOMATON_CACHE_CAPACITY: usize = 64;
-const SCORING_MODEL_VERSION: u16 = 1;
+/// Version of the parser's score-bearing projection.
+///
+/// Consumers that persist a score derived from a parse fold this into their
+/// provenance, so a parser change invalidates those stored scores instead of
+/// letting them be compared against freshly-parsed ones.
+pub const SCORING_MODEL_VERSION: u16 = 1;
 
 pub(crate) struct AnalysisInputs<'a> {
     pub(crate) raw_input: &'a str,

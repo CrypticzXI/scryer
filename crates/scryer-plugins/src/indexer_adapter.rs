@@ -1231,6 +1231,7 @@ impl IndexerClient for WasmIndexerClient {
                     info_url: r.info_url,
                     provenance: None,
                     queue_scope: None,
+                    coverage_scope: None,
                     auto_eligible: None,
                     auto_decision_code: None,
                     auto_decision_summary: None,

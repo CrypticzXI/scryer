@@ -9,6 +9,43 @@ pub(crate) enum ReleaseCoverage {
     Unknown,
 }
 
+impl crate::AcquisitionScopeState {
+    /// The scope this ledger row stands for.
+    ///
+    /// Gates resolve incumbents by scope, so a row has to be able to say what it
+    /// covers without the caller re-deriving it from three optional columns.
+    pub(crate) fn submission_scope(&self) -> SubmissionScope {
+        if let Some(episode_id) = self
+            .episode_id
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return SubmissionScope::Episode {
+                episode_id: episode_id.clone(),
+            };
+        }
+        if let Some(series_movie_link_id) = self
+            .series_movie_link_id
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return SubmissionScope::SeriesMovie {
+                series_movie_link_id: series_movie_link_id.clone(),
+            };
+        }
+        if let Some(collection_id) = self
+            .collection_id
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return SubmissionScope::Collection {
+                collection_id: collection_id.clone(),
+            };
+        }
+        SubmissionScope::Title
+    }
+}
+
 impl ReleaseCoverage {
     pub(crate) fn submission_scope(&self) -> SubmissionScope {
         match self {
@@ -45,20 +82,25 @@ impl ReleaseCoverage {
         }
     }
 
-    pub(crate) fn single_episode_preference_penalty(
-        &self,
-        requested_episode: Option<&Episode>,
-    ) -> i32 {
+    /// How far this release's span is from what the search asked for. Lower is
+    /// a closer match, and it is a *sort* key only.
+    ///
+    /// This used to be `single_episode_preference_penalty`, subtracted from the
+    /// score. As a score term it made the same release worth different amounts
+    /// depending on the search that found it, and none of it survived to import
+    /// — so grab and import valued a season pack differently. Pack preference is
+    /// a property of the search, so it belongs in the ordering.
+    pub(crate) fn coverage_distance(&self, requested_episode: Option<&Episode>) -> usize {
         let Some(episode) = requested_episode else {
             return 0;
         };
         match self {
             Self::SingleEpisode(episode_id) if episode_id == &episode.id => 0,
-            Self::EpisodeSet(episode_ids) if episode_ids.iter().any(|id| id == &episode.id) => -6,
+            Self::EpisodeSet(episode_ids) if episode_ids.iter().any(|id| id == &episode.id) => 1,
             Self::Collection(collection_id)
                 if episode.collection_id.as_deref() == Some(collection_id.as_str()) =>
             {
-                -12
+                2
             }
             _ => 0,
         }
@@ -164,23 +206,13 @@ pub(crate) fn coverage_runtime_minutes(
     default_runtime_minutes: Option<i32>,
 ) -> Option<i32> {
     match coverage {
-        ReleaseCoverage::SingleEpisode(episode_id) => {
-            episode_runtime_minutes(episodes, episode_id).or(default_runtime_minutes)
-        }
+        ReleaseCoverage::SingleEpisode(episode_id) => episode_span_runtime_minutes(
+            episodes,
+            std::slice::from_ref(episode_id),
+            default_runtime_minutes,
+        ),
         ReleaseCoverage::EpisodeSet(episode_ids) => {
-            let mut total = 0i32;
-            let mut missing = 0i32;
-            for episode_id in episode_ids {
-                if let Some(runtime) = episode_runtime_minutes(episodes, episode_id) {
-                    total += runtime;
-                } else {
-                    missing += 1;
-                }
-            }
-            if missing > 0 {
-                total += default_runtime_minutes.unwrap_or(45) * missing;
-            }
-            (total > 0).then_some(total)
+            episode_span_runtime_minutes(episodes, episode_ids, default_runtime_minutes)
         }
         ReleaseCoverage::Collection(collection_id) => {
             let season_episodes = episodes
@@ -196,7 +228,10 @@ pub(crate) fn coverage_runtime_minutes(
                 .as_ref()
                 .is_some_and(|episode| episode.is_partial_season)
             {
-                return Some(default_runtime_minutes.unwrap_or(45) * (count.max(2) / 2).max(1));
+                return Some(
+                    default_runtime_minutes.unwrap_or(UNKNOWN_EPISODE_RUNTIME_MINUTES)
+                        * (count.max(2) / 2).max(1),
+                );
             }
             let total = season_episodes
                 .iter()
@@ -205,7 +240,11 @@ pub(crate) fn coverage_runtime_minutes(
                         .duration_seconds
                         .map(|seconds| (seconds / 60) as i32)
                 })
-                .map(|runtime| runtime.unwrap_or(default_runtime_minutes.unwrap_or(45)))
+                .map(|runtime| {
+                    runtime.unwrap_or(
+                        default_runtime_minutes.unwrap_or(UNKNOWN_EPISODE_RUNTIME_MINUTES),
+                    )
+                })
                 .sum::<i32>();
             (total > 0).then_some(total)
         }
@@ -232,6 +271,53 @@ fn collection_id_for_season(collections: &[Collection], season: u32) -> Option<S
         .iter()
         .find(|collection| collection.collection_index.trim().parse::<u32>().ok() == Some(season))
         .map(|collection| collection.id.clone())
+}
+
+/// Assumed length of an episode whose runtime nobody recorded, when at least
+/// one sibling in the same span *does* have one. Sonarr's own fallback.
+const UNKNOWN_EPISODE_RUNTIME_MINUTES: i32 = 45;
+
+/// Minutes of content a set of episodes represents — **the one runtime basis**
+/// (D4).
+///
+/// Size scoring is runtime-derived, so the expected size of a release depends
+/// entirely on this number, and the three places that need it must agree or the
+/// same file scores differently at grab, at import, and when its bar is
+/// re-derived. A double-length premiere, a 7-minute special and an anime OVA all
+/// move the size bucket several steps away from the series average.
+///
+/// A single episode with no recorded runtime falls back to the caller's default
+/// (the title's average, or nothing); in a multi-episode span the missing ones
+/// are assumed to be [`UNKNOWN_EPISODE_RUNTIME_MINUTES`] rather than dropped,
+/// because dropping them would make a twelve-episode pack look twelve times too
+/// large.
+pub(crate) fn episode_span_runtime_minutes(
+    episodes: &[Episode],
+    episode_ids: &[String],
+    default_runtime_minutes: Option<i32>,
+) -> Option<i32> {
+    match episode_ids {
+        [] => None,
+        [only] => episode_runtime_minutes(episodes, only).or(default_runtime_minutes),
+        many => {
+            let mut total = 0i32;
+            let mut missing = 0i32;
+            for episode_id in many {
+                match episode_runtime_minutes(episodes, episode_id) {
+                    Some(runtime) => total = total.saturating_add(runtime),
+                    None => missing += 1,
+                }
+            }
+            if missing > 0 {
+                total = total.saturating_add(
+                    default_runtime_minutes
+                        .unwrap_or(UNKNOWN_EPISODE_RUNTIME_MINUTES)
+                        .saturating_mul(missing),
+                );
+            }
+            (total > 0).then_some(total)
+        }
+    }
 }
 
 fn episode_runtime_minutes(episodes: &[Episode], episode_id: &str) -> Option<i32> {

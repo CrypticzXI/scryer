@@ -249,6 +249,7 @@ async fn decode_quality_profile(
             scoring_overrides: scoring_config.scoring_overrides,
             cutoff_tier: scoring_config.cutoff_tier,
             min_score_to_grab: scoring_config.min_score_to_grab,
+            cutoff_score: scoring_config.cutoff_score,
             facet_persona_overrides: scoring_config.facet_persona_overrides,
         },
     })
@@ -286,6 +287,7 @@ async fn upsert_quality_profile_tx(
         scoring_overrides: criteria.scoring_overrides,
         cutoff_tier: criteria.cutoff_tier,
         min_score_to_grab: criteria.min_score_to_grab,
+        cutoff_score: criteria.cutoff_score,
         facet_persona_overrides: criteria.facet_persona_overrides,
     })
     .map_err(|error| AppError::Repository(error.to_string()))?;

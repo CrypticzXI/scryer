@@ -102,7 +102,7 @@ async fn execute_resolved_episode_import(
                     skip_reason: Some(ImportSkipReason::PolicyMismatch),
                     blocking_rule_codes: vec!["additional_file_multi_episode".to_string()],
                 },
-                finalize_before_import: false,
+                disposition: crate::import_decide::RejectionDisposition::Hold,
                 reason_code: Some("additional_file_multi_episode".to_string()),
                 episode_ids: target_episode_ids.clone(),
             });
@@ -246,6 +246,8 @@ async fn execute_resolved_episode_import(
             reason_code: Some("additional_file".to_string()),
             link_type: Some(link_type),
             size_bytes: Some(file_result.size_bytes as i64),
+            // An additional file never reaches the gate, so it never earns one.
+            blocklist_after_import: None,
         });
     }
     let existing_incumbents = existing_incumbents
@@ -279,8 +281,7 @@ async fn execute_resolved_episode_import(
         .as_deref()
         .and_then(|value| non_empty_string(Some(value.to_string())))
         .or_else(|| parsed.quality.clone());
-    let precheck_parsed =
-        parsed_with_quality_override(parsed, precheck_quality_label.as_deref());
+    let precheck_parsed = parsed_with_quality_override(parsed, precheck_quality_label.as_deref());
     let precheck_dest_path = episode_import_dest_path(
         title,
         use_season_folders,
@@ -347,9 +348,15 @@ async fn execute_resolved_episode_import(
                     episode_ids: target_episode_ids.clone(),
                 });
             }
+            // The probe refused the bytes outright. A corrupt container or a
+            // source that changed under the import means the release is not
+            // what it claimed, so it is burned and the scope reopened; a
+            // user/system rule veto on the file is operator policy, not a lie,
+            // and is held instead (`prepare_rejection_disposition`).
+            let disposition = crate::import_decide::prepare_rejection_disposition(&rejection);
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,
-                finalize_before_import: true,
+                disposition,
                 reason_code: None,
                 episode_ids: target_episode_ids.clone(),
             });
@@ -378,7 +385,7 @@ async fn execute_resolved_episode_import(
                 skip_reason: Some(ImportSkipReason::PolicyMismatch),
                 blocking_rule_codes: Vec::new(),
             },
-            finalize_before_import: true,
+            disposition: crate::import_decide::RejectionDisposition::Blocklist,
             reason_code: Some(
                 super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
             ),
@@ -417,6 +424,19 @@ async fn execute_resolved_episode_import(
         });
     }
 
+    // The announced half of the evidence: the canonical import parse *before*
+    // the probe merged its findings in, with only the operator's explicit
+    // quality override applied. `prepared.parsed` already carries the analysis,
+    // so handing that in would make both scoring passes identical and no
+    // release could ever be caught contradicting itself.
+    let announced_parsed = match quality_override
+        .as_deref()
+        .and_then(|value| non_empty_string(Some(value.to_string())))
+    {
+        Some(label) => parsed_with_quality_override(parsed, Some(label.as_str())),
+        None => parsed.clone(),
+    };
+
     let ext = precheck_ext;
     let effective_quality_label = quality_override
         .as_deref()
@@ -453,46 +473,73 @@ async fn execute_resolved_episode_import(
         runtime_sample_mode,
         crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
     );
-    if !existing_incumbents.is_empty() {
-        let post_download_score =
-            crate::post_download_gate::compute_post_download_acquisition_decision(
-                app,
-                &effective_parsed,
-                prepared.accepted.as_ref(),
-                quality_profile,
-                title,
-                title.runtime_minutes,
-                source_size,
-                true,
-                existing_score,
-                &prepared.rescore_changes,
-                is_filler,
-            )
-            .await;
-        // A manual operator replacement always lands and is score-boosted so it is
-        // not immediately re-replaced by a marginally-higher automatic upgrade.
-        let new_score = post_download_score.score
-            + if manual_replacement {
-                crate::post_download_gate::MANUAL_GRAB_BOOST
-            } else {
-                0
-            };
-        let upgrade_plan = match build_episode_upgrade_plan(
-            &existing_incumbents,
-            &target_episode_ids,
-            new_score,
-            manual_replacement,
-        ) {
-            Ok(plan) => plan,
-            Err(rejection) => {
-                return Ok(EpisodeImportOutcome::Rejected {
-                    rejection,
-                    finalize_before_import: true,
-                    reason_code: None,
-                    episode_ids: target_episode_ids.clone(),
-                });
-            }
-        };
+
+    // **One runtime basis per scope** (D4): the episodes this file actually
+    // holds, not the series average. Size scoring is runtime-derived, so scoring
+    // a double-length premiere or a 7-minute special against the average puts it
+    // in a different size band than the grab decision used — the same file,
+    // scored two ways. The grab lane has always used the covered episodes'
+    // runtime (`coverage_runtime_minutes`); this is the same function.
+    let scope_runtime_minutes = crate::acquisition_coverage::episode_span_runtime_minutes(
+        target_episodes,
+        &target_episode_ids,
+        title.runtime_minutes,
+    )
+    .or(title.runtime_minutes);
+
+    // **The one import decision** (design §3). Subject, landed score, truth
+    // verdict and admission all live in `decide_import`; what is left here is
+    // carrying out its plan.
+    let scoring_context = app
+        .resolve_canonical_scoring_context(title, quality_profile)
+        .await;
+    let episode_scope = crate::SubmissionScope::EpisodeSet {
+        episode_ids: target_episode_ids.clone(),
+    };
+    let decision_input = crate::import_decide::ImportDecisionInput {
+        title,
+        scoring_context: &scoring_context,
+        scope: &episode_scope,
+        scope_runtime_minutes,
+        parsed: &announced_parsed,
+        accepted: prepared.accepted.as_ref(),
+        prior_rescore_changes: &prepared.rescore_changes,
+        landed_size_bytes: source_size,
+        is_filler,
+        operator_intent: manual_replacement,
+        incumbent_rows: crate::import_decide::IncumbentRows::Episodes(&existing_incumbents),
+        scope_label: "this episode",
+    };
+    let plan = match crate::import_decide::decide_import(app, &decision_input).await {
+        crate::import_decide::ImportDecisionOutcome::Admit(plan) => plan,
+        crate::import_decide::ImportDecisionOutcome::Reject {
+            rejection,
+            disposition,
+        } => {
+            tracing::info!(
+                title_id = %title.id,
+                code = rejection.recycle_reason,
+                ?disposition,
+                "{}",
+                rejection.message
+            );
+            let reason_code = Some(rejection.recycle_reason.to_string());
+            return Ok(EpisodeImportOutcome::Rejected {
+                rejection,
+                disposition,
+                reason_code,
+                episode_ids: target_episode_ids.clone(),
+            });
+        }
+    };
+    // Reported to the caller rather than written here: a pack's members share
+    // one release, so the blocklist row is deduplicated at the file loop.
+    let blocklist_after_import = plan.blocklist_after_import.clone();
+    let new_score = plan.score;
+
+    if let crate::import_decide::SupersededIncumbents::Episodes(superseded) = &plan.superseded
+        && let Some((primary_incumbent, additional_superseded)) = superseded.split_first()
+    {
         let replacement_media_root = title_folder_path
             .parent()
             .and_then(|path| path.to_str())
@@ -505,7 +552,7 @@ async fn execute_resolved_episode_import(
         let old_file_recycle_context = crate::upgrade::resolve_old_file_recycle_context(
             app,
             title,
-            &upgrade_plan.primary_incumbent.media_file,
+            &primary_incumbent.media_file,
         )
         .await?;
 
@@ -515,14 +562,14 @@ async fn execute_resolved_episode_import(
             actor,
             import_id,
             title,
-            &upgrade_plan.primary_incumbent.media_file,
+            &primary_incumbent.media_file,
             source_video,
             &dest_path,
             &prepared,
-            post_download_score.parsed.quality.as_deref(),
+            plan.parsed.quality.as_deref(),
             new_score,
-            upgrade_plan.previous_best_score,
-            post_download_score.scoring_log.clone(),
+            plan.previous_best_score,
+            plan.scoring_log.clone(),
             &target_episode_ids,
             Some(replacement_media_root),
             Some(old_file_recycle_context.media_root.as_str()),
@@ -536,16 +583,16 @@ async fn execute_resolved_episode_import(
                     cleanup_superseded_episode_incumbents(
                         app,
                         title,
-                        &upgrade_plan.additional_superseded,
+                        additional_superseded,
                         &outcome.new_file_id,
                         &dest_path,
                     )
                     .await;
-                } else if !upgrade_plan.additional_superseded.is_empty() {
+                } else if !additional_superseded.is_empty() {
                     tracing::warn!(
                         title_id = %title.id,
                         replacement_file_id = %outcome.new_file_id,
-                        superseded_files = upgrade_plan.additional_superseded.len(),
+                        superseded_files = additional_superseded.len(),
                         "skipping superseded episode cleanup because primary recycle entry was not committed"
                     );
                 }
@@ -553,12 +600,11 @@ async fn execute_resolved_episode_import(
                     title = %title.name,
                     old_score = outcome.old_score,
                     new_score = outcome.new_score,
-                    superseded_files = upgrade_plan.additional_superseded.len() + 1,
+                    superseded_files = additional_superseded.len() + 1,
                     "episode file upgraded"
                 );
                 for episode_id in &target_episode_ids {
-                    mark_wanted_completed(app, &title.id, Some(episode_id), Some(outcome.new_score))
-                        .await;
+                    mark_wanted_completed(app, &title.id, Some(episode_id), true).await;
                 }
                 return Ok(EpisodeImportOutcome::Imported {
                     dest_path: path_to_stored_string(&dest_path),
@@ -568,12 +614,15 @@ async fn execute_resolved_episode_import(
                     link_type: (import_mode == scryer_domain::ImportMode::Move)
                         .then_some(scryer_domain::ImportStrategy::Move),
                     size_bytes: Some(outcome.new_size_bytes),
+                    blocklist_after_import,
                 });
             }
             Ok(crate::upgrade::UpgradeResult::Rejected(rejection)) => {
+                // The transfer itself failed a safety check; nothing was judged
+                // about the release, so it keeps its place in the search space.
                 return Ok(EpisodeImportOutcome::Rejected {
                     rejection,
-                    finalize_before_import: false,
+                    disposition: crate::import_decide::RejectionDisposition::Hold,
                     reason_code: None,
                     episode_ids: target_episode_ids.clone(),
                 });
@@ -598,23 +647,11 @@ async fn execute_resolved_episode_import(
     )
     .await?;
 
-    let has_existing = existing_files
-        .iter()
-        .any(|file| file.file_path == path_to_stored_string(&dest_path));
-    let post_download_score = crate::post_download_gate::compute_post_download_acquisition_decision(
-        app,
-        &effective_parsed,
-        prepared.accepted.as_ref(),
-        quality_profile,
-        title,
-        title.runtime_minutes,
-        file_result.size_bytes as i64,
-        has_existing,
-        existing_score,
-        &prepared.rescore_changes,
-        is_filler,
-    )
-    .await;
+    // The persisted bar must be the score of the bytes that actually landed
+    // (I7), and the transfer can change the size. Same context, same pipeline,
+    // one number different — no second profile resolution.
+    let post_download_score =
+        crate::import_decide::rescore_landed_size(&decision_input, file_result.size_bytes as i64);
     let acq_score = post_download_score.score;
 
     let media_file_input = crate::InsertMediaFileInput {
@@ -713,7 +750,7 @@ async fn execute_resolved_episode_import(
         finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
 
     for episode in target_episodes {
-        mark_wanted_completed(app, &title.id, Some(&episode.id), Some(acq_score)).await;
+        mark_wanted_completed(app, &title.id, Some(&episode.id), true).await;
     }
 
     Ok(EpisodeImportOutcome::Imported {
@@ -723,16 +760,21 @@ async fn execute_resolved_episode_import(
         reason_code: None,
         link_type: Some(link_type),
         size_bytes: Some(file_result.size_bytes as i64),
+        blocklist_after_import,
     })
 }
 /// Mark an existing acquisition-state row completed for a title scope.
 /// If no row exists, leave it absent: convergence derives target-ness from
 /// library state, so passive scans/imports must not synthesize wanted rows.
+/// `landed_import` is whether a file actually landed for this scope: `true` from
+/// the import paths, `false` from a passive library scan or a manual completion
+/// that only observed a file already on disk. It decides whether the in-flight
+/// grab is cleared, and it replaces reading `Option<score>` as a flag.
 pub(crate) async fn mark_wanted_completed(
     app: &AppUseCase,
     title_id: &str,
     episode_id: Option<&str>,
-    imported_score: Option<i32>,
+    landed_import: bool,
 ) {
     let now = Utc::now().to_rfc3339();
 
@@ -740,7 +782,7 @@ pub(crate) async fn mark_wanted_completed(
         .services
         .workflow
         .acquisition_scope_states
-        .complete_acquisition_scope_for_title(title_id, episode_id, Some(&now), imported_score)
+        .complete_acquisition_scope_for_title(title_id, episode_id, Some(&now), landed_import)
         .await
     {
         Ok(true) => {}

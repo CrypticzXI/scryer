@@ -361,6 +361,15 @@ pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title
     parsed_release_matches_title_evidence(parsed, &canonical_title_evidence(title))
 }
 
+/// One title's in-flight submissions, read once per RSS pass over that title.
+struct TitleQueueSnapshot {
+    submissions: Vec<crate::DownloadSubmission>,
+    tracked_states: std::collections::HashMap<
+        crate::contracts::DownloadSourceIdentity,
+        scryer_domain::TrackedDownloadState,
+    >,
+}
+
 impl AppUseCase {
     /// Run a single RSS sync cycle: fetch latest releases from all enabled indexers,
     /// match against monitored titles, score, and grab approved releases.
@@ -591,6 +600,11 @@ impl AppUseCase {
                 .map(|h| h.has_episodes())
                 .unwrap_or(false);
 
+            // D18: one submission read per title, shared by every scope this
+            // pass touches.
+            let queue = self.title_queue_snapshot(&title.id, &dl_snapshot).await;
+            let queue = queue.as_ref();
+
             if has_episodes {
                 // For series: route each release to its covered episode(s) or
                 // pack, gated on per-scope monitoring + missing/below-cutoff.
@@ -598,6 +612,7 @@ impl AppUseCase {
                     &title,
                     releases,
                     &dl_snapshot,
+                    queue,
                     &delay_profiles,
                     &mut grabbed_urls,
                     &mut report,
@@ -608,6 +623,7 @@ impl AppUseCase {
                     &title,
                     releases,
                     &dl_snapshot,
+                    queue,
                     &delay_profiles,
                     &mut grabbed_urls,
                     &mut report,
@@ -630,6 +646,7 @@ impl AppUseCase {
                     &title,
                     releases,
                     &dl_snapshot,
+                    queue,
                     &delay_profiles,
                     &mut grabbed_urls,
                     &mut report,
@@ -660,6 +677,57 @@ impl AppUseCase {
         Ok(report)
     }
 
+    /// One title's in-flight submissions and their tracked states, read **once
+    /// per title per sync** rather than once per scope.
+    ///
+    /// The RSS lane visits every monitored scope of a title in one pass, so the
+    /// per-scope read D18 needs would be one query per episode of a 24-episode
+    /// series. `None` means "no queued pseudo-incumbents": either the title has
+    /// no submissions at all, or the client queue could not be listed, in which
+    /// case the honest answer is not "nothing is queued" — it is the lane's own
+    /// conservative skip, which `evaluate_auto_candidate` still applies through
+    /// `DownloadClientSnapshot::is_active`.
+    async fn title_queue_snapshot(
+        &self,
+        title_id: &str,
+        dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+    ) -> Option<TitleQueueSnapshot> {
+        if dl_snapshot.queue_listing_failed() {
+            return None;
+        }
+        let submissions = self
+            .services
+            .workflow
+            .download_submissions
+            .list_for_title(title_id)
+            .await
+            .unwrap_or_default();
+        if submissions.is_empty() {
+            return None;
+        }
+        let identities = submissions
+            .iter()
+            .map(crate::contracts::DownloadSourceIdentity::from_submission)
+            .collect::<Vec<_>>();
+        let tracked_states = self
+            .services
+            .workflow
+            .download_submissions
+            .list_identity_tracked_states_for_client_items(&identities)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(identity, state)| {
+                scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                    .map(|state| (identity, state))
+            })
+            .collect();
+        Some(TitleQueueSnapshot {
+            submissions,
+            tracked_states,
+        })
+    }
+
     /// Process RSS releases matched to a movie title. Target-ness (§D5) is the
     /// monitored title being missing or below cutoff; the state row, if any,
     /// only supplies upgrade/pause state.
@@ -672,6 +740,7 @@ impl AppUseCase {
         title: &Title,
         releases: &[IndexerSearchResult],
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        queue: Option<&TitleQueueSnapshot>,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
         report: &mut RssSyncReport,
@@ -746,7 +815,9 @@ impl AppUseCase {
             &wanted,
             &scored,
             &category,
+            None,
             dl_snapshot,
+            queue,
             delay_profiles,
             grabbed_urls,
             report,
@@ -767,6 +838,7 @@ impl AppUseCase {
         title: &Title,
         releases: &[IndexerSearchResult],
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        queue: Option<&TitleQueueSnapshot>,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
         report: &mut RssSyncReport,
@@ -923,7 +995,9 @@ impl AppUseCase {
                 &wanted,
                 &scored,
                 &category,
+                None,
                 dl_snapshot,
+                queue,
                 delay_profiles,
                 grabbed_urls,
                 report,
@@ -942,6 +1016,7 @@ impl AppUseCase {
                 &catalog_episodes,
                 &monitored_collection_ids,
                 dl_snapshot,
+                queue,
                 delay_profiles,
                 grabbed_urls,
                 report,
@@ -971,6 +1046,41 @@ impl AppUseCase {
             .is_none_or(|collection_id| monitored_collection_ids.contains(collection_id))
     }
 
+    /// The submission scope a pack release is judged against.
+    ///
+    /// A **full-season** release is a `Collection`; a **partial batch** —
+    /// `Show - 01-05` — is an `EpisodeSet` over the episodes it actually covers.
+    /// Under `SubjectIntent::Grab` both are per-member subjects (D8 as amended),
+    /// so the difference is only *which* episodes are in scope: a batch's own
+    /// five, or the season's monitored members. Giving a batch the season's
+    /// scope refused every batch for a currently-airing season for the whole run
+    /// and, in the other direction, admitted a five-episode batch because
+    /// episode 11 was missing.
+    ///
+    /// Total, not `Option`: `pack_items` only ever carries these two coverages.
+    fn pack_submission_scope(
+        coverage: &crate::acquisition_coverage::ReleaseCoverage,
+    ) -> SubmissionScope {
+        match coverage {
+            crate::acquisition_coverage::ReleaseCoverage::EpisodeSet(episode_ids) => {
+                SubmissionScope::EpisodeSet {
+                    episode_ids: episode_ids.clone(),
+                }
+            }
+            crate::acquisition_coverage::ReleaseCoverage::Collection(collection_id) => {
+                SubmissionScope::Collection {
+                    collection_id: collection_id.clone(),
+                }
+            }
+            // Only the two pack coverages are pushed into `pack_items`; a
+            // season pack anchored on nothing is not a pack.
+            other => {
+                debug_assert!(false, "pack lane reached with non-pack coverage {other:?}");
+                SubmissionScope::Orphan
+            }
+        }
+    }
+
     /// Evaluate one multi-episode/season pack once at pack granularity (§D5 #3).
     /// A pack is a target when ≥1 monitored member episode is missing or below
     /// cutoff and it is not dominated (every member already has a file scoring at
@@ -990,6 +1100,7 @@ impl AppUseCase {
         catalog_episodes: &[Episode],
         monitored_collection_ids: &HashSet<String>,
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        queue: Option<&TitleQueueSnapshot>,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
         report: &mut RssSyncReport,
@@ -1061,49 +1172,26 @@ impl AppUseCase {
             Err(_) => return,
         };
 
-        // Pack upgrade guard (mirrors the task-runner pack-dominated check): the
-        // pack is dominated — pure waste — when every monitored member already
-        // has a primary file scoring at least the pack's score. Only skip when we
-        // can see the pack's score; an unscored pack falls through to the grab
-        // path, which applies the per-scope cutoff/upgrade gates.
-        let existing_files = self
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-        let episode_file_scores: HashMap<String, i32> = existing_files
-            .iter()
-            .filter(|file| file.role.is_primary())
-            .filter_map(|file| {
-                file.episode_id
-                    .as_ref()
-                    .zip(file.acquisition_score)
-                    .map(|(episode_id, score)| (episode_id.clone(), score))
-            })
-            .collect();
-        if let Some(pack_score) = scored.first().and_then(|candidate| {
-            candidate
-                .quality_profile_decision
-                .as_ref()
-                .map(|decision| decision.preference_score)
-        }) {
-            let benefits = monitored_members.iter().any(|episode| {
-                episode_file_scores
-                    .get(&episode.id)
-                    .map(|existing| pack_score > *existing)
-                    .unwrap_or(true) // no file → member benefits
-            });
-            if !benefits {
-                info!(
-                    title = title.name.as_str(),
-                    release = release.title.as_str(),
-                    "RSS sync: pack skipped, every monitored member already has an equal or better file"
-                );
-                return;
-            }
-        }
+        // No pack guard here any more. This used to compare the pack's canonical
+        // score against members' *stored* `acquisition_score` — a tierless,
+        // old-scale number that blocked every pack upgrade until the whole
+        // season had been re-imported. The one pack gate is now the per-member
+        // admission subject built below, over re-derived bars (D8).
+        //
+        // The subject has to be the pack's, not the anchor member's: this lane
+        // anchors its state row to the first monitored member, and an
+        // episode-scoped subject would judge the whole pack on that one episode
+        // — refusing a pack that fills eleven missing members because the first
+        // one happens to hold a better file.
+        //
+        // **Which pack scope depends on what the release actually covers.** A
+        // full-season release gets the Collection scope; a partial batch —
+        // `Show - 01-05` — gets an EpisodeSet over its own five episodes. Both
+        // are judged per member at grab (D8 as amended), so a batch that fills
+        // four missing episodes is fetched even though the fifth already holds a
+        // better file, and a batch reaching into an unaired episode is refused
+        // exactly like a mid-season pack.
+        let pack_scope = Self::pack_submission_scope(coverage);
 
         // The submission scope + season_pack flag are derived from the winning
         // release's coverage inside the grab path, so no per-episode fan-out and
@@ -1113,7 +1201,9 @@ impl AppUseCase {
             &wanted,
             &scored,
             category,
+            Some(pack_scope),
             dl_snapshot,
+            queue,
             delay_profiles,
             grabbed_urls,
             report,
@@ -1134,6 +1224,7 @@ impl AppUseCase {
         title: &Title,
         releases: &[IndexerSearchResult],
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        queue: Option<&TitleQueueSnapshot>,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
         report: &mut RssSyncReport,
@@ -1229,30 +1320,43 @@ impl AppUseCase {
             let indexer_routing = self
                 .resolve_indexer_routing(Some(title.library_id.as_str()), scope_id.as_deref())
                 .await;
-            let scored = self
+            let scored = match self
                 .score_release_results(
                     matched_releases,
                     &quality_profile,
                     &subject.title_id,
-                    Some(title.library_id.as_str()),
-                    scope_id.as_deref(),
                     indexer_routing.as_ref(),
-                    Some(subject.category.as_str()),
-                    &subject.title_tags,
                     subject.runtime_minutes,
                     &subject.title_evidence.parse_context,
                     subject.season,
                     subject.episode,
                     subject.absolute_episode,
                 )
-                .await;
+                .await
+            {
+                Ok(scored) => scored,
+                Err(error) => {
+                    // A scoring failure is not an empty result set: continuing
+                    // with none would report the link as searched-and-nothing-
+                    // found (D12).
+                    warn!(
+                        title_id = title.id.as_str(),
+                        series_movie_link_id = link.id.as_str(),
+                        error = %error,
+                        "RSS sync: failed to score series-movie releases"
+                    );
+                    continue;
+                }
+            };
 
             self.try_grab_rss_release(
                 title,
                 &wanted,
                 &scored,
                 &subject.category,
+                None,
                 dl_snapshot,
+                queue,
                 delay_profiles,
                 grabbed_urls,
                 report,
@@ -1295,23 +1399,18 @@ impl AppUseCase {
             .resolve_indexer_routing(Some(library_id), scope_id.as_deref())
             .await;
 
-        Ok(self
-            .score_release_results(
-                releases.to_vec(),
-                &quality_profile,
-                title_id,
-                Some(library_id),
-                scope_id.as_deref(),
-                indexer_routing.as_ref(),
-                category.as_deref(),
-                title_tags,
-                runtime_minutes,
-                parse_context,
-                season,
-                episode,
-                absolute_episode,
-            )
-            .await)
+        self.score_release_results(
+            releases.to_vec(),
+            &quality_profile,
+            title_id,
+            indexer_routing.as_ref(),
+            runtime_minutes,
+            parse_context,
+            season,
+            episode,
+            absolute_episode,
+        )
+        .await
     }
 
     /// Try to grab the best candidate from scored RSS releases.
@@ -1321,6 +1420,11 @@ impl AppUseCase {
     /// ledger row is materialized via `ensure_acquisition_scope_state` before the first
     /// anchored write (release decision, pending release, grab), and every FK
     /// write uses the persisted id returned by it.
+    ///
+    /// `scope_override` replaces the scope the state row would imply. The pack
+    /// lane needs it: its row is anchored to one member episode, but the gate
+    /// has to judge the pack against every monitored member of the collection
+    /// (D8), not against the anchor alone.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS grab attempts coordinate release state, client state, and reporting in one place"
@@ -1331,7 +1435,9 @@ impl AppUseCase {
         wanted: &AcquisitionScopeState,
         scored: &[IndexerSearchResult],
         _category: &str,
+        scope_override: Option<SubmissionScope>,
         dl_snapshot: &super::acquisition_workflow::DownloadClientSnapshot,
+        queue: Option<&TitleQueueSnapshot>,
         delay_profiles: &[DelayProfile],
         grabbed_urls: &mut HashSet<String>,
         report: &mut RssSyncReport,
@@ -1358,7 +1464,7 @@ impl AppUseCase {
         let search_title = self
             .release_search_title_for_wanted_item(title, &wanted, episode.as_ref())
             .await;
-        let subject = self
+        let mut subject = self
             .resolve_release_search_subject_for_wanted_item(
                 title,
                 &search_title,
@@ -1366,6 +1472,9 @@ impl AppUseCase {
                 episode.as_ref(),
             )
             .await;
+        if let Some(scope) = scope_override {
+            subject.submission_scope = scope;
+        }
         let existing_files = self
             .services
             .library
@@ -1376,16 +1485,15 @@ impl AppUseCase {
             .into_iter()
             .filter(|file| file.role.is_primary())
             .collect::<Vec<_>>();
+        let cutoff_scope = self.cutoff_scope_for(&subject.submission_scope).await;
         let analyzed_cutoff_quality =
             crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
                 &existing_files,
-                subject.submission_scope.episode_id(),
-                subject.submission_scope.series_movie_link_id(),
+                &cutoff_scope,
             );
         let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
-                wanted.grabbed_release.as_deref(),
                 Some(subject.owner_facet.as_str()),
                 analyzed_cutoff_quality,
             )
@@ -1401,10 +1509,6 @@ impl AppUseCase {
                 return;
             }
         };
-        if upgrade_context.cutoff_reached {
-            return;
-        }
-
         // The scope is a genuine target from here on, so its ledger row exists
         // before the first anchored write (§D5). An existing row's id is reused;
         // an unpersisted view is materialized.
@@ -1429,7 +1533,66 @@ impl AppUseCase {
         // Hoisted above the loop on purpose: the evaluation context is rebuilt
         // per candidate below, and resolving thresholds inside it would repeat
         // the same repository reads for every release in the feed.
+        // One catalog read per scope, shared by the unmonitored-episode refusal
+        // (D21) and by the queued pseudo-incumbents' D4 runtime basis (D18).
+        let (catalog_episodes, catalog_collections) = if title.facet == MediaFacet::Movie {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                self.services
+                    .catalog
+                    .shows
+                    .list_episodes_for_title(&title.id)
+                    .await
+                    .unwrap_or_default(),
+                self.services
+                    .catalog
+                    .shows
+                    .list_collections_for_title(&title.id)
+                    .await
+                    .unwrap_or_default(),
+            )
+        };
+        let unmonitored_episode_ids: HashSet<String> = catalog_episodes
+            .iter()
+            .filter(|episode| !episode.monitored)
+            .map(|episode| episode.id.clone())
+            .collect();
         let minimum_seeders = self.minimum_seeders_for_candidates(scored).await;
+        // Resolved once for the scope, not per candidate: this is a store read.
+        let scoring_context = self
+            .resolve_canonical_scoring_context(title, &upgrade_context.profile)
+            .await;
+        let mut admission = self
+            .admission_subject_for_scope(
+                title,
+                &subject.submission_scope,
+                &scoring_context,
+                None,
+                crate::quality::canonical_context::SubjectIntent::Grab,
+            )
+            .await;
+        // D18: whatever this title already has in flight, compared on the same
+        // ladder as a file on disk. `queue` was read once for the whole title.
+        if let Some(queue) = queue {
+            let membership = self
+                .scope_membership_for(title, &subject.submission_scope)
+                .await;
+            let queued = self
+                .queued_releases_for_scope(
+                    title,
+                    &membership.view(),
+                    &scoring_context,
+                    &queue.submissions,
+                    &queue.tracked_states,
+                    dl_snapshot,
+                    &catalog_episodes,
+                    &catalog_collections,
+                )
+                .await;
+            admission = admission.with_queued(queued);
+        }
+
         let mut selected: Option<&IndexerSearchResult> = None;
 
         for candidate in scored {
@@ -1452,11 +1615,18 @@ impl AppUseCase {
             let evaluation_context = AutoCandidateEvaluationContext {
                 title,
                 subject: &subject,
-                current_score: wanted.current_score,
+                admission: &admission,
                 last_search_at: wanted.last_search_at.as_deref(),
                 profile: &upgrade_context.profile,
                 thresholds: &upgrade_context.thresholds,
-                cutoff_reached: upgrade_context.cutoff_reached,
+                incumbent_at_cutoff: crate::acquisition_release_search::incumbent_at_cutoff(
+                    upgrade_context.cutoff_reached,
+                    &admission,
+                    upgrade_context.profile.criteria.cutoff_score,
+                ),
+                // A feed pass, so the PROPER old-file guard binds here — this
+                // is the lane Sonarr's `ProperSpecification` was written for.
+                is_rss_lane: true,
                 now,
                 dl_snapshot: Some(dl_snapshot),
                 db_blocklist: &db_blocklist,
@@ -1464,6 +1634,7 @@ impl AppUseCase {
                 delay_profiles,
                 failed_routes: None,
                 minimum_seeders: &minimum_seeders,
+                unmonitored_episode_ids: &unmonitored_episode_ids,
             };
             let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
             let candidate_score = candidate
@@ -1474,29 +1645,18 @@ impl AppUseCase {
             let mut decision_candidate = candidate.clone();
             annotate_auto_decision(&mut decision_candidate, decision_code);
 
-            let decision_record = ReleaseDecision {
-                id: Id::new().0,
-                wanted_item_id: wanted.id.clone(),
-                title_id: title.id.clone(),
-                release_title: decision_candidate.title.clone(),
-                release_url: decision_candidate
-                    .canonical_download_source()
-                    .map(|(source, _)| source),
-                release_size_bytes: decision_candidate.size_bytes,
-                decision_code: decision_code.as_str().to_string(),
-                candidate_score,
-                current_score: wanted.current_score,
-                score_delta: wanted.current_score.map(|c| candidate_score - c),
-                explanation_json: serialize_decision_explanation(&decision_candidate),
-                created_at: now.to_rfc3339(),
-            };
-
-            let _ = self
-                .services
-                .workflow
-                .acquisition_scope_states
-                .insert_release_decision(&decision_record)
-                .await;
+            // One construction, shared with the convergence path, so the two
+            // cannot drift apart in what they record.
+            crate::acquisition_workflow::record_release_decision(
+                self,
+                &wanted,
+                title,
+                candidate,
+                decision_code,
+                admission.best_score(),
+                now,
+            )
+            .await;
 
             if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
                 let delay_minutes = crate::delay_profile::resolve_delay_decision(
@@ -1753,6 +1913,7 @@ impl AppUseCase {
                             source_hint: None,
                             source_provider_id: best.indexer_id.clone(),
                             source_provider_name: Some(best.source.clone()),
+                            release_size_bytes: best.size_bytes,
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
@@ -1842,7 +2003,6 @@ impl AppUseCase {
                     .transition_acquisition_scope_to_grabbed(&AcquisitionScopeGrabTransition {
                         id: wanted.id.clone(),
                         last_search_at: Some(now.to_rfc3339()),
-                        current_score: Some(candidate_score),
                         grabbed_release: grabbed_json,
                     })
                     .await;
@@ -2693,6 +2853,37 @@ mod tests {
                 "portmere".to_string(),
                 "hard nine".to_string()
             ]
+        );
+    }
+
+    /// **B2, as amended by D8.** A partial multi-episode batch is judged against
+    /// the episodes it covers; a full season against the season. Both are
+    /// per-member subjects at grab, so the scope choice decides *which* episodes
+    /// are in play and nothing else.
+    ///
+    /// Routing `EpisodeSet` through the Collection scope refused every batch for
+    /// a currently-airing season (`SeasonIncomplete` counts the whole season's
+    /// unaired members), and in the other direction admitted a five-episode
+    /// batch because episode 11 of the season was missing.
+    #[test]
+    fn a_partial_batch_is_scoped_to_its_own_episodes_and_a_full_season_to_the_season() {
+        use crate::acquisition_coverage::ReleaseCoverage;
+
+        let batch = ReleaseCoverage::EpisodeSet(vec!["ep-01".to_string(), "ep-05".to_string()]);
+        assert_eq!(
+            AppUseCase::pack_submission_scope(&batch),
+            SubmissionScope::EpisodeSet {
+                episode_ids: vec!["ep-01".to_string(), "ep-05".to_string()],
+            },
+            "a partial batch is judged against the episodes it covers, not the season"
+        );
+
+        let season = ReleaseCoverage::Collection("season-1".to_string());
+        assert_eq!(
+            AppUseCase::pack_submission_scope(&season),
+            SubmissionScope::Collection {
+                collection_id: "season-1".to_string(),
+            }
         );
     }
 }

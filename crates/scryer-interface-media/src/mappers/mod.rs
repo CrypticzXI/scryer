@@ -141,7 +141,7 @@ mod tests {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: "2026-06-19T00:00:00Z".to_string(),

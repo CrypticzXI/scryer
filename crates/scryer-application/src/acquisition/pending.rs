@@ -137,6 +137,82 @@ impl AppUseCase {
         }
     }
 
+    /// Order one scope's expired pending releases best-first, on facts derived
+    /// now rather than remembered from when they were parked (BL3).
+    ///
+    /// The key is `RankHead`'s: refused releases last, then tier, then revision,
+    /// then score — the same order `evaluate_admission` compares in, so the
+    /// release this picks is the one the gate would prefer. A scope whose title
+    /// or profile cannot be resolved keeps the stored order: an unorderable
+    /// group is still worth trying, and the gate refuses whatever it should.
+    async fn order_expired_releases_by_rank(
+        &self,
+        wanted: &AcquisitionScopeState,
+        releases: &mut [PendingRelease],
+    ) {
+        if releases.len() < 2 {
+            return;
+        }
+        let Ok(Some(title)) = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(&wanted.title_id)
+            .await
+        else {
+            releases.sort_by_key(|release| std::cmp::Reverse(release.release_score));
+            return;
+        };
+        let Ok(profile) = self.resolve_quality_profile_for_title(&title).await else {
+            releases.sort_by_key(|release| std::cmp::Reverse(release.release_score));
+            return;
+        };
+        let context = self
+            .resolve_canonical_scoring_context(&title, &profile)
+            .await;
+        let catalog_episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+
+        let mut keys: std::collections::HashMap<String, (bool, usize, i32, i32)> =
+            std::collections::HashMap::with_capacity(releases.len());
+        for release in releases.iter() {
+            let facts = crate::quality::canonical_context::score_parked_release_title(
+                &title,
+                &release.release_title,
+                release.release_size_bytes,
+                &catalog_episodes,
+                &catalog_collections,
+                &context,
+            );
+            keys.insert(
+                release.id.clone(),
+                (
+                    !facts.allowed,
+                    crate::admission::tier_sort_key(facts.tier_index),
+                    facts.revision.saturating_neg(),
+                    facts.score.saturating_neg(),
+                ),
+            );
+        }
+        releases.sort_by(|left, right| {
+            keys.get(&left.id)
+                .cmp(&keys.get(&right.id))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+    }
+
     /// Park the best candidate of a scope for human review (Pillar A3): the
     /// auto path rejected it as `ambiguous_identity`, so it is neither grabbed
     /// nor silently dropped. The row carries no delay semantics — the expiry
@@ -256,9 +332,6 @@ impl AppUseCase {
         let mut grabbed_count = 0u32;
 
         for (wanted_item_id, mut releases) in by_wanted {
-            // Sort descending by score
-            releases.sort_by_key(|release| std::cmp::Reverse(release.release_score));
-
             let Some(wanted) = self
                 .services
                 .workflow
@@ -296,6 +369,20 @@ impl AppUseCase {
                 }
                 continue;
             }
+
+            // **Which release gets grabbed is a decision, so it is made on
+            // freshly-derived facts** (D13/D20, BL3). The stored
+            // `release_score` is what the release scored when it was parked —
+            // under whatever profile, persona and rule packs were live then,
+            // and on the pre-Chunk-1 scale for anything parked before the
+            // upgrade — and it does not carry the tier at all, so ordering by
+            // it grabbed a 720p release at a stale 900 ahead of a 2160p one at
+            // 400 and marked the 2160p `Superseded` without ever scoring it.
+            //
+            // Ordered by the search rank's own key, which is the same ladder
+            // admission compares on: allowed, tier, revision, score.
+            self.order_expired_releases_by_rank(&wanted, &mut releases)
+                .await;
 
             // Try to grab the best release
             let mut grabbed = false;
@@ -731,6 +818,56 @@ impl AppUseCase {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
+        // What the parked release actually covers, re-derived from its own title
+        // against the catalog — the same derivation the search lane does.
+        //
+        // The anchor state row is not the answer: the RSS pack lane parks a
+        // season pack against its *first monitored member's* row, so
+        // `wanted.submission_scope()` reports `Episode { anchor }` and the whole
+        // pack would be judged against one episode when the delay elapsed — no
+        // per-member gate, no `unaired_members`, no `SeasonIncomplete`. D8's
+        // "one pack gate" had a hole exactly the size of the delay lane.
+        let catalog_episodes = self
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = self
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        // Resolved **once**, and the answer is the one that gets submitted (MA3).
+        // The submit block used to parse and resolve coverage a second time with
+        // a different parse context (an episode anchor rather than the title's
+        // catalog), so a season pack whose collection did not resolve was gated
+        // as a single episode and then submitted as a season pack: no per-member
+        // subject, no `unaired_members`, no `SeasonIncomplete`, and a download
+        // record describing something the gate never judged.
+        //
+        // Scoring waits for the profile below; only the coverage is needed here.
+        let pending_scope_fallback = wanted.submission_scope();
+        let pending_parse_context = crate::release_parser::build_release_parse_context_for_title(
+            &title,
+            &catalog_episodes,
+            Some(title.facet.as_str()),
+        );
+        let pending_parsed = crate::release_parser::parse_release_metadata_for_target(
+            &pr.release_title,
+            &pending_parse_context,
+        );
+        let pending_coverage = crate::acquisition_coverage::resolve_release_coverage(
+            &pending_parsed,
+            &catalog_episodes,
+            &catalog_collections,
+            None,
+        );
+        let pending_scope = pending_coverage.submission_scope_or(&pending_scope_fallback);
+
         let existing_files = self
             .services
             .library
@@ -741,11 +878,11 @@ impl AppUseCase {
             .into_iter()
             .filter(|file| file.role.is_primary())
             .collect::<Vec<_>>();
+        let cutoff_scope = self.cutoff_scope_for(&pending_scope).await;
         let analyzed_cutoff_quality =
             crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
                 &existing_files,
-                wanted.episode_id.as_deref(),
-                wanted.series_movie_link_id.as_deref(),
+                &cutoff_scope,
             );
         // A resolution failure defers rather than errors: the callers expire
         // parked releases on Err, and a possibly transient settings problem
@@ -753,7 +890,6 @@ impl AppUseCase {
         let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 &title,
-                wanted.grabbed_release.as_deref(),
                 None,
                 analyzed_cutoff_quality,
             )
@@ -770,20 +906,157 @@ impl AppUseCase {
             }
         };
 
-        if upgrade_context.cutoff_reached {
+        // A delayed release faces the same gate as an immediate one, against what
+        // is on disk now rather than what the ledger remembered when it was
+        // queued — the wait is exactly when the library can have moved on.
+        let scoring_context = self
+            .resolve_canonical_scoring_context(&title, &upgrade_context.profile)
+            .await;
+
+        // **Re-scored, not remembered** (D13/D20). The stored `release_score` was
+        // written when the release was parked, under whatever profile, persona,
+        // rule packs and scoring algorithm were live then — a delay profile can
+        // hold a release for hours and an operator can edit a profile in the
+        // meantime. Sonarr re-runs its whole decision engine over pending
+        // releases on every sync; so do we, from the two facts the row keeps.
+        //
+        // The column stays for display and history. It is not an input.
+        let facts = crate::quality::canonical_context::score_parked_release_title(
+            &title,
+            &pr.release_title,
+            pr.release_size_bytes,
+            &catalog_episodes,
+            &catalog_collections,
+            &scoring_context,
+        );
+        if !facts.allowed {
+            // A profile edit while the release waited now vetoes it. Expired,
+            // not grabbed: there is nothing to wait for.
+            info!(
+                release = pr.release_title.as_str(),
+                codes = ?facts.block_codes,
+                "pending release: rejected by the current profile on re-scoring"
+            );
             return Ok(PendingGrabOutcome::Rejected);
         }
-        let decision = crate::acquisition_policy::evaluate_upgrade(
-            pr.release_score,
-            wanted.current_score,
-            upgrade_context.profile.criteria.allow_upgrades,
-            wanted.last_search_at.as_deref(),
-            now,
-            &upgrade_context.thresholds,
-            upgrade_context.profile.criteria.min_score_to_grab,
-        );
+        let candidate_runtime_minutes = facts.runtime_minutes;
+        let candidate_score = facts.score;
 
-        if !decision.is_accept() {
+        let mut admission = self
+            .admission_subject_for_scope(
+                &title,
+                &pending_scope,
+                &scoring_context,
+                candidate_runtime_minutes,
+                crate::quality::canonical_context::SubjectIntent::Grab,
+            )
+            .await;
+        // D18: whatever is already downloading for this scope is a
+        // pseudo-incumbent. A parked release has no submission of its own yet,
+        // so nothing here can self-block.
+        if !dl_snapshot.queue_listing_failed() {
+            let submissions = self
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            if !submissions.is_empty() {
+                let identities = submissions
+                    .iter()
+                    .map(crate::contracts::DownloadSourceIdentity::from_submission)
+                    .collect::<Vec<_>>();
+                let tracked_states = self
+                    .services
+                    .workflow
+                    .download_submissions
+                    .list_identity_tracked_states_for_client_items(&identities)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(identity, state)| {
+                        scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                            .map(|state| (identity, state))
+                    })
+                    .collect();
+                let membership = self.scope_membership_for(&title, &pending_scope).await;
+                let queued = self
+                    .queued_releases_for_scope(
+                        &title,
+                        &membership.view(),
+                        &scoring_context,
+                        &submissions,
+                        &tracked_states,
+                        &dl_snapshot,
+                        &catalog_episodes,
+                        &catalog_collections,
+                    )
+                    .await;
+                admission = admission.with_queued(queued);
+            }
+        }
+        let policy = crate::admission::AdmissionPolicy {
+            allow_upgrades: upgrade_context.profile.criteria.allow_upgrades,
+            min_delta: upgrade_context.thresholds.same_tier_min_delta,
+            // Sonarr reads `UpgradeAllowed ? CutoffFormatScore : MinFormatScore`
+            // here; the `else` arm is unreachable in this ladder, because a
+            // no-upgrade profile returns `UpgradesDisabled` before either gate
+            // consults the cutoff. So this is just the cutoff (D19).
+            cutoff_score: upgrade_context.profile.criteria.cutoff_score,
+            manual_override: false,
+            // D18: the grab lanes, and only the grab lanes, treat in-flight
+            // submissions as pseudo-incumbents.
+            applies_to_queue: true,
+        };
+        // Tier, revision and score all out of the one derivation, so the parked
+        // release cannot be compared by facts that disagree with each other.
+        let candidate_facts = crate::admission::CandidateFacts::new(
+            facts.tier_index,
+            facts.revision,
+            candidate_score,
+        );
+        // The same candidate-aware cutoff gate the search and RSS lanes run
+        // (D15). It used to be a scope-level `if cutoff_reached { return }`
+        // above the score, which meant a PROPER parked behind a delay profile
+        // was thrown away when the delay elapsed. A parked release is
+        // reconsidered outside an active search — Sonarr's
+        // `SearchCriteria == null` — so the old-file guard binds here too.
+        if let Some(code) = crate::acquisition_release_search::cutoff_refusal(
+            candidate_facts,
+            &admission,
+            crate::acquisition_release_search::incumbent_at_cutoff(
+                upgrade_context.cutoff_reached,
+                &admission,
+                upgrade_context.profile.criteria.cutoff_score,
+            ),
+            true,
+            now,
+        ) {
+            info!(
+                release = pr.release_title.as_str(),
+                decision = code.as_str(),
+                "pending release: refused by the cutoff gate"
+            );
+            return Ok(PendingGrabOutcome::Rejected);
+        }
+
+        if !crate::admission::evaluate_admission(&admission, candidate_facts, &policy).is_admitted()
+        {
+            return Ok(PendingGrabOutcome::Rejected);
+        }
+        if let Some(incumbent) = admission.best_incumbent()
+            && crate::acquisition_policy::upgrade_cooldown_is_active(
+                crate::acquisition_policy::CooldownCandidate {
+                    tier_index: candidate_facts.tier_index,
+                    score: candidate_score,
+                },
+                incumbent,
+                wanted.last_search_at.as_deref(),
+                now,
+                &upgrade_context.thresholds,
+            )
+        {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
@@ -929,54 +1202,11 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let episode = if wanted.media_type == "episode" {
-                    match wanted.episode_id.as_deref() {
-                        Some(episode_id) => self
-                            .services
-                            .catalog
-                            .shows
-                            .get_episode_by_id(episode_id)
-                            .await
-                            .ok()
-                            .flatten(),
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                let parse_context = build_release_parse_context(
-                    &title,
-                    episode.as_ref(),
-                    None,
-                    Some(title.facet.as_str()),
-                );
-                let parsed = parse_release_metadata_for_target(&pr.release_title, &parse_context);
-                let catalog_episodes = self
-                    .services
-                    .catalog
-                    .shows
-                    .list_episodes_for_title(&title.id)
-                    .await
-                    .unwrap_or_default();
-                let catalog_collections = self
-                    .services
-                    .catalog
-                    .shows
-                    .list_collections_for_title(&title.id)
-                    .await
-                    .unwrap_or_default();
-                let submission_scope = crate::acquisition_coverage::resolve_release_coverage(
-                    &parsed,
-                    &catalog_episodes,
-                    &catalog_collections,
-                    episode.as_ref(),
-                )
-                .submission_scope_or(
-                    &super::acquisition::direct_download_submission_scope_for_wanted_item(
-                        wanted,
-                        episode.as_ref(),
-                    ),
-                );
+                // **The scope that was gated is the scope that is submitted**
+                // (MA3). This block used to resolve coverage a second time,
+                // against a different parse context, and could land on a
+                // different answer than the gate above.
+                let submission_scope = pending_scope.clone();
                 let grabbed_json = serde_json::json!({
                     "title": pr.release_title,
                     "score": pr.release_score,
@@ -1000,7 +1230,6 @@ impl AppUseCase {
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: wanted.id.clone(),
                         covered_wanted_item_ids,
-                        current_score: wanted.current_score,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
@@ -1015,6 +1244,7 @@ impl AppUseCase {
                             source_provider_name: pr.indexer_source.clone(),
                             source_kind: None,
                             source_title: source_title.clone(),
+                            release_size_bytes: pr.release_size_bytes,
                             request_signature: request_signature.clone(),
                             scope: submission_scope,
                         },
