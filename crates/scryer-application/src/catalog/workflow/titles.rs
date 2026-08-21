@@ -910,6 +910,7 @@ impl AppUseCase {
                     client_id,
                     &conflict.download_client_item_id,
                     false,
+                    false,
                 )
                 .await?;
         } else {
@@ -919,6 +920,7 @@ impl AppUseCase {
                 .delete_queue_item_for_client(
                     &conflict.download_client_type,
                     &conflict.download_client_item_id,
+                    false,
                     false,
                 )
                 .await?;

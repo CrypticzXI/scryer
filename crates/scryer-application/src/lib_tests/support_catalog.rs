@@ -8,7 +8,9 @@ pub(super) type DownloadSubmissionIdentities =
     Arc<Mutex<HashMap<TrackedDownloadStateKey, DownloadSubmissionIdentity>>>;
 pub(super) type DownloadIdentityStates = Arc<Mutex<HashMap<String, String>>>;
 pub(super) type ImportIdentities = Arc<Mutex<HashMap<String, DownloadSubmissionIdentity>>>;
-pub(super) type DeletedDownloadRequest = (Option<String>, Option<String>, String, bool);
+/// `(client_id, client_type, item_id, is_history, remove_data)` for a delete
+/// the caller issued.
+pub(super) type DeletedDownloadRequest = (Option<String>, Option<String>, String, bool, bool);
 pub(super) type DeletedDownloadRequests = Arc<Mutex<Vec<DeletedDownloadRequest>>>;
 /// `(client_id, item_id)` for a pause the caller issued.
 pub(super) type PausedDownloadRequest = (Option<String>, String);

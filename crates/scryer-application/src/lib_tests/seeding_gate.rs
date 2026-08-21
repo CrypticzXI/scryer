@@ -293,7 +293,14 @@ async fn usenet_downloads_are_removed_on_import_exactly_as_before() {
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        vec![(Some(config.id.clone()), None, "nzb-1".to_string(), true)]
+        // Usenet keeps today's behavior: no data removal.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "nzb-1".to_string(),
+            true,
+            false,
+        )]
     );
 }
 
@@ -325,10 +332,13 @@ async fn a_failed_torrent_is_removed_immediately_so_blocklisting_never_waits_on_
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
+        // Sonarr's failed-download cleanup deletes the data with the entry
+        // (`RemoveItem(item, deleteData: true)`); nobody is going to import it.
         vec![(
             Some(config.id.clone()),
             None,
             "torrent-failed-1".to_string(),
+            true,
             true
         )]
     );
@@ -550,7 +560,8 @@ async fn a_usenet_download_still_stops_being_tracked_once_it_is_removed() {
             Some(config.id.clone()),
             None,
             "nzb-settle-1".to_string(),
-            true
+            true,
+            false
         )]
     );
 }
@@ -908,9 +919,92 @@ async fn a_client_that_reports_its_obligation_met_now_releases_the_entry() {
             .lock()
             .await
             .iter()
-            .map(|(_, _, item_id, _)| item_id.clone())
+            .map(|(_, _, item_id, _, remove_data)| (item_id.clone(), *remove_data))
             .collect::<Vec<_>>(),
-        vec!["torrent-live-1".to_string()]
+        // A released torrent's payload goes with its entry, Sonarr's
+        // `RemoveItem(item, deleteData: true)`. The import already produced the
+        // library file; leaving the client's copy behind would orphan it.
+        vec![("torrent-live-1".to_string(), true)]
+    );
+}
+
+#[tokio::test]
+async fn an_ignored_torrent_is_removed_without_deleting_its_data() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Ignored Torrent").await;
+
+    let tracked = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-ignored-1",
+        &title,
+        TrackedDownloadState::Ignored,
+        true,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Ignored,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        // Ignoring a download says "stop tracking this", not "delete what you
+        // downloaded" — the operator may still want the payload.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "torrent-ignored-1".to_string(),
+            true,
+            false
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_torrent_released_by_its_persisted_goal_takes_its_data_with_it() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Goal Met With Data",
+        "torrent-live-9",
+        Some(persisted_goals(false)),
+    )
+    .await;
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.4),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::ImportedSeeding,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    let requests = download_client.deleted_requests.lock().await.clone();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|(_, _, item_id, _, remove_data)| (item_id.clone(), *remove_data))
+            .collect::<Vec<_>>(),
+        vec![("torrent-live-9".to_string(), true)]
     );
 }
 

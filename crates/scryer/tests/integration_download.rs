@@ -771,7 +771,7 @@ async fn nzbget_delete_queue_item() {
         .await;
 
     let result = new_nzbget_client(&ctx.nzbget_server.uri())
-        .delete_queue_item("12345", false)
+        .delete_queue_item("12345", false, false)
         .await;
     assert!(result.is_ok(), "delete should succeed: {:?}", result.err());
 }
@@ -789,7 +789,7 @@ async fn nzbget_delete_history_item() {
         .await;
 
     let result = new_nzbget_client(&ctx.nzbget_server.uri())
-        .delete_queue_item("999", true)
+        .delete_queue_item("999", true, false)
         .await;
     assert!(
         result.is_ok(),
@@ -2107,7 +2107,7 @@ async fn sabnzbd_delete_queue_item() {
         .await;
 
     let result = new_sabnzbd_client(&server.uri())
-        .delete_queue_item("SABnzbd_nzo_kyt1f0", false)
+        .delete_queue_item("SABnzbd_nzo_kyt1f0", false, false)
         .await;
     assert!(result.is_ok(), "delete should succeed: {:?}", result.err());
 }
@@ -2126,7 +2126,7 @@ async fn sabnzbd_delete_history_item() {
         .await;
 
     let result = new_sabnzbd_client(&server.uri())
-        .delete_queue_item("SABnzbd_nzo_hist01", true)
+        .delete_queue_item("SABnzbd_nzo_hist01", true, false)
         .await;
     assert!(
         result.is_ok(),

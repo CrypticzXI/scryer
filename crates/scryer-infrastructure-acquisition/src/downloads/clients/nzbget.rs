@@ -1313,7 +1313,16 @@ impl DownloadClient for NzbgetDownloadClient {
         self.edit_queue("GroupResume", vec![nzb_id]).await
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    /// `_remove_data` is accepted and not acted on: usenet has no seeding
+    /// obligation, and what NZBGet keeps after a delete is its own
+    /// `DeleteCleanupDisk` setting. Data removal for the first-party usenet
+    /// clients is deliberately out of scope for the seeding work.
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         let nzb_id: i64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid nzbget queue id: {id}")))?;

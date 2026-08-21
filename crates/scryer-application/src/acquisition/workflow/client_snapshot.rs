@@ -975,7 +975,14 @@ pub(crate) async fn process_download_failure(
             .services
             .integrations
             .download_client
-            .delete_queue_item_for_client_id(&context.client_id, &context.client_item_id, true)
+            // History cleanup for a download the client itself failed: the
+            // entry goes, what the client kept is left to the client.
+            .delete_queue_item_for_client_id(
+                &context.client_id,
+                &context.client_item_id,
+                true,
+                false,
+            )
             .await
     {
         warn!(

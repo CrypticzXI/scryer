@@ -2201,7 +2201,14 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
 
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+        // Usenet: the entry goes, the data stays the client's business.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            item_id.to_string(),
+            true,
+            false,
+        )]
     );
 
     timeout(Duration::from_secs(5), async {
@@ -4067,7 +4074,14 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
     );
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+        // Usenet: the entry goes, the data stays the client's business.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            item_id.to_string(),
+            true,
+            false,
+        )]
     );
 }
 

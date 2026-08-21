@@ -1421,6 +1421,7 @@ impl StubDownloadClient {
         client_type: Option<&str>,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         if let Some(error) = self.delete_error.lock().await.clone() {
             return Err(AppError::Repository(error));
@@ -1434,6 +1435,7 @@ impl StubDownloadClient {
             client_type.map(str::to_string),
             id.to_string(),
             is_history,
+            remove_data,
         ));
         Ok(())
     }
@@ -1588,8 +1590,14 @@ impl DownloadClient for StubDownloadClient {
             .find(|item| item.download_client_item_id == download_client_item_id))
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
-        self.record_delete(None, None, id, is_history).await
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
+        self.record_delete(None, None, id, is_history, remove_data)
+            .await
     }
 
     async fn delete_queue_item_for_client_id(
@@ -1597,8 +1605,9 @@ impl DownloadClient for StubDownloadClient {
         client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.record_delete(Some(client_id), None, id, is_history)
+        self.record_delete(Some(client_id), None, id, is_history, remove_data)
             .await
     }
 
@@ -1607,8 +1616,9 @@ impl DownloadClient for StubDownloadClient {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.record_delete(None, Some(client_type), id, is_history)
+        self.record_delete(None, Some(client_type), id, is_history, remove_data)
             .await
     }
 

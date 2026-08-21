@@ -2079,7 +2079,12 @@ impl DownloadClient for ManualImportCleanupDownloadClient {
         Err(AppError::Repository("not configured".into()))
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         self.deleted_items
             .lock()
             .await

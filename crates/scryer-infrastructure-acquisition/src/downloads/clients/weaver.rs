@@ -1586,7 +1586,17 @@ impl DownloadClient for WeaverDownloadClient {
         Ok(())
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    /// `_remove_data` is accepted and not acted on: Weaver is usenet, with no
+    /// seeding obligation, and the history delete deliberately keeps
+    /// `deleteFiles: false` so a removal never takes the payload out from under
+    /// an import. Data removal for the first-party usenet clients is out of
+    /// scope for the seeding work.
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         let job_id: u64 = id
             .parse()
             .map_err(|_| AppError::Validation(format!("invalid weaver job id: {id}")))?;

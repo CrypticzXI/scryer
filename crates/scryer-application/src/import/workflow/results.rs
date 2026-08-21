@@ -141,6 +141,10 @@ pub async fn retry_failed_import(
 /// on its own — the gate has to agree that the seeding obligation is
 /// discharged. Failed and Ignored downloads are deliberately *not* gated:
 /// blocklist and retry must never wait on seeding (Sonarr's rule).
+///
+/// Once a removal is agreed, a torrent's payload goes with the entry
+/// (`remove_data`, Sonarr's `deleteData: true`); see the call site for which
+/// states qualify and which keep today's behavior.
 #[expect(
     clippy::too_many_arguments,
     reason = "terminal cleanup carries client identity, routing scope, state, and the seeding gate's view of the client entry"
@@ -303,17 +307,47 @@ async fn reconcile_terminal_download_cleanup(
             | TrackedDownloadState::Ignored
     );
 
+    // Sonarr removes both a completed-and-imported download and a failed one
+    // with `RemoveItem(item, deleteData: true)` (DownloadEventHub
+    // .RemoveFromDownloadClient). Match it for torrents: reaching this line in
+    // `Imported`/`ImportedSeeding` means the gate released the entry with
+    // `RemoveEntry` — the seeding obligation is discharged and nothing is left
+    // to protect — and `Failed` is a download nobody will import. A hardlinked
+    // import keeps the library file either way; a copy import would otherwise
+    // leave the client's copy behind with no owner.
+    //
+    // `Ignored` keeps today's behavior on purpose: the operator told Scryer to
+    // stop tracking the download, not to delete what it downloaded. So do the
+    // first-party usenet clients, whose delete semantics are their own — both
+    // are documented as deferred.
+    let remove_data = matches!(
+        state,
+        TrackedDownloadState::Imported
+            | TrackedDownloadState::ImportedSeeding
+            | TrackedDownloadState::Failed
+    ) && crate::seeding_gate::client_type_is_torrent(app, client_type);
+
     let delete_result = if client_id.is_empty() {
         app.services
             .integrations
             .download_client
-            .delete_queue_item_for_client(client_type, download_client_item_id, is_history)
+            .delete_queue_item_for_client(
+                client_type,
+                download_client_item_id,
+                is_history,
+                remove_data,
+            )
             .await
     } else {
         app.services
             .integrations
             .download_client
-            .delete_queue_item_for_client_id(client_id, download_client_item_id, is_history)
+            .delete_queue_item_for_client_id(
+                client_id,
+                download_client_item_id,
+                is_history,
+                remove_data,
+            )
             .await
     };
 

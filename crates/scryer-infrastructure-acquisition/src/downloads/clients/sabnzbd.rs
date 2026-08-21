@@ -1201,7 +1201,16 @@ impl DownloadClient for SabnzbdDownloadClient {
         Ok(())
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    /// `_remove_data` is accepted and not acted on: the queue delete already
+    /// passes `del_files=1`, and a history delete leaves what SABnzbd kept to
+    /// SABnzbd. Data removal for the first-party usenet clients is deliberately
+    /// out of scope for the seeding work.
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         if is_history {
             self.api_get_mutation(
                 &[("mode", "history"), ("name", "delete"), ("value", id)],

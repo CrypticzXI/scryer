@@ -1368,11 +1368,16 @@ impl DownloadClient for WasmDownloadClient {
         .await
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
         let request = PluginDownloadClientControlRequest {
             action: DownloadControlAction::Remove,
             client_item_id: id.to_string(),
-            remove_data: false,
+            remove_data,
             is_history,
         };
         if let Some(result) = self

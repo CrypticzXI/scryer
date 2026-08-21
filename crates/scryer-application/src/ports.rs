@@ -5562,7 +5562,22 @@ pub trait DownloadClient: Send + Sync {
         self.resume_queue_item(id).await
     }
 
-    async fn delete_queue_item(&self, _id: &str, _is_history: bool) -> AppResult<()> {
+    /// Remove one item from the client.
+    ///
+    /// `remove_data` asks the client to delete the payload it downloaded along
+    /// with the entry — Sonarr's `RemoveItem(item, deleteData: true)`, which it
+    /// uses for both post-import and failed-download cleanup. Callers own the
+    /// policy: the terminal-cleanup executor asks for it only where the data is
+    /// Scryer's to reclaim (see
+    /// `import::workflow::results::reconcile_terminal_download_cleanup`), and
+    /// everything else passes `false`. A client that has no way to keep the
+    /// data, or no way to delete it, honors what it can and documents the rest.
+    async fn delete_queue_item(
+        &self,
+        _id: &str,
+        _is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         Err(AppError::Repository(
             "delete is not supported for this download client".to_string(),
         ))
@@ -5573,8 +5588,9 @@ pub trait DownloadClient: Send + Sync {
         _client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.delete_queue_item(id, is_history).await
+        self.delete_queue_item(id, is_history, remove_data).await
     }
 
     async fn delete_queue_item_for_client(
@@ -5582,9 +5598,10 @@ pub trait DownloadClient: Send + Sync {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         let _ = client_type;
-        self.delete_queue_item(id, is_history).await
+        self.delete_queue_item(id, is_history, remove_data).await
     }
 
     async fn mark_imported(&self, _request: &DownloadClientMarkImportedRequest) -> AppResult<()> {

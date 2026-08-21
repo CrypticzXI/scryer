@@ -507,8 +507,15 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.resume_queue_item_for_client(client_id, id).await
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
-        self.inner.delete_queue_item(id, is_history).await
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
+        self.inner
+            .delete_queue_item(id, is_history, remove_data)
+            .await
     }
 
     async fn delete_queue_item_for_client_id(
@@ -516,9 +523,10 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         self.inner
-            .delete_queue_item_for_client_id(client_id, id, is_history)
+            .delete_queue_item_for_client_id(client_id, id, is_history, remove_data)
             .await
     }
 
@@ -527,9 +535,10 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         self.inner
-            .delete_queue_item_for_client(client_type, id, is_history)
+            .delete_queue_item_for_client(client_type, id, is_history, remove_data)
             .await
     }
 
@@ -3879,9 +3888,14 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )))
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_queue_action(id, is_history).await? {
-            return client.delete_queue_item(id, is_history).await;
+            return client.delete_queue_item(id, is_history, remove_data).await;
         }
         Err(AppError::Validation(format!(
             "download client item not found: {id}"
@@ -3893,9 +3907,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_id(client_id).await? {
-            return client.delete_queue_item(id, is_history).await;
+            return client.delete_queue_item(id, is_history, remove_data).await;
         }
         Err(AppError::Validation(format!(
             "download client not found: {client_id}"
@@ -3907,9 +3922,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         if let Some(client) = self.resolve_client_for_type(client_type).await? {
-            return client.delete_queue_item(id, is_history).await;
+            return client.delete_queue_item(id, is_history, remove_data).await;
         }
         Err(AppError::Validation(format!(
             "download client not found for type: {client_type}"
@@ -4949,7 +4965,7 @@ mod tests {
         status: Mutex<DownloadClientStatus>,
         paused: Mutex<Vec<String>>,
         resumed: Mutex<Vec<String>>,
-        deleted: Mutex<Vec<(String, bool)>>,
+        deleted: Mutex<Vec<(String, bool, bool)>>,
     }
 
     #[derive(Clone, Copy)]
@@ -5024,11 +5040,16 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
+        async fn delete_queue_item(
+            &self,
+            id: &str,
+            is_history: bool,
+            remove_data: bool,
+        ) -> AppResult<()> {
             self.deleted
                 .lock()
                 .unwrap()
-                .push((id.to_string(), is_history));
+                .push((id.to_string(), is_history, remove_data));
             Ok(())
         }
     }
@@ -6059,7 +6080,7 @@ mod tests {
             Err(AppError::Validation(message)) if message.contains("download client item not found")
         ));
         assert!(matches!(
-            router.delete_queue_item("job-1", false).await,
+            router.delete_queue_item("job-1", false, false).await,
             Err(AppError::Validation(message)) if message.contains("download client item not found")
         ));
     }
@@ -7680,14 +7701,65 @@ mod tests {
         );
 
         router
-            .delete_queue_item("SABnzbd_nzo_hist01", true)
+            .delete_queue_item("SABnzbd_nzo_hist01", true, false)
             .await
             .expect("history delete should route to sabnzbd client");
 
         assert!(nzb_client.deleted.lock().unwrap().is_empty());
         assert_eq!(
             sab_client.deleted.lock().unwrap().as_slice(),
-            [("SABnzbd_nzo_hist01".to_string(), true)]
+            [("SABnzbd_nzo_hist01".to_string(), true, false)]
+        );
+    }
+
+    /// The data-removal flag is the caller's decision (the terminal-cleanup
+    /// executor's), so the router has to carry it to the client it resolved
+    /// rather than deciding anything itself.
+    #[tokio::test]
+    async fn delete_forwards_the_data_removal_flag_to_the_resolved_client() {
+        let torrent_client = Arc::new(MockDownloadClient::default());
+        torrent_client
+            .history_items
+            .lock()
+            .unwrap()
+            .push(test_queue_item("torrent-1"));
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["magnet_uri".to_string()],
+                clients: vec![("qbit".to_string(), torrent_client.clone())],
+            });
+
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("qbit", "qBittorrent", "qbittorrent", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        router
+            .delete_queue_item("torrent-1", true, true)
+            .await
+            .expect("history delete should route to the torrent client");
+        router
+            .delete_queue_item_for_client_id("qbit", "torrent-1", true, true)
+            .await
+            .expect("client-id delete should route to the torrent client");
+        router
+            .delete_queue_item_for_client("qbittorrent", "torrent-1", true, true)
+            .await
+            .expect("client-type delete should route to the torrent client");
+
+        assert_eq!(
+            torrent_client.deleted.lock().unwrap().as_slice(),
+            [
+                ("torrent-1".to_string(), true, true),
+                ("torrent-1".to_string(), true, true),
+                ("torrent-1".to_string(), true, true)
+            ]
         );
     }
 

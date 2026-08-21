@@ -72,6 +72,7 @@ pub async fn start_background_download_delete_poller(
                         client_id,
                         &command.download_client_item_id,
                         command.is_history,
+                        false,
                     )
                     .await
             } else {
@@ -82,6 +83,7 @@ pub async fn start_background_download_delete_poller(
                         &command.client_type,
                         &command.download_client_item_id,
                         command.is_history,
+                        false,
                     )
                     .await
             };
