@@ -674,7 +674,19 @@ const en: LocaleDictionary = {
   "settings.seedingProfileDeleteError": "Failed to delete the seeding profile.",
   "settings.seedingProfileDefaultSaved": "Default seeding profile saved.",
   "settings.seedingProfileProwlarrManaged": "Managed by Prowlarr",
+  "settings.seedingProfileProwlarrManagedMinimum":
+    "Managed by Prowlarr · minimum {{count}} seeders",
+  "settings.seedingProfileProwlarrManagedMinimumOne":
+    "Managed by Prowlarr · minimum 1 seeder",
+  "settings.seedingProfileProwlarrManagedMinimumOff":
+    "Managed by Prowlarr · seeder check off",
   "settings.seedingProfileInherit": "Inherit default",
+  "settings.seedingProfileInheritProwlarrMinimum":
+    "Inherit default · Prowlarr minimum {{count}} seeders",
+  "settings.seedingProfileInheritProwlarrMinimumOne":
+    "Inherit default · Prowlarr minimum 1 seeder",
+  "settings.seedingProfileInheritProwlarrMinimumOff":
+    "Inherit default · Prowlarr seeder check off",
   "settings.seedingProfileRoutingInherit": "Inherit global default",
   "settings.seedingProfileColumn": "Seeding profile",
   "settings.seedingProfileIndexerLabel": "Seeding profile for {{name}}",

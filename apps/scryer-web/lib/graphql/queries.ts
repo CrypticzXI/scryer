@@ -2053,6 +2053,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     downloadClientId
     seedingProfileId
     hasProwlarrSeedCriteria
+    prowlarrMinimumSeeders
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2242,6 +2243,7 @@ const indexerFieldSelection = `
     downloadClientId
     seedingProfileId
     hasProwlarrSeedCriteria
+    prowlarrMinimumSeeders
     hasApiKey
     storedSecretKeys
     rateLimitSeconds

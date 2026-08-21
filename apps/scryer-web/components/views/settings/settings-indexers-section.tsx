@@ -59,6 +59,7 @@ import type { IndexerSettingsTab } from "@/components/root/types";
 import type { SeedingProfileOption } from "@/lib/types/seeding-profiles";
 import {
   SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileInheritOptionKey,
   seedingProfileSelectValue,
   seedingProfileSelectValueToId,
   supportsSeedingProfileAssignment,
@@ -621,6 +622,7 @@ function IndexerSeedingProfileSelect({
   options,
   supported,
   prowlarrManaged = false,
+  prowlarrMinimumSeeders = null,
   isPending,
   disabled = false,
   showLabel = false,
@@ -634,6 +636,10 @@ function IndexerSeedingProfileSelect({
   /// Prowlarr supplied seed criteria for this child, so the null option means
   /// "use them" rather than "inherit the default".
   prowlarrManaged?: boolean;
+  /// Prowlarr's imported `appMinimumSeeders` for this child, or null when it
+  /// supplied none. It governs admission whether or not Prowlarr also sent
+  /// goals, so the inherit option names it instead of claiming a bare default.
+  prowlarrMinimumSeeders?: number | null;
   isPending: boolean;
   disabled?: boolean;
   showLabel?: boolean;
@@ -658,6 +664,11 @@ function IndexerSeedingProfileSelect({
 
   const isMissing =
     value !== null && !options.some((option) => option.id === value);
+  const prowlarrMinimum = prowlarrMinimumSeeders ?? null;
+  const inheritLabel = t(
+    seedingProfileInheritOptionKey(prowlarrManaged, prowlarrMinimum),
+    { count: prowlarrMinimum ?? 0 },
+  );
 
   return (
     <div className="min-w-[190px] space-y-1.5">
@@ -673,6 +684,12 @@ function IndexerSeedingProfileSelect({
         <SelectTrigger
           id={selectId}
           data-testid={selectId}
+          // Readable without opening the menu: the trigger only renders the
+          // selected option's text, so the imported threshold needs its own
+          // hook for assertions and for support reading a screenshot.
+          data-prowlarr-minimum-seeders={
+            prowlarrMinimum === null ? undefined : String(prowlarrMinimum)
+          }
           className="w-full"
           disabled={isPending || disabled}
           aria-describedby={isMissing ? statusId : undefined}
@@ -681,12 +698,11 @@ function IndexerSeedingProfileSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={SEEDING_PROFILE_INHERIT_VALUE}>
-            {t(
-              prowlarrManaged
-                ? "settings.seedingProfileProwlarrManaged"
-                : "settings.seedingProfileInherit",
-            )}
+          <SelectItem
+            value={SEEDING_PROFILE_INHERIT_VALUE}
+            data-testid={`${selectId}-inherit`}
+          >
+            {inheritLabel}
           </SelectItem>
           {isMissing && value ? (
             <SelectItem value={value}>
@@ -758,6 +774,7 @@ function IndexerSeedingProfileCell({
       value={indexer.seedingProfileId}
       options={options}
       prowlarrManaged={indexer.hasProwlarrSeedCriteria}
+      prowlarrMinimumSeeders={indexer.prowlarrMinimumSeeders}
       supported={
         !isManagementOnlyIndexer(indexer) &&
         supportsSeedingProfileAssignment(protocolFamilies)

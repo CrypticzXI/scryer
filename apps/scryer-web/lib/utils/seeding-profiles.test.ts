@@ -16,6 +16,7 @@ import {
   formatSeedingProfileRatio,
   formatSeedingProfileSeedTime,
   SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileInheritOptionKey,
   seedingProfileMinimumSeedersChip,
   seedingProfileSelectValue,
   seedingProfileSelectValueToId,
@@ -423,4 +424,58 @@ test("a profile minimum of zero round-trips as zero, not as empty", () => {
     minimumSeeders: "0",
   };
   assert.equal(seedingProfileDraftToInput(draft).minimumSeeders, 0);
+});
+
+test("the inherit option names Prowlarr's imported minimum", () => {
+  // Without a value the option keeps the two labels it had: the sentinel is
+  // about seed goals, and W1 deliberately stopped it claiming a minimum.
+  assert.equal(
+    seedingProfileInheritOptionKey(false, null),
+    "settings.seedingProfileInherit",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(true, null),
+    "settings.seedingProfileProwlarrManaged",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(false, undefined),
+    "settings.seedingProfileInherit",
+  );
+
+  // A live Prowlarr always pushes a minimum (its app profile defaults to 1),
+  // so the singular is the common case, not an edge one.
+  assert.equal(
+    seedingProfileInheritOptionKey(false, 1),
+    "settings.seedingProfileInheritProwlarrMinimumOne",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(false, 4),
+    "settings.seedingProfileInheritProwlarrMinimum",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(true, 4),
+    "settings.seedingProfileProwlarrManagedMinimum",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(true, 1),
+    "settings.seedingProfileProwlarrManagedMinimumOne",
+  );
+
+  // Zero is Prowlarr's explicit "do not enforce", so it must not read as a
+  // threshold of zero seeders nor fall back to "Inherit default".
+  assert.equal(
+    seedingProfileInheritOptionKey(false, 0),
+    "settings.seedingProfileInheritProwlarrMinimumOff",
+  );
+  assert.equal(
+    seedingProfileInheritOptionKey(true, 0),
+    "settings.seedingProfileProwlarrManagedMinimumOff",
+  );
+
+  for (const managed of [false, true]) {
+    for (const minimum of [null, 0, 1, 4]) {
+      const key = seedingProfileInheritOptionKey(managed, minimum);
+      assert.equal(typeof en[key], "string", `missing English string for ${key}`);
+    }
+  }
 });

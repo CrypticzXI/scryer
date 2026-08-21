@@ -16,6 +16,12 @@ export type IndexerRecord = {
    * overrides them.
    */
   hasProwlarrSeedCriteria: boolean;
+  /**
+   * Minimum seeders Prowlarr imported for this managed child, or null when it
+   * supplied none. Read-only: 0 means Prowlarr turned the seeder check off, and
+   * assigning a profile overrides the imported value.
+   */
+  prowlarrMinimumSeeders: number | null;
   hasApiKey: boolean;
   storedSecretKeys: string[];
   rateLimitSeconds: number | null;

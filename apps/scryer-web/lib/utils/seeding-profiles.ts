@@ -430,6 +430,44 @@ export function seedingProfileSelectValueToId(value: string): string | null {
 }
 
 /**
+ * Copy key for the inherit option of an indexer's seeding-profile picker.
+ *
+ * Prowlarr pushes two independent things to a managed child: seed goals, which
+ * the "Managed by Prowlarr" sentinel speaks for, and an `appMinimumSeeders`
+ * admission threshold, which it deliberately does not. A live Prowlarr always
+ * sends the threshold (its app profile defaults to 1), so without naming it
+ * here the row reads "Inherit default" while Prowlarr's value is what actually
+ * governs admission.
+ *
+ * Zero is Prowlarr's explicit "do not enforce", not "inherit", and gets its own
+ * wording. Keys are complete sentences rather than assembled fragments so the
+ * plural and the off case stay translatable.
+ */
+export function seedingProfileInheritOptionKey(
+  prowlarrManaged: boolean,
+  prowlarrMinimumSeeders: number | null | undefined,
+): string {
+  if (prowlarrMinimumSeeders === null || prowlarrMinimumSeeders === undefined) {
+    return prowlarrManaged
+      ? "settings.seedingProfileProwlarrManaged"
+      : "settings.seedingProfileInherit";
+  }
+  if (prowlarrMinimumSeeders <= 0) {
+    return prowlarrManaged
+      ? "settings.seedingProfileProwlarrManagedMinimumOff"
+      : "settings.seedingProfileInheritProwlarrMinimumOff";
+  }
+  if (prowlarrMinimumSeeders === 1) {
+    return prowlarrManaged
+      ? "settings.seedingProfileProwlarrManagedMinimumOne"
+      : "settings.seedingProfileInheritProwlarrMinimumOne";
+  }
+  return prowlarrManaged
+    ? "settings.seedingProfileProwlarrManagedMinimum"
+    : "settings.seedingProfileInheritProwlarrMinimum";
+}
+
+/**
  * True when an indexer can carry a seeding profile at all. The backend rejects
  * assignment on anything that is not torrent-capable, so the control mirrors
  * the download-client mapping's not-applicable handling instead of failing the
