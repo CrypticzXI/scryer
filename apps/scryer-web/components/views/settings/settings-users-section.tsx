@@ -1,7 +1,8 @@
 import * as React from "react";
-import { ChevronRight, KeyRound, Plus, Power, PowerOff, ShieldOff, Trash2 } from "lucide-react";
+import { Check, ChevronRight, KeyRound, Loader2, Plus, Power, PowerOff, ShieldOff, Trash2, X } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { InfoHelp } from "@/components/common/info-help";
 import {
   PermissionDropdowns,
   type LibraryPermissionDrafts,
@@ -37,7 +38,6 @@ const USERS_TABLE_HEADER_ROW_CLASS =
   "border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]";
 const USERS_TABLE_HEADER_CELL_CLASS =
   "font-semibold text-[var(--scry-muted2)]";
-
 type SettingsUsersSectionProps = {
   settingsUsers: UserRecord[];
   libraries: LibraryRecord[];
@@ -49,6 +49,7 @@ type SettingsUsersSectionProps = {
   setNewUsername: (value: string) => void;
   newPassword: string;
   setNewPassword: (value: string) => void;
+  loadPasswordMinLength: () => Promise<number | null>;
   newAppPermissions: string[];
   newLibraryPermissionDrafts: LibraryPermissionDrafts;
   canManagePermissions: boolean;
@@ -65,7 +66,10 @@ type SettingsUsersSectionProps = {
     changes: LibraryPermissionDrafts,
   ) => void;
   mutatingUserId: string | null;
-  setUserPassword: (userId: string) => Promise<void> | void;
+  setUserPassword: (
+    userId: string,
+    passwordMinLength: number | null,
+  ) => Promise<boolean> | boolean;
   setUserAppPermissions: (userId: string, permissions?: string[]) => Promise<void> | void;
   setUserLibraryPermissions: (
     userId: string,
@@ -141,6 +145,7 @@ export function SettingsUsersSection({
   setNewUsername,
   newPassword,
   setNewPassword,
+  loadPasswordMinLength,
   newAppPermissions,
   newLibraryPermissionDrafts,
   canManagePermissions,
@@ -166,6 +171,13 @@ export function SettingsUsersSection({
   const [isCreateUserOpen, setIsCreateUserOpen] = React.useState(false);
   const [passwordResetUser, setPasswordResetUser] =
     React.useState<UserRecord | null>(null);
+  const [passwordResetEditorUserId, setPasswordResetEditorUserId] =
+    React.useState<string | null>(null);
+  const [passwordMinLength, setPasswordMinLength] = React.useState<number | null>(null);
+  const isPasswordTooShort = (password: string) =>
+    passwordMinLength !== null &&
+    password.length > 0 &&
+    password.length < passwordMinLength;
   return (
     <div id="settings-users-section" className="space-y-4 text-sm">
       <div className={USERS_PANEL_CLASS}>
@@ -284,38 +296,96 @@ export function SettingsUsersSection({
                       <AuthFactorStatusBadge enabled={user.hasPasskey} />
                     </TableCell>
                     <TableCell className="align-middle">
-                      {canSetPassword ? (
-                        <div className="flex items-center gap-2">
-                          <label className="sr-only" htmlFor={`new-password-${user.id}`}>
-                            {t("settings.temporaryPassword")}
-                          </label>
-                          <Input
-                            id={`new-password-${user.id}`}
-                            value={userPasswordDrafts[user.id] ?? ""}
-                            onChange={(event) => updateUserPasswordDraft(user.id, event.target.value)}
-                            placeholder={t("form.newPasswordPlaceholder")}
-                            type="password"
-                            autoComplete="new-password"
-                            aria-label={t("settings.temporaryPassword")}
-                            disabled={isOwnUser}
-                          />
+                      {canSetPassword && !isOwnUser ? (
+                        passwordResetEditorUserId === user.id ? (
+                          <div className="flex items-center gap-2">
+                            <label className="sr-only" htmlFor={`new-password-${user.id}`}>
+                              {t("settings.temporaryPassword")}
+                            </label>
+                            <div className="min-w-0 flex-1">
+                              <Input
+                                id={`new-password-${user.id}`}
+                                value={userPasswordDrafts[user.id] ?? ""}
+                                onChange={(event) =>
+                                  updateUserPasswordDraft(user.id, event.target.value)
+                                }
+                                placeholder={t("form.newPasswordPlaceholder")}
+                                type="password"
+                                autoComplete="new-password"
+                                minLength={passwordMinLength ?? undefined}
+                                aria-label={t("settings.temporaryPassword")}
+                                aria-invalid={isPasswordTooShort(
+                                  userPasswordDrafts[user.id] ?? "",
+                                )}
+                                aria-describedby={
+                                  isPasswordTooShort(userPasswordDrafts[user.id] ?? "")
+                                    ? `new-password-${user.id}-error`
+                                    : undefined
+                                }
+                                disabled={mutatingUserId === user.id}
+                              />
+                              {isPasswordTooShort(userPasswordDrafts[user.id] ?? "") ? (
+                                <p
+                                  id={`new-password-${user.id}-error`}
+                                  className="mt-1 text-xs text-[var(--scry-danger-text)]"
+                                >
+                                  {t("settings.passwordMinLengthError", {
+                                    min: passwordMinLength,
+                                  })}
+                                </p>
+                              ) : null}
+                            </div>
+                            <IconButton
+                              id={selectorId("settings-user-update-password", user.username)}
+                              label={t("label.save")}
+                              tone="enabled"
+                              onClick={() => setPasswordResetUser(user)}
+                              disabled={
+                                mutatingUserId === user.id ||
+                                !(userPasswordDrafts[user.id]?.trim()) ||
+                                isPasswordTooShort(userPasswordDrafts[user.id] ?? "")
+                              }
+                            >
+                              {mutatingUserId === user.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Check className="h-4 w-4" />
+                              )}
+                            </IconButton>
+                            <IconButton
+                              id={selectorId(
+                                "settings-user-cancel-password-reset",
+                                user.username,
+                              )}
+                              label={t("label.cancel")}
+                              tone="delete"
+                              onClick={() => {
+                                updateUserPasswordDraft(user.id, "");
+                                setPasswordResetEditorUserId(null);
+                              }}
+                              disabled={mutatingUserId === user.id}
+                            >
+                              <X className="h-4 w-4" />
+                            </IconButton>
+                          </div>
+                        ) : (
                           <Button
-                            id={selectorId("settings-user-update-password", user.username)}
+                            id={selectorId("settings-user-reset-password", user.username)}
                             variant="primary"
                             size="sm"
-                            className="min-w-24 px-2"
-                            onClick={() => setPasswordResetUser(user)}
-                            disabled={mutatingUserId === user.id || isOwnUser}
+                            onClick={async () => {
+                              setPasswordMinLength(await loadPasswordMinLength());
+                              setPasswordResetEditorUserId(user.id);
+                            }}
+                            disabled={mutatingUserId === user.id}
                           >
                             <KeyRound className="h-3.5 w-3.5" />
-                            {mutatingUserId === user.id
-                              ? t("label.saving")
-                              : t("settings.setTemporaryPassword")}
+                            {t("settings.resetPassword")}
                           </Button>
-                        </div>
+                        )
                       ) : (
                         <span className="text-sm text-[var(--scry-muted3)]">
-                          {t("settings.passwordManagedExternally")}
+                          N/A
                         </span>
                       )}
                     </TableCell>
@@ -386,7 +456,10 @@ export function SettingsUsersSection({
             <form id="settings-user-create-form" className="space-y-4" onSubmit={createUser}>
               <div className="grid gap-3 md:grid-cols-2">
                 <div>
-                  <Label htmlFor="settings-user-username" className="mb-2 block">
+                  <Label
+                    htmlFor="settings-user-username"
+                    className="mb-2 flex min-h-5 items-center"
+                  >
                     {t("settings.username")}
                   </Label>
                   <Input
@@ -399,8 +472,15 @@ export function SettingsUsersSection({
                   />
                 </div>
                 <div>
-                  <Label htmlFor="settings-user-password" className="mb-2 block">
+                  <Label
+                    htmlFor="settings-user-password"
+                    className="mb-2 flex min-h-5 items-center gap-1.5"
+                  >
                     {t("settings.temporaryPassword")}
+                    <InfoHelp
+                      ariaLabel={t("settings.temporaryPassword")}
+                      text={t("settings.temporaryPasswordHelp")}
+                    />
                   </Label>
                   <Input
                     id="settings-user-password"
@@ -411,9 +491,6 @@ export function SettingsUsersSection({
                     autoComplete="new-password"
                     required
                   />
-                  <p className="mt-1 text-xs text-[var(--scry-muted)]">
-                    {t("settings.temporaryPasswordHelp")}
-                  </p>
                 </div>
               </div>
               {canManagePermissions ? (
@@ -434,7 +511,10 @@ export function SettingsUsersSection({
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-2">
-                <Button id="settings-user-create" type="submit" className="min-w-40">
+                <Button
+                  id="settings-user-create"
+                  type="submit"
+                >
                   <Plus className="h-4 w-4" />
                   {t("settings.createUser")}
                 </Button>
@@ -475,8 +555,11 @@ export function SettingsUsersSection({
         }
         onConfirm={async () => {
           if (!passwordResetUser) return;
-          await setUserPassword(passwordResetUser.id);
-          setPasswordResetUser(null);
+          const saved = await setUserPassword(passwordResetUser.id, passwordMinLength);
+          if (saved) {
+            setPasswordResetEditorUserId(null);
+            setPasswordResetUser(null);
+          }
         }}
         onCancel={() => setPasswordResetUser(null)}
       />

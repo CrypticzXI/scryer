@@ -9,7 +9,7 @@ const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SCRYER_TOTP_URI =
   "otpauth://totp/Scryer:jen%40example.test?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Scryer&algorithm=SHA1&digits=6&period=30";
 
-async function renderTotpQrCode(): Promise<string> {
+async function renderTotpQrCode(value = SCRYER_TOTP_URI): Promise<string> {
   const server = await createServer({
     root: WEB_ROOT,
     server: { middlewareMode: true },
@@ -23,7 +23,7 @@ async function renderTotpQrCode(): Promise<string> {
     );
     const TotpQrCode = module.TotpQrCode as ComponentType<{ value: string }>;
     return renderToStaticMarkup(
-      createElement(TotpQrCode, { value: SCRYER_TOTP_URI }),
+      createElement(TotpQrCode, { value }),
     );
   } finally {
     await server.close();
@@ -33,37 +33,23 @@ async function renderTotpQrCode(): Promise<string> {
 test("TOTP QR keeps its scanner-safe rendering contract", async () => {
   const markup = await renderTotpQrCode();
   const wrapperClasses = markup.match(/^<div class="([^"]+)">/)?.[1];
-  const svgTag = markup.match(/<svg\b[^>]*>/)?.[0];
+  const imageTag = markup.match(/<img\b[^>]*>/)?.[0];
 
   assert.ok(wrapperClasses);
-  assert.ok(svgTag);
+  assert.ok(imageTag);
   assert.ok(wrapperClasses.split(/\s+/).includes("bg-white"));
-  assert.ok(wrapperClasses.split(/\s+/).includes("p-6"));
-  assert.match(svgTag, /shape-rendering="crispEdges"/);
-  assert.match(svgTag, /height="256"/);
-  assert.match(svgTag, /width="256"/);
-  assert.deepEqual(
-    [...markup.matchAll(/<path\b[^>]*fill="([^"]+)"/g)].map(
-      (match) => match[1],
-    ),
-    ["#FFFFFF", "#000000"],
-  );
+  assert.match(imageTag, /src="data:image\/gif;base64,/);
+  assert.match(imageTag, /\[image-rendering:pixelated\]/);
+  assert.doesNotMatch(markup, /<svg\b/);
 });
 
 test("TOTP QR remains sparse enough for 1Password screen scanning", async () => {
-  const markup = await renderTotpQrCode();
-  const viewBox = markup.match(/viewBox="0 0 (\d+) (\d+)"/);
+  const markup = await renderTotpQrCode(
+    "otpauth://totp/Scryer:alexander%2Bmedia%40example.test?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Scryer&algorithm=SHA1&digits=6&period=30",
+  );
+  const imageTag = markup.match(/<img\b[^>]*>/)?.[0];
 
-  assert.ok(viewBox);
-  const moduleWidth = Number(viewBox[1]);
-  const moduleHeight = Number(viewBox[2]);
-  assert.equal(moduleWidth, moduleHeight);
-  assert.ok(
-    moduleWidth <= 41,
-    `expected at most 41 modules per side, received ${moduleWidth}`,
-  );
-  assert.ok(
-    256 / moduleWidth >= 6,
-    `expected at least 6 rendered pixels per module, received ${256 / moduleWidth}`,
-  );
+  assert.ok(imageTag);
+  assert.match(imageTag, /height="424"/);
+  assert.match(imageTag, /width="424"/);
 });

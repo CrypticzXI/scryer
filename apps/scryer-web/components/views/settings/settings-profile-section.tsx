@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { TotpCodeForm } from "@/components/auth/totp-code-form";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { InfoHelp } from "@/components/common/info-help";
 import {
   Dialog,
   DialogContent,
@@ -94,7 +96,7 @@ type Props = {
   revokingOauthGrantId: string | null;
   unlinkingAccountId: string | null;
   onAddPasskey: () => void;
-  onDeletePasskey: (id: string) => void;
+  onDeletePasskey: (id: string) => Promise<void> | void;
   onRevokeOauthApp: (grantId: string) => void;
   onStartTotpEnrollment: () => void;
   onTotpEnrollmentCodeChange: (value: string) => void;
@@ -232,6 +234,8 @@ export function SettingsProfileSection({
   const [pendingTotpAction, setPendingTotpAction] =
     useState<TotpProfileAction>(null);
   const [submittedTotpAction, setSubmittedTotpAction] = useState(false);
+  const [pendingPasskeyDeletionId, setPendingPasskeyDeletionId] =
+    useState<string | null>(null);
   const passwordMismatch =
     confirmPassword.length > 0 && newPassword !== confirmPassword;
   const showSponsorButton = !hideSponsorButton;
@@ -462,17 +466,19 @@ export function SettingsProfileSection({
         </div>
       ) : null}
 
-      {showPasskeys ? (
-        <div className={PROFILE_CARD_CLASS}>
+      <div className={cn("grid gap-4", showPasskeys && "xl:grid-cols-2")}>
+        {showPasskeys ? (
+          <div className={PROFILE_CARD_CLASS}>
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3">
-              <div className="space-y-1">
+              <div className="flex items-center gap-1.5">
                 <h3 className={PROFILE_CARD_TITLE_CLASS}>
                   {t("profile.passkeys")}
                 </h3>
-                <p className={PROFILE_MUTED_TEXT_CLASS}>
-                  {t("profile.passkeysDescription")}
-                </p>
+                <InfoHelp
+                  ariaLabel={t("profile.passkeys")}
+                  text={t("profile.passkeysDescription")}
+                />
               </div>
               {canAddPasskey ? (
                 <Button
@@ -523,8 +529,8 @@ export function SettingsProfileSection({
                       id={selectorId(
                         `settings-profile-delete-passkey-${passkey.id}`,
                       )}
-                      variant="outline"
-                      onClick={() => onDeletePasskey(passkey.id)}
+                      variant="destructive"
+                      onClick={() => setPendingPasskeyDeletionId(passkey.id)}
                       disabled={deletingPasskeyId === passkey.id}
                       className="w-fit"
                     >
@@ -539,86 +545,15 @@ export function SettingsProfileSection({
             )}
           </div>
         </div>
-      ) : null}
+        ) : null}
 
-      <div className={PROFILE_CARD_CLASS}>
-        <div className="space-y-1">
-          <h3 className={PROFILE_CARD_TITLE_CLASS}>Connected apps</h3>
-          <p className={PROFILE_MUTED_TEXT_CLASS}>
-            OAuth integrations authorized to access Scryer as you.
-          </p>
-        </div>
-
-        {loadingOauthApps ? (
-          <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>{t("label.loading")}</span>
-          </div>
-        ) : oauthApps.length === 0 ? (
-          <p
-            id="settings-profile-oauth-apps-empty"
-            className={PROFILE_MUTED_TEXT_CLASS}
-          >
-            No connected apps.
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {oauthApps.map((app) => (
-              <div
-                id={selectorId("settings-profile-oauth-app-row", app.clientId)}
-                key={app.grantId}
-                className={PROFILE_ROW_CARD_CLASS}
-              >
-                <div className="space-y-1">
-                  <div className="font-medium text-[var(--scry-ink2)]">
-                    {app.clientName}
-                  </div>
-                  <div
-                    id={selectorId(
-                      "settings-profile-oauth-app-authorized-at",
-                      app.clientId,
-                    )}
-                    className={PROFILE_MUTED_TEXT_CLASS}
-                  >
-                    Authorized: {formatTimestamp(app.authorizedAt, dateTimeFormat)}
-                  </div>
-                  <div
-                    id={selectorId(
-                      "settings-profile-oauth-app-last-used",
-                      app.clientId,
-                    )}
-                    className={PROFILE_MUTED_TEXT_CLASS}
-                  >
-                    Last used: {formatTimestamp(app.lastUsedAt, dateTimeFormat)}
-                  </div>
-                </div>
-                <Button
-                  id={selectorId(
-                    "settings-profile-revoke-oauth-app",
-                    app.clientId,
-                  )}
-                  variant="outline"
-                  onClick={() => onRevokeOauthApp(app.grantId)}
-                  disabled={revokingOauthGrantId === app.grantId}
-                  className="w-fit"
-                >
-                  {revokingOauthGrantId === app.grantId ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  Revoke
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div className={PROFILE_CARD_CLASS}>
-        <div className="space-y-1">
+        <div className={PROFILE_CARD_CLASS}>
+        <div className="flex items-center gap-1.5">
           <h3 className={PROFILE_CARD_TITLE_CLASS}>{t("profile.totp")}</h3>
-          <p className={PROFILE_MUTED_TEXT_CLASS}>
-            {t("profile.totpDescription")}
-          </p>
+          <InfoHelp
+            ariaLabel={t("profile.totp")}
+            text={t("profile.totpDescription")}
+          />
         </div>
 
         {loadingTotp ? (
@@ -822,6 +757,79 @@ export function SettingsProfileSection({
             ) : null}
             {t("profile.totpStartEnrollment")}
           </Button>
+        )}
+        </div>
+      </div>
+
+      <div className={PROFILE_CARD_CLASS}>
+        <div className="space-y-1">
+          <h3 className={PROFILE_CARD_TITLE_CLASS}>Connected apps</h3>
+          <p className={PROFILE_MUTED_TEXT_CLASS}>
+            OAuth integrations authorized to access Scryer as you.
+          </p>
+        </div>
+
+        {loadingOauthApps ? (
+          <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>{t("label.loading")}</span>
+          </div>
+        ) : oauthApps.length === 0 ? (
+          <p
+            id="settings-profile-oauth-apps-empty"
+            className={PROFILE_MUTED_TEXT_CLASS}
+          >
+            No connected apps.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {oauthApps.map((app) => (
+              <div
+                id={selectorId("settings-profile-oauth-app-row", app.clientId)}
+                key={app.grantId}
+                className={PROFILE_ROW_CARD_CLASS}
+              >
+                <div className="space-y-1">
+                  <div className="font-medium text-[var(--scry-ink2)]">
+                    {app.clientName}
+                  </div>
+                  <div
+                    id={selectorId(
+                      "settings-profile-oauth-app-authorized-at",
+                      app.clientId,
+                    )}
+                    className={PROFILE_MUTED_TEXT_CLASS}
+                  >
+                    Authorized: {formatTimestamp(app.authorizedAt, dateTimeFormat)}
+                  </div>
+                  <div
+                    id={selectorId(
+                      "settings-profile-oauth-app-last-used",
+                      app.clientId,
+                    )}
+                    className={PROFILE_MUTED_TEXT_CLASS}
+                  >
+                    Last used: {formatTimestamp(app.lastUsedAt, dateTimeFormat)}
+                  </div>
+                </div>
+                <Button
+                  id={selectorId(
+                    "settings-profile-revoke-oauth-app",
+                    app.clientId,
+                  )}
+                  variant="outline"
+                  onClick={() => onRevokeOauthApp(app.grantId)}
+                  disabled={revokingOauthGrantId === app.grantId}
+                  className="w-fit"
+                >
+                  {revokingOauthGrantId === app.grantId ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Revoke
+                </Button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
@@ -1247,6 +1255,21 @@ export function SettingsProfileSection({
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingPasskeyDeletionId !== null}
+        title={t("profile.passkeyDeleteConfirmTitle")}
+        description={t("profile.passkeyDeleteConfirmDescription")}
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        confirmButtonVariant="destructive"
+        isBusy={deletingPasskeyId === pendingPasskeyDeletionId}
+        onConfirm={async () => {
+          if (!pendingPasskeyDeletionId) return;
+          await onDeletePasskey(pendingPasskeyDeletionId);
+          setPendingPasskeyDeletionId(null);
+        }}
+        onCancel={() => setPendingPasskeyDeletionId(null)}
+      />
     </div>
   );
 }

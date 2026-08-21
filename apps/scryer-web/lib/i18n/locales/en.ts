@@ -1470,10 +1470,12 @@ const en: LocaleDictionary = {
   "settings.createUser": "Create user",
   "settings.username": "Username",
   "settings.password": "Password",
+  "settings.passwordMinLengthError": "Password must be at least {{min}} characters.",
   "settings.permissions": "Permissions",
   "settings.noUsers": "No users loaded.",
   "settings.updatePassword": "Update",
   "settings.temporaryPassword": "Temporary password",
+  "settings.resetPassword": "Reset password",
   "settings.setTemporaryPassword": "Set temporary password",
   "settings.temporaryPasswordHelp":
     "The user must replace this password after local sign-in. Send it through a safe out-of-band channel.",
@@ -2405,6 +2407,9 @@ const en: LocaleDictionary = {
   "profile.passkeyNeverUsed": "Never used",
   "profile.passkeyAdded": "Passkey added.",
   "profile.passkeyDeleted": "Passkey deleted.",
+  "profile.passkeyDeleteConfirmTitle": "Delete passkey?",
+  "profile.passkeyDeleteConfirmDescription":
+    "This passkey will no longer be able to sign in to your account.",
   "profile.passkeyDeleteFailed": "Failed to delete passkey.",
   "profile.passkeyOperationFailed": "Passkey request failed.",
   "profile.totp": "Authenticator app",

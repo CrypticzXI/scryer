@@ -31,9 +31,7 @@ import type {
 } from "@/lib/types/settings";
 import {
   authenticateLoginVerificationPasskey,
-  authenticateWithConditionalPasskey,
   authenticateWithPasskey,
-  conditionalPasskeyMediationSupported,
   PasskeyClientError,
   registerLoginEnrollmentPasskey,
 } from "@/lib/utils/passkeys";
@@ -181,7 +179,6 @@ export default function LoginPage() {
   const replacementPasswordInput = useRef<HTMLInputElement | null>(null);
   const [persistSession, setPersistSession] = useState(false);
   const persistSessionInitialized = useRef(false);
-  const conditionalPasskeyAbort = useRef<AbortController | null>(null);
   const verificationPasskeyAbort = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -194,7 +191,6 @@ export default function LoginPage() {
     "waiting" | "cancelled" | "failed"
   >("waiting");
   const [verificationPasskeyAttempt, setVerificationPasskeyAttempt] = useState(0);
-  const [conditionalPasskeyAttempt, setConditionalPasskeyAttempt] = useState(0);
   const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const [jellyfinSubmitting, setJellyfinSubmitting] = useState(false);
   const [embySubmitting, setEmbySubmitting] = useState(false);
@@ -283,7 +279,6 @@ export default function LoginPage() {
   const beginLoginVerification = useCallback((error: unknown): boolean => {
     const challenge = loginVerificationFromError(error);
     if (!challenge) return false;
-    conditionalPasskeyAbort.current?.abort();
     setPassword("");
     setJellyfinPassword("");
     setEmbyPassword("");
@@ -340,7 +335,6 @@ export default function LoginPage() {
     ) {
       return;
     }
-    conditionalPasskeyAbort.current?.abort();
     const controller = new AbortController();
     verificationPasskeyAbort.current = controller;
     setVerificationPasskeyBusy(true);
@@ -375,63 +369,6 @@ export default function LoginPage() {
     redirectTarget,
     verificationFactor,
     verificationPasskeyAttempt,
-  ]);
-
-  useEffect(() => {
-    if (
-      !localPasswordAvailable ||
-      !passkeyEnabled ||
-      !passwordFormVisible ||
-      loginVerification ||
-      passwordChangeRequired
-    ) {
-      return;
-    }
-    const controller = new AbortController();
-    conditionalPasskeyAbort.current = controller;
-    let active = true;
-    let refreshTimer: number | undefined;
-    void (async () => {
-      if (!(await conditionalPasskeyMediationSupported()) || !active) return;
-      try {
-        const result = await authenticateWithConditionalPasskey(
-          persistSession,
-          controller.signal,
-          undefined,
-          (expiresAt) => {
-            const refreshDelay = new Date(expiresAt).getTime() - Date.now() - 15_000;
-            if (refreshDelay > 0) {
-              refreshTimer = window.setTimeout(() => {
-                controller.abort();
-                setConditionalPasskeyAttempt((attempt) => attempt + 1);
-              }, refreshDelay);
-            }
-          },
-        );
-        if (!active || controller.signal.aborted) return;
-        adoptSession(result.token, result.user, result.persistSession);
-        navigate(redirectTarget, { replace: true });
-      } catch {
-        // Conditional mediation is ambient browser UI. Cancellation and the
-        // absence of a matching credential must not disturb password login.
-      }
-    })();
-    return () => {
-      active = false;
-      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
-      controller.abort();
-    };
-  }, [
-    adoptSession,
-    localPasswordAvailable,
-    loginVerification,
-    navigate,
-    passkeyEnabled,
-    passwordChangeRequired,
-    passwordFormVisible,
-    persistSession,
-    redirectTarget,
-    conditionalPasskeyAttempt,
   ]);
 
   const handleVerificationTotp = useCallback(async () => {
@@ -538,7 +475,6 @@ export default function LoginPage() {
 
   const handlePasskeySignIn = useCallback(
     async () => {
-      conditionalPasskeyAbort.current?.abort();
       setError(null);
       setPasskeySubmitting(true);
       try {
@@ -611,7 +547,6 @@ export default function LoginPage() {
   const handleSubmit = useCallback(
     async (e?: React.FormEvent) => {
       e?.preventDefault();
-      conditionalPasskeyAbort.current?.abort();
       setError(null);
       setSubmitting(true);
       try {
@@ -712,7 +647,6 @@ export default function LoginPage() {
     async () => {
       if (!jellyfinConnectionId || !jellyfinUsername || !jellyfinPassword) return;
 
-      conditionalPasskeyAbort.current?.abort();
       setError(null);
       setJellyfinSubmitting(true);
       try {
@@ -770,7 +704,6 @@ export default function LoginPage() {
   const handleEmbySignIn = useCallback(async () => {
     if (!embyConnectionId || !embyUsername || !embyPassword) return;
 
-    conditionalPasskeyAbort.current?.abort();
     setError(null);
     setEmbySubmitting(true);
     try {
@@ -1242,19 +1175,21 @@ export default function LoginPage() {
           </div>
         )}
 
-        <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
-          <input
-            id="persist-session"
-            type="checkbox"
-            checked={persistSession}
-            onChange={(event) => {
-              persistSessionInitialized.current = true;
-              setPersistSession(event.target.checked);
-            }}
-            disabled={anySubmitting}
-          />
-          Keep me signed in
-        </label>
+        {!passwordFormVisible ? (
+          <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
+            <input
+              id="persist-session"
+              type="checkbox"
+              checked={persistSession}
+              onChange={(event) => {
+                persistSessionInitialized.current = true;
+                setPersistSession(event.target.checked);
+              }}
+              disabled={anySubmitting}
+            />
+            Keep me signed in
+          </label>
+        ) : null}
 
         <div className="space-y-3">
           {localPasswordAvailable ? (
@@ -1290,8 +1225,7 @@ export default function LoginPage() {
                       <Input
                         id="username"
                         type="text"
-                        autoComplete="username webauthn"
-                        autoFocus
+                        autoComplete="username"
                         required
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
@@ -1318,6 +1252,20 @@ export default function LoginPage() {
                         className={AUTH_INPUT_CLASS}
                       />
                     </div>
+
+                    <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
+                      <input
+                        id="persist-session"
+                        type="checkbox"
+                        checked={persistSession}
+                        onChange={(event) => {
+                          persistSessionInitialized.current = true;
+                          setPersistSession(event.target.checked);
+                        }}
+                        disabled={anySubmitting}
+                      />
+                      Keep me signed in
+                    </label>
 
                     <button
                       id="login-submit"
@@ -1346,7 +1294,7 @@ export default function LoginPage() {
               ) : (
                 <Fingerprint className="h-4 w-4" aria-hidden="true" />
               )}
-              {passkeySubmitting ? t("auth.passkeySigningIn") : "Use a passkey another way"}
+              {passkeySubmitting ? t("auth.passkeySigningIn") : "Sign in with a passkey"}
             </button>
           ) : null}
 

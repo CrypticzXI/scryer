@@ -945,6 +945,7 @@ mod tests {
                 id TEXT PRIMARY KEY NOT NULL,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT,
+                password_change_required INTEGER NOT NULL DEFAULT 0,
                 account_kind TEXT NOT NULL DEFAULT 'local',
                 status TEXT NOT NULL DEFAULT 'active',
                 auth_session_version TEXT
