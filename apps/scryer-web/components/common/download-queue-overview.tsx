@@ -26,6 +26,7 @@ const queueStateClasses: Record<string, string> = {
   IMPORT_BLOCKED: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   IMPORT_FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   REMOVE_FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  WARNING: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   FAILED: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
@@ -42,6 +43,7 @@ const queueStateLabels: Record<string, string> = {
   IMPORT_BLOCKED: "queue.state.importBlocked",
   IMPORT_FAILED: "queue.manualImportFailed",
   REMOVE_FAILED: "queue.removeFailed",
+  WARNING: "queue.state.warning",
   FAILED: "queue.state.failed",
 };
 
@@ -134,6 +136,7 @@ function getProgressBarColor(stateKey: string): string {
     case "REMOVE_FAILED":
       return "bg-[var(--scry-danger-solid)]";
     case "PAUSED":
+    case "WARNING":
       return "bg-[var(--scry-warning-solid)]";
     case "IMPORT_PENDING":
       return "bg-[rgb(var(--scry-accent-rgb))]";

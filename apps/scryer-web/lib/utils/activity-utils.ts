@@ -30,6 +30,9 @@ export const queueStateClasses: Record<string, string> = {
   import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   ignored: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  // A recoverable client problem: loud enough to be noticed, not dressed as a
+  // dead grab.
+  warning: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
@@ -47,10 +50,12 @@ export const queueStateLabels: Record<string, string> = {
   import_failed: "queue.manualImportFailed",
   ignored: "queue.state.ignored",
   remove_failed: "queue.removeFailed",
+  warning: "queue.state.warning",
   failed: "queue.state.failed",
 };
 
 export const queueStateAttention: Record<string, boolean> = {
+  warning: true,
   failed: true,
   importing: true,
   removing: true,
@@ -102,6 +107,8 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
           return 2;
         case "post_processing":
           return 3;
+        case "warning":
+          return 4;
         default:
           return 99;
       }
@@ -199,6 +206,7 @@ export function deriveQueueRowPresentation(
             : t(queueStateLabels[statusBadgeKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
+      stateKey === "warning" ||
       displayStateKey === "REMOVE_FAILED" ||
       displayStateKey === "IMPORT_BLOCKED" ||
       displayStateKey === "IMPORT_FAILED") &&
@@ -228,7 +236,10 @@ export function deriveQueueRowPresentation(
   const hasExpandableDetails =
     (displayStateKey === "IMPORT_BLOCKED" ||
       displayStateKey === "IMPORT_FAILED" ||
-      displayStateKey === "REMOVE_FAILED") &&
+      displayStateKey === "REMOVE_FAILED" ||
+      // The client's message is the whole point of a warning: it is what tells
+      // the operator which recoverable problem to go and fix.
+      displayStateKey === "WARNING") &&
     (failureReason.length > 0 || releaseTitle !== "—");
 
   return {
@@ -372,6 +383,7 @@ export function getProgressBarColor(stateKey: string): string {
     case "remove_failed":
       return "bg-[var(--scry-danger-solid)]";
     case "paused":
+    case "warning":
       return "bg-[var(--scry-warning-solid)]";
     case "import_pending":
       return "bg-[rgb(var(--scry-accent-rgb))]";

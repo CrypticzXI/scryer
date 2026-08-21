@@ -52,6 +52,9 @@ function queueStateSortRank(state: string | null | undefined): number {
     case "importpending":
     case "completed":
       return 3;
+    // Both states want the operator's attention, so they sort together at the
+    // end; only their handling differs.
+    case "warning":
     case "failed":
       return 4;
     default:
@@ -528,6 +531,10 @@ export function matchesActivityStatuses(
       return statuses.includes("PAUSED");
     case "POST_PROCESSING":
       return statuses.includes("POST_PROCESSING");
+    // A warned download is still live in the client, so it belongs with the
+    // activity it is part of rather than with the failed history.
+    case "WARNING":
+      return statuses.includes("WARNING");
     default:
       return false;
   }

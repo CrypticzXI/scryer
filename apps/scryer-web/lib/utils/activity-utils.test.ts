@@ -9,6 +9,7 @@ const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 type QueueRowResult = {
   failureReason: string;
   hasStatusDetails: boolean;
+  hasExpandableDetails: boolean;
   displayStateKey: string;
   statusBadgeKey: string;
   statusLabel: string;
@@ -40,6 +41,7 @@ after(async () => {
 
 const translations: Record<string, string> = {
   "queue.state.completed": "Completed",
+  "queue.state.warning": "Warning",
   "queue.state.importedSeeding": "Imported · Seeding",
   "queue.blockReasonFallbackUnassigned":
     "Automatic import could not identify a library title. Assign a title to continue.",
@@ -174,6 +176,31 @@ test("a finished download without a seeding hold keeps the completed badge", () 
 
   assert.equal(row.statusBadgeKey, "COMPLETED");
   assert.equal(row.statusLabel, translations["queue.state.completed"]);
+});
+
+test("a warned download reads as a warning and shows the client's message", () => {
+  // qBittorrent's `error` / `missingFiles` reach the queue as WARNING with the
+  // client's own message, and must not be dressed up as a failed grab.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      state: "WARNING",
+      displayState: "WARNING",
+      trackedState: "DOWNLOADING",
+      trackedStatus: "WARNING",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      progressPercent: 42,
+      attentionRequired: true,
+      attentionReason: "files are missing from the save path",
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "WARNING");
+  assert.equal(row.statusLabel, translations["queue.state.warning"]);
+  assert.equal(row.failureReason, "files are missing from the save path");
+  assert.equal(row.hasStatusDetails, true);
+  assert.equal(row.hasExpandableDetails, true);
 });
 
 test("backend import-block detail takes precedence over frontend fallback copy", () => {
