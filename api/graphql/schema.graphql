@@ -3639,6 +3639,10 @@ enum DownloadActivityFilterValue {
 	Include post-processing items.
 	"""
 	POST_PROCESSING
+	"""
+	Include items the client reported a recoverable problem for.
+	"""
+	WARNING
 }
 
 """

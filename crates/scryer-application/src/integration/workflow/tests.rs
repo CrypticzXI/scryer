@@ -754,6 +754,21 @@ mod tests {
             Some("files are missing from the save path"),
             "the client's message is what makes the warning actionable"
         );
+
+        // The queue page asks for an explicit list of activity filters, so the
+        // row is only reachable if it answers to one of them.
+        assert!(crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::Warning
+        ));
+        assert!(crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::All
+        ));
+        assert!(!crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::Downloading
+        ));
     }
 
     #[test]

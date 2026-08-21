@@ -163,6 +163,7 @@ impl IntoApplication<scryer_application::DownloadActivityFilter> for DownloadAct
             Self::Queued => scryer_application::DownloadActivityFilter::Queued,
             Self::Paused => scryer_application::DownloadActivityFilter::Paused,
             Self::PostProcessing => scryer_application::DownloadActivityFilter::PostProcessing,
+            Self::Warning => scryer_application::DownloadActivityFilter::Warning,
         }
     }
 }

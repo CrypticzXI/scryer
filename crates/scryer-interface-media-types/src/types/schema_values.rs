@@ -537,6 +537,8 @@ pub enum DownloadActivityFilterValue {
     Paused,
     /// Include post-processing items.
     PostProcessing,
+    /// Include items the client reported a recoverable problem for.
+    Warning,
 }
 
 /// Filter for import activity.

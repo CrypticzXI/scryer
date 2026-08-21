@@ -760,6 +760,7 @@ pub enum DownloadActivityFilter {
     Queued,
     Paused,
     PostProcessing,
+    Warning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

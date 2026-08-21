@@ -237,6 +237,10 @@ fn classify_download_queue_item(item: &DownloadQueueItem) -> ClassifiedDownloadQ
         DownloadDisplayState::Queued => Some(DownloadActivityFilter::Queued),
         DownloadDisplayState::Paused => Some(DownloadActivityFilter::Paused),
         DownloadDisplayState::PostProcessing => Some(DownloadActivityFilter::PostProcessing),
+        // Every activity state needs its own filter: the queue page asks for an
+        // explicit list of them, so a state that belongs to no filter is a
+        // state the operator can never see.
+        DownloadDisplayState::Warning => Some(DownloadActivityFilter::Warning),
         _ => None,
     };
 
