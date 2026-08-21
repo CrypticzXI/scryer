@@ -10,7 +10,7 @@ use scryer_domain::{
 };
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
@@ -22,6 +22,8 @@ use std::os::unix::{
 };
 #[cfg(windows)]
 use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+#[cfg(unix)]
+use std::path::Component;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
