@@ -324,7 +324,6 @@ function PluginUpdateStrip({
               appearance="ghost"
               tone="upgrade"
               label={`${t("label.update")} ${update.name}`}
-              className="h-5 w-5"
               disabled={updatingPluginIds.includes(update.id)}
               onClick={() => onUpdatePlugin(update.id)}
             >
@@ -346,7 +345,7 @@ function PluginUpdateStrip({
         </Button>
         <Link
           to={buildViewPath("settings", "plugins")}
-          className="whitespace-nowrap text-[11px] font-medium text-[var(--scry-warning-text)] hover:underline"
+          className="whitespace-nowrap text-[11px] font-medium text-[var(--scry-warning-text)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] focus-visible:ring-offset-0"
         >
           {t("dashboard.pluginManage")}
         </Link>
@@ -569,7 +568,6 @@ function RequestsPanel({
                 <IconButton
                   appearance="boxed"
                   tone="enabled"
-                  className="h-6 w-6"
                   disabled={busy}
                   label={t("dashboard.approveRequest", { name: request.title })}
                   onClick={() => onApprove(request)}
@@ -579,7 +577,6 @@ function RequestsPanel({
                 <IconButton
                   appearance="boxed"
                   tone="neutral"
-                  className="h-6 w-6"
                   disabled={busy}
                   label={t("dashboard.dismissRequest", { name: request.title })}
                   onClick={() => onDismiss(request)}
@@ -734,7 +731,6 @@ function ImportActivityRow({
         presentation.canDirectManualImport ? (
           <IconButton
             tone="accent"
-            className="h-6 w-6"
             label={t("queue.manualImportTooltip")}
             disabled={busy}
             onClick={() => onImport(item)}
@@ -745,7 +741,6 @@ function ImportActivityRow({
         {presentation.canMarkFailed ? (
           <IconButton
             tone="neutral"
-            className="h-6 w-6"
             label={t("queue.markFailedSearchAgain")}
             disabled={busy}
             onClick={() => onMarkFailed(item)}
@@ -755,7 +750,6 @@ function ImportActivityRow({
         ) : null}
         <IconButton
           tone="delete"
-          className="h-6 w-6"
           label={t("queue.removeFromDownloader")}
           disabled={busy}
           onClick={() => onRemove(item)}

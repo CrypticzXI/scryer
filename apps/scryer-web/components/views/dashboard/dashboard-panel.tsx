@@ -55,7 +55,7 @@ export function DashboardPanel({
         {linkTo && linkLabel ? (
           <Link
             to={linkTo}
-            className="ml-auto inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-[11px] font-medium text-[var(--scry-muted)] transition-colors hover:text-[var(--scry-ink2)]"
+            className="ml-auto inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-[11px] font-medium text-[var(--scry-muted)] transition-colors hover:text-[var(--scry-ink2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-accent-ring)] focus-visible:ring-offset-0"
           >
             {linkLabel}
             <ChevronRight className="h-3 w-3" aria-hidden="true" />

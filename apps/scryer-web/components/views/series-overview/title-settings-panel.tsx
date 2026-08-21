@@ -14,6 +14,7 @@ import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-pi
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { mediaRenamePreviewQuery } from "@/lib/graphql/queries";
 import { renameTitlesMutation, setTitleRequiredAudioMutation } from "@/lib/graphql/mutations";
+import { AVAILABLE_LANGUAGES, getLanguageLabel } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleDetail } from "@/components/containers/series-overview-container";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -115,6 +116,10 @@ export function TitleSettingsPanel({
   const currentProfileId = title.qualityProfileId?.trim() || INHERIT_VALUE;
   const currentRootFolderId = title.rootFolderId?.trim() || "";
   const currentSeasonFolder = title.useSeasonFolders === false ? "disabled" : "enabled";
+  const currentMetadataLanguage =
+    title.metadataLanguageOverride?.trim() || INHERIT_VALUE;
+  const effectiveMetadataLanguage =
+    title.effectiveMetadataLanguage?.trim() || title.metadataLanguage?.trim() || "eng";
   const currentFillerPolicy = title.fillerPolicy?.trim() || INHERIT_VALUE;
   const currentRecapPolicy = title.recapPolicy?.trim() || INHERIT_VALUE;
   const [saving, setSaving] = React.useState(false);
@@ -171,6 +176,17 @@ export function TitleSettingsPanel({
     try {
       await onUpdateTitleOptions({
         useSeasonFolders: value === "enabled",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleMetadataLanguageChange = async (value: string) => {
+    setSaving(true);
+    try {
+      await onUpdateTitleOptions({
+        metadataLanguage: value === INHERIT_VALUE ? null : value,
       });
     } finally {
       setSaving(false);
@@ -354,6 +370,34 @@ export function TitleSettingsPanel({
               {t("title.requiredAudioResetInherit")}
             </button>
           ) : null}
+        </div>
+
+        <div className="min-w-0">
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+            {t("settings.libraryMetadataLanguageLabel")}
+          </label>
+          <Select
+            value={currentMetadataLanguage}
+            onValueChange={(value) => void handleMetadataLanguageChange(value)}
+            disabled={saving}
+          >
+            <SelectTrigger id="series-overview-settings-metadata-language" className="h-9 w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={INHERIT_VALUE}>{t("title.inheritDefault")}</SelectItem>
+              {AVAILABLE_LANGUAGES.map((language) => (
+                <SelectItem key={language.code} value={language.code}>
+                  {language.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("settings.libraryEffectiveMetadataLanguage", {
+              value: getLanguageLabel(effectiveMetadataLanguage),
+            })}
+          </p>
         </div>
 
         {title.facet === "ANIME" ? (

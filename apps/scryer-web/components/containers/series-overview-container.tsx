@@ -124,6 +124,9 @@ export type TitleDetail = {
   country: string | null;
   aliases: string[];
   metadataLanguage: string | null;
+  metadataLanguageOverride?: string | null;
+  effectiveMetadataLanguage?: string | null;
+  inheritsMetadataLanguage?: boolean;
   metadataFetchedAt: string | null;
   requiredAudioLanguagesOverride?: string[] | null;
   effectiveRequiredAudioLanguages?: string[];
