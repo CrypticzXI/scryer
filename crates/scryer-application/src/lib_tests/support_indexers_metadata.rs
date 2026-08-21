@@ -254,6 +254,11 @@ pub(super) struct FixedReleaseIndexerClient {
     /// When set, every fired indexer reports `Fired { empty: true }` and the
     /// response carries no results — a genuine zero-hit response.
     pub(super) empty_response: bool,
+    /// Reported seeder count, written onto `extra["seeders"]` — exactly where
+    /// the indexer adapter writes it and where `seeders_from_extra` reads it.
+    /// Deliberately independent of the release's source kind: the capture path
+    /// under test reads the map, not the protocol.
+    pub(super) seeders: Option<i64>,
 }
 
 impl FixedReleaseIndexerClient {
@@ -263,7 +268,13 @@ impl FixedReleaseIndexerClient {
             indexer_languages: None,
             fired_indexer_ids: Vec::new(),
             empty_response: false,
+            seeders: None,
         }
+    }
+
+    pub(super) fn with_seeders(mut self, seeders: i64) -> Self {
+        self.seeders = Some(seeders);
+        self
     }
 
     pub(super) fn with_fired_indexers(
@@ -319,6 +330,10 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 grab_max: None,
             });
         }
+        let mut extra = std::collections::HashMap::new();
+        if let Some(seeders) = self.seeders {
+            extra.insert("seeders".to_string(), serde_json::json!(seeders));
+        }
         Ok(IndexerSearchResponse {
             indexer_outcomes,
             results: vec![IndexerSearchResult {
@@ -338,7 +353,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 password_hint: None,
                 parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
                 quality_profile_decision: None,
-                extra: Default::default(),
+                extra,
                 response_attributes: Default::default(),
                 guid: Some("guid-fixed-release".to_string()),
                 info_url: Some("https://example.invalid/info".to_string()),

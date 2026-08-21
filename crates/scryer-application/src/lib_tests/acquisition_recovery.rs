@@ -5026,6 +5026,244 @@ async fn an_operator_force_grab_bypasses_the_minimum_seeder_re_judge() {
 }
 
 #[tokio::test]
+async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
+    // Standby recovery is an automatic grab with no operator in the loop, so it
+    // applies current policy the same way delay expiry does: a stored candidate
+    // whose swarm is now below the threshold is expired and the loop falls
+    // through to the next one. Reacquiring into a dead swarm just fails again.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Standby Swarm Recovery".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+        status: AcquisitionScopeStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": "Failed.Swarm.Release.1080p.WEB-DL",
+                "score": 100,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed wanted item");
+
+    let standby = |release_title: &str, score: i32, seeders: Option<i64>| PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: wanted.id.clone(),
+        title_id: title.id.clone(),
+        release_title: release_title.to_string(),
+        release_url: Some(format!("https://example.com/{release_title}.torrent")),
+        source_kind: Some(DownloadSourceKind::TorrentFile),
+        release_size_bytes: Some(1_000),
+        release_score: score,
+        scoring_log_json: None,
+        indexer_source: Some("torrent_rss".to_string()),
+        indexer_id: Some("standby-indexer".to_string()),
+        release_guid: Some(format!("guid-{release_title}")),
+        added_at: Utc::now().to_rfc3339(),
+        delay_until: Utc::now().to_rfc3339(),
+        status: PendingReleaseStatus::Standby,
+        grabbed_at: None,
+        source_password: None,
+        published_at: Some(Utc::now().to_rfc3339()),
+        info_hash: None,
+        seed_minimums: Default::default(),
+        seeders,
+    };
+    // Tried first (the test repo lists standby rows in insertion order).
+    let dead = standby("Standby.Dead.Swarm.1080p.WEB-DL", 200, Some(1));
+    let unknown = standby("Standby.Unknown.Swarm.1080p.WEB-DL", 150, None);
+    let dead_id = dead.id.clone();
+    let unknown_id = unknown.id.clone();
+    pending_releases
+        .insert_pending_release(&dead)
+        .await
+        .expect("seed dead-swarm standby");
+    pending_releases
+        .insert_pending_release(&unknown)
+        .await
+        .expect("seed unknown-swarm standby");
+
+    // Raised after both were stored: the swarm is judged against the threshold
+    // in force at recovery time.
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+            None,
+            "5".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed minimum-seeders floor");
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "failed-swarm-job".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Failed.Swarm.Release.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record failed submission");
+
+    *download_client.history_items.lock().await = vec![failed_history_item(
+        "failed-swarm-job",
+        "Failed.Swarm.Release.1080p.WEB-DL",
+    )];
+
+    app.run_convergence_cycle_once().await;
+
+    let stored = pending_releases.store.lock().await.clone();
+    let status_of = |id: &str| {
+        stored
+            .iter()
+            .find(|release| release.id == id)
+            .map(|release| release.status)
+            .expect("standby row exists")
+    };
+    assert_eq!(
+        status_of(&dead_id),
+        PendingReleaseStatus::Expired,
+        "a standby below the current threshold must be expired, not reacquired"
+    );
+    assert_eq!(
+        status_of(&unknown_id),
+        PendingReleaseStatus::Grabbed,
+        "an unknown seeder count stays eligible, so recovery falls through to it"
+    );
+    assert!(
+        download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(|submission| submission.source_title.as_deref()
+                == Some("Standby.Unknown.Swarm.1080p.WEB-DL"))
+    );
+}
+
+#[tokio::test]
+async fn the_rss_park_path_stores_the_reported_seeder_count_on_the_pending_row() {
+    // Binds the park site to the capture: promotion can only re-judge a swarm it
+    // was told about, and every promotion test builds its row by hand, so
+    // without this the four capture sites are unguarded.
+    let release_title = "Rss.Delayed.Swarm.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title).with_seeders(7));
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases.clone(),
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let _title = add_rss_target_movie(&app, &user, &wanted_items, "Rss Delayed Swarm Movie").await;
+
+    // A delay profile that holds this release, so the RSS cycle parks it instead
+    // of grabbing it. The fixture's release is usenet-shaped because that is the
+    // only client the acquisition harness enables; the capture under test reads
+    // `extra["seeders"]` and is indifferent to the protocol, and the production
+    // park site is the same single call either way.
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            DELAY_PROFILE_CATALOG_KEY,
+            None,
+            serde_json::json!([{
+                "id": "delay-torrents",
+                "name": "Delay torrents",
+                "usenet_delay_minutes": 120,
+            }])
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed delay profile catalog");
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 0);
+    assert_eq!(report.releases_held, 1);
+    let parked = pending_releases.store.lock().await.clone();
+    let row = parked
+        .iter()
+        .find(|release| release.release_title == release_title)
+        .expect("the delayed release should have been parked");
+    assert_eq!(
+        row.seeders,
+        Some(7),
+        "the park site must persist the count the indexer reported"
+    );
+}
+
+#[tokio::test]
 async fn pending_release_grab_is_gated_by_the_blocklist_until_the_entry_is_cleared() {
     // A parked release whose title has a blocklist entry for it is rejected by
     // the pending grab gate; clearing the entry re-allows the grab immediately.
