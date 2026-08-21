@@ -608,8 +608,14 @@ const en: LocaleDictionary = {
     "Releases from an indexer using this profile need at least this many seeders to be grabbed. Leave empty to use the system default; enter 0 to turn the check off.",
   "settings.seedingProfileMinimumSeedersUnknownHelp":
     "Indexers that do not report a seeder count are always eligible.",
+  "settings.seedingProfileMinimumSeedersRoutingHelp":
+    "A profile that is only assigned through a download client routing entry does not apply its minimum: the check runs before a client is picked, so it looks at the indexer's profile, then a profile imported from Prowlarr, then the default profile.",
+  "settings.seedingProfileMinimumSeedersInheritHelp":
+    "An empty field inherits the Default minimum seeders setting, not a value imported from Prowlarr — assigning this profile to a Prowlarr-managed indexer replaces that imported minimum.",
   "settings.seedingProfileMinimumSeedersPlaceholder":
     "Leave empty to use the system default",
+  "settings.seedingProfileMinimumSeedersOffBadge": "Seeders check off",
+  "settings.seedingProfileMinimumSeedersBadge": "≥ {{value}} seeders",
   "settings.seedingMinimumSeedersFloorLabel": "Default minimum seeders",
   "settings.seedingMinimumSeedersFloorHelp":
     "Applied when no seeding profile covers the indexer a release came from. Enter 0 to allow releases with no seeders anywhere.",

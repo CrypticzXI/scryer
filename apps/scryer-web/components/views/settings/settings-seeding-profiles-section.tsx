@@ -46,6 +46,7 @@ import {
   SEASON_PACK_SEED_MODES,
   SEED_GOAL_MET_ACTIONS,
   SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileMinimumSeedersChip,
   seedingProfileSelectValue,
   seedingProfileSelectValueToId,
   validateSeedingProfileFields,
@@ -129,6 +130,34 @@ function FieldLabel({
       </Label>
       <FieldInfo content={info} />
     </div>
+  );
+}
+
+/// The Behavior cell's minimum-seeders deviation: nothing at all for a profile
+/// that inherits the floor, so the cell keeps reading as a list of exceptions.
+function MinimumSeedersChip({
+  profileId,
+  minimumSeeders,
+  floor,
+}: {
+  profileId: string;
+  minimumSeeders: number | null;
+  floor: number;
+}) {
+  const t = useTranslate();
+  const chip = seedingProfileMinimumSeedersChip(minimumSeeders, floor);
+  if (!chip) {
+    return null;
+  }
+  const id = selectorId("settings-seeding-profile-minimum-seeders", profileId);
+  return chip.kind === "disabled" ? (
+    <span id={id} className="text-xs text-[var(--scry-warning-text)]">
+      {t("settings.seedingProfileMinimumSeedersOffBadge")}
+    </span>
+  ) : (
+    <span id={id} className="text-xs">
+      {t("settings.seedingProfileMinimumSeedersBadge", { value: chip.value })}
+    </span>
   );
 }
 
@@ -438,6 +467,11 @@ export function SettingsSeedingProfilesSection({
                               })}
                             </span>
                           ) : null}
+                          <MinimumSeedersChip
+                            profileId={profile.id}
+                            minimumSeeders={profile.minimumSeeders}
+                            floor={minimumSeedersFloor}
+                          />
                           {profile.honorTrackerMinimums ? null : (
                             <span className="text-xs text-[var(--scry-warning-text)]">
                               {t("settings.seedingProfileIgnoresMinimums")}
@@ -597,6 +631,12 @@ export function SettingsSeedingProfilesSection({
                         <p>{t("settings.seedingProfileMinimumSeedersHelp")}</p>
                         <p className="mt-1.5">
                           {t("settings.seedingProfileMinimumSeedersUnknownHelp")}
+                        </p>
+                        <p className="mt-1.5">
+                          {t("settings.seedingProfileMinimumSeedersRoutingHelp")}
+                        </p>
+                        <p className="mt-1.5">
+                          {t("settings.seedingProfileMinimumSeedersInheritHelp")}
                         </p>
                       </>
                     }

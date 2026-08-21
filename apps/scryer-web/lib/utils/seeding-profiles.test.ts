@@ -16,6 +16,7 @@ import {
   formatSeedingProfileRatio,
   formatSeedingProfileSeedTime,
   SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileMinimumSeedersChip,
   seedingProfileSelectValue,
   seedingProfileSelectValueToId,
   seedingProfileToDraft,
@@ -320,6 +321,14 @@ test("every seeding-profile string the UI renders has an English entry", () => {
     "settings.seedingProfileIndexerLabel",
     "settings.seedingProfileRoutingLabel",
     "settings.seedingProfileNotApplicable",
+    "settings.seedingProfileMinimumSeedersLabel",
+    "settings.seedingProfileMinimumSeedersHelp",
+    "settings.seedingProfileMinimumSeedersUnknownHelp",
+    "settings.seedingProfileMinimumSeedersRoutingHelp",
+    "settings.seedingProfileMinimumSeedersInheritHelp",
+    "settings.seedingProfileMinimumSeedersPlaceholder",
+    "settings.seedingProfileMinimumSeedersOffBadge",
+    "settings.seedingProfileMinimumSeedersBadge",
     "status.indexerSeedingProfileSaving",
     "status.indexerSeedingProfileSaved",
   ];
@@ -383,6 +392,28 @@ test("minimum seeders distinguishes empty from zero", () => {
   assert.deepEqual(parseMinimumSeeders("-1"), { ok: false });
   assert.deepEqual(parseMinimumSeeders("1.5"), { ok: false });
   assert.deepEqual(parseMinimumSeeders("many"), { ok: false });
+});
+
+test("the behavior cell only inks a minimum that deviates from the floor", () => {
+  // Inheriting says nothing the floor field does not already say.
+  assert.equal(seedingProfileMinimumSeedersChip(null, 1), null);
+  assert.equal(seedingProfileMinimumSeedersChip(1, 1), null);
+
+  // Explicitly off stays visible even when the floor itself is off: it is an
+  // opt-out that survives the floor being raised again.
+  assert.deepEqual(seedingProfileMinimumSeedersChip(0, 1), { kind: "disabled" });
+  assert.deepEqual(seedingProfileMinimumSeedersChip(0, 0), { kind: "disabled" });
+
+  // Tighter and looser than the floor both deviate; the looser one is the
+  // reason this is not a `> floor` test.
+  assert.deepEqual(seedingProfileMinimumSeedersChip(5, 1), {
+    kind: "threshold",
+    value: 5,
+  });
+  assert.deepEqual(seedingProfileMinimumSeedersChip(1, 3), {
+    kind: "threshold",
+    value: 1,
+  });
 });
 
 test("a profile minimum of zero round-trips as zero, not as empty", () => {

@@ -378,6 +378,36 @@ export function formatSeasonPackSummary(
 }
 
 /**
+ * The minimum-seeders deviation the profile table should spend ink on, or
+ * `null` when the profile does not deviate.
+ *
+ * `null` inherits the system floor, so it says nothing the floor field does not
+ * already say. `0` is an explicit opt-out of the check and always shows: it
+ * stays an opt-out when the floor is raised later. Any other value earns a chip
+ * only when it differs from the floor it would otherwise inherit — including a
+ * value *below* the floor, which loosens admission instead of tightening it.
+ */
+export type SeedingProfileMinimumSeedersChip =
+  | { kind: "disabled" }
+  | { kind: "threshold"; value: number };
+
+export function seedingProfileMinimumSeedersChip(
+  minimumSeeders: number | null,
+  floor: number,
+): SeedingProfileMinimumSeedersChip | null {
+  if (minimumSeeders === null) {
+    return null;
+  }
+  // Mirrors the backend clamp: a stored value at or below zero means "no check".
+  if (minimumSeeders <= 0) {
+    return { kind: "disabled" };
+  }
+  return minimumSeeders === floor
+    ? null
+    : { kind: "threshold", value: minimumSeeders };
+}
+
+/**
  * Whether a profile stops Scryer managing its torrents after import. Handoff
  * makes the goal-met action and the never-remove flag moot, so the editor and
  * the table both dim them rather than implying they still apply.
