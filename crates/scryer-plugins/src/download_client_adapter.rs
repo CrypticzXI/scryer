@@ -304,6 +304,40 @@ fn seeding_snapshot_for_item(item: &PluginDownloadItem) -> Option<DownloadSeedin
     (!snapshot.is_empty()).then_some(snapshot)
 }
 
+/// The removal request to send for one item, with `remove_data` clamped to what
+/// the plugin says it can do.
+///
+/// This is the first reader of `DownloadClientCapabilities::remove_with_data`.
+/// Three published clients declare it `false` and mean it: rTorrent and
+/// DownloadStation answer a data-removal request with `Unsupported` (Scryer
+/// deletes their files through host filesystem access, not through the client
+/// ABI) and aria2 ignores it. Forwarding the flag verbatim would turn every
+/// terminal cleanup on those two into an error, and the queue entry would never
+/// be removed at all — strictly worse than leaving the payload behind. Sonarr
+/// has the same division of labour and still removes the entry
+/// (`RTorrent.cs:217-225`, `TorrentDownloadStation.cs:144-153`), so dropping the
+/// data half is the right half to lose.
+///
+/// The caller's `remove_data` is a *policy* decision (see
+/// `import::workflow::results::reconcile_terminal_download_cleanup`); this is
+/// purely "can this client carry it out".
+fn remove_control_request(
+    descriptor: &PluginDescriptor,
+    id: &str,
+    is_history: bool,
+    remove_data: bool,
+) -> PluginDownloadClientControlRequest {
+    let can_remove_with_data = descriptor
+        .download_client()
+        .is_some_and(|provider| provider.capabilities.remove_with_data);
+    PluginDownloadClientControlRequest {
+        action: DownloadControlAction::Remove,
+        client_item_id: id.to_string(),
+        remove_data: remove_data && can_remove_with_data,
+        is_history,
+    }
+}
+
 /// Every identifier a later listing might use to find this item again.
 fn seeding_observation_keys(item: &PluginDownloadItem) -> Vec<String> {
     let mut keys = Vec::new();
@@ -1368,18 +1402,27 @@ impl DownloadClient for WasmDownloadClient {
         .await
     }
 
+    /// Remove the item, asking for its data only if the client can actually
+    /// delete it.
+    ///
+    /// See `remove_control_request`: a plugin that declares
+    /// `remove_with_data: false` is sent an entry-only removal rather than a
+    /// request it would refuse.
     async fn delete_queue_item(
         &self,
         id: &str,
         is_history: bool,
         remove_data: bool,
     ) -> AppResult<()> {
-        let request = PluginDownloadClientControlRequest {
-            action: DownloadControlAction::Remove,
-            client_item_id: id.to_string(),
-            remove_data,
-            is_history,
-        };
+        let request = remove_control_request(&self.descriptor, id, is_history, remove_data);
+        if remove_data && !request.remove_data {
+            debug!(
+                provider = %self.descriptor.id,
+                client_id = %self.client_id,
+                client_item_id = id,
+                "download client cannot delete downloaded data; removing the entry only and leaving the payload in place"
+            );
+        }
         if let Some(result) = self
             .invoke_command(
                 PluginDownloadClientCommand::Control(request.clone()),
@@ -2158,6 +2201,53 @@ mod tests {
         assert_eq!(seeding.seed_goal_ratio, None);
         assert_eq!(seeding.seed_goal_seconds, None);
         assert!(!seeding.never_remove);
+    }
+
+    fn client_descriptor(id: &str, remove_with_data: bool) -> PluginDescriptor {
+        let mut descriptor = crate::seeding_trust::descriptor(id, "1.1.0");
+        if let scryer_plugin_sdk::ProviderDescriptor::DownloadClient(provider) =
+            &mut descriptor.provider
+        {
+            provider.capabilities.remove_with_data = remove_with_data;
+        }
+        descriptor
+    }
+
+    /// rTorrent and DownloadStation answer a data-removal request with
+    /// `Unsupported` — they expect Scryer to delete their files itself — so a
+    /// verbatim `remove_data: true` would fail the whole control call and leave
+    /// the queue entry in the client forever. Downgrading to an entry-only
+    /// removal is what Sonarr ends up doing for the same clients, and it is the
+    /// request shape their `Unsupported` guard lets through.
+    #[test]
+    fn a_client_that_cannot_delete_data_is_asked_for_an_entry_only_removal() {
+        let request = remove_control_request(
+            &client_descriptor("rtorrent", false),
+            "torrent-1",
+            true,
+            true,
+        );
+
+        assert!(
+            !request.remove_data,
+            "a plugin that declares it cannot delete data must never be asked to"
+        );
+        assert!(matches!(request.action, DownloadControlAction::Remove));
+        assert_eq!(request.client_item_id, "torrent-1");
+        assert!(request.is_history);
+    }
+
+    #[test]
+    fn a_client_that_can_delete_data_still_obeys_the_callers_policy() {
+        let descriptor = client_descriptor("qbittorrent", true);
+
+        let asked = remove_control_request(&descriptor, "torrent-2", true, true);
+        assert!(asked.remove_data, "the capability alone does not force it");
+
+        // The caller decides *whether* to delete data; the capability only
+        // decides whether the client can be asked.
+        let not_asked = remove_control_request(&descriptor, "torrent-2", true, false);
+        assert!(!not_asked.remove_data);
     }
 
     /// The whole point of the floor: what the gate reads for a stale plugin.
