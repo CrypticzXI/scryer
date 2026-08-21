@@ -212,6 +212,10 @@ fn validate_manual_queue_purpose(
         )),
     }
 }
+/// `Warning` blocks like any other live state: the download is still in the
+/// client and — unlike a failure — is never cleaned up on its own, so treating
+/// it as absent would leave the operator with two grabs for one release.
+/// Sonarr's `QueueSpecification` skips only `FailedPending` for the same reason.
 fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
     matches!(
         state,
@@ -222,12 +226,18 @@ fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
             | DownloadQueueState::Repairing
             | DownloadQueueState::Extracting
             | DownloadQueueState::ImportPending
+            | DownloadQueueState::Warning
     )
 }
+/// Blocking a warned grab without letting it be replaced would be a dead end:
+/// nothing else removes it, so the operator needs the swap.
 fn queue_state_is_replaceable(state: DownloadQueueState) -> bool {
     matches!(
         state,
-        DownloadQueueState::Queued | DownloadQueueState::Downloading | DownloadQueueState::Paused
+        DownloadQueueState::Queued
+            | DownloadQueueState::Downloading
+            | DownloadQueueState::Paused
+            | DownloadQueueState::Warning
     )
 }
 fn queue_item_matches_submission(

@@ -1019,6 +1019,16 @@ async fn queue_existing_title_download_ignores_stale_matching_submission() {
 
 #[tokio::test]
 async fn queue_existing_title_download_reports_scope_conflict() {
+    // A warned download is still live in the client and is never cleaned up on
+    // its own, so it has to block a duplicate grab exactly like a downloading
+    // one — and stay replaceable, which is the operator's way out of a torrent
+    // that is stuck. Sonarr's QueueSpecification skips only FailedPending.
+    for state in [DownloadQueueState::Downloading, DownloadQueueState::Warning] {
+        queue_existing_title_download_conflicts_for_state(state).await;
+    }
+}
+
+async fn queue_existing_title_download_conflicts_for_state(state: DownloadQueueState) {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -1061,11 +1071,8 @@ async fn queue_existing_title_download_reports_scope_conflict() {
         })
         .await
         .expect("record submission");
-    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
-        "existing-job",
-        DownloadQueueState::Downloading,
-        0,
-    )];
+    *download_client.queue_items.lock().await =
+        vec![queue_history_fixture_item("existing-job", state, 0)];
 
     let outcome = app
         .queue_existing_title_download(
@@ -1087,17 +1094,48 @@ async fn queue_existing_title_download_reports_scope_conflict() {
         .expect("conflict should be returned as outcome");
 
     let QueueDownloadOutcome::Conflict(conflict) = outcome else {
-        panic!("queue should conflict");
+        panic!("queue should conflict for {state:?}");
     };
-    assert_eq!(conflict.download_client_item_id, "existing-job");
-    assert!(conflict.replaceable);
+    assert_eq!(
+        conflict.download_client_item_id, "existing-job",
+        "{state:?}"
+    );
+    assert!(conflict.replaceable, "{state:?}");
     assert!(
         download_client
             .submitted_release_titles
             .lock()
             .await
-            .is_empty()
+            .is_empty(),
+        "{state:?} must not be duplicated"
     );
+}
+
+#[tokio::test]
+async fn a_warned_download_still_counts_as_active_in_the_client_snapshot() {
+    // The double-submit guard reads the client's own queue states. A warned
+    // download is live work, so the automatic paths must see it as active
+    // rather than searching for a replacement behind its back.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, _user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    *download_client.queue_items.lock().await = vec![queue_history_fixture_item(
+        "warned-job",
+        DownloadQueueState::Warning,
+        0,
+    )];
+
+    let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
+
+    // An unobservable queue answers "active" to everything, so the assertion
+    // below would pass for the wrong reason without this guard.
+    assert!(!snapshot.queue_listing_failed());
+    assert!(snapshot.is_active("Fixture warned-job"));
 }
 
 #[tokio::test]

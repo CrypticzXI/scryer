@@ -215,7 +215,12 @@ impl DownloadClientSnapshot {
                     match item.state {
                         DownloadQueueState::Queued
                         | DownloadQueueState::Downloading
-                        | DownloadQueueState::Paused => {
+                        | DownloadQueueState::Paused
+                        // A warned download is live work the client is still
+                        // holding, so the double-submit guard has to see it;
+                        // otherwise an automatic search grabs a second copy
+                        // behind a torrent that nothing will clean up.
+                        | DownloadQueueState::Warning => {
                             active_titles.insert(item.title_name.to_ascii_lowercase());
                             active_client_ids.insert(download_client_item_identity(
                                 Some(item.client_id.as_str()),
