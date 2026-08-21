@@ -155,18 +155,18 @@ function queueItemRecencyValue(
 }
 
 function transientQueueStateRank(displayState: string | null | undefined): number {
+  // `warning` ranks with the terminal states: a client that starts reporting a
+  // problem is the fresher, more specific observation, exactly as `failed` was
+  // before it had its own state — without a rank here the merge keeps the stale
+  // downloading row and the badge never catches up. `warning` deliberately
+  // stays out of `isTransientQueueDisplayState`: a warned row that disappears
+  // from the authoritative list is gone, and must not be resurrected.
   switch (normalizeQueueState(displayState)) {
     case "completed":
     case "failed":
     case "remove_failed":
     case "import_failed":
     case "import_blocked":
-    // A client that starts reporting a problem is the fresher, more specific
-    // observation, exactly as `failed` was before it had its own state: without
-    // a rank here the merge keeps the stale downloading row and the badge never
-    // catches up. `warning` deliberately stays out of
-    // `isTransientQueueDisplayState`: a warned row that disappears from the
-    // authoritative list is gone, and must not be resurrected.
     case "warning":
       return 6;
     case "import_pending":
