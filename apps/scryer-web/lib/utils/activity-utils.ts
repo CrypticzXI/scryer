@@ -155,9 +155,14 @@ export function deriveQueueRowPresentation(
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
   const displayStateKey = queueItem.displayState;
-  const statusBadgeKey = isImportedSeedingRow(queueItem)
-    ? "IMPORTED_SEEDING"
-    : displayStateKey;
+  // The seeding badge exists only because those rows display as `COMPLETED`. A
+  // client warning is already the specific state, so it must not be hidden
+  // behind "Imported · Seeding" — that is exactly how a stuck torrent would
+  // look healthy.
+  const statusBadgeKey =
+    isImportedSeedingRow(queueItem) && displayStateKey !== "WARNING"
+      ? "IMPORTED_SEEDING"
+      : displayStateKey;
   const reportedFailureReason = buildQueueStatusDetail(queueItem);
   const facetKey = normalizeQueueState(queueItem.facet);
   const failureReason =

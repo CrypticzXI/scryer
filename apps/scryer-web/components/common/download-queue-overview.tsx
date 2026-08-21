@@ -157,10 +157,14 @@ function getProgressBarColor(stateKey: string): string {
  * Badge key for a queue row. `IMPORTED_SEEDING` is a tracked state whose
  * display state stays `COMPLETED`, so it has to be read off the tracked record
  * or an imported-and-still-seeding torrent is indistinguishable from a
- * finished download.
+ * finished download. `WARNING` is the exception: there the display state is
+ * already the specific one, and burying it under the seeding badge would make
+ * a stuck torrent look healthy.
  */
 function queueBadgeStateKey(queueItem: DownloadQueueItem): string {
-  return isImportedSeedingRow(queueItem) ? "IMPORTED_SEEDING" : queueItem.displayState;
+  return isImportedSeedingRow(queueItem) && queueItem.displayState !== "WARNING"
+    ? "IMPORTED_SEEDING"
+    : queueItem.displayState;
 }
 
 function queueStatusLabel(

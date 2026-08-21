@@ -203,6 +203,32 @@ test("a warned download reads as a warning and shows the client's message", () =
   assert.equal(row.hasExpandableDetails, true);
 });
 
+test("a warning on a still-seeding import wins over the seeding badge", () => {
+  // The IMPORTED_SEEDING badge only exists because those rows display as
+  // COMPLETED. When the client is reporting a live problem the display state is
+  // already the specific one, and hiding it behind "Imported · Seeding" is how
+  // a stuck torrent looks healthy.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      state: "WARNING",
+      displayState: "WARNING",
+      trackedState: "IMPORTED_SEEDING",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: true,
+      attentionReason: "files are missing from the save path",
+      seedingState: "SEEDING",
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "WARNING");
+  assert.equal(row.statusLabel, translations["queue.state.warning"]);
+  assert.equal(row.failureReason, "files are missing from the save path");
+  assert.equal(row.hasExpandableDetails, true);
+});
+
 test("backend import-block detail takes precedence over frontend fallback copy", () => {
   const backendReason =
     "Automatic import could not choose a season for episode 9 because the downloaded filename is obfuscated.";

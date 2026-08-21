@@ -280,7 +280,15 @@ fn apply_tracked_download_activity_projection(
         // the library. It differs only in that the client entry is still
         // there, seeding, and has not been released yet.
         TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => {
-            item.state = DownloadQueueState::Completed;
+            // A settled import reads as finished — unless the client is
+            // reporting a live problem with an entry it is still holding. A
+            // torrent that errors while seeding out its goal has to keep its
+            // warning and its message instead of being repainted healthy;
+            // `import_status` stays `Completed` either way, so nothing
+            // re-imports it and the seeding gate keeps whatever hold it has.
+            if item.state != DownloadQueueState::Warning {
+                item.state = DownloadQueueState::Completed;
+            }
             item.progress_percent = 100;
             item.remaining_seconds = Some(0);
             item.import_status = Some(ImportStatus::Completed);

@@ -771,23 +771,141 @@ mod tests {
         ));
     }
 
+    fn warned_client_row(id: &str) -> DownloadQueueItem {
+        let mut queue_item = item(id, DownloadQueueState::Warning);
+        queue_item.attention_required = true;
+        queue_item.attention_reason = Some("files are missing from the save path".to_string());
+        queue_item
+    }
+
+    fn tracked_in_state(
+        queue_item: &DownloadQueueItem,
+        state: TrackedDownloadState,
+    ) -> crate::tracked_downloads::TrackedDownload {
+        crate::tracked_downloads::TrackedDownload {
+            id: format!("qbittorrent:{}", queue_item.id),
+            client_id: "client-1".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item: queue_item.clone(),
+            completed_source: None,
+            state,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("movie".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: true,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            snapshot_missing_since: None,
+        }
+    }
+
     #[test]
-    fn warning_state_never_preempts_an_import_overlay() {
-        let mut queue_item = item("job-warning-importing", DownloadQueueState::Warning);
-        queue_item.import_status = Some(ImportStatus::Running);
+    fn warning_state_never_preempts_a_live_import_overlay() {
+        // Run the overlay itself, not a hand-built row: an import that is
+        // actually moving files is the more specific answer and has to keep the
+        // row, exactly as it did before `Warning` existed.
+        for (tracked_state, expected) in [
+            (
+                TrackedDownloadState::ImportPending,
+                DownloadDisplayState::ImportPending,
+            ),
+            (
+                TrackedDownloadState::Importing,
+                DownloadDisplayState::Importing,
+            ),
+            (
+                TrackedDownloadState::ImportBlocked,
+                DownloadDisplayState::ImportBlocked,
+            ),
+        ] {
+            let mut queue_item = warned_client_row("job-warning-importing");
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
 
-        assert_eq!(
-            derive_download_queue_display_state(&queue_item),
-            DownloadDisplayState::Importing
-        );
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                expected,
+                "{tracked_state:?} overlays the client warning"
+            );
+        }
+    }
 
-        let mut blocked = item("job-warning-blocked", DownloadQueueState::Warning);
-        blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+    #[test]
+    fn a_settled_import_still_surfaces_a_live_client_warning() {
+        // The scenario this workstream exists for: a torrent that hits
+        // `error` / `missingFiles` while it is seeding out its goal after the
+        // import finished. The overlay used to repaint it `Completed`, so it
+        // read as perfectly healthy while the client was stuck.
+        for tracked_state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::ImportedSeeding,
+        ] {
+            let mut queue_item = warned_client_row("job-warning-seeding");
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
 
-        assert_eq!(
-            derive_download_queue_display_state(&blocked),
-            DownloadDisplayState::ImportBlocked
-        );
+            assert_eq!(
+                queue_item.state,
+                DownloadQueueState::Warning,
+                "{tracked_state:?} must not repaint a live client warning"
+            );
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::Warning,
+                "{tracked_state:?}"
+            );
+            assert_eq!(
+                queue_item.attention_reason.as_deref(),
+                Some("files are missing from the save path"),
+                "{tracked_state:?}"
+            );
+            // The import is still settled: nothing may re-import it, and the
+            // seeding gate keeps whatever hold it has.
+            assert_eq!(
+                queue_item.import_status,
+                Some(ImportStatus::Completed),
+                "{tracked_state:?}"
+            );
+            assert_eq!(queue_item.progress_percent, 100, "{tracked_state:?}");
+            assert!(queue_item.imported_at.is_some(), "{tracked_state:?}");
+        }
+    }
+
+    #[test]
+    fn a_settled_import_without_a_warning_still_reads_as_completed() {
+        for tracked_state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::ImportedSeeding,
+        ] {
+            let mut queue_item = item("job-imported", DownloadQueueState::Downloading);
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+
+            assert_eq!(
+                queue_item.state,
+                DownloadQueueState::Completed,
+                "{tracked_state:?}"
+            );
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::Completed,
+                "{tracked_state:?}"
+            );
+        }
     }
 
     #[test]
