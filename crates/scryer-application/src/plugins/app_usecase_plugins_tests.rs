@@ -1426,10 +1426,20 @@ fn bootstrap_plugins_with_supported_features(
     provider: Option<MockPluginProvider>,
     supported_features: &[&str],
 ) -> TestHarness {
+    bootstrap_plugins_inner(provider, supported_features, None)
+}
+
+fn bootstrap_plugins_inner(
+    provider: Option<MockPluginProvider>,
+    supported_features: &[&str],
+    settings: Option<Arc<dyn SettingsRepository>>,
+) -> TestHarness {
     use crate::null_repositories::NullSettingsRepository;
     use crate::null_repositories::test_nulls::*;
     use crate::types::JwtAuthConfig;
 
+    let settings =
+        settings.unwrap_or_else(|| Arc::new(NullSettingsRepository) as Arc<dyn SettingsRepository>);
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
     let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
@@ -1443,7 +1453,7 @@ fn bootstrap_plugins_with_supported_features(
         Arc::new(NullDownloadClient),
         Arc::new(NullDownloadClientConfigRepository),
         Arc::new(NullReleaseAttemptRepository),
-        Arc::new(NullSettingsRepository),
+        settings,
         Arc::new(NullQualityProfileRepository),
         String::new(),
     )
@@ -2515,7 +2525,7 @@ async fn list_available_plugins_ignores_cached_community_source_with_unapproved_
 }
 
 #[tokio::test]
-async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_only() {
+async fn list_available_plugins_marks_install_in_progress_for_every_actor() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let initiator = admin();
     let other_actor = config_admin();
@@ -2550,7 +2560,10 @@ async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_o
         .iter()
         .find(|plugin| plugin.id == "alpha")
         .unwrap();
-    assert!(!other_plugin.install_in_progress);
+    assert!(
+        other_plugin.install_in_progress,
+        "the plugin is busy for everyone, whoever started the operation"
+    );
 }
 
 #[tokio::test]
@@ -4535,25 +4548,16 @@ async fn plugin_catalog_status_returns_cached_status_without_rewriting_it() {
 
 // ── Scheduled plugin auto-update ─────────────────────────────────────────────
 
-type MockSettingValues = HashMap<(String, String, Option<String>), String>;
-
-#[derive(Default)]
+/// Answers exactly the one system setting the auto-update scheduler reads.
 struct MockSettingsStore {
-    values: StdMutex<MockSettingValues>,
+    plugin_auto_update_enabled: bool,
 }
 
 impl MockSettingsStore {
     fn with_plugin_auto_update(enabled: bool) -> Arc<Self> {
-        let store = Self::default();
-        store.values.lock().expect("settings lock").insert(
-            (
-                crate::SETTINGS_SCOPE_SYSTEM.to_string(),
-                crate::PLUGIN_AUTO_UPDATE_ENABLED_KEY.to_string(),
-                None,
-            ),
-            enabled.to_string(),
-        );
-        Arc::new(store)
+        Arc::new(Self {
+            plugin_auto_update_enabled: enabled,
+        })
     }
 }
 
@@ -4565,40 +4569,30 @@ impl SettingsRepository for MockSettingsStore {
         key_name: &str,
         scope_id: Option<String>,
     ) -> AppResult<Option<String>> {
-        Ok(self
-            .values
-            .lock()
-            .expect("settings lock")
-            .get(&(scope.to_string(), key_name.to_string(), scope_id))
-            .cloned())
+        let is_plugin_auto_update = scope == crate::SETTINGS_SCOPE_SYSTEM
+            && key_name == crate::PLUGIN_AUTO_UPDATE_ENABLED_KEY
+            && scope_id.is_none();
+        Ok(is_plugin_auto_update.then(|| self.plugin_auto_update_enabled.to_string()))
     }
 
     async fn upsert_setting_json(
         &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
-        value_json: String,
+        _scope: &str,
+        _key_name: &str,
+        _scope_id: Option<String>,
+        _value_json: String,
         _source: &str,
         _updated_by_user_id: Option<String>,
     ) -> AppResult<()> {
-        self.values.lock().expect("settings lock").insert(
-            (scope.to_string(), key_name.to_string(), scope_id),
-            value_json,
-        );
         Ok(())
     }
 
     async fn delete_setting_value(
         &self,
-        scope: &str,
-        key_name: &str,
-        scope_id: Option<String>,
+        _scope: &str,
+        _key_name: &str,
+        _scope_id: Option<String>,
     ) -> AppResult<()> {
-        self.values
-            .lock()
-            .expect("settings lock")
-            .remove(&(scope.to_string(), key_name.to_string(), scope_id));
         Ok(())
     }
 
@@ -4611,50 +4605,7 @@ fn bootstrap_plugins_with_settings(
     provider: Option<MockPluginProvider>,
     settings: Arc<MockSettingsStore>,
 ) -> TestHarness {
-    use crate::null_repositories::test_nulls::*;
-    use crate::types::JwtAuthConfig;
-
-    let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
-    let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
-    let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
-
-    let mut services = AppServices::builder(
-        Arc::new(NullTitleRepository),
-        Arc::new(NullShowRepository),
-        Arc::new(NullUserRepository),
-        indexer_config_repo.clone() as Arc<dyn IndexerConfigRepository>,
-        Arc::new(NullIndexerClient),
-        Arc::new(NullDownloadClient),
-        Arc::new(NullDownloadClientConfigRepository),
-        Arc::new(NullReleaseAttemptRepository),
-        settings,
-        Arc::new(NullQualityProfileRepository),
-        String::new(),
-    )
-    .with_plugin_installations(plugin_repo.clone())
-    .with_plugin_descriptor_loader(plugin_descriptor_loader.clone());
-    let plugin_provider = provider.map(Arc::new);
-    if let Some(provider) = &plugin_provider {
-        services = services.with_plugin_provider(provider.clone());
-    }
-
-    let app = AppUseCase::new(
-        services.build_partial_for_tests(),
-        JwtAuthConfig {
-            issuer: "test".to_string(),
-            access_ttl_seconds: 3600,
-            jwt_signing_salt: "test-salt".to_string(),
-        },
-        Arc::new(FacetRegistry::new()),
-    );
-
-    TestHarness {
-        app,
-        plugin_repo,
-        indexer_config_repo,
-        plugin_provider,
-        plugin_descriptor_loader,
-    }
+    bootstrap_plugins_inner(provider, &[], Some(settings))
 }
 
 const AUTO_UPDATE_WASM_BYTES: &[u8] = b"persisted plugin artifact";
@@ -4815,7 +4766,7 @@ async fn auto_update_ignores_optimized_artifact_the_host_cannot_run() {
 async fn scheduled_auto_update_does_nothing_while_the_setting_is_off() {
     let h = bootstrap_plugins_with_settings(
         Some(MockPluginProvider::new()),
-        Arc::new(MockSettingsStore::default()),
+        MockSettingsStore::with_plugin_auto_update(false),
     );
     h.plugin_repo
         .store_catalog_fixture_json(&make_catalog_fixture_json(&[auto_update_catalog_entry(
@@ -4827,15 +4778,13 @@ async fn scheduled_auto_update_does_nothing_while_the_setting_is_off() {
 
     let report = h.app.run_scheduled_plugin_auto_update().await;
 
-    assert!(!report.enabled);
-    assert_eq!(report.considered, 0);
     assert!(!report.did_work());
     assert!(!report.has_failures());
     assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
 }
 
 #[tokio::test]
-async fn scheduled_auto_update_skips_a_plugin_with_an_operation_in_flight() {
+async fn scheduled_auto_update_reports_a_plugin_with_an_operation_in_flight() {
     let h = bootstrap_plugins_with_settings(
         Some(MockPluginProvider::new()),
         MockSettingsStore::with_plugin_auto_update(true),
@@ -4861,17 +4810,20 @@ async fn scheduled_auto_update_skips_a_plugin_with_an_operation_in_flight() {
 
     let report = h.app.run_scheduled_plugin_auto_update().await;
 
-    assert!(report.enabled);
-    assert_eq!(report.considered, 1);
-    assert_eq!(report.skipped_in_progress, vec!["prowlarr".to_string()]);
     assert!(report.updated.is_empty());
-    assert!(report.failed.is_empty());
-    assert!(!report.has_failures());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].plugin_id, "prowlarr");
+    assert!(
+        !report.failed[0].rolled_back,
+        "the slot holder owns the plugin; automation never touched it"
+    );
+    assert!(report.failed[0].rollback_error.is_none());
+    assert!(report.has_failures());
     assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
 }
 
 #[tokio::test]
-async fn scheduled_auto_update_rolls_back_a_failed_candidate_and_keeps_going() {
+async fn scheduled_auto_update_keeps_going_after_a_failed_candidate() {
     let h = bootstrap_plugins_with_settings(
         Some(MockPluginProvider::new()),
         MockSettingsStore::with_plugin_auto_update(true),
@@ -4896,10 +4848,8 @@ async fn scheduled_auto_update_rolls_back_a_failed_candidate_and_keeps_going() {
 
     let report = h.app.run_scheduled_plugin_auto_update().await;
 
-    assert!(report.enabled);
-    assert_eq!(report.considered, 2);
     assert!(report.updated.is_empty());
-    assert!(report.rollback_failures.is_empty());
+    assert!(report.error.is_none());
     assert!(report.has_failures());
     assert_eq!(
         report
@@ -4911,12 +4861,20 @@ async fn scheduled_auto_update_rolls_back_a_failed_candidate_and_keeps_going() {
         "a failed candidate must not stop the ones after it"
     );
     assert!(
-        report.failed[0].rolled_back,
-        "a candidate that reached the upgrade is rolled back"
+        report
+            .failed
+            .iter()
+            .all(|failure| !failure.rolled_back && failure.rollback_error.is_none()),
+        "both candidates failed before the upgrade persisted anything"
     );
-    assert!(
-        !report.failed[1].rolled_back,
-        "a candidate rejected before the upgrade has nothing to roll back"
+    assert_eq!(
+        h.plugin_provider
+            .as_ref()
+            .expect("indexer provider")
+            .upsert_count
+            .load(Ordering::Relaxed),
+        0,
+        "an untouched installation is never reloaded into the runtime"
     );
     assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
     assert_eq!(stored_installation(&h, "zeta").await.version, "1.2.3");
@@ -4950,10 +4908,11 @@ async fn scheduled_auto_update_retries_a_failed_plugin_on_the_next_cycle() {
 
     assert_eq!(first.failed.len(), 1);
     assert_eq!(
-        second.considered, 1,
+        second.failed.len(),
+        1,
         "no failure state is persisted, so the same target is retried"
     );
-    assert_eq!(second.failed.len(), 1);
+    assert_eq!(second.failed[0].plugin_id, "prowlarr");
 }
 
 #[tokio::test]
@@ -4980,7 +4939,7 @@ async fn plugin_auto_update_rollback_restores_record_wasm_and_runtime() {
         .expect("persist failed upgrade state");
 
     h.app
-        .restore_plugin_installation_snapshot(&prior, &prior_payload)
+        .restore_plugin_installation_snapshot(&prior, &prior_payload, &replacement)
         .await
         .expect("rollback restores the prior installation");
 
@@ -5025,8 +4984,11 @@ async fn plugin_auto_update_rollback_leaves_a_disabled_plugin_out_of_the_runtime
     };
     seed_auto_update_installation(&h, prior.clone()).await;
 
+    let mut replacement = prior.clone();
+    replacement.version = "1.2.4".to_string();
+
     h.app
-        .restore_plugin_installation_snapshot(&prior, &prior_payload)
+        .restore_plugin_installation_snapshot(&prior, &prior_payload, &replacement)
         .await
         .expect("rollback restores the prior installation");
 

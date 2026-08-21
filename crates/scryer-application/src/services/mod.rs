@@ -561,10 +561,9 @@ mod tests {
             .await
             .expect("install should start");
 
-        let admin_active = orchestrator.active_plugin_ids_for_actor("admin").await;
-        assert!(admin_active.contains("email"));
-        let viewer_active = orchestrator.active_plugin_ids_for_actor("viewer").await;
-        assert!(viewer_active.is_empty());
+        // Busy-ness is global; only the progress snapshot is actor-scoped.
+        let active = orchestrator.active_plugin_ids().await;
+        assert!(active.contains("email"));
 
         let admin_rx = orchestrator
             .subscribe("admin", "email")

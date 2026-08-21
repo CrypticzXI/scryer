@@ -386,31 +386,19 @@ fn plugin_registry_refresh_outcome(
         return JobExecutionOutcome::new(Some(PLUGIN_CATALOG_REFRESHED_MESSAGE.to_string()), None);
     }
 
-    let failed_count = report.failed.len() + report.errors.len();
+    let failed_count = report.failed.len() + usize::from(report.error.is_some());
     let mut message = format!(
         "{PLUGIN_CATALOG_REFRESHED_MESSAGE}; auto-updated {} plugin(s)",
         report.updated.len()
     );
-    if !report.skipped_in_progress.is_empty() {
-        message.push_str(&format!(
-            "; {} skipped while an install was in progress",
-            report.skipped_in_progress.len()
-        ));
-    }
     if failed_count > 0 {
         message.push_str(&format!("; {failed_count} failed"));
     }
 
     let summary_json = serde_json::to_string(&json!({
-        "consideredCount": report.considered,
-        "updatedCount": report.updated.len(),
-        "skippedInProgressCount": report.skipped_in_progress.len(),
-        "failedCount": failed_count,
         "updated": report.updated,
-        "skippedInProgress": report.skipped_in_progress,
-        "failures": report.failed,
-        "rollbackFailures": report.rollback_failures,
-        "errors": report.errors,
+        "failed": report.failed,
+        "error": report.error,
     }))
     .ok();
 
@@ -3337,8 +3325,7 @@ fn summary_text_from_library_scan(summary: &LibraryScanSummary) -> String {
 mod tests {
     use super::*;
     use crate::plugins::runtime::{
-        PluginAutoUpdateFailure, PluginAutoUpdateReport, PluginAutoUpdateRollbackFailure,
-        PluginAutoUpdateUpgrade,
+        PluginAutoUpdateFailure, PluginAutoUpdateReport, PluginAutoUpdateUpgrade,
     };
     use chrono::TimeZone;
 
@@ -3357,45 +3344,45 @@ mod tests {
     #[test]
     fn plugin_catalog_refresh_outcome_reports_applied_updates() {
         let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
-            enabled: true,
-            considered: 2,
             updated: vec![PluginAutoUpdateUpgrade {
                 plugin_id: "alpha".to_string(),
                 from_version: "1.2.3".to_string(),
                 to_version: "1.2.4".to_string(),
             }],
-            skipped_in_progress: vec!["beta".to_string()],
             ..Default::default()
         });
 
         assert!(outcome.status_override.is_none());
         let summary_text = outcome.summary_text.expect("summary text");
-        assert!(summary_text.starts_with("Plugin catalog refreshed; auto-updated 1 plugin(s)"));
-        assert!(summary_text.contains("1 skipped while an install was in progress"));
+        assert_eq!(
+            summary_text,
+            "Plugin catalog refreshed; auto-updated 1 plugin(s)"
+        );
         let summary: serde_json::Value =
             serde_json::from_str(&outcome.summary_json.expect("summary json"))
                 .expect("summary json parses");
-        assert_eq!(summary["consideredCount"], 2);
-        assert_eq!(summary["updatedCount"], 1);
-        assert_eq!(summary["failedCount"], 0);
-        assert_eq!(summary["updated"][0]["plugin_id"], "alpha");
-        assert_eq!(summary["skippedInProgress"][0], "beta");
+        assert_eq!(summary["updated"][0]["pluginId"], "alpha");
+        assert_eq!(summary["updated"][0]["fromVersion"], "1.2.3");
+        assert_eq!(summary["updated"][0]["toVersion"], "1.2.4");
+        assert!(
+            summary["failed"]
+                .as_array()
+                .expect("failed array")
+                .is_empty()
+        );
+        assert!(summary["error"].is_null());
     }
 
     #[test]
     fn plugin_catalog_refresh_outcome_warns_on_failures() {
         let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
-            enabled: true,
-            considered: 1,
             failed: vec![PluginAutoUpdateFailure {
                 plugin_id: "alpha".to_string(),
                 error: "validation: boom".to_string(),
-                rolled_back: true,
+                rolled_back: false,
+                rollback_error: Some("restore failed".to_string()),
             }],
-            rollback_failures: vec![PluginAutoUpdateRollbackFailure {
-                plugin_id: "alpha".to_string(),
-                error: "restore failed".to_string(),
-            }],
+            error: Some("catalog unavailable".to_string()),
             ..Default::default()
         });
 
@@ -3404,15 +3391,16 @@ mod tests {
             outcome
                 .summary_text
                 .expect("summary text")
-                .contains("1 failed")
+                .contains("2 failed")
         );
         let summary: serde_json::Value =
             serde_json::from_str(&outcome.summary_json.expect("summary json"))
                 .expect("summary json parses");
-        assert_eq!(summary["failedCount"], 1);
-        assert_eq!(summary["failures"][0]["error"], "validation: boom");
-        assert_eq!(summary["failures"][0]["rolled_back"], true);
-        assert_eq!(summary["rollbackFailures"][0]["error"], "restore failed");
+        assert_eq!(summary["failed"][0]["pluginId"], "alpha");
+        assert_eq!(summary["failed"][0]["error"], "validation: boom");
+        assert_eq!(summary["failed"][0]["rolledBack"], false);
+        assert_eq!(summary["failed"][0]["rollbackError"], "restore failed");
+        assert_eq!(summary["error"], "catalog unavailable");
     }
 
     #[test]

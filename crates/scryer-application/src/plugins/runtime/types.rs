@@ -394,7 +394,7 @@ impl AppUseCase {
             .await?;
 
         Ok(self
-            .build_available_plugins(None)
+            .build_available_plugins()
             .await?
             .into_iter()
             .filter(|plugin| plugin.update_available)
