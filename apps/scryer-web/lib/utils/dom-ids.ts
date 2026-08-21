@@ -287,6 +287,21 @@ export function releaseSearchResultQueueId(
   );
 }
 
+/**
+ * The line explaining why Queue is unavailable for a result. Separate from the
+ * button so a check can assert the reason itself rather than matching its text.
+ */
+export function releaseSearchResultQueueReasonId(
+  release: ReleaseSearchSelectorInput,
+  variant?: ReleaseSearchResultIdVariant,
+): string {
+  return selectorId(
+    "release-search-result-queue-reason",
+    variant,
+    ...releaseSearchResultSelectorParts(release),
+  );
+}
+
 export function releaseSearchResultQueueAdditionalId(
   release: ReleaseSearchSelectorInput,
   variant?: ReleaseSearchResultIdVariant,

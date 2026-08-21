@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import {
   releaseSearchResultQueueAdditionalId,
   releaseSearchResultQueueId,
+  releaseSearchResultQueueReasonId,
   releaseSearchResultRowId,
 } from "@/lib/utils/dom-ids";
 import type { Release } from "@/lib/types";
@@ -247,10 +248,18 @@ function SearchResultRow({
   // the grab cannot finish. The row still shows the release and its seeder
   // count so the operator can see why, rather than the release vanishing.
   const belowMinimumSeeders = result.autoDecisionCode === "minimum_seeders";
-  const queueUnavailableReason =
+  // The code travels with the text so a reader (or a check) can tell the two
+  // reasons apart without parsing the localized sentence.
+  const queueUnavailableCode =
     requireCandidateToken && !result.candidateToken
-      ? t("queue.manualUnavailableForResult")
+      ? "manual_unavailable"
       : belowMinimumSeeders
+        ? "minimum_seeders"
+        : null;
+  const queueUnavailableReason =
+    queueUnavailableCode === "manual_unavailable"
+      ? t("queue.manualUnavailableForResult")
+      : queueUnavailableCode === "minimum_seeders"
         ? t("queue.belowMinimumSeeders")
         : null;
   const queueDisabled = disabled || queueRequested || queueUnavailableReason !== null;
@@ -263,6 +272,7 @@ function SearchResultRow({
   const idVariant = mobile ? "mobile" : undefined;
   const rowId = releaseSearchResultRowId(result, idVariant);
   const queueButtonId = releaseSearchResultQueueId(result, idVariant);
+  const queueReasonId = releaseSearchResultQueueReasonId(result, idVariant);
   const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(
     result,
     idVariant,
@@ -376,7 +386,12 @@ function SearchResultRow({
             </div>
           ) : null}
           {queueUnavailableReason ? (
-            <p className="mt-2 text-[11px] text-[var(--scry-faint)]">
+            <p
+              id={queueReasonId}
+              data-ui="release-search-result-queue-reason"
+              data-reason={queueUnavailableCode ?? undefined}
+              className="mt-2 text-[11px] text-[var(--scry-faint)]"
+            >
               {queueUnavailableReason}
             </p>
           ) : null}
@@ -532,7 +547,12 @@ function SearchResultRow({
             </div>
           ) : null}
           {queueUnavailableReason ? (
-            <p className="text-xs text-muted-foreground">
+            <p
+              id={queueReasonId}
+              data-ui="release-search-result-queue-reason"
+              data-reason={queueUnavailableCode ?? undefined}
+              className="text-xs text-muted-foreground"
+            >
               {queueUnavailableReason}
             </p>
           ) : null}
@@ -646,7 +666,12 @@ function SearchResultRow({
               </div>
             ) : null}
             {queueUnavailableReason ? (
-              <p className="mt-1 text-xs text-muted-foreground">
+              <p
+                id={queueReasonId}
+                data-ui="release-search-result-queue-reason"
+                data-reason={queueUnavailableCode ?? undefined}
+                className="mt-1 text-xs text-muted-foreground"
+              >
                 {queueUnavailableReason}
               </p>
             ) : null}
