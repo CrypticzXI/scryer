@@ -625,4 +625,30 @@ mod tests {
         );
         assert!(!nothing.has_prowlarr_seed_criteria);
     }
+
+    #[test]
+    fn the_imported_minimum_seeders_reads_back_on_the_indexer_payload() {
+        // The flag above deliberately says nothing about admission, so the
+        // imported threshold needs its own field or the operator cannot see
+        // what governs the row.
+        let imported = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7, "minimum_seeders": 4 })),
+            &[],
+        );
+        assert_eq!(imported.prowlarr_minimum_seeders, Some(4));
+
+        let absent = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7, "seed_ratio": 1.5 })),
+            &[],
+        );
+        assert_eq!(absent.prowlarr_minimum_seeders, None);
+
+        // Zero is Prowlarr's "do not enforce", not "inherit", so it must survive
+        // the trip as `Some(0)` rather than collapsing into null.
+        let disabled = from_indexer_config_with_fields(
+            prowlarr_child_indexer(json!({ "indexer_id": 7, "minimum_seeders": 0 })),
+            &[],
+        );
+        assert_eq!(disabled.prowlarr_minimum_seeders, Some(0));
+    }
 }

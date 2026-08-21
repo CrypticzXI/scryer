@@ -559,6 +559,10 @@ pub fn from_indexer_config_with_fields(
     // but an imported `appMinimumSeeders` must not claim them.
     let has_prowlarr_seed_criteria =
         scryer_application::prowlarr_managed_goal_profile(&config).is_some();
+    // The admission half of the same split, read back verbatim: the resolver
+    // answers admission from this value at the Prowlarr tier, so the row has to
+    // be able to say so instead of reading "Inherit default".
+    let prowlarr_minimum_seeders = scryer_application::prowlarr_managed_minimum_seeders(&config);
     let (config_json, stored_secret_keys) =
         redact_indexer_config_json(config.config_json, config_fields);
     let has_api_key = stored_secret_keys.iter().any(|key| key == "api_key")
@@ -575,6 +579,7 @@ pub fn from_indexer_config_with_fields(
         download_client_id: config.download_client_id.map(Into::into),
         seeding_profile_id: config.seeding_profile_id.map(Into::into),
         has_prowlarr_seed_criteria,
+        prowlarr_minimum_seeders,
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),

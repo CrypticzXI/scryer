@@ -456,7 +456,11 @@ pub fn prowlarr_managed_goal_profile(indexer: &IndexerConfig) -> Option<SeedingP
 /// Prowlarr's zero is a decision — disable the check — and it must not read as
 /// "inherit the floor". Prowlarr's own validator only warns on a non-positive
 /// value, so zero really does arrive.
-pub(crate) fn prowlarr_managed_minimum_seeders(indexer: &IndexerConfig) -> Option<i32> {
+///
+/// Public because the interface layer reads it back for the operator: without a
+/// surface, an imported minimum governs admission while the indexer row still
+/// reads "Inherit default".
+pub fn prowlarr_managed_minimum_seeders(indexer: &IndexerConfig) -> Option<i32> {
     prowlarr_managed_criteria(indexer)?
         .minimum_seeders
         .filter(|value| *value >= 0)

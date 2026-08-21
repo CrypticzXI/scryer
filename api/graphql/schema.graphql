@@ -6334,6 +6334,12 @@ type IndexerConfigPayload {
 	"""
 	hasProwlarrSeedCriteria: Boolean!
 	"""
+	Minimum seeders Prowlarr imported for this managed child, or null when it
+	supplied none. Zero means Prowlarr turned the seeder check off. Read-only:
+	it is edited in Prowlarr, and an assigned seeding profile overrides it.
+	"""
+	prowlarrMinimumSeeders: Int
+	"""
 	Whether an API key is configured without exposing it.
 	"""
 	hasApiKey: Boolean!

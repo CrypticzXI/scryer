@@ -334,6 +334,10 @@ pub struct IndexerConfigPayload {
     /// did and no seeding profile is assigned, those criteria apply; assigning
     /// a profile overrides them.
     pub has_prowlarr_seed_criteria: bool,
+    /// Minimum seeders Prowlarr imported for this managed child, or null when it
+    /// supplied none. Zero means Prowlarr turned the seeder check off. Read-only:
+    /// it is edited in Prowlarr, and an assigned seeding profile overrides it.
+    pub prowlarr_minimum_seeders: Option<i32>,
     /// Whether an API key is configured without exposing it.
     pub has_api_key: bool,
     /// Whether this configuration is managed by a parent configuration.
