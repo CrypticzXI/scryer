@@ -256,7 +256,10 @@ const METADATA_GATEWAY_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(5);
 const METADATA_GATEWAY_MAX_SEARCH_BATCH: usize = 50;
 const METADATA_GATEWAY_MAX_METADATA_BULK_BATCH: usize = 50;
 const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
-const METADATA_GATEWAY_MAX_TITLE_BULK_BATCH: usize = METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH;
+/// `titles(ids:)` and `resolveTitles(refs:)` are rejected by the gateway above
+/// fifty entries per request (the same cap as `metadataBulk`), so chunk to it
+/// rather than to the larger alias-batch size.
+const METADATA_GATEWAY_MAX_TITLE_BULK_BATCH: usize = METADATA_GATEWAY_MAX_METADATA_BULK_BATCH;
 const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
 const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
@@ -3891,6 +3894,61 @@ mod tests {
         assert!(graphql_docs::TITLES_QUERY.contains("titles(ids:"));
         assert!(graphql_docs::RESOLVE_TITLES_QUERY.contains("resolveTitles"));
         assert!(graphql_docs::SEARCH_TITLES_BATCH_QUERY.contains("searchTitlesBatch"));
+    }
+
+    #[tokio::test]
+    async fn get_movie_titles_chunks_below_the_gateway_id_limit() {
+        // The gateway rejects `titles(ids:)` above fifty ids per request, so a
+        // caller that hands us a larger page (the title image cache walks a
+        // hundred titles at a time) must still be split into accepted chunks.
+        assert!(super::METADATA_GATEWAY_MAX_TITLE_BULK_BATCH <= 50);
+
+        let _guard = title_id_capability_test_lock().lock().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", super::OP_TITLES))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "titles": { "movies": [], "missing_ids": [], "redirects": [] } }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let refs = (1..=super::METADATA_GATEWAY_MAX_TITLE_BULK_BATCH as i64 + 1)
+            .map(|smg_id| MovieTitleRef {
+                smg_id: Some(smg_id),
+                tvdb_id: None,
+                tmdb_id: None,
+                imdb_id: None,
+            })
+            .collect::<Vec<_>>();
+        let result = client
+            .get_movie_titles(&refs, "eng")
+            .await
+            .expect("chunked title-id request should succeed");
+
+        assert_eq!(result.missing_ref_indexes.len(), refs.len());
+        for request in server.received_requests().await.unwrap_or_default() {
+            let ids = request
+                .url
+                .query_pairs()
+                .find_map(|(name, value)| {
+                    (name == "variables").then(|| {
+                        serde_json::from_str::<serde_json::Value>(&value)
+                            .expect("variables JSON")["ids"]
+                            .as_array()
+                            .map(Vec::len)
+                            .unwrap_or_default()
+                    })
+                })
+                .expect("titles request carries variables");
+            assert!(
+                ids <= 50,
+                "request carried {ids} ids, above the gateway cap"
+            );
+        }
     }
 
     #[tokio::test]
