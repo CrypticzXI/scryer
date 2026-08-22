@@ -2,32 +2,32 @@
   "data": {
     "searchTitles": {
       "source": "smg",
-      "query": "TMDB Primary",
+      "query": "Test Movie",
       "generated_at": "2026-08-21T00:00:00Z",
       "total_results": 1,
       "results": [
         {
-          "title_id": 202,
+          "title_id": 101,
           "kind": "movie",
-          "primary_source": "tmdb",
-          "tvdb_id": null,
-          "tmdb_id": 2020,
-          "imdb_id": "tt7654321",
+          "primary_source": "tvdb",
+          "tvdb_id": 123456,
+          "tmdb_id": 111,
+          "imdb_id": "tt1234567",
           "external_ids": [
-            { "source": "smg", "kind": "movie", "id": "202", "key": "smg:title:202" },
-            { "source": "tmdb", "kind": "movie", "id": "2020", "key": "tmdb:movie:2020" }
+            { "source": "smg", "kind": "movie", "id": "101", "key": "smg:title:101" },
+            { "source": "tvdb", "kind": "movie", "id": "123456", "key": "tvdb:movie:123456" }
           ],
-          "name": "TMDB Primary Movie",
-          "slug": "tmdb-primary-movie",
+          "name": "Test Movie Title",
+          "slug": "test-movie-title",
           "type": "movie",
-          "year": 2025,
+          "year": 2024,
           "status": "Released",
-          "overview": "A movie whose primary identifier is TMDB.",
-          "poster_url": "https://image.tmdb.org/t/p/original/tmdb-primary.jpg",
+          "overview": "A gripping tale of testing integration.",
+          "poster_url": "https://artworks.thetvdb.com/banners/movies/123456/posters/test.jpg",
           "language": "eng",
-          "runtime_minutes": 110,
-          "popularity": 12.0,
-          "sort_title": "TMDB Primary Movie",
+          "runtime_minutes": 142,
+          "popularity": 85.5,
+          "sort_title": "Test Movie Title",
           "normalization_notes": []
         }
       ]

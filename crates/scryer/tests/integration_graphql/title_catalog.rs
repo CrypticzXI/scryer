@@ -1236,6 +1236,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
                 "facet": "MOVIE",
                 "monitored": true,
                 "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "700001" }],
                 "options": {
                     "rootFolderId": library_a_root_id
                 }
@@ -1261,6 +1262,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
                 "libraryId": library_a_id,
                 "monitored": true,
                 "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "700002" }],
                 "options": {
                     "rootFolderId": library_b_root_id
                 }
@@ -1318,6 +1320,44 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_eq!(
         second["data"]["addTitle"]["title"]["id"],
         first["data"]["addTitle"]["title"]["id"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_add_movie_accepts_smg_and_tmdb_identity_without_tvdb() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                metadataHydrationState
+                title { externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "SMG and TMDB Identity Movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [],
+                "smgId": 202,
+                "tmdbId": 2020
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["metadataHydrationState"],
+        "PENDING"
+    );
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["externalIds"],
+        json!([
+            { "source": "smg", "value": "202" },
+            { "source": "tmdb", "value": "2020" },
+        ])
     );
 }
 

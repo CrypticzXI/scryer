@@ -134,6 +134,10 @@ pub(crate) fn map_add_input(
         mut tags,
         options: _,
         external_ids,
+        smg_id,
+        tvdb_id,
+        tmdb_id,
+        imdb_id,
         source_hint: _,
         source_kind: _,
         source_title: _,
@@ -156,19 +160,52 @@ pub(crate) fn map_add_input(
         apply_title_options(&mut tags, options);
     }
 
+    let mut external_ids = external_ids
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| ExternalId {
+            source: item.source,
+            value: item.value,
+        })
+        .collect::<Vec<_>>();
+    for (source, value) in [
+        ("smg", smg_id.map(|id| id.to_string())),
+        ("tvdb", tvdb_id),
+        ("tmdb", tmdb_id.map(|id| id.to_string())),
+        ("imdb", imdb_id),
+    ] {
+        let Some(value) = value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if !external_ids.iter().any(|external_id| {
+            external_id.source.eq_ignore_ascii_case(source) && external_id.value == value
+        }) {
+            external_ids.push(ExternalId {
+                source: source.to_string(),
+                value,
+            });
+        }
+    }
+    if parsed_facet == scryer_domain::MediaFacet::Movie
+        && !external_ids.iter().any(|external_id| {
+            matches!(
+                external_id.source.to_ascii_lowercase().as_str(),
+                "smg" | "tvdb" | "tmdb" | "imdb"
+            ) && !external_id.value.trim().is_empty()
+        })
+    {
+        return Err(async_graphql::Error::new("a title identity is required"));
+    }
+
     Ok(NewTitle {
         name,
         facet: parsed_facet,
         monitored,
         tags,
-        external_ids: external_ids
-            .unwrap_or_default()
-            .into_iter()
-            .map(|item| ExternalId {
-                source: item.source,
-                value: item.value,
-            })
-            .collect(),
+        external_ids,
         root_folder_id,
         min_availability,
         poster_url: None,

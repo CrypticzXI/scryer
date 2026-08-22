@@ -3305,6 +3305,13 @@ export const notificationsInitQuery = `query NotificationsInit {
 
 const METADATA_SEARCH_FIELDS = `
     tvdbId
+    smgId
+    tmdbId
+    primarySource
+    externalIds {
+      source
+      value
+    }
     name
     imdbId
     slug
@@ -3426,6 +3433,8 @@ export const searchMetadataMultiQuery = `query SearchMetadataMulti($query: Strin
 export const metadataMovieQuery = `query MetadataMovie($input: MetadataMovieInput!) {
   metadataMovie(input: $input) {
     tvdbId
+    smgId
+    tmdbId
     name
     slug
     year

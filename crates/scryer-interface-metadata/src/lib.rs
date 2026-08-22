@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_graphql::{Context, ID, Object, Result as GqlResult};
-use scryer_application::{AppError, AppUseCase, ImageProxyKind};
+use scryer_application::{AppError, AppUseCase, ImageProxyKind, MovieTitleRef};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 use scryer_interface_media::mappers::{from_calendar_episode, parse_iso_date};
 use scryer_interface_media::types::*;
@@ -13,7 +13,10 @@ fn from_metadata_search_item(
     app: &AppUseCase,
     item: scryer_application::RichMetadataSearchItem,
 ) -> MetadataSearchItemPayload {
-    let owner_id = item.tvdb_id.to_string();
+    let owner_id = item
+        .smg_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| item.tvdb_id.to_string());
     let poster_url = app.media_image_url(
         item.poster_url.as_deref(),
         Some("metadata_search"),
@@ -23,6 +26,21 @@ fn from_metadata_search_item(
     );
     MetadataSearchItemPayload {
         tvdb_id: item.tvdb_id,
+        smg_id: item.smg_id,
+        tmdb_id: item
+            .external_ids
+            .iter()
+            .find(|external_id| external_id.source.eq_ignore_ascii_case("tmdb"))
+            .and_then(|external_id| external_id.value.parse().ok()),
+        primary_source: item.primary_source,
+        external_ids: item
+            .external_ids
+            .into_iter()
+            .map(|external_id| ExternalIdPayload {
+                source: external_id.source,
+                value: external_id.value,
+            })
+            .collect(),
         name: item.name,
         imdb_id: item.imdb_id,
         slug: item.slug,
@@ -130,38 +148,58 @@ impl MetadataQueries {
         })
     }
 
-    /// Fetch one movie metadata record by TVDB identity and language.
+    /// Fetch one movie metadata record by a supplied identity and language.
     async fn metadata_movie(
         &self,
         ctx: &Context<'_>,
-        #[graphql(desc = "TVDB identity and optional metadata language, which defaults to `eng`.")]
+        #[graphql(
+            desc = "Movie identity and optional metadata language, which defaults to `eng`."
+        )]
         input: MetadataMovieInput,
     ) -> GqlResult<MetadataMoviePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let tvdb_id: i64 = input
-            .tvdb_id
-            .parse()
-            .map_err(|_| to_gql_error(AppError::Validation("invalid tvdb id".to_string())))?;
+        let parse_optional_id = |value: Option<String>, field: &str| {
+            value
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    value.parse().map_err(|_| {
+                        to_gql_error(AppError::Validation(format!("invalid {field} id")))
+                    })
+                })
+                .transpose()
+        };
+        let movie_ref = MovieTitleRef {
+            smg_id: input.smg_id,
+            tvdb_id: parse_optional_id(input.tvdb_id, "tvdb")?,
+            tmdb_id: input.tmdb_id,
+            imdb_id: input.imdb_id.filter(|value| !value.trim().is_empty()),
+        };
         let language = input.language.unwrap_or_else(|| "eng".to_string());
         let movie = app
-            .get_metadata_movie(&actor, tvdb_id, &language)
+            .get_metadata_movie_by_ref(&actor, &movie_ref, &language)
             .await
             .map_err(to_gql_error)?;
-        // This legacy endpoint is TVDB-keyed; TMDB-primary rows have no value to expose here.
-        let tvdb_id = movie.tvdb_id.unwrap_or(0);
-        let owner_id = tvdb_id.to_string();
+        let tvdb_id = movie.tvdb_id.map(|id| id.to_string()).unwrap_or_default();
+        let owner_id = movie
+            .smg_id
+            .map(|id| id.to_string())
+            .or_else(|| movie.tvdb_id.map(|id| id.to_string()))
+            .or_else(|| movie.tmdb_id.map(|id| id.to_string()))
+            .or_else(|| (!movie.imdb_id.trim().is_empty()).then(|| movie.imdb_id.clone()));
         let poster_url = app
             .media_image_url(
                 Some(movie.poster_url.as_str()),
                 Some("metadata_movie"),
-                Some(&owner_id),
+                owner_id.as_deref(),
                 ImageProxyKind::Poster,
                 "w250",
             )
-            .expect("metadata movie image registration with an owner always returns a URL");
+            .unwrap_or_default();
         Ok(MetadataMoviePayload {
-            tvdb_id: tvdb_id.to_string(),
+            tvdb_id,
+            smg_id: movie.smg_id,
+            tmdb_id: movie.tmdb_id,
             name: movie.name,
             slug: movie.slug,
             year: movie.year,

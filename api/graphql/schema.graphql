@@ -370,6 +370,22 @@ input AddTitleInput {
 	"""
 	externalIds: [ExternalIdInput!]
 	"""
+	SMG canonical movie title ID, when supplied by metadata search.
+	"""
+	smgId: Int
+	"""
+	TVDB title ID, when supplied by metadata search.
+	"""
+	tvdbId: String
+	"""
+	TMDB title ID, when supplied by metadata search.
+	"""
+	tmdbId: Int
+	"""
+	IMDb title ID, when supplied by metadata search.
+	"""
+	imdbId: String
+	"""
 	Download source locator, such as an NZB URL or magnet URI, used when queuing the title.
 	"""
 	sourceHint: String
@@ -5837,9 +5853,13 @@ input FixTitleMatchInput {
 	"""
 	titleId: ID!
 	"""
-	TVDB identity to associate with the title.
+	TVDB identity to associate with the title. Required for Series and Anime.
 	"""
-	tvdbId: String!
+	tvdbId: String
+	"""
+	SMG canonical movie title ID to associate with a Movie title.
+	"""
+	smgId: Int
 }
 
 """
@@ -9143,13 +9163,25 @@ type MetadataEpisodePayload {
 }
 
 """
-Metadata gateway movie lookup by provider ID and language.
+Metadata gateway movie lookup by one supported identity and language.
 """
 input MetadataMovieInput {
 	"""
-	TVDB movie ID.
+	TVDB movie ID, when known.
 	"""
-	tvdbId: String!
+	tvdbId: String
+	"""
+	SMG canonical movie title ID, when known.
+	"""
+	smgId: Int
+	"""
+	TMDB movie ID, when known.
+	"""
+	tmdbId: Int
+	"""
+	IMDb movie ID, when known.
+	"""
+	imdbId: String
 	"""
 	Optional metadata language code.
 	"""
@@ -9164,6 +9196,14 @@ type MetadataMoviePayload {
 	TVDB movie ID.
 	"""
 	tvdbId: String!
+	"""
+	SMG canonical movie title ID, or null when unavailable.
+	"""
+	smgId: Int
+	"""
+	TMDB movie ID, or null when unavailable.
+	"""
+	tmdbId: Int
 	"""
 	Movie title.
 	"""
@@ -9222,6 +9262,22 @@ type MetadataSearchItemPayload {
 	TVDB provider ID.
 	"""
 	tvdbId: String!
+	"""
+	SMG canonical title ID, or null for legacy-only results.
+	"""
+	smgId: Int
+	"""
+	TMDB provider ID, or null when unavailable.
+	"""
+	tmdbId: Int
+	"""
+	Primary metadata-provider source, or null for legacy-only results.
+	"""
+	primarySource: String
+	"""
+	Every external identity supplied by the metadata provider.
+	"""
+	externalIds: [ExternalIdPayload!]!
 	"""
 	Metadata title.
 	"""
@@ -9522,11 +9578,11 @@ type MutationRoot {
 		input: SetPrimaryMovieFileInput!
 	): TitlePayload!
 	"""
-	Associate a title with a TVDB identity and return any hydration or scan result.
+	Associate a title with a metadata identity and return any hydration or scan result.
 	"""
 	fixTitleMatch(
 		"""
-		Title identity and TVDB identity used for the rematch.
+		Title identity and metadata identity used for the rematch.
 		"""
 		input: FixTitleMatchInput!
 	): FixTitleMatchPayload!
@@ -13938,11 +13994,11 @@ type QueryRoot {
 		language: String! = "eng"
 	): MetadataSearchMultiPayload!
 	"""
-	Fetch one movie metadata record by TVDB identity and language.
+	Fetch one movie metadata record by a supplied identity and language.
 	"""
 	metadataMovie(
 		"""
-		TVDB identity and optional metadata language, which defaults to `eng`.
+		Movie identity and optional metadata language, which defaults to `eng`.
 		"""
 		input: MetadataMovieInput!
 	): MetadataMoviePayload!

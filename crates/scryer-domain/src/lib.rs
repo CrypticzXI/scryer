@@ -2738,6 +2738,8 @@ pub struct TitleRematchedEventData {
     pub title: TitleContextSnapshot,
     pub old_tvdb_id: Option<String>,
     pub new_tvdb_id: String,
+    pub smg_id: Option<i64>,
+    pub tmdb_id: Option<i64>,
     pub source: String,
 }
 

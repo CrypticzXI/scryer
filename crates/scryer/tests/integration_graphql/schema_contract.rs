@@ -1452,10 +1452,17 @@ async fn graphql_introspection_search_metadata_uses_media_facet_enum() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect::<Vec<_>>(),
-        vec!["tvdbId", "language"]
+        vec!["tvdbId", "smgId", "tmdbId", "imdbId", "language"]
     );
-    assert_eq!(movie_input_fields[0]["type"]["kind"], "NON_NULL");
-    assert_eq!(movie_input_fields[0]["type"]["ofType"]["name"], "String");
+    for (field, scalar) in [
+        (&movie_input_fields[0], "String"),
+        (&movie_input_fields[1], "Int"),
+        (&movie_input_fields[2], "Int"),
+        (&movie_input_fields[3], "String"),
+    ] {
+        assert_eq!(field["type"]["kind"], "SCALAR");
+        assert_eq!(field["type"]["name"], scalar);
+    }
 
     let series_input_fields = body["data"]["metadataSeriesInput"]["inputFields"]
         .as_array()

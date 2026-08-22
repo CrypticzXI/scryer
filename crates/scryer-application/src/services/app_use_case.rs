@@ -629,11 +629,27 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::View,
         )
         .await?;
-        self.services
-            .library
-            .metadata_gateway
-            .search_tvdb_rich(query, type_hint, limit, language, year)
-            .await
+        let gateway = &self.services.library.metadata_gateway;
+        if type_hint.eq_ignore_ascii_case("movie") {
+            match gateway
+                .search_titles(query, "movie", limit, language, year)
+                .await
+            {
+                Ok(results) => Ok(results),
+                Err(error)
+                    if crate::catalog_workflow::movie_title_queries_not_supported(&error) =>
+                {
+                    gateway
+                        .search_tvdb_rich(query, type_hint, limit, language, year)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            gateway
+                .search_tvdb_rich(query, type_hint, limit, language, year)
+                .await
+        }
     }
 
     pub async fn search_metadata_tvdb(
@@ -685,11 +701,17 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::View,
         )
         .await?;
-        self.services
-            .library
-            .metadata_gateway
-            .search_tvdb_multi(query, limit, language)
+        let gateway = &self.services.library.metadata_gateway;
+        let mut legacy = gateway.search_tvdb_multi(query, limit, language).await?;
+        match gateway
+            .search_titles(query, "movie", limit, language, None)
             .await
+        {
+            Ok(movies) => legacy.movies = movies,
+            Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {}
+            Err(error) => return Err(error),
+        }
+        Ok(legacy)
     }
 
     pub async fn get_metadata_movie(
@@ -708,6 +730,54 @@ impl AppUseCase {
             .metadata_gateway
             .get_movie(tvdb_id, language)
             .await
+    }
+
+    pub async fn get_metadata_movie_by_ref(
+        &self,
+        actor: &User,
+        movie_ref: &MovieTitleRef,
+        language: &str,
+    ) -> AppResult<MovieMetadata> {
+        self.require_any_library_permission_for_service(
+            actor,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
+        if movie_ref.smg_id.is_none()
+            && movie_ref.tvdb_id.is_none()
+            && movie_ref.tmdb_id.is_none()
+            && movie_ref
+                .imdb_id
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(AppError::Validation("a title identity is required".into()));
+        }
+
+        match self
+            .services
+            .library
+            .metadata_gateway
+            .get_movie_titles(std::slice::from_ref(movie_ref), language)
+            .await
+        {
+            Ok(result) => {
+                result.by_ref_index.get(&0).cloned().ok_or_else(|| {
+                    AppError::NotFound("movie metadata response missing title".into())
+                })
+            }
+            Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {
+                let tvdb_id = movie_ref.tvdb_id.ok_or_else(|| {
+                    AppError::Repository("legacy metadata gateway requires a tvdb id".into())
+                })?;
+                self.services
+                    .library
+                    .metadata_gateway
+                    .get_movie(tvdb_id, language)
+                    .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn get_metadata_series(
