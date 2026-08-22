@@ -1992,7 +1992,9 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
     );
     assert_eq!(
         pending_status_for("pending-b-standby"),
-        PendingReleaseStatus::Superseded
+        // Saved search results survive a sibling grab: they are the fallback if
+        // that grab fails.
+        PendingReleaseStatus::Standby
     );
     assert_eq!(
         pending_status_for("pending-c-uncovered"),
@@ -3409,6 +3411,436 @@ async fn convergence_cursor_requeries_only_the_pruned_indexer() {
     assert!(
         rows.iter().any(|row| row == &indexer_b_before),
         "the covered peer row was untouched by the restricted cursor search"
+    );
+}
+
+/// The failure loop never costs an indexer query. A grab that fails is
+/// blocklisted and its scope re-opened under its existing coverage; the cursor
+/// then walks the scope's saved search results in order, and once they are
+/// exhausted the scope simply stays converged — no re-search.
+#[tokio::test]
+async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexer() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(
+        FixedReleaseIndexerClient::new("Saved Results Fixture.2024.1080p.WEB-DL")
+            .with_fired_indexers(["indexer-a", "indexer-b"])
+            .with_empty_response(),
+    );
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+    app.services
+        .integrations
+        .indexer_configs
+        .delete("acquisition-indexer")
+        .await
+        .expect("remove bootstrap indexer");
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        app.services
+            .integrations
+            .indexer_configs
+            .create(synthetic_direct_nab_indexer_config(indexer_id, "newznab"))
+            .await
+            .expect("create routed indexer");
+    }
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Saved Results Fixture".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    let release = |suffix: &str| format!("Saved.Results.Fixture.2024.1080p.WEB-DL-{suffix}");
+
+    // The scope was searched (both indexers covered), its best release grabbed,
+    // and the two runners-up saved.
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some("movie".to_string()),
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: Some(Utc::now().to_rfc3339()),
+        status: AcquisitionScopeStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": release("FIRST"),
+                "score": 300,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed grabbed wanted movie");
+    let search_title = app
+        .release_search_title_for_wanted_item(&title, &wanted, None)
+        .await;
+    let subject = app
+        .resolve_release_search_subject_for_wanted_item(&title, &search_title, &wanted, None)
+        .await;
+    let convergence = app
+        .resolve_scope_convergence(&title, &subject)
+        .await
+        .expect("resolve live convergence coordinates");
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+        .await;
+    let covered_before = coverage.recorded().await;
+    assert_eq!(covered_before.len(), 2, "fixture: both indexers covered");
+
+    let saved = |suffix: &str, score: i32| PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: wanted.id.clone(),
+        title_id: title.id.clone(),
+        release_title: release(suffix),
+        release_url: Some(format!("https://example.com/{}.nzb", suffix.to_lowercase())),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        release_size_bytes: None,
+        release_score: score,
+        scoring_log_json: None,
+        indexer_source: Some("indexer-a".to_string()),
+        indexer_id: Some("indexer-a".to_string()),
+        release_guid: Some(format!("guid-{}", suffix.to_lowercase())),
+        added_at: Utc::now().to_rfc3339(),
+        delay_until: Utc::now().to_rfc3339(),
+        status: PendingReleaseStatus::Standby,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
+    };
+    pending_releases
+        .insert_pending_release(&saved("SECOND", 200))
+        .await
+        .expect("seed saved result");
+    pending_releases
+        .insert_pending_release(&saved("THIRD", 100))
+        .await
+        .expect("seed saved result");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "first-job".to_string(),
+            source_hint: None,
+            source_provider_id: Some("indexer-a".to_string()),
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some(release("FIRST")),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record first grab");
+
+    let wanted_now = || async {
+        wanted_items
+            .get_acquisition_scope_state_by_id(&wanted.id)
+            .await
+            .expect("load wanted")
+            .expect("wanted exists")
+    };
+    let status_of = |suffix: &str| {
+        let pending_releases = pending_releases.clone();
+        let release_title = release(suffix);
+        async move {
+            pending_releases
+                .store
+                .lock()
+                .await
+                .iter()
+                .find(|row| row.release_title == release_title)
+                .map(|row| row.status)
+        }
+    };
+    let fail = |client_id: String, client_type: String, client_item_id: String, suffix: &str| {
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: None,
+            title_id: Some(title.id.clone()),
+            client_id,
+            client_type,
+            client_name: Some("Primary".to_string()),
+            client_item_id,
+            release_title: release(suffix),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+            skip_reacquire: false,
+        }
+    };
+    let submission_for = |suffix: &str| {
+        let download_submissions = download_submissions.clone();
+        let release_title = release(suffix);
+        async move {
+            download_submissions
+                .store
+                .lock()
+                .await
+                .iter()
+                .find(|submission| {
+                    submission.source_title.as_deref() == Some(release_title.as_str())
+                })
+                .cloned()
+                .expect("the cursor recorded the grab")
+        }
+    };
+
+    // 1. The first grab fails: blocklisted, scope re-opened, coverage untouched.
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        fail(
+            "primary".into(),
+            "nzbget".into(),
+            "first-job".into(),
+            "FIRST",
+        ),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    assert_eq!(wanted_now().await.status, AcquisitionScopeStatus::Wanted);
+    assert_eq!(
+        coverage.recorded().await,
+        covered_before,
+        "a failure never prunes coverage"
+    );
+    // The client no longer lists the failed job (the failure was processed).
+    download_client.queue_items.lock().await.clear();
+
+    // 2. The cursor grabs the next saved result and queries nothing.
+    app.run_convergence_cycle_once().await;
+    assert!(
+        indexer_client.requested_indexer_id_sets().await.is_empty(),
+        "no indexer query while saved results remain"
+    );
+    let after_first = wanted_now().await;
+    assert_eq!(
+        after_first.status,
+        AcquisitionScopeStatus::Grabbed,
+        "the cursor walked to the next saved result: {:?}",
+        pending_releases
+            .store
+            .lock()
+            .await
+            .iter()
+            .map(|row| (row.release_title.clone(), row.status))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        after_first
+            .grabbed_release
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&release("SECOND")),
+        "{:?}",
+        after_first.grabbed_release
+    );
+    assert_eq!(
+        status_of("SECOND").await,
+        Some(PendingReleaseStatus::Grabbed)
+    );
+    assert_eq!(
+        status_of("THIRD").await,
+        Some(PendingReleaseStatus::Standby),
+        "the rest of the list survives the grab"
+    );
+
+    // 3. That one fails too: the walk continues down the same list.
+    let second = submission_for("SECOND").await;
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        fail(
+            second.download_client_id.clone().unwrap_or_default(),
+            second.download_client_type.clone(),
+            second.download_client_item_id.clone(),
+            "SECOND",
+        ),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    download_client.queue_items.lock().await.clear();
+    app.run_convergence_cycle_once().await;
+    assert!(indexer_client.requested_indexer_id_sets().await.is_empty());
+    let after_second = wanted_now().await;
+    assert_eq!(after_second.status, AcquisitionScopeStatus::Grabbed);
+    assert!(
+        after_second
+            .grabbed_release
+            .as_deref()
+            .unwrap_or_default()
+            .contains(&release("THIRD"))
+    );
+    assert_eq!(
+        status_of("THIRD").await,
+        Some(PendingReleaseStatus::Grabbed)
+    );
+
+    // 4. The last one fails: nothing saved remains, the scope stays converged
+    //    under its untouched coverage, and still nothing was queried.
+    let third = submission_for("THIRD").await;
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        fail(
+            third.download_client_id.clone().unwrap_or_default(),
+            third.download_client_type.clone(),
+            third.download_client_item_id.clone(),
+            "THIRD",
+        ),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    download_client.queue_items.lock().await.clear();
+    app.run_convergence_cycle_once().await;
+    assert!(
+        indexer_client.requested_indexer_id_sets().await.is_empty(),
+        "an exhausted list leaves the scope converged; no re-search"
+    );
+    assert_eq!(wanted_now().await.status, AcquisitionScopeStatus::Wanted);
+    assert!(
+        pending_releases
+            .list_all_standby_pending_releases()
+            .await
+            .expect("list standby")
+            .is_empty()
+    );
+    assert_eq!(coverage.recorded().await, covered_before);
+}
+
+/// Everything the search ranked below the grabbed release is saved — the whole
+/// list, not a capped handful — so a failure can walk as far down as it needs.
+#[tokio::test]
+async fn a_grab_saves_every_remaining_eligible_search_result() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let titles: Vec<String> = (1..=8)
+        .map(|index| format!("Saved.Everything.Fixture.2024.1080p.WEB-DL-G{index}"))
+        .collect();
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(
+        titles.iter().map(String::as_str).collect(),
+    ));
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases.clone(),
+        wanted_items.clone(),
+        indexer_client,
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Saved Everything Fixture".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some("movie".to_string()),
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: None,
+        status: AcquisitionScopeStatus::Wanted,
+        grabbed_release: None,
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed fileless wanted movie");
+
+    app.run_convergence_cycle_once().await;
+
+    let updated = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted.id)
+        .await
+        .expect("load wanted")
+        .expect("wanted exists");
+    assert_eq!(updated.status, AcquisitionScopeStatus::Grabbed);
+    let saved: Vec<String> = pending_releases
+        .store
+        .lock()
+        .await
+        .iter()
+        .filter(|row| {
+            row.wanted_item_id == wanted.id && row.status == PendingReleaseStatus::Standby
+        })
+        .map(|row| row.release_title.clone())
+        .collect();
+    assert_eq!(
+        saved.len(),
+        titles.len() - 1,
+        "every runner-up is saved, not a capped handful: {saved:?}"
     );
 }
 

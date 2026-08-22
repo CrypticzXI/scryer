@@ -99,7 +99,6 @@ async fn reject_import(
         app,
         crate::domain_events::DomainEventActor::system(),
         title,
-        completed,
         &completed.name,
         std::path::Path::new("/downloads/rejected-import/video.mkv"),
         crate::post_download_gate::BlocklistAttribution::default(),
@@ -115,7 +114,7 @@ async fn reject_import(
 }
 
 #[tokio::test]
-async fn rejected_import_prunes_only_the_attributed_indexer_coverage() {
+async fn rejected_import_keeps_coverage_and_reopens_for_the_saved_results_walk() {
     let (app, title, wanted, download_submissions, wanted_items, coverage, completed) =
         rejection_fixture().await;
     let collection_id = "import-rejection-pack";
@@ -150,16 +149,19 @@ async fn rejected_import_prunes_only_the_attributed_indexer_coverage() {
 
     reject_import(&app, &title, &completed).await;
 
+    // A burned import never touches coverage: the scope is re-opened under its
+    // existing coverage and the cursor walks the saved search results instead
+    // of re-querying the indexer.
     let scope_key = format!("title:{}", title.id);
-    assert_eq!(
-        coverage.indexers_for_scope(&scope_key).await,
-        vec!["indexer-b".to_string()]
-    );
-    assert_eq!(
-        coverage.indexers_for_scope(&pack_scope_key).await,
-        vec!["indexer-b".to_string()],
-        "a rejected season pack invalidates its own coverage key as well as the retried item"
-    );
+    for key in [&scope_key, &pack_scope_key] {
+        let mut covered = coverage.indexers_for_scope(key).await;
+        covered.sort();
+        assert_eq!(
+            covered,
+            vec!["indexer-a".to_string(), "indexer-b".to_string()],
+            "coverage for {key} must survive the rejection"
+        );
+    }
     assert_eq!(
         wanted_items
             .get_acquisition_scope_state_by_id(&wanted.id)
@@ -182,14 +184,19 @@ async fn rejected_import_prunes_only_the_attributed_indexer_coverage() {
 }
 
 #[tokio::test]
-async fn rejected_import_without_submission_prunes_all_scope_coverage() {
+async fn rejected_import_without_submission_keeps_scope_coverage() {
     let (app, title, wanted, _download_submissions, wanted_items, coverage, completed) =
         rejection_fixture().await;
 
     reject_import(&app, &title, &completed).await;
 
     let scope_key = format!("title:{}", title.id);
-    assert!(coverage.indexers_for_scope(&scope_key).await.is_empty());
+    // Even without an attributable submission the coverage stays: a failure
+    // is never a reason to re-query an indexer.
+    assert!(
+        !coverage.indexers_for_scope(&scope_key).await.is_empty(),
+        "coverage survives an unattributed rejection"
+    );
     assert_eq!(
         wanted_items
             .get_acquisition_scope_state_by_id(&wanted.id)

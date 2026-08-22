@@ -198,7 +198,7 @@ async fn import_series_download(
         }
     }
 
-    blocklist_ledger.finalize(app, actor, title, completed).await;
+    blocklist_ledger.finalize(app, actor, title).await;
 
     if imported_count > 0 {
         persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
@@ -442,13 +442,7 @@ impl DownloadBlocklistLedger {
     }
 
     /// Write the single entry this download earned, if any.
-    async fn finalize(
-        self,
-        app: &AppUseCase,
-        actor: &User,
-        title: &scryer_domain::Title,
-        completed: &CompletedDownload,
-    ) {
+    async fn finalize(self, app: &AppUseCase, actor: &User, title: &scryer_domain::Title) {
         let Some(write) = self.planned_write() else {
             return;
         };
@@ -457,7 +451,6 @@ impl DownloadBlocklistLedger {
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 write.release_title,
                 write.source_path,
                 write.attribution,

@@ -631,10 +631,9 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
                     .grabbed_pending_release_id
                     .as_deref()
                     .is_none_or(|pending_release_id| release.id != pending_release_id);
-            let should_supersede = matches!(
-                release.status,
-                PendingReleaseStatus::Waiting | PendingReleaseStatus::Standby
-            );
+            // Mirrors `commit_successful_grab_tx`: only delay-waiting siblings
+            // are superseded; saved search results stay for the failure walk.
+            let should_supersede = matches!(release.status, PendingReleaseStatus::Waiting);
             if is_sibling && should_supersede {
                 release.status = PendingReleaseStatus::Superseded;
             }

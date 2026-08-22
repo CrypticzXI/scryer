@@ -1257,7 +1257,8 @@ fn inside_the_overhead_band_the_size_term_matches_the_grab() {
     )
     .release_score;
     for permille in (850..=1000).step_by(5) {
-        let landed = announced / 1000 * permille;
+        // Round up so the 850‰ edge lands on the band, not one byte below it.
+        let landed = ((announced as f64) * (permille as f64 / 1000.0)).ceil() as i64;
         let import = score_release(
             &ReleaseEvidence::announced(
                 parsed.clone(),
@@ -1274,7 +1275,7 @@ fn inside_the_overhead_band_the_size_term_matches_the_grab() {
 
     // Load-bearing: below the band the landed bytes are the basis, and that
     // moves the number.
-    let short = announced / 1000 * 800;
+    let short = ((announced as f64) * 0.8) as i64;
     let landed_basis = score_release(
         &ReleaseEvidence::announced(
             parsed.clone(),

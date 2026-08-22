@@ -1,6 +1,3 @@
-const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
-const STANDBY_RETENTION_HOURS: i64 = 24;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadRouteKey {
     pub source_kind: Option<DownloadSourceKind>,

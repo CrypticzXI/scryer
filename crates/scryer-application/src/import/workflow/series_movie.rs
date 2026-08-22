@@ -102,7 +102,6 @@ async fn carry_out_import_rejection(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 release_title,
                 source_video,
                 crate::post_download_gate::BlocklistAttribution {

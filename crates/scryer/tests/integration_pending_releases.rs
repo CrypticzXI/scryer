@@ -495,7 +495,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
 }
 
 #[tokio::test]
-async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab() {
+async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_results() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
@@ -605,7 +605,9 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
             .unwrap()
             .unwrap()
             .status,
-        PendingReleaseStatus::Superseded
+        // A saved search result survives a sibling grab: it is the fallback if
+        // that grab fails, so only the waiting sibling is superseded.
+        PendingReleaseStatus::Standby
     );
 }
 

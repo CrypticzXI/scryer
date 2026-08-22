@@ -70,9 +70,10 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
 ) {
     prune_standby_candidates(app).await;
 
-    // Failed downloads first: each failure re-opens its scope after invalidating
-    // the failed indexer's coverage (or all coverage when unknown), so this
-    // cycle's derivation already sees it as searchable.
+    // Failed downloads first: each failure blocklists its release and re-opens
+    // its scope under the existing coverage, so this cycle's derivation already
+    // sees it — and the scope's saved search results are tried below before
+    // any indexer is queried.
     let dl_snapshot = DownloadClientSnapshot::fetch(app).await;
     check_grabbed_for_failures(app, &dl_snapshot).await;
 
@@ -431,6 +432,34 @@ async fn process_single_target(
             "skipping search — download for this wanted item is already active or completed"
         );
         return Ok(());
+    }
+
+    // Saved search results first: a failure never costs an indexer query. A
+    // `wanted` scope that still holds ranked results from its last search —
+    // the remainder after a grab that later failed — walks them in order,
+    // re-judged against the blocklist, the swarm and admission. Only an
+    // exhausted list (or a scope that never saved one) reaches the convergence
+    // gate below.
+    if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
+        match try_saved_candidates(app, item, None, dl_snapshot, now).await {
+            StandbyRecoveryOutcome::Recovered => {
+                info!(
+                    title = title.name.as_str(),
+                    scope_key = target.scope_key.as_str(),
+                    "grabbed the next saved search result; no indexer query spent"
+                );
+                return Ok(());
+            }
+            StandbyRecoveryOutcome::Deferred => {
+                info!(
+                    title = title.name.as_str(),
+                    scope_key = target.scope_key.as_str(),
+                    "saved search result kept pending until the download client recovers"
+                );
+                return Ok(());
+            }
+            StandbyRecoveryOutcome::Exhausted => {}
+        }
     }
 
     let search_title = app

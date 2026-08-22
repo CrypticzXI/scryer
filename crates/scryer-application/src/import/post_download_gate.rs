@@ -5,9 +5,9 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, DownloadSourceIdentity, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
-    acquisition::convergence::{CoverageReopen, convergence_scope_key},
-    normalize_release_attempt_hint, normalize_release_attempt_title,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
+    acquisition::convergence::CoverageReopen, normalize_release_attempt_hint,
+    normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -1546,7 +1546,6 @@ pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
-    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1562,7 +1561,6 @@ pub(crate) async fn reject_source_file_before_import(
         app,
         actor,
         title,
-        completed,
         completed_name,
         path,
         attribution,
@@ -1580,7 +1578,6 @@ async fn finalize_import_rejection(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
-    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1615,43 +1612,11 @@ async fn finalize_import_rejection(
     ));
     blocklist_release_for_title(app, title, completed_name, reason.clone(), attribution).await;
 
-    // Invalidate the source indexer's convergence coverage (or the whole scope
-    // when the grab cannot be attributed) only *after* the blocklist row exists,
-    // then re-open the refused scopes so the cursor seeks a different candidate
-    // from that indexer rather than re-grabbing the burned release.
-    let coverage = match app
-        .services
-        .workflow
-        .download_submissions
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            Some(completed.client_id.as_str()),
-            &completed.client_type,
-            &completed.download_client_item_id,
-        ))
-        .await
-    {
-        Ok(Some(submission)) => {
-            let indexer_id = submission.source_provider_id.clone();
-            if let Some(scope_key) = convergence_scope_key(&submission.scope, &title.id) {
-                app.prune_scope_key_coverage(&scope_key, indexer_id.as_deref())
-                    .await;
-            }
-            indexer_id
-                .map(CoverageReopen::Indexer)
-                .unwrap_or(CoverageReopen::All)
-        }
-        Ok(None) => CoverageReopen::All,
-        Err(error) => {
-            warn!(
-                error = %error,
-                client_id = %completed.client_id,
-                client_type = %completed.client_type,
-                download_client_item_id = %completed.download_client_item_id,
-                "failed to resolve indexer for rejected import coverage invalidation"
-            );
-            CoverageReopen::All
-        }
-    };
+    // Re-open the refused scopes under their existing coverage: the cursor
+    // walks each scope's saved search results before it would spend an indexer
+    // query (the burned release is excluded by the blocklist row written above),
+    // and a scope whose saved results are exhausted stays converged.
+    let coverage = CoverageReopen::Keep;
     match reopen_episode_ids {
         // A pack reopens only the members that were refused; the row written
         // above is still attributed to every member the download covered.

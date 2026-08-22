@@ -442,10 +442,13 @@ pub(crate) struct ScopeConvergence {
 /// resets only the state row, retaining deliberately-valid coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CoverageReopen {
-    #[allow(dead_code)] // Retained for state-reset-only convergence policy tests.
+    /// Reset the scope's state row only. Every failure path uses this: the
+    /// scope's saved search results are tried before any indexer is queried,
+    /// and a scope whose results are exhausted stays converged.
     Keep,
+    /// Forget every indexer's coverage for the scope (operator triggers:
+    /// search-again, queue replacement, search-monitored).
     All,
-    Indexer(String),
 }
 
 /// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
@@ -706,10 +709,6 @@ impl AppUseCase {
             match coverage {
                 CoverageReopen::Keep => {}
                 CoverageReopen::All => self.prune_scope_key_coverage(&scope_key, None).await,
-                CoverageReopen::Indexer(indexer_id) => {
-                    self.prune_scope_key_coverage(&scope_key, Some(&indexer_id))
-                        .await;
-                }
             }
         }
         self.runtime.acquisition.acquisition_wake.notify_one();

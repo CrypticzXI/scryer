@@ -27,7 +27,8 @@
 //!    same canonical bar.
 //! 2. Score the landed evidence **once**, before the occupancy branch: the truth
 //!    verdict is a fact about the release, not about the scope.
-//! 3. Apply the verdict, unless an operator asked for this import by hand.
+//! 3. Apply the verdict under the submission origin's guard policy, unless an
+//!    explicit manual import asked for the bypass.
 //! 4. Run [`crate::admission::evaluate_admission`] — the same comparator the
 //!    grab used, under the import policy (ties accepted, no floor, no churn
 //!    threshold; invariant I4).
@@ -41,9 +42,9 @@
 //! evidence *and* on the release name is the profile refusing the release, which
 //! is a grab-side decision; Sonarr has no import-time allow-list gate at all and
 //! neither does this. Only [`crate::canonical_scoring::TruthVerdict`] speaks
-//! here, and it distinguishes the release lying (`Blocked` → burn it) from the
-//! profile refusing an undisclosed property of the file (`Vetoed` → hold it).
-//! A file whose vetoes fired on both passes imports with its honest bar.
+//! here. Automatic lanes burn guard failures so convergence can find another
+//! release; operator-queued lanes hold them for manual import. A file whose
+//! vetoes fired on both passes imports with its honest bar.
 //!
 //! **A tie.** Import is never stricter than grab on the same facts (I4): the
 //! bytes are already on disk, and discarding a file that merely matches the

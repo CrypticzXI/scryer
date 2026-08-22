@@ -84,7 +84,6 @@ pub async fn process_failed(app: &AppUseCase, td: &mut TrackedDownload) {
             remove_from_client_if_configured: false,
             skip_reacquire: td.skip_reacquire_on_failure,
         },
-        None,
     )
     .await;
     if td.skip_reacquire_on_failure

@@ -191,7 +191,7 @@ pub async fn commit_successful_grab_tx(
                      SET status = 'superseded'
                      WHERE wanted_item_id = {}
                        AND id != {}
-                       AND status IN ('waiting', 'standby')",
+                       AND status = 'waiting'",
                     &[
                         SqlArg::Text(wanted_item_id.clone()),
                         SqlArg::Text(except_id.to_string()),
@@ -205,7 +205,7 @@ pub async fn commit_successful_grab_tx(
                     "UPDATE pending_releases
                      SET status = 'superseded'
                      WHERE wanted_item_id = {}
-                       AND status IN ('waiting', 'standby')",
+                       AND status = 'waiting'",
                     &[SqlArg::Text(wanted_item_id.clone())],
                 )
                 .await?;

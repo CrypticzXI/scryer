@@ -327,10 +327,12 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             .clone(),
         vec!["Standby.Release.1080p.WEB-DL".to_string()]
     );
+    let mut covered = coverage.indexers_for_scope(&scope_key).await;
+    covered.sort();
     assert_eq!(
-        coverage.indexers_for_scope(&scope_key).await,
-        vec!["indexer-b".to_string()],
-        "standby recovery re-opens only the failed indexer for a fresh search"
+        covered,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "a failure never touches coverage: the saved results were walked instead of re-searching"
     );
 }
 
@@ -449,7 +451,6 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
             remove_from_client_if_configured: false,
             skip_reacquire: true,
         },
-        None,
     )
     .await;
     assert_eq!(
@@ -636,6 +637,26 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         scryer_domain::TrackedDownloadState::Failed
     );
 
+    // The failure itself only blocklists and re-opens: the saved result is
+    // still there, untouched, and the scope is `wanted` under its coverage.
+    let reopened = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted.id)
+        .await
+        .expect("load wanted")
+        .expect("wanted exists");
+    assert_eq!(reopened.status, AcquisitionScopeStatus::Wanted);
+    assert_eq!(
+        pending_releases
+            .list_all_standby_pending_releases()
+            .await
+            .expect("list standby")
+            .len(),
+        1
+    );
+
+    // The next cursor pass walks the saved results before any indexer query.
+    app.run_convergence_cycle_once().await;
+
     let updated = wanted_items
         .get_acquisition_scope_state_by_id(&wanted.id)
         .await
@@ -812,13 +833,12 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
 
     assert_eq!(
         outcome,
-        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedDeferred
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     assert_eq!(
         pending_releases
@@ -834,10 +854,26 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await
         .expect("load wanted")
         .expect("wanted exists");
-    // A submit-unavailable failure defers to the standby recovery
-    // rather than re-opening — the grabbed state row is untouched (no reopen,
-    // no reschedule) while the standby is preserved for the retry.
-    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Grabbed);
+    // The failure re-opens the scope under its coverage and leaves the saved
+    // result for the cursor; with the download client unavailable the cursor
+    // keeps it pending rather than expiring it.
+    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Wanted);
+    app.run_convergence_cycle_once().await;
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&standby_id)
+            .await
+            .expect("load standby")
+            .expect("standby exists")
+            .status,
+        PendingReleaseStatus::Standby
+    );
+    let updated_wanted = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted.id)
+        .await
+        .expect("load wanted")
+        .expect("wanted exists");
+    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Wanted);
     assert!(
         !download_submissions
             .store
@@ -959,12 +995,11 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
     assert_eq!(
         first,
-        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     let reopened = wanted_items
         .get_acquisition_scope_state_by_id(&wanted_id)
@@ -972,10 +1007,12 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .expect("get reopened wanted item")
         .expect("reopened wanted item exists");
     assert_eq!(reopened.status, AcquisitionScopeStatus::Wanted);
+    let mut covered = coverage.indexers_for_scope(&scope_key).await;
+    covered.sort();
     assert_eq!(
-        coverage.indexers_for_scope(&scope_key).await,
-        vec!["indexer-b".to_string()],
-        "exhausted standby recovery invalidates only the failed indexer"
+        covered,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "a failure never touches coverage"
     );
     let blocklist_before_duplicate = app
         .services
@@ -1004,7 +1041,6 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
     assert_eq!(
@@ -1172,7 +1208,6 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
             remove_from_client_if_configured: false,
             skip_reacquire: true,
         },
-        None,
     )
     .await;
 
@@ -1281,7 +1316,6 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
     assert_ne!(
@@ -1303,7 +1337,6 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
     assert_eq!(
@@ -1761,18 +1794,19 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
     assert_eq!(
         first,
-        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     for scope_key in &coverage_scope_keys {
+        let mut covered = coverage.indexers_for_scope(scope_key).await;
+        covered.sort();
         assert_eq!(
-            coverage.indexers_for_scope(scope_key).await,
-            vec!["indexer-b".to_string()],
-            "only the failed pack indexer's coverage is invalidated for {scope_key}"
+            covered,
+            vec!["indexer-a".to_string(), "indexer-b".to_string()],
+            "a failed pack never touches coverage for {scope_key}"
         );
     }
 
@@ -3390,13 +3424,12 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             remove_from_client_if_configured: false,
             skip_reacquire: false,
         },
-        None,
     )
     .await;
 
     assert_eq!(
         outcome,
-        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
 
     let blocklist = app
@@ -6776,7 +6809,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
 }
 
 #[tokio::test]
-async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_scan() {
+async fn acquisition_cycle_keeps_an_old_saved_result_for_an_in_flight_grab() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -6820,8 +6853,15 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: None,
-        status: AcquisitionScopeStatus::Wanted,
-        grabbed_release: None,
+        status: AcquisitionScopeStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": "Prune.During.Scan.2024.1080p.WEB-DL",
+                "score": 100,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
         landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
@@ -6877,12 +6917,20 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
     )
     .await;
 
-    assert!(
-        pending_releases
-            .list_all_standby_pending_releases()
-            .await
-            .expect("list standby")
-            .is_empty()
+    // Saved results have no age limit: the 30-hour-old row is still the
+    // in-flight grab's next candidate, untouched by the cycle's pruning pass.
+    let row = pending_releases
+        .store
+        .lock()
+        .await
+        .iter()
+        .find(|release| release.release_title == "Stale.Standby.Release")
+        .cloned()
+        .expect("the old saved result is still there");
+    assert_eq!(
+        row.status,
+        PendingReleaseStatus::Standby,
+        "an old saved result is never aged out"
     );
 }
 
@@ -7059,7 +7107,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
 }
 
 #[tokio::test]
-async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
+async fn acquisition_cycle_drops_saved_results_of_a_completed_scope() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -7103,7 +7151,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         episode_number: None,
         media_type: "movie".to_string(),
         last_search_at: None,
-        status: AcquisitionScopeStatus::Wanted,
+        status: AcquisitionScopeStatus::Completed,
         grabbed_release: None,
         landed_bar: None,
         latest_release_decision: None,
