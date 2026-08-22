@@ -1698,12 +1698,10 @@ mod pack_blocklist_ledger_tests {
         assert!(DownloadBlocklistLedger::default().planned_write().is_none());
     }
 
-    /// **Final review B1.** A user/system rule veto raised by the probe gate is
-    /// operator policy on the file, not the release lying: held, never burned —
-    /// the gate half of the promise `classify_truth`'s `Vetoed` verdict keeps
-    /// for the scorer half. Bytes that are not what was claimed still burn.
+    /// A user/system rule veto raised by the probe gate is an import failure:
+    /// the release is burned so convergence can try another result.
     #[test]
-    fn a_probe_gate_rule_veto_is_held_not_blocklisted() {
+    fn a_probe_gate_rule_veto_is_blocklisted() {
         let rule_veto = crate::post_download_gate::ImportedFileRejection {
             message: "operator rule refused the file".to_string(),
             recycle_reason: "post_download_rule_blocked",
@@ -1712,7 +1710,7 @@ mod pack_blocklist_ledger_tests {
         };
         assert_eq!(
             crate::import_decide::prepare_rejection_disposition(&rule_veto),
-            crate::import_decide::RejectionDisposition::Hold
+            crate::import_decide::RejectionDisposition::Blocklist
         );
 
         let corrupt = crate::post_download_gate::ImportedFileRejection {

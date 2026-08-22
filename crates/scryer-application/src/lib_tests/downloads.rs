@@ -7546,13 +7546,11 @@ async fn a_release_that_lied_about_its_quality_is_blocklisted_and_the_scope_reop
     assert_eq!(primaries[0].id, incumbent_id);
 }
 
-/// **`Hold`.** A file rule the operator wrote vetoes the file over something the
-/// release name never disclosed — the rule can only see `input.file.*` on the
-/// analyzed pass, so it is structurally analyzed-only. Nothing about the release
-/// was a lie, so nothing is burned and the scope is left alone: the next release
-/// would land in exactly the same place.
+/// A file rule the operator wrote vetoes the file over something the release name
+/// never disclosed. That is an import failure, so burn this release and reopen
+/// the scope to try another candidate.
 #[tokio::test]
-async fn a_file_the_profile_vetoes_over_an_undisclosed_property_is_held() {
+async fn a_file_the_profile_vetoes_over_an_undisclosed_property_is_blocklisted() {
     let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
     let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
 
@@ -7603,18 +7601,20 @@ score_entry["operator_refuses_this_file"] := -10000 if {
 
     assert_eq!(
         result.decision,
-        scryer_domain::ImportDecision::Skipped,
+        scryer_domain::ImportDecision::Rejected,
         "{result:?}"
     );
+    assert!(result.release_burned, "{result:?}");
+    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
     assert!(
-        fixture.blocklisted_titles().await.is_empty(),
-        "an undisclosed veto is the profile refusing the file, not the release lying: {:?}",
+        fixture.blocklisted_titles().await.contains(&expected),
+        "an undisclosed veto must burn this release: {:?}",
         fixture.blocklisted_titles().await
     );
     assert_eq!(
         fixture.scope_status().await,
-        AcquisitionScopeStatus::Grabbed,
-        "a hold must not reopen the scope; the next release would be vetoed identically"
+        AcquisitionScopeStatus::Wanted,
+        "a burned veto must reopen the scope so convergence can try another release"
     );
     assert!(
         primary_movie_files(&fixture).await.is_empty(),

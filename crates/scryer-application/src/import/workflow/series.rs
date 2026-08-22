@@ -37,7 +37,7 @@ fn facet_for_completed_download(completed: &CompletedDownload) -> Option<MediaFa
         _ => None,
     }
 }
-fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
+pub(crate) fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
     match value
         .map(str::trim)
         .filter(|value| !value.is_empty())

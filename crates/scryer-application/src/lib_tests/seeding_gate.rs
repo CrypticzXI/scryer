@@ -349,6 +349,57 @@ async fn a_failed_torrent_is_removed_immediately_so_blocklisting_never_waits_on_
     );
 }
 
+#[tokio::test]
+async fn a_timed_out_downloading_warning_uses_client_failure_cleanup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Timed Out Downloading Warning",
+        "torrent-warning-downloading",
+        Some(persisted_goals(false)),
+    )
+    .await;
+    tracked.state = TrackedDownloadState::Downloading;
+    tracked.client_item.state = DownloadQueueState::Warning;
+    tracked.client_item.attention_reason = Some("disk full".to_string());
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+    let now = chrono::Utc::now();
+
+    assert!(!tracker.fail_persistent_warning(&id, now));
+    assert!(tracker.fail_persistent_warning(
+        &id,
+        now + crate::tracked_downloads::TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+    ));
+    let mut timed_out = tracker.find(&id).expect("timed-out download").clone();
+    assert_eq!(timed_out.state, TrackedDownloadState::FailedPending);
+    assert!(!timed_out.burned_by_import_gate);
+
+    // The background failure worker publishes this terminal state; a payload
+    // that never completed does not owe a seeding obligation.
+    timed_out.state = TrackedDownloadState::Failed;
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &timed_out,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(timed_out.client_id.clone()),
+            None,
+            "torrent-warning-downloading".to_string(),
+            true,
+            false,
+        )]
+    );
+}
+
 /// The other half of Sonarr's failed-download rule: once the client itself says
 /// the torrent is free to go, the data goes with the entry.
 #[tokio::test]
@@ -596,6 +647,84 @@ async fn a_burned_torrent_failure_holds_until_its_seed_goal_is_met() {
 
     assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
     assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_timed_out_completed_torrent_warning_stays_in_the_seeding_gate() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Timed Out Completed Warning",
+        "torrent-warning-completed",
+        Some(persisted_goals(false)),
+    )
+    .await;
+    tracked.state = TrackedDownloadState::ImportPending;
+    tracked.client_item.state = DownloadQueueState::Warning;
+    tracked.client_item.attention_reason = Some("files are missing".to_string());
+    let id = tracked.id.clone();
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(tracked);
+    let now = chrono::Utc::now();
+
+    assert!(!tracker.fail_persistent_warning(&id, now));
+    assert!(tracker.fail_persistent_warning(
+        &id,
+        now + crate::tracked_downloads::TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+    ));
+    let mut timed_out = tracker.find(&id).expect("timed-out torrent").clone();
+    assert_eq!(timed_out.state, TrackedDownloadState::FailedPending);
+    assert!(timed_out.burned_by_import_gate);
+
+    // The background failure worker publishes this terminal state. Unlike a
+    // never-completed download, its payload is retained until the seed goal.
+    timed_out.state = TrackedDownloadState::Failed;
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.7),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut timed_out,
+    );
+    let held = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &timed_out,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+    assert_eq!(held, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.4),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut timed_out,
+    );
+    let released = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &timed_out,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+    assert_eq!(released, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(timed_out.client_id.clone()),
+            None,
+            "torrent-warning-completed".to_string(),
+            true,
+            true,
+        )]
+    );
 }
 
 #[tokio::test]
@@ -1034,13 +1163,28 @@ async fn a_restarted_burned_torrent_stays_failed_while_held_for_seeding() {
     )
     .await;
 
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Failed,
+    )
+    .await;
+
     let held = tracker
         .find(&id)
         .expect("held burned torrent stays tracked");
     assert_eq!(held.state, TrackedDownloadState::Failed);
     assert!(held.burned_by_import_gate);
     assert_eq!(held.status, scryer_domain::TrackedDownloadStatus::Error);
-    assert_eq!(held.status_messages, vec![message.to_string()]);
+    assert_eq!(
+        held.status_messages,
+        vec![
+            message.to_string(),
+            "Kept in the download client until its seeding goal is met; the entry and its data are removed then."
+                .to_string(),
+        ]
+    );
     assert!(download_client.deleted_requests.lock().await.is_empty());
     assert_eq!(
         submissions

@@ -174,50 +174,80 @@ pub(super) async fn apply_import_result_with_completed(
         td.clear_no_video_import_retry();
         td.clear_import_execution_retry();
         if !crate::seeding_gate::client_type_is_torrent(app, &td.client_type) {
-            if let Some(completed) = completed {
-                let rejected_sources = vec![crate::stored_paths::stored_path_to_path_buf(
-                    &result.source_path,
-                )];
-                match crate::import_workflow::delete_burned_download_data(
+            let (library_id, resolved_facet) =
+                crate::import_workflow::cleanup_routing_scope_for_title_id(
                     app,
-                    completed,
-                    &rejected_sources,
+                    td.title_id.as_deref(),
                 )
-                .await
-                {
-                    crate::import_workflow::BurnedDataCleanupOutcome::DeletedDirectory(path) => {
-                        tracing::info!(
-                            path = %path.display(),
-                            "import: deleted burned Usenet download directory"
-                        );
+                .await;
+            let facet = resolved_facet
+                .or_else(|| crate::import_workflow::facet_from_tracked_label(td.facet.as_deref()));
+            let routing_key = if td.client_id.trim().is_empty() {
+                td.client_type.as_str()
+            } else {
+                td.client_id.as_str()
+            };
+            let should_remove = match facet.as_ref() {
+                Some(facet) => {
+                    app.should_remove_failed_download(library_id.as_deref(), facet, routing_key)
+                        .await
+                }
+                None => false,
+            };
+
+            if should_remove {
+                if let Some(completed) = completed {
+                    let rejected_sources = vec![crate::stored_paths::stored_path_to_path_buf(
+                        &result.source_path,
+                    )];
+                    match crate::import_workflow::delete_burned_download_data(
+                        app,
+                        completed,
+                        &rejected_sources,
+                    )
+                    .await
+                    {
+                        crate::import_workflow::BurnedDataCleanupOutcome::DeletedDirectory(
+                            path,
+                        ) => {
+                            tracing::info!(
+                                path = %path.display(),
+                                "import: deleted burned Usenet download directory"
+                            );
+                        }
+                        crate::import_workflow::BurnedDataCleanupOutcome::DeletedFiles(paths) => {
+                            tracing::info!(
+                                paths = ?paths,
+                                "import: deleted burned Usenet download source files"
+                            );
+                        }
+                        crate::import_workflow::BurnedDataCleanupOutcome::Skipped(reason) => {
+                            tracing::warn!(
+                                import_id = result.import_id.as_str(),
+                                job_dir = %completed.dest_dir,
+                                reason,
+                                "import: skipped burned Usenet download data cleanup"
+                            );
+                        }
+                        crate::import_workflow::BurnedDataCleanupOutcome::Failed(error) => {
+                            tracing::warn!(
+                                import_id = result.import_id.as_str(),
+                                job_dir = %completed.dest_dir,
+                                error = %error,
+                                "import: failed to clean up burned Usenet download data"
+                            );
+                        }
                     }
-                    crate::import_workflow::BurnedDataCleanupOutcome::DeletedFiles(paths) => {
-                        tracing::info!(
-                            paths = ?paths,
-                            "import: deleted burned Usenet download source files"
-                        );
-                    }
-                    crate::import_workflow::BurnedDataCleanupOutcome::Skipped(reason) => {
-                        tracing::warn!(
-                            import_id = result.import_id.as_str(),
-                            job_dir = %completed.dest_dir,
-                            reason,
-                            "import: skipped burned Usenet download data cleanup"
-                        );
-                    }
-                    crate::import_workflow::BurnedDataCleanupOutcome::Failed(error) => {
-                        tracing::warn!(
-                            import_id = result.import_id.as_str(),
-                            job_dir = %completed.dest_dir,
-                            error = %error,
-                            "import: failed to clean up burned Usenet download data"
-                        );
-                    }
+                } else {
+                    tracing::warn!(
+                        import_id = result.import_id.as_str(),
+                        "import: no completed download source available for burned data cleanup"
+                    );
                 }
             } else {
-                tracing::warn!(
-                    import_id = result.import_id.as_str(),
-                    "import: no completed download source available for burned data cleanup"
+                tracing::info!(
+                    client_id = routing_key,
+                    "Remove failed is off for this client; keeping the client's copy of the burned download"
                 );
             }
         }

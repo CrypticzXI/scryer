@@ -159,9 +159,9 @@ pub(crate) enum TruthVerdict {
     ///   the profile refusing the *file*, not the release lying. A codec-silent
     ///   name against a codec blocklist, HDR or Dolby Vision read out of
     ///   `video_hdr_format`, a file rule keyed on `input.file.*` — every one of
-    ///   those fires identically for the next codec-silent release, so burning
-    ///   this one walks the whole catalogue into the blocklist. That is
-    ///   [`TruthVerdict::Vetoed`], and it holds instead of burning.
+    ///   those fires identically for the next codec-silent release. That is
+    ///   [`TruthVerdict::Vetoed`], an import failure that blocklists this
+    ///   release and lets convergence test the next candidate.
     ///
     /// Never expressible as a number either way.
     Blocked { codes: Vec<String> },
@@ -169,11 +169,9 @@ pub(crate) enum TruthVerdict {
     ///
     /// Nothing here says the release misrepresented itself; the name was simply
     /// silent about a fact the probe supplies, and the profile refuses that
-    /// fact. So the import is held for the operator (`ImportBlocked`) rather
-    /// than rejected-and-reopened: there is no better candidate to seek, and a
-    /// blocklist entry would only remove one arbitrary release from a class the
-    /// grab side should be filtering. D18 keeps the held download counted as
-    /// queued, so an equal-or-worse replacement is not fetched behind it.
+    /// fact. The import is rejected-and-reopened: each burned release is
+    /// excluded from the next search, so convergence continues until one
+    /// imports successfully.
     Vetoed { codes: Vec<String> },
 }
 
@@ -523,8 +521,8 @@ const POLICY_ONLY_BLOCK_CODES: &[&str] = &["score_below_minimum", "upgrade_block
 /// Did the announcement *state* the fact this veto keys on?
 ///
 /// The difference between a release that lied and a file the profile refuses.
-/// Only the first earns a blocklist (design §9, "Truth verdicts"); the second is
-/// [`TruthVerdict::Vetoed`] and is held for the operator.
+/// Both are import failures: the latter is [`TruthVerdict::Vetoed`] and is
+/// blocklisted one candidate at a time.
 ///
 /// | code | assertable | why |
 /// |---|---|---|
@@ -532,9 +530,9 @@ const POLICY_ONLY_BLOCK_CODES: &[&str] = &["score_below_minimum", "upgrade_block
 /// | `size_implausible*_for_quality` | always | both passes score the *same* bytes, so this can only be introduced when the landed quality moved — which is the quality claim again, seen through the size band. |
 /// | `video_codec_*` | iff the parse carried a codec | `H.265` in the name against an H.264 stream is a lie; a codec-silent name is not a claim. |
 /// | `audio_codec_*` | iff the parse carried an audio codec | same rule. Note the gate only fires at all when `normalized_audio_codecs` is non-empty, which for a silent name means the probe populated it. |
-/// | `hdr_not_allowed`, `dolby_vision_*` | never | derived from `video_hdr_format`; a DV profile-5 encode with a silent name is ordinary, and a profile that forbids HDR would otherwise blocklist every untagged HDR release in the catalogue. |
-/// | user/system rule blocks | never | [`run_term_pipeline`] hands the rules engine a `FileDoc` on the analyzed pass only, so any rule reading `input.file.*` is structurally analyzed-only. Operator policy, not a misrepresentation. |
-/// | anything else | never | unreachable today (`source_*`, `bd_disk_not_allowed`, `required_audio_language_missing` key on fields the analyzed pass never rewrites). Defaulting an unrecognised code to "hold" is the safe direction: a new veto cannot start burning releases until someone decides it is a claim. |
+/// | `hdr_not_allowed`, `dolby_vision_*` | never | derived from `video_hdr_format`; a profile that forbids them has refused this file, so import burns this release and convergence tries the next candidate. |
+/// | user/system rule blocks | never | [`run_term_pipeline`] hands the rules engine a `FileDoc` on the analyzed pass only, so any rule reading `input.file.*` is structurally analyzed-only. Operator policy still makes this an import failure. |
+/// | anything else | never | unreachable today (`source_*`, `bd_disk_not_allowed`, `required_audio_language_missing` key on fields the analyzed pass never rewrites). An unrecognised veto is conservatively treated as an import failure. |
 fn veto_contradicts_an_assertion(code: &str, announced: &ParsedReleaseMetadata) -> bool {
     if code.starts_with("quality_") || code.starts_with("size_implausib") {
         return true;
@@ -584,7 +582,7 @@ fn veto_contradicts_an_assertion(code: &str, announced: &ParsedReleaseMetadata) 
 /// no name is obliged to carry) and for user/system file rules, which only see
 /// `input.file.*` on the analyzed pass by construction. None of those is the
 /// release misrepresenting itself; they are the profile refusing the file, which
-/// is [`TruthVerdict::Vetoed`] — a hold, not a burn. See
+/// is [`TruthVerdict::Vetoed`] — a burn followed by another convergence search. See
 /// [`veto_contradicts_an_assertion`] for the per-code table.
 fn classify_truth(
     announced_parsed: &ParsedReleaseMetadata,

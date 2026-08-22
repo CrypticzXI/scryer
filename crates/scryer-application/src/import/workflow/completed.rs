@@ -347,10 +347,10 @@ pub(crate) fn terminal_download_cleanup_is_complete(
             | TerminalDownloadCleanupOutcome::HandedOff
     )
 }
-async fn cleanup_routing_scope_for_title_id(
+pub(crate) async fn cleanup_routing_scope_for_title_id(
     app: &AppUseCase,
     title_id: Option<&str>,
-) -> CleanupRoutingScope {
+) -> (Option<String>, Option<MediaFacet>) {
     let Some(title_id) = title_id.map(str::trim).filter(|value| !value.is_empty()) else {
         return (None, None);
     };
@@ -501,6 +501,9 @@ async fn terminal_failure_origin_for_tracked(
     if state != TrackedDownloadState::Failed {
         return TerminalFailureOrigin::ClientFailure;
     }
+    if tracked.burned_by_import_gate {
+        return TerminalFailureOrigin::ImportGate;
+    }
 
     let identity = crate::tracked_downloads::observed_queue_item_identity(&tracked.client_item);
     if crate::download_submission_identity_is_empty(&identity) {
@@ -511,7 +514,7 @@ async fn terminal_failure_origin_for_tracked(
         &tracked.client_type,
         &tracked.client_item.download_client_item_id,
     );
-    let import_gate_rejection = app
+    let seeding_gate_failure = app
         .services
         .workflow
         .download_submissions
@@ -519,8 +522,14 @@ async fn terminal_failure_origin_for_tracked(
         .await
         .ok()
         .flatten()
-        .is_some_and(|reason| reason == "import_gate_rejected");
-    if import_gate_rejection {
+        .is_some_and(|reason| {
+            matches!(
+                reason.as_str(),
+                crate::tracked_downloads::IMPORT_GATE_REJECTED_TRACKED_STATE_REASON
+                    | crate::tracked_downloads::WARNING_TIMEOUT_TRACKED_STATE_REASON
+            )
+        });
+    if seeding_gate_failure {
         TerminalFailureOrigin::ImportGate
     } else {
         TerminalFailureOrigin::ClientFailure

@@ -151,8 +151,28 @@ async fn apply_result_treats_burned_rule_block_as_final() {
 
 #[tokio::test]
 async fn burned_usenet_rejection_deletes_the_mapped_job_directory() {
-    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let settings = Arc::new(super::route_gate::RoutingSettingsRepo::default());
+    settings
+        .set_routing(
+            "movie",
+            r#"{"client-1":{"enabled":true,"removeCompleted":true,"removeFailed":true}}"#,
+        )
+        .await;
+    let app = build_app_with_download_client_configs_submissions_and_settings(
+        vec![build_title("title-1", "Show", MediaFacet::Movie)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TestAppRepositories {
+            download_client: Arc::new(NullDownloadClient),
+            download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+            download_submissions: Arc::new(
+                crate::null_repositories::NullDownloadSubmissionRepository,
+            ),
+            settings,
+        },
+    );
+    let mut td = build_tracked_download("title-1", "movie", "Show.S01E01.1080p.WEB-DL");
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let job_dir = temp_dir.path().join("completed/job");
     let source = job_dir.join("release/episode.mkv");
@@ -173,6 +193,52 @@ async fn burned_usenet_rejection_deletes_the_mapped_job_directory() {
     );
     assert_eq!(td.state, TrackedDownloadState::Failed);
     assert!(!job_dir.exists());
+}
+
+#[tokio::test]
+async fn burned_usenet_rejection_keeps_data_when_remove_failed_is_off() {
+    let settings = Arc::new(super::route_gate::RoutingSettingsRepo::default());
+    settings
+        .set_routing(
+            "movie",
+            r#"{"client-1":{"enabled":true,"removeCompleted":true,"removeFailed":false}}"#,
+        )
+        .await;
+    let app = build_app_with_download_client_configs_submissions_and_settings(
+        vec![build_title("title-1", "Show", MediaFacet::Movie)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TestAppRepositories {
+            download_client: Arc::new(NullDownloadClient),
+            download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+            download_submissions: Arc::new(
+                crate::null_repositories::NullDownloadSubmissionRepository,
+            ),
+            settings,
+        },
+    );
+    let mut td = build_tracked_download("title-1", "movie", "Show.S01E01.1080p.WEB-DL");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let job_dir = temp_dir.path().join("completed/job");
+    let source = job_dir.join("release/episode.mkv");
+    std::fs::create_dir_all(source.parent().expect("source parent")).expect("create source");
+    std::fs::write(&source, b"video").expect("write source");
+    let completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        job_dir.to_string_lossy().as_ref(),
+        None,
+    );
+    let mut result = failed_execution_result("release language does not match the title");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+    result.source_path = source.to_string_lossy().into_owned();
+
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, result, 0, Some(&completed), None).await
+    );
+    assert_eq!(td.state, TrackedDownloadState::Failed);
+    assert!(job_dir.exists());
 }
 
 #[tokio::test]

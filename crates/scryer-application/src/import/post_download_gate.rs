@@ -1137,8 +1137,7 @@ pub(crate) const TRUTH_BLOCKED_CODE: &str = "truth_blocked";
 /// advertised.
 pub(crate) const TRUTH_QUALITY_DOWNGRADE_CODE: &str = "truth_quality_downgrade";
 /// Recycle reason for a file the profile vetoes over a property its release name
-/// never disclosed. Held for the operator, never blocklisted (design §9,
-/// "Truth verdicts").
+/// never disclosed. This is burned so convergence can seek another candidate.
 pub(crate) const TRUTH_VETOED_CODE: &str = "truth_vetoed";
 
 /// Prefix of the verdict code [`crate::canonical_scoring::score_release`] emits
@@ -1162,13 +1161,6 @@ pub(crate) enum TruthVerdictAction {
     /// Refuse it: recycle the bytes, blocklist the release for this title, and
     /// reopen the scope's search so it seeks a different candidate.
     Reject(ImportedFileRejection),
-    /// Refuse it, but blame the profile rather than the release: the file
-    /// violates a veto the announcement never disclosed
-    /// ([`crate::canonical_scoring::TruthVerdict::Vetoed`]). No blocklist and no
-    /// reopen — the next silent release would land in exactly the same place, so
-    /// burning this one buys nothing and reopening the scope only fetches
-    /// another one. The download is held for the operator.
-    Hold(ImportedFileRejection),
 }
 
 /// The `(announced, landed)` pair from a quality-contradiction code, if one is
@@ -1216,13 +1208,12 @@ fn landed_tier_is_worse(
 ///    (an honest 720p beats no episode) but must never be offered the same
 ///    release again as an upgrade.
 ///
-/// A third outcome refuses without blaming the release.
-/// [`crate::canonical_scoring::TruthVerdict::Vetoed`] — the probe surfaced a
-/// fact the name never stated (HDR, Dolby Vision, a codec on a silent name, a
-/// file rule reading `input.file.*`) and the profile forbids it — becomes
-/// [`TruthVerdictAction::Hold`]: no blocklist, no reopen. Burning the release
-/// would only make room for the next release with the same undisclosed
-/// property.
+/// A probe veto is an import failure. [`crate::canonical_scoring::TruthVerdict::Vetoed`]
+/// means the downloaded file carries something this quality profile refuses,
+/// even though the name did not state it. Blocklist the release and reopen the
+/// scope: the next search excludes the burned release, deliberately walking
+/// codec-silent releases into the blocklist one at a time until an import
+/// succeeds.
 ///
 /// A score-only `Contradicted` is deliberately **not** a blocklist: one size
 /// bucket of drift is the ordinary case for usenet (par2/RAR overhead, a short
@@ -1254,17 +1245,15 @@ pub(crate) fn resolve_truth_verdict_action(
             blocking_rule_codes: codes.clone(),
         }),
         // The profile refuses the file over something the name never claimed.
-        // Held, not burned — but a *proven* tier downgrade in the same verdict
-        // still outranks it: that half is a lie, and the release must not be
-        // offered back as an upgrade. The file is refused either way, so the
-        // unoccupied-scope "import it honestly" branch does not apply here.
+        // A proven tier downgrade still takes the dedicated path first; every
+        // other veto is burned so convergence can seek another candidate.
         TruthVerdict::Vetoed { codes } => {
             if let Some((announced, landed)) = quality_contradiction(codes)
                 && landed_tier_is_worse(criteria, announced, landed)
             {
                 return TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed));
             }
-            TruthVerdictAction::Hold(ImportedFileRejection {
+            TruthVerdictAction::Reject(ImportedFileRejection {
                 message: format!(
                     "the downloaded file carries something this quality profile refuses, which the release never advertised: {}",
                     if codes.is_empty() {

@@ -1219,27 +1219,6 @@ async fn import_movie_download(
                 )
                 .await;
             }
-            // A user/system rule veto on the file is operator policy, not a
-            // lie: held like the band miss, never burned
-            // (`import_decide::prepare_rejection_disposition`).
-            if crate::import_decide::prepare_rejection_disposition(&rejection)
-                == crate::import_decide::RejectionDisposition::Hold
-            {
-                return hold_replacement_for_manual_resolution(
-                    app,
-                    title,
-                    import_id,
-                    completed,
-                    release_evidence,
-                    &source_video,
-                    source_size,
-                    parsed.quality.clone(),
-                    rejection.recycle_reason,
-                    rejection.message.clone(),
-                    started_at,
-                )
-                .await;
-            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
@@ -2050,27 +2029,6 @@ async fn import_series_movie_download(
                     source_size,
                     parsed.quality.clone(),
                     crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE,
-                    rejection.message.clone(),
-                    started_at,
-                )
-                .await;
-            }
-            // A user/system rule veto on the file is operator policy, not a
-            // lie: held like the band miss, never burned
-            // (`import_decide::prepare_rejection_disposition`).
-            if crate::import_decide::prepare_rejection_disposition(&rejection)
-                == crate::import_decide::RejectionDisposition::Hold
-            {
-                return hold_replacement_for_manual_resolution(
-                    app,
-                    title,
-                    import_id,
-                    completed,
-                    release_evidence,
-                    &source_video,
-                    source_size,
-                    parsed.quality.clone(),
-                    rejection.recycle_reason,
                     rejection.message.clone(),
                     started_at,
                 )

@@ -1723,6 +1723,7 @@ async fn a_queued_releases_announced_size_is_part_of_its_score() {
     let subject =
         AdmissionSubject::new(AdmissionScope::Title, []).with_queued(vec![QueuedRelease {
             title: release.to_string(),
+            covers: Vec::new(),
             tier_index: queued_facts.tier_index,
             revision: queued_facts.revision,
             score: queued_facts.score,
@@ -1834,6 +1835,7 @@ async fn a_queued_release_the_profile_now_vetoes_still_holds_its_scope() {
     let subject =
         AdmissionSubject::new(AdmissionScope::Title, []).with_queued(vec![QueuedRelease {
             title: release.to_string(),
+            covers: Vec::new(),
             tier_index: facts.tier_index,
             revision: facts.revision,
             score: facts.score,

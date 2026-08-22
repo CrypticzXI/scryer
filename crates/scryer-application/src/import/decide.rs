@@ -235,12 +235,6 @@ pub(crate) async fn decide_import(
                     disposition: RejectionDisposition::Blocklist,
                 };
             }
-            crate::post_download_gate::TruthVerdictAction::Hold(rejection) => {
-                return ImportDecisionOutcome::Reject {
-                    rejection,
-                    disposition: RejectionDisposition::Hold,
-                };
-            }
         }
     }
 
@@ -412,17 +406,13 @@ pub(crate) fn disposition_for(
 /// user/system **rule** BLOCK at the gate is the same event `classify_truth`
 /// would classify as [`crate::canonical_scoring::TruthVerdict::Vetoed`] had
 /// the gate not fired first — operator policy on the file, not a
-/// misrepresentation — so it takes the same disposition, `Hold`. Burning it
-/// would walk every release for the title into the blocklist one codec-silent
-/// name at a time (design §9, "Truth verdicts"); the verdict test pins the
-/// scorer half of that promise, this pins the gate half.
+/// misrepresentation — it is still an import failure. The release is
+/// blocklisted and the scope reopens so the next search cannot retry it.
 pub(crate) fn prepare_rejection_disposition(
     rejection: &ImportedFileRejection,
 ) -> RejectionDisposition {
-    match rejection.skip_reason {
-        Some(ImportSkipReason::PostDownloadRuleBlocked) => RejectionDisposition::Hold,
-        _ => RejectionDisposition::Blocklist,
-    }
+    let _ = rejection;
+    RejectionDisposition::Blocklist
 }
 
 /// Translate a shared admission refusal into the import layer's rejection shape.

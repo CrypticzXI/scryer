@@ -350,9 +350,8 @@ async fn execute_resolved_episode_import(
             }
             // The probe refused the bytes outright. A corrupt container or a
             // source that changed under the import means the release is not
-            // what it claimed, so it is burned and the scope reopened; a
-            // user/system rule veto on the file is operator policy, not a lie,
-            // and is held instead (`prepare_rejection_disposition`).
+            // what it claimed, so it is burned and the scope reopened. A
+            // user/system rule veto on the file is also an import failure.
             let disposition = crate::import_decide::prepare_rejection_disposition(&rejection);
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,

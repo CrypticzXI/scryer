@@ -803,6 +803,13 @@ async fn process_tracked_download_snapshot(
             }
         }
 
+        if runtime.tracker.fail_persistent_warning(&id, Utc::now()) {
+            tracing::info!(
+                id = %id,
+                "tracked: client warning persisted for 24h; queueing failed-download handling"
+            );
+        }
+
         if let Some(td) = runtime.tracker.find_mut(&id)
             && matches!(
                 td.state,
@@ -2401,6 +2408,18 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
             // Keep the burned release visibly failed while its torrent remains
             // under the same seeding obligation as an imported download; it
             // deliberately records no seeding history while it is held.
+            const HELD_BURNED_TORRENT_MESSAGE: &str =
+                "Kept in the download client until its seeding goal is met; the entry and its data are removed then.";
+            if let Some(tracked) = tracker.find_mut(id)
+                && !tracked
+                    .status_messages
+                    .iter()
+                    .any(|message| message == HELD_BURNED_TORRENT_MESSAGE)
+            {
+                tracked
+                    .status_messages
+                    .push(HELD_BURNED_TORRENT_MESSAGE.to_string());
+            }
             return;
         }
         // Only the transition *into* the hold is history. A held torrent is

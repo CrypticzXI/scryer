@@ -701,6 +701,16 @@ impl AppUseCase {
                 );
                 Some(crate::admission::QueuedRelease {
                     title: release_title,
+                    covers: match &submission.scope {
+                        crate::SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+                        crate::SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+                        crate::SubmissionScope::Collection { .. } => {
+                            membership.episode_ids.to_vec()
+                        }
+                        crate::SubmissionScope::Title
+                        | crate::SubmissionScope::Orphan
+                        | crate::SubmissionScope::SeriesMovie { .. } => Vec::new(),
+                    },
                     tier_index: facts.tier_index,
                     revision: facts.revision,
                     score: facts.score,
