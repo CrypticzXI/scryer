@@ -8,7 +8,7 @@ use scryer_domain::{
 use scryer_plugin_sdk::ArchivePluginFormat;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
@@ -798,6 +798,7 @@ impl IndexerPluginProvider for MockPluginProvider {
 struct MockPluginDescriptorLoader {
     descriptors: StdArc<StdMutex<HashMap<Vec<u8>, scryer_plugin_sdk::PluginDescriptor>>>,
     load_calls: StdArc<AtomicUsize>,
+    block_on_current_runtime: AtomicBool,
 }
 
 impl MockPluginDescriptorLoader {
@@ -805,6 +806,7 @@ impl MockPluginDescriptorLoader {
         Self {
             descriptors: StdArc::new(StdMutex::new(HashMap::new())),
             load_calls: StdArc::new(AtomicUsize::new(0)),
+            block_on_current_runtime: AtomicBool::new(false),
         }
     }
 
@@ -818,6 +820,10 @@ impl MockPluginDescriptorLoader {
     fn load_count(&self) -> usize {
         self.load_calls.load(Ordering::Relaxed)
     }
+
+    fn block_on_current_runtime(&self) {
+        self.block_on_current_runtime.store(true, Ordering::Relaxed);
+    }
 }
 
 impl PluginDescriptorLoader for MockPluginDescriptorLoader {
@@ -826,6 +832,9 @@ impl PluginDescriptorLoader for MockPluginDescriptorLoader {
         wasm_bytes: &[u8],
     ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
         self.load_calls.fetch_add(1, Ordering::Relaxed);
+        if self.block_on_current_runtime.load(Ordering::Relaxed) {
+            tokio::runtime::Handle::current().block_on(std::future::ready(()));
+        }
         self.descriptors
             .lock()
             .expect("plugin descriptor loader lock")
@@ -4125,6 +4134,35 @@ async fn install_uploaded_plugin_accepts_raw_wasm_payload() {
             .load(Ordering::Relaxed),
         1,
     );
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_loads_descriptor_on_blocking_pool() {
+    let provider = MockPluginProvider::new().with_provider(
+        "manual-local",
+        "Manual Local",
+        Some("https://example.com"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
+    let descriptor =
+        make_runtime_plugin_load("manual-local-plugin", "indexer", "manual-local").descriptor;
+    h.plugin_descriptor_loader.register(&wasm_bytes, descriptor);
+    h.plugin_descriptor_loader.block_on_current_runtime();
+
+    let installation = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "manual-local-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(&wasm_bytes),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(installation.plugin_id, "manual-local-plugin");
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
 }
 
 #[tokio::test]
