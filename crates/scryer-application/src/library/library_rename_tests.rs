@@ -574,7 +574,7 @@ fn configured_title_folder_path_truncates_generated_folder_component() {
 #[cfg(not(windows))]
 #[test]
 fn configured_title_folder_path_preserves_long_component() {
-    let title_name = "Long ".repeat(100);
+    let title_name = format!("{}Long", "Long ".repeat(99));
     let title = test_movie_title(&title_name);
     let path = configured_title_folder_path("/library", &title, "{title}", None);
 

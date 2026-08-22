@@ -15,7 +15,8 @@ use scryer_application::{
     SeedGoalGrabRecord, SeedGoalRequest, SeedGoalResolver, SeedingProfileRepository,
     SettingsRepository, StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
     apply_remote_path_mappings_to_completed_download, apply_remote_path_mappings_to_status,
-    extract_magnet_info_hash, is_valid_magnet_uri, parse_download_client_remote_path_mappings,
+    extract_magnet_info_hash, is_valid_magnet_uri, normalize_torrent_info_hash,
+    parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
 use scryer_outbound_http::{
@@ -94,6 +95,31 @@ fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<S
             .collect::<String>();
         (!safe.trim().is_empty()).then_some(safe)
     })
+}
+
+fn hexadecimal_v1_magnet_info_hash(uri: &str) -> Option<String> {
+    extract_magnet_info_hash(uri)
+        .and_then(|hash| normalize_torrent_info_hash(Some(&hash)))
+        .filter(|hash| hash.len() == 40)
+}
+
+fn resolved_magnet_info_hash_hint(info_hash_hint: Option<String>, uri: &str) -> Option<String> {
+    hexadecimal_v1_magnet_info_hash(uri)
+        .or(info_hash_hint)
+        .or_else(|| extract_magnet_info_hash(uri))
+}
+
+fn preserves_v2_info_hash_hint(info_hash_hint: Option<&str>) -> bool {
+    normalize_torrent_info_hash(info_hash_hint).is_some_and(|hash| hash.len() == 64)
+}
+
+fn resolved_v1_info_hash(request: &DownloadClientAddRequest) -> Option<String> {
+    let info_hash_hint = match request.resolved_download_artifact.as_ref()? {
+        ResolvedDownloadArtifact::Magnet { info_hash_hint, .. }
+        | ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } => info_hash_hint.as_deref(),
+        ResolvedDownloadArtifact::Nzb { .. } => return None,
+    };
+    normalize_torrent_info_hash(info_hash_hint).filter(|hash| hash.len() == 40)
 }
 
 #[cfg(test)]
@@ -999,16 +1025,19 @@ impl PrioritizedDownloadClientRouter {
         }
         if is_valid_magnet_uri(download_url) {
             let uri = download_url.to_string();
+            let resolved_v1_info_hash = hexadecimal_v1_magnet_info_hash(&uri);
             let mut prepared = request.clone();
             prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: request
-                    .info_hash_hint
+                info_hash_hint: resolved_v1_info_hash
                     .clone()
+                    .or_else(|| request.info_hash_hint.clone())
                     .or_else(|| extract_magnet_info_hash(&uri)),
                 uri: uri.clone(),
             });
             prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
             prepared.source_hint = Some(uri);
+            prepared.info_hash_hint =
+                resolved_v1_info_hash.or_else(|| request.info_hash_hint.clone());
             return Ok(prepared);
         }
 
@@ -1687,7 +1716,7 @@ impl PrioritizedDownloadClientRouter {
         if final_url.is_some_and(is_valid_magnet_uri) {
             let uri = final_url.unwrap().trim().to_string();
             return Ok(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
+                info_hash_hint: resolved_magnet_info_hash_hint(info_hash_hint, &uri),
                 uri,
             });
         }
@@ -1696,7 +1725,7 @@ impl PrioritizedDownloadClientRouter {
             if is_valid_magnet_uri(trimmed) {
                 let uri = trimmed.to_string();
                 return Ok(ResolvedDownloadArtifact::Magnet {
-                    info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
+                    info_hash_hint: resolved_magnet_info_hash_hint(info_hash_hint, &uri),
                     uri,
                 });
             }
@@ -1741,7 +1770,11 @@ impl PrioritizedDownloadClientRouter {
                 bytes,
                 file_name,
                 content_type,
-                info_hash_hint: info_hash_hint.or(torrent_info_hash_v1),
+                info_hash_hint: if preserves_v2_info_hash_hint(info_hash_hint.as_deref()) {
+                    info_hash_hint
+                } else {
+                    torrent_info_hash_v1.or(info_hash_hint)
+                },
             });
         }
 
@@ -3006,7 +3039,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         job_id: result.job_id,
                         client_id: Some(config.id.clone()),
                         client_type: config.client_type.clone(),
-                        info_hash: result.info_hash,
+                        info_hash: result
+                            .info_hash
+                            .or_else(|| resolved_v1_info_hash(&effective_request)),
                     };
                     self.persist_seed_goals(
                         &effective_request,
@@ -4392,7 +4427,7 @@ mod tests {
         assert_eq!(prepared.source_kind, Some(DownloadSourceKind::TorrentFile));
         assert_eq!(
             prepared.info_hash_hint.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef01")
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
         );
 
         let derived = router
@@ -4410,6 +4445,18 @@ mod tests {
             Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
         );
 
+        let v2_hint = "ab".repeat(32);
+        let mut v2_request = test_add_request(
+            &format!("{}/download", server.uri()),
+            Some(DownloadSourceKind::TorrentFile),
+        );
+        v2_request.info_hash_hint = Some(v2_hint.clone());
+        let prepared = router
+            .prepare_download_request(&v2_request, None)
+            .await
+            .expect("HTTP torrent should preserve an explicit v2 hint");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(v2_hint.as_str()));
+
         let nzb_request = test_add_request(
             "http://127.0.0.1:1/release.nzb",
             Some(DownloadSourceKind::NzbUrl),
@@ -4420,6 +4467,56 @@ mod tests {
             .expect("direct NZB URLs must not be fetched by torrent normalization");
         assert_eq!(preserved.source_hint, nzb_request.source_hint);
         assert!(preserved.resolved_download_artifact.is_none());
+    }
+
+    #[tokio::test]
+    async fn hexadecimal_v1_magnets_override_stale_hints_across_resolution_paths() {
+        const STALE_HASH: &str = "abcdef0123456789abcdef0123456789abcdef01";
+        const CANONICAL_HASH: &str = "0123456789abcdef0123456789abcdef01234567";
+        const MAGNET: &str = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+
+        let router = no_client_router();
+        let mut request = test_add_request(MAGNET, Some(DownloadSourceKind::MagnetUri));
+        request.info_hash_hint = Some(STALE_HASH.to_string());
+
+        let direct = router
+            .prepare_download_request(&request, None)
+            .await
+            .expect("direct hexadecimal btih magnet should resolve");
+        assert_eq!(direct.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
+        assert!(matches!(
+            direct.resolved_download_artifact.as_ref(),
+            Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: Some(hash),
+                ..
+            }) if hash == CANONICAL_HASH
+        ));
+
+        let from_final_url = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            Some(MAGNET),
+            None,
+            Vec::new(),
+            Some(STALE_HASH.to_string()),
+        )
+        .expect("final magnet URL should resolve");
+        let prepared = router
+            .prepare_resolved_request(&request, from_final_url)
+            .expect("final magnet URL should prepare");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
+
+        let from_body = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            None,
+            None,
+            MAGNET.as_bytes().to_vec(),
+            Some(STALE_HASH.to_string()),
+        )
+        .expect("magnet response body should resolve");
+        let prepared = router
+            .prepare_resolved_request(&request, from_body)
+            .expect("magnet response body should prepare");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
     }
 
     #[tokio::test]
@@ -7187,10 +7284,20 @@ mod tests {
             submissions.clone(),
         );
 
-        router
-            .submit_download(&torrent_add_request(None))
+        let canonical_hash = "0123456789abcdef0123456789abcdef01234567";
+        let mut request = torrent_add_request(None);
+        request.info_hash_hint = Some(canonical_hash.to_string());
+        if let Some(ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. }) =
+            request.resolved_download_artifact.as_mut()
+        {
+            *info_hash_hint = Some(canonical_hash.to_string());
+        }
+
+        let grab = router
+            .submit_download(&request)
             .await
             .expect("torrent request should route");
+        assert_eq!(grab.info_hash.as_deref(), Some(canonical_hash));
 
         let recorded = submissions.seed_goals.lock().unwrap();
         let recorded = recorded.first().expect("goals should be persisted");

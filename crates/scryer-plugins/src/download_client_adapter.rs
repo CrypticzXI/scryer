@@ -1982,6 +1982,10 @@ mod tests {
             plugin_request.release.info_hash_v1.as_deref(),
             Some("abcdef0123456789abcdef0123456789abcdef01")
         );
+        assert_eq!(
+            plugin_request.release.info_hash_hint.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
         assert_eq!(plugin_request.routing.isolation.len(), 4);
         assert_eq!(
             plugin_request
