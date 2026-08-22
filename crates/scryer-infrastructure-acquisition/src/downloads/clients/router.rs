@@ -96,13 +96,33 @@ fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<S
     })
 }
 
+#[cfg(test)]
 fn looks_like_torrent_metainfo(bytes: &[u8]) -> bool {
+    torrent_info_hash_v1(bytes).is_some()
+}
+
+/// The BitTorrent v1 info hash is the SHA-1 of the raw bencoded `info`
+/// dictionary. Never deserialize and re-encode it: bencode byte order is part
+/// of the torrent identity.
+fn torrent_info_hash_v1(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
-        return false;
+        return None;
     }
-    matches!(
-        parse_bencode_dict(bytes, 0, 0),
-        Ok((consumed, true)) if consumed == bytes.len()
+    let (consumed, info_span) = parse_bencode_dict(bytes, 0, 0).ok()?;
+    if consumed != bytes.len() {
+        return None;
+    }
+    let (info_start, info_end) = info_span?;
+    let digest = aws_lc_rs::digest::digest(
+        &aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY,
+        &bytes[info_start..info_end],
+    );
+    Some(
+        digest
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
     )
 }
 
@@ -138,25 +158,34 @@ fn parse_bencode_value(bytes: &[u8], offset: usize, depth: usize) -> Result<usiz
     }
 }
 
-fn parse_bencode_dict(bytes: &[u8], offset: usize, depth: usize) -> Result<(usize, bool), ()> {
+fn parse_bencode_dict(
+    bytes: &[u8],
+    offset: usize,
+    depth: usize,
+) -> Result<(usize, Option<(usize, usize)>), ()> {
     if depth > 64 || bytes.get(offset) != Some(&b'd') {
         return Err(());
     }
     let mut cursor = offset + 1;
-    let mut has_info_dict = false;
+    let mut info_span = None;
     while cursor < bytes.len() && bytes[cursor] != b'e' {
         let (after_key, key_start, key_end) = parse_bencode_string(bytes, cursor)?;
         let is_top_level_info = depth == 0 && &bytes[key_start..key_end] == b"info";
         if is_top_level_info && bytes.get(after_key) != Some(&b'd') {
             return Err(());
         }
-        cursor = parse_bencode_value(bytes, after_key, depth + 1)?;
-        has_info_dict |= is_top_level_info;
+        let after_value = parse_bencode_value(bytes, after_key, depth + 1)?;
+        if is_top_level_info {
+            if info_span.replace((after_key, after_value)).is_some() {
+                return Err(());
+            }
+        }
+        cursor = after_value;
     }
     if cursor >= bytes.len() {
         return Err(());
     }
-    Ok((cursor + 1, has_info_dict))
+    Ok((cursor + 1, info_span))
 }
 
 fn parse_bencode_string(bytes: &[u8], offset: usize) -> Result<(usize, usize, usize), ()> {
@@ -1654,6 +1683,7 @@ impl PrioritizedDownloadClientRouter {
             }
         }
 
+        let torrent_info_hash_v1 = torrent_info_hash_v1(&bytes);
         let content_type = solver::solution_header_string(headers, "content-type");
         let file_name = content_disposition_filename(headers);
         let final_path = final_url
@@ -1669,16 +1699,16 @@ impl PrioritizedDownloadClientRouter {
         if content_type.as_deref().is_some_and(|value| {
             let value = value.to_ascii_lowercase();
             value.contains("application/x-bittorrent")
-                || value.contains("application/octet-stream") && looks_like_torrent_metainfo(&bytes)
+                || value.contains("application/octet-stream") && torrent_info_hash_v1.is_some()
         }) || final_path
             .as_deref()
             .is_some_and(|path| path.ends_with(".torrent"))
             || file_name_lower
                 .as_deref()
                 .is_some_and(|name| name.ends_with(".torrent"))
-            || looks_like_torrent_metainfo(&bytes)
+            || torrent_info_hash_v1.is_some()
         {
-            if !looks_like_torrent_metainfo(&bytes) {
+            if torrent_info_hash_v1.is_none() {
                 return Err(AppError::Validation(format!(
                     "{provider_name} resolved invalid torrent file bytes."
                 )));
@@ -1692,7 +1722,7 @@ impl PrioritizedDownloadClientRouter {
                 bytes,
                 file_name,
                 content_type,
-                info_hash_hint,
+                info_hash_hint: info_hash_hint.or(torrent_info_hash_v1),
             });
         }
 
@@ -4143,10 +4173,13 @@ mod tests {
             None,
         )
         .expect("valid metainfo is sufficient to classify a torrent");
-        assert!(matches!(
-            artifact,
-            ResolvedDownloadArtifact::TorrentFile { .. }
-        ));
+        let ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } = artifact else {
+            panic!("valid metainfo should classify as a torrent");
+        };
+        assert_eq!(
+            info_hash_hint.as_deref(),
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
+        );
     }
 
     #[tokio::test]
@@ -4322,7 +4355,8 @@ mod tests {
             &format!("{}/download", server.uri()),
             Some(DownloadSourceKind::MagnetUri),
         );
-        torrent_request.info_hash_hint = Some("known-hash".to_string());
+        torrent_request.info_hash_hint =
+            Some("abcdef0123456789abcdef0123456789abcdef01".to_string());
         let prepared = router
             .prepare_download_request(&torrent_request, None)
             .await
@@ -4332,6 +4366,25 @@ mod tests {
             Some(ResolvedDownloadArtifact::TorrentFile { .. })
         ));
         assert_eq!(prepared.source_kind, Some(DownloadSourceKind::TorrentFile));
+        assert_eq!(
+            prepared.info_hash_hint.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
+
+        let derived = router
+            .prepare_download_request(
+                &test_add_request(
+                    &format!("{}/download", server.uri()),
+                    Some(DownloadSourceKind::MagnetUri),
+                ),
+                None,
+            )
+            .await
+            .expect("HTTP torrent should derive its v1 hash when the indexer omitted it");
+        assert_eq!(
+            derived.info_hash_hint.as_deref(),
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
+        );
 
         let nzb_request = test_add_request(
             "http://127.0.0.1:1/release.nzb",

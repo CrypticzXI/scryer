@@ -2334,6 +2334,9 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_ref: Option<String>,
+    /// Absent on tokens minted before torrent info-hash handoff existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<i64>,
     /// Absent on tokens minted before minimum-seeder admission existed, which

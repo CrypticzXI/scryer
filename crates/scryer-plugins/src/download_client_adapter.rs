@@ -20,7 +20,7 @@ use scryer_plugin_sdk::command::{
     PluginDownloadClientCommandResult, PluginDownloadGetCompletedRequest,
 };
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
-use scryer_plugin_sdk::{PluginError, PluginResult};
+use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use tracing::debug;
 
 use crate::blocking::run_blocking_plugin_call;
@@ -205,13 +205,50 @@ impl WasmDownloadClient {
 fn decode_command_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
     match result {
         PluginResult::Ok(value) => Ok(value),
-        PluginResult::Err(PluginError {
-            code,
-            public_message,
-            ..
-        }) => Err(AppError::Repository(format!(
-            "{context}: plugin error {code:?}: {public_message}"
-        ))),
+        PluginResult::Err(error) => Err(plugin_error_as_repository(error, context)),
+    }
+}
+
+fn decode_download_add_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
+    match result {
+        PluginResult::Ok(value) => Ok(value),
+        PluginResult::Err(error) => Err(map_download_add_plugin_error(error, context)),
+    }
+}
+
+fn decode_legacy_download_add_result<T>(output: &str, context: &str) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let envelope: PluginResult<T> = serde_json::from_str(output).map_err(|error| {
+        AppError::Repository(format!(
+            "{context}: plugin returned invalid result envelope: {error}"
+        ))
+    })?;
+    decode_download_add_result(envelope, context)
+}
+
+fn plugin_error_message(error: &PluginError, context: &str) -> String {
+    format!(
+        "{context}: plugin error {:?}: {}",
+        error.code, error.public_message
+    )
+}
+
+fn plugin_error_as_repository(error: PluginError, context: &str) -> AppError {
+    AppError::Repository(plugin_error_message(&error, context))
+}
+
+fn map_download_add_plugin_error(error: PluginError, context: &str) -> AppError {
+    let message = plugin_error_message(&error, context);
+    match error.code {
+        PluginErrorCode::RateLimited
+        | PluginErrorCode::UpstreamUnavailable
+        | PluginErrorCode::Temporary => AppError::DownloadSubmitUnavailable(message),
+        PluginErrorCode::InvalidConfig
+        | PluginErrorCode::AuthFailed
+        | PluginErrorCode::Unsupported
+        | PluginErrorCode::Permanent => AppError::DownloadSubmitRejected(message),
     }
 }
 
@@ -931,8 +968,7 @@ impl DownloadClient for WasmDownloadClient {
                     "download-client command returned the wrong result for add".to_string(),
                 ));
             };
-            let response = decode_command_result(result, "download add")
-                .map_err(AppError::into_download_submit_unavailable)?;
+            let response = decode_download_add_result(result, "download add")?;
             return Ok(map_add_response_to_grab_result(
                 response,
                 request,
@@ -961,7 +997,7 @@ impl DownloadClient for WasmDownloadClient {
         .map_err(AppError::into_download_submit_unavailable)?;
 
         let response: PluginDownloadClientAddResponse =
-            decode_plugin_result(&output, EXPORT_DOWNLOAD_ADD)
+            decode_legacy_download_add_result(&output, EXPORT_DOWNLOAD_ADD)
                 .map_err(AppError::into_download_submit_unavailable)?;
         Ok(map_add_response_to_grab_result(
             response,
@@ -1965,6 +2001,71 @@ mod tests {
                 DownloadInputKind::TorrentFile,
             ])
         );
+    }
+
+    #[test]
+    fn command_add_permanent_plugin_error_is_rejected_without_losing_its_message() {
+        let error = decode_download_add_result::<()>(
+            PluginResult::Err(PluginError {
+                code: PluginErrorCode::Permanent,
+                public_message: "rTorrent add requires an info hash from the release".to_string(),
+                debug_message: None,
+                retry_after_seconds: None,
+            }),
+            "download add",
+        )
+        .expect_err("permanent plugin error should reject the submission");
+
+        assert!(!error.is_retryable_download_submit_failure());
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitRejected(message)
+                if message.contains("rTorrent add requires an info hash from the release")
+        ));
+    }
+
+    #[test]
+    fn command_add_transient_plugin_errors_remain_retryable() {
+        for code in [
+            PluginErrorCode::RateLimited,
+            PluginErrorCode::UpstreamUnavailable,
+            PluginErrorCode::Temporary,
+        ] {
+            let error = decode_download_add_result::<()>(
+                PluginResult::Err(PluginError {
+                    code,
+                    public_message: "client is temporarily unavailable".to_string(),
+                    debug_message: None,
+                    retry_after_seconds: None,
+                }),
+                "download add",
+            )
+            .expect_err("transient plugin error should fail the submission");
+
+            assert!(error.is_retryable_download_submit_failure());
+        }
+    }
+
+    #[test]
+    fn legacy_add_permanent_plugin_error_is_rejected() {
+        let output = serde_json::to_string(&PluginResult::<PluginDownloadClientAddResponse>::Err(
+            PluginError {
+                code: PluginErrorCode::Permanent,
+                public_message: "download source is invalid".to_string(),
+                debug_message: None,
+                retry_after_seconds: None,
+            },
+        ))
+        .unwrap();
+
+        let error = decode_legacy_download_add_result::<PluginDownloadClientAddResponse>(
+            &output,
+            EXPORT_DOWNLOAD_ADD,
+        )
+        .expect_err("permanent legacy plugin error should reject the submission");
+
+        assert!(!error.is_retryable_download_submit_failure());
+        assert!(matches!(error, AppError::DownloadSubmitRejected(_)));
     }
 
     #[test]

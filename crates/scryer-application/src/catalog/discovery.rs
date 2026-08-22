@@ -1253,6 +1253,11 @@ impl AppUseCase {
                     .or(result.source_kind),
                 source_title: Some(result.title.clone()),
                 source_password: result.password_hint.clone(),
+                info_hash_hint: result
+                    .extra
+                    .get("info_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
                 size_bytes: result.size_bytes,
                 seeders: crate::acquisition::seed_goals::seeders_from_extra(&result.extra),
             };

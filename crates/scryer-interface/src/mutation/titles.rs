@@ -318,7 +318,7 @@ impl TitleMutations {
             source_kind,
             source_title: source_title.clone(),
             source_password: None,
-
+            info_hash_hint: None,
             size_bytes: None,
             seeders: None,
         };
