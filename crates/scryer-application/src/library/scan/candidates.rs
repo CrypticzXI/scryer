@@ -2342,6 +2342,9 @@ mod tests {
         let (by_name, by_tvdb, _, _) = build_movie_title_indexes(&existing_titles);
         let selected = |tvdb_id: &str, year: Option<i32>| MetadataSearchItem {
             tvdb_id: tvdb_id.to_string(),
+            smg_id: None,
+            primary_source: None,
+            external_ids: vec![],
             name: "Remade Film".to_string(),
             year,
             auto_match_safe: true,

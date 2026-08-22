@@ -148,7 +148,9 @@ impl MetadataQueries {
             .get_metadata_movie(&actor, tvdb_id, &language)
             .await
             .map_err(to_gql_error)?;
-        let owner_id = movie.tvdb_id.to_string();
+        // This legacy endpoint is TVDB-keyed; TMDB-primary rows have no value to expose here.
+        let tvdb_id = movie.tvdb_id.unwrap_or(0);
+        let owner_id = tvdb_id.to_string();
         let poster_url = app
             .media_image_url(
                 Some(movie.poster_url.as_str()),
@@ -159,7 +161,7 @@ impl MetadataQueries {
             )
             .expect("metadata movie image registration with an owner always returns a URL");
         Ok(MetadataMoviePayload {
-            tvdb_id: movie.tvdb_id.to_string(),
+            tvdb_id: tvdb_id.to_string(),
             name: movie.name,
             slug: movie.slug,
             year: movie.year,

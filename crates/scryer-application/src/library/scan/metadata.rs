@@ -2058,6 +2058,9 @@ mod tests {
     fn select_safe_batch_match_trusts_smg_auto_match_safe() {
         let pelton_tvdb_signal = MetadataSearchItem {
             tvdb_id: "2502".to_string(),
+            smg_id: None,
+            primary_source: None,
+            external_ids: vec![],
             name: "Pelton".to_string(),
             year: Some(1970),
             auto_match_safe: true,
@@ -2137,6 +2140,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "2502".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "The Lantern Supremacy".to_string(),
                 year: Some(2004),
                 auto_match_safe: true,
@@ -2427,6 +2433,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "415677".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Rascal!! (2022)".into(),
                 year: Some(2022),
                 auto_match_safe: true,
@@ -2580,6 +2589,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -2604,6 +2616,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: false,
@@ -2640,6 +2655,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -2677,6 +2695,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -2718,6 +2739,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -2755,6 +2779,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -2792,6 +2819,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "2502".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Pelton".into(),
                 year: Some(1970),
                 auto_match_safe: true,
@@ -2829,6 +2859,9 @@ mod tests {
             key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "157390".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Feranki: A Sand Kettle Saga".into(),
                 year: Some(2024),
                 auto_match_safe: true,
@@ -3011,6 +3044,9 @@ mod tests {
             exact_key,
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "12345".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Wrong Alpha".into(),
                 year: Some(2024),
                 auto_match_safe: false,
@@ -3048,6 +3084,9 @@ mod tests {
                 .expect("alpha key"),
             Arc::new(vec![MetadataSearchItem {
                 tvdb_id: "12345".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Alpha".into(),
                 year: Some(2024),
                 auto_match_safe: true,
@@ -3153,6 +3192,9 @@ mod tests {
             "Glass Harbor",
             vec![MetadataSearchItem {
                 tvdb_id: "movie-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Glass Harbor".into(),
                 year: Some(2021),
                 auto_match_safe: true,
@@ -3197,6 +3239,9 @@ mod tests {
             "MY LIGHTHOUSE",
             vec![MetadataSearchItem {
                 tvdb_id: "movie-2".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "My Lighthouse".into(),
                 year: Some(2020),
                 auto_match_safe: true,
@@ -3261,6 +3306,9 @@ mod tests {
             "Silver Horizon",
             vec![MetadataSearchItem {
                 tvdb_id: "series-1".into(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Silver Horizon".into(),
                 year: Some(2018),
                 auto_match_safe: true,
@@ -3376,6 +3424,9 @@ mod tests {
         let gateway = CountingMetadataGateway::default();
         let wrong_year_match = vec![MetadataSearchItem {
             tvdb_id: "wrong-series".into(),
+            smg_id: None,
+            primary_source: None,
+            external_ids: vec![],
             name: "Nightfall".into(),
             year: Some(2009),
             auto_match_safe: false,

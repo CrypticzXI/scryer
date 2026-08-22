@@ -3,7 +3,9 @@ use super::*;
 fn hydration_test_movie(tvdb_id: i64, name: &str) -> MovieMetadata {
     MovieMetadata {
         target_key: None,
-        tvdb_id,
+        smg_id: None,
+        primary_source: "tvdb".to_string(),
+        tvdb_id: Some(tvdb_id),
         name: name.to_string(),
         slug: name.to_ascii_lowercase().replace(' ', "-"),
         year: Some(2026),

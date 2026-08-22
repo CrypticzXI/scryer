@@ -158,7 +158,9 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                 131_963,
                 MovieMetadata {
                     target_key: None,
-                    tvdb_id: 131_963,
+                    smg_id: None,
+                    primary_source: "tvdb".into(),
+                    tvdb_id: Some(131_963),
                     name: "Iron Rail".into(),
                     slug: "iron-rail".into(),
                     year: Some(2020),

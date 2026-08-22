@@ -448,7 +448,9 @@ mod tests {
     fn test_movie(credits: Vec<TitleCredit>) -> MovieMetadata {
         MovieMetadata {
             target_key: None,
-            tvdb_id: 909,
+            smg_id: None,
+            primary_source: "tvdb".to_string(),
+            tvdb_id: Some(909),
             name: "Fixture Movie".to_string(),
             slug: "fixture-movie".to_string(),
             year: Some(2026),

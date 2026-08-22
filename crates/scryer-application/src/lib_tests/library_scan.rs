@@ -151,7 +151,7 @@ impl MetadataGateway for HydratingMovieSearchGateway {
     }
 
     async fn get_movie(&self, tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
-        if tvdb_id == self.movie.tvdb_id {
+        if self.movie.tvdb_id == Some(tvdb_id) {
             Ok(self.movie.clone())
         } else {
             Err(AppError::NotFound(format!("movie {tvdb_id}")))
@@ -171,7 +171,7 @@ impl MetadataGateway for HydratingMovieSearchGateway {
         Ok(BulkMetadataResult {
             movies: movie_tvdb_ids
                 .iter()
-                .filter(|tvdb_id| **tvdb_id == self.movie.tvdb_id)
+                .filter(|tvdb_id| Some(**tvdb_id) == self.movie.tvdb_id)
                 .map(|tvdb_id| (*tvdb_id, self.movie.clone()))
                 .collect(),
             series: HashMap::new(),
@@ -618,6 +618,9 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
                     vec![MetadataSearchItem {
                         name: format!("Deliberately Different Identity Title {tvdb_id}"),
                         tvdb_id,
+                        smg_id: None,
+                        primary_source: None,
+                        external_ids: vec![],
                         year: Some(1901),
                         auto_match_safe: true,
                         auto_match_signals: vec!["identity".to_string()],
@@ -2091,6 +2094,9 @@ async fn movie_full_scan_records_duplicate_same_title_sibling_folder_as_ownershi
         Arc::new(FixedBatchSearchMetadataGateway {
             results: vec![MetadataSearchItem {
                 tvdb_id: "112233".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Duplicate Title".to_string(),
                 year: Some(2026),
                 auto_match_safe: true,
@@ -2314,6 +2320,9 @@ async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_ite
         Arc::new(FixedBatchSearchMetadataGateway {
             results: vec![MetadataSearchItem {
                 tvdb_id: "123456".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Matched Movie".to_string(),
                 year: Some(2020),
                 auto_match_safe: true,
@@ -2987,6 +2996,9 @@ async fn movie_full_scan_completes_title_match_while_inventory_walk_is_blocked()
         Arc::new(FixedBatchSearchMetadataGateway {
             results: vec![MetadataSearchItem {
                 tvdb_id: "445566".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Blocked Movie".to_string(),
                 year: Some(2024),
                 auto_match_safe: true,
@@ -3294,6 +3306,9 @@ async fn movie_full_scan_by_id_uses_selected_library_scope() {
         Arc::new(HydratingMovieSearchGateway {
             search_item: MetadataSearchItem {
                 tvdb_id: "778899".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "Selected Movie".to_string(),
                 year: Some(2026),
                 auto_match_safe: true,
@@ -3414,6 +3429,9 @@ async fn movie_full_scan_adopts_empty_folder_match_with_zero_files() {
         Arc::new(FixedBatchSearchMetadataGateway {
             results: vec![MetadataSearchItem {
                 tvdb_id: "667788".to_string(),
+                smg_id: None,
+                primary_source: None,
+                external_ids: vec![],
                 name: "scan-item-empty".to_string(),
                 year: None,
                 auto_match_safe: true,
@@ -6334,6 +6352,9 @@ impl MetadataGateway for PendingImportSearchMetadataGateway {
 fn pending_import_search_result(tvdb_id: &str, name: &str) -> RichMetadataSearchItem {
     RichMetadataSearchItem {
         tvdb_id: tvdb_id.to_string(),
+        smg_id: None,
+        primary_source: None,
+        external_ids: vec![],
         name: name.to_string(),
         imdb_id: None,
         slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
@@ -6469,7 +6490,9 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_keeps_item_b
                 123_456,
                 MovieMetadata {
                     target_key: None,
-                    tvdb_id: 123_456,
+                    smg_id: None,
+                    primary_source: "tvdb".into(),
+                    tvdb_id: Some(123_456),
                     name: "Matched Movie".into(),
                     slug: "matched-movie".into(),
                     year: Some(2020),
@@ -6569,7 +6592,9 @@ async fn resolve_ignored_pending_import_creates_unmonitored_movie_title_and_clea
                 123_456,
                 MovieMetadata {
                     target_key: None,
-                    tvdb_id: 123_456,
+                    smg_id: None,
+                    primary_source: "tvdb".into(),
+                    tvdb_id: Some(123_456),
                     name: "Matched Movie".into(),
                     slug: "matched-movie".into(),
                     year: Some(2020),
@@ -6708,7 +6733,9 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
                 123_456,
                 MovieMetadata {
                     target_key: None,
-                    tvdb_id: 123_456,
+                    smg_id: None,
+                    primary_source: "tvdb".into(),
+                    tvdb_id: Some(123_456),
                     name: "サンドライン".into(),
                     slug: "sandline".into(),
                     year: Some(2021),
@@ -6795,7 +6822,8 @@ async fn hydrate_titles_bulk_persists_movie_tmdb_external_id() {
     movie.tmdb_id = Some(815_010);
     movie.anidb_id = Some(715_010);
     let metadata_gateway = Arc::new(MockMetadataGateway {
-        movies: HashMap::from([(movie.tvdb_id, movie)]),
+        // This test gateway remains TVDB-keyed; TMDB-primary rows are not in this map.
+        movies: HashMap::from([(movie.tvdb_id.unwrap_or(0), movie)]),
     });
     let (app, _user, titles) = bootstrap_with_metadata_gateway_and_titles(metadata_gateway);
     let title = make_due_hydration_title("movie-tmdb-hydration", MediaFacet::Movie, 91_501);
