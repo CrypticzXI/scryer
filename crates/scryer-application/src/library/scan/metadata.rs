@@ -447,25 +447,75 @@ pub(crate) async fn execute_batch_metadata_searches(
         return Ok(HashMap::new());
     }
 
-    let search_queries = search_keys
-        .iter()
-        .map(|key| MetadataSearchQuery {
+    let mut movie_queries_without_external_id = Vec::new();
+    let mut movie_queries_with_external_id = Vec::new();
+    let mut series_queries = Vec::new();
+    for key in &search_keys {
+        let query = MetadataSearchQuery {
             query: key.query.clone(),
             type_hint: key.type_hint.to_string(),
             year: key.year,
             imdb_id: key.imdb_id.clone(),
             tmdb_id: key.tmdb_id.clone(),
             tvdb_id: key.tvdb_id.clone(),
-        })
-        .collect::<Vec<_>>();
-    let Some(batched_results) = await_cancellable_app_result(
-        cancel_token,
-        metadata_gateway.search_tvdb_batch(&search_queries, metadata_language),
-    )
-    .await?
-    else {
-        return Ok(HashMap::new());
-    };
+        };
+        match key.type_hint {
+            METADATA_TYPE_MOVIE if key.has_external_id() => {
+                movie_queries_with_external_id.push(query);
+            }
+            METADATA_TYPE_MOVIE => movie_queries_without_external_id.push(query),
+            _ => series_queries.push(query),
+        }
+    }
+
+    let mut batched_results = HashMap::new();
+    for (queries, create_missing) in [
+        (movie_queries_without_external_id, false),
+        (movie_queries_with_external_id, true),
+    ] {
+        if queries.is_empty() {
+            continue;
+        }
+        let movie_results = match await_cancellable_app_result(
+            cancel_token,
+            metadata_gateway.search_titles_batch(
+                &queries,
+                METADATA_TYPE_MOVIE,
+                metadata_language,
+                create_missing,
+            ),
+        )
+        .await
+        {
+            Ok(Some(results)) => results,
+            Ok(None) => return Ok(HashMap::new()),
+            Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {
+                let Some(results) = await_cancellable_app_result(
+                    cancel_token,
+                    metadata_gateway.search_tvdb_batch(&queries, metadata_language),
+                )
+                .await?
+                else {
+                    return Ok(HashMap::new());
+                };
+                results
+            }
+            Err(error) => return Err(error),
+        };
+        batched_results.extend(movie_results);
+    }
+
+    if !series_queries.is_empty() {
+        let Some(series_results) = await_cancellable_app_result(
+            cancel_token,
+            metadata_gateway.search_tvdb_batch(&series_queries, metadata_language),
+        )
+        .await?
+        else {
+            return Ok(HashMap::new());
+        };
+        batched_results.extend(series_results);
+    }
 
     let mut results = HashMap::new();
     for key in search_keys {

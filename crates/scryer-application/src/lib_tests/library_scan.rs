@@ -573,12 +573,25 @@ impl MediaAnalyzer for CountingValidMediaAnalyzer {
 #[derive(Clone, Default)]
 struct RecordingExactIdMetadataGateway {
     batch_queries: Arc<Mutex<Vec<Vec<MetadataSearchQuery>>>>,
+    title_batch_queries: Arc<Mutex<Vec<(Vec<MetadataSearchQuery>, String, bool)>>>,
+    title_id_movies_enabled: bool,
     detail_calls: Arc<AtomicUsize>,
 }
 
 impl RecordingExactIdMetadataGateway {
+    fn with_title_id_movies() -> Self {
+        Self {
+            title_id_movies_enabled: true,
+            ..Default::default()
+        }
+    }
+
     async fn batch_queries(&self) -> Vec<Vec<MetadataSearchQuery>> {
         self.batch_queries.lock().await.clone()
+    }
+
+    async fn title_batch_queries(&self) -> Vec<(Vec<MetadataSearchQuery>, String, bool)> {
+        self.title_batch_queries.lock().await.clone()
     }
 
     fn detail_calls(&self) -> usize {
@@ -624,6 +637,56 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
                         year: Some(1901),
                         auto_match_safe: true,
                         auto_match_signals: vec!["identity".to_string()],
+                    }],
+                )
+            })
+            .collect())
+    }
+
+    async fn search_titles_batch(
+        &self,
+        queries: &[MetadataSearchQuery],
+        kind: &str,
+        _language: &str,
+        create_missing: bool,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        self.title_batch_queries.lock().await.push((
+            queries.to_vec(),
+            kind.to_string(),
+            create_missing,
+        ));
+        if !self.title_id_movies_enabled {
+            return Err(AppError::Repository(
+                "metadata gateway does not support title-id queries".into(),
+            ));
+        }
+
+        assert_eq!(kind, "movie");
+        Ok(queries
+            .iter()
+            .cloned()
+            .map(|query| {
+                let tmdb_id = query.tmdb_id.clone().expect("tmdb identity hint");
+                (
+                    query,
+                    vec![MetadataSearchItem {
+                        name: "TMDB Primary Match".to_string(),
+                        tvdb_id: String::new(),
+                        smg_id: Some(7_777),
+                        primary_source: Some("tmdb".to_string()),
+                        external_ids: vec![
+                            ExternalId {
+                                source: "tmdb".to_string(),
+                                value: tmdb_id,
+                            },
+                            ExternalId {
+                                source: "imdb".to_string(),
+                                value: "tt0077777".to_string(),
+                            },
+                        ],
+                        year: Some(2020),
+                        auto_match_safe: true,
+                        auto_match_signals: vec!["external_id:tmdb".to_string()],
                     }],
                 )
             })
@@ -2800,6 +2863,134 @@ async fn movie_full_scan_batches_radarr_identity_hints_at_gateway_cap() {
         .filter_map(|query| query.tmdb_id.clone())
         .collect();
     assert_eq!(distinct_tmdb_ids.len(), 22);
+
+    let title_batches = metadata_gateway.title_batch_queries().await;
+    assert!(!title_batches.is_empty());
+    assert!(
+        title_batches
+            .iter()
+            .all(|(_, kind, create_missing)| { kind == "movie" && *create_missing })
+    );
+    let titles = app
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 22);
+    assert!(titles.iter().all(|title| {
+        title
+            .external_ids
+            .iter()
+            .any(|id| id.source.eq_ignore_ascii_case("tvdb") && !id.value.trim().is_empty())
+    }));
+}
+
+#[tokio::test]
+async fn movie_full_scan_creates_a_tmdb_primary_title_from_a_radarr_hint() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let movie_folder = movie_root.join("TMDB Primary Match (2020)");
+    std::fs::create_dir_all(&movie_folder).expect("create movie folder");
+    let movie_file = movie_folder.join("TMDB.Primary.Match.2020.mkv");
+    std::fs::write(&movie_file, b"movie").expect("write movie file");
+    let movie_path = movie_file.to_string_lossy().to_string();
+
+    let mut scan_hints = LibraryScanHintSet::new();
+    scan_hints.push(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportRadarr,
+        facet: LibraryScanHintFacet::Movie,
+        path_key: crate::library_scan_file_leaf_key(&movie_path).expect("file leaf path key"),
+        full_path_key: crate::library_scan_file_full_path_key(&movie_path),
+        ids: vec![
+            ExternalIdHint::normalized(ExternalIdProvider::Tmdb, "7777")
+                .expect("normalized tmdb id"),
+        ],
+    });
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway = Arc::new(RecordingExactIdMetadataGateway::with_title_id_movies());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(&movie_path)])
+        .await;
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&movie_root, true)]),
+    )
+    .await
+    .expect("store movie root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted movie scan");
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(1)
+    );
+
+    let title_batches = metadata_gateway.title_batch_queries().await;
+    assert_eq!(title_batches.len(), 1);
+    assert_eq!(title_batches[0].1, "movie");
+    assert!(
+        title_batches[0].2,
+        "external-id matches create missing titles"
+    );
+    assert_eq!(title_batches[0].0.len(), 1);
+    assert_eq!(title_batches[0].0[0].query, "");
+    assert_eq!(title_batches[0].0[0].tmdb_id.as_deref(), Some("7777"));
+    assert!(metadata_gateway.batch_queries().await.is_empty());
+
+    let titles = app
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 1);
+    assert!(titles[0].metadata_fetched_at.is_none());
+    assert!(
+        titles[0]
+            .external_ids
+            .iter()
+            .any(|id| { id.source.eq_ignore_ascii_case("smg") && id.value == "7777" })
+    );
+    assert!(
+        titles[0]
+            .external_ids
+            .iter()
+            .any(|id| { id.source.eq_ignore_ascii_case("tmdb") && id.value == "7777" })
+    );
+    assert!(
+        titles[0]
+            .external_ids
+            .iter()
+            .any(|id| { id.source.eq_ignore_ascii_case("imdb") && id.value == "tt0077777" })
+    );
+    assert!(
+        !titles[0]
+            .external_ids
+            .iter()
+            .any(|id| id.source.eq_ignore_ascii_case("tvdb")),
+        "TMDB-primary matches must not synthesize a TVDB id"
+    );
 }
 
 #[tokio::test]
@@ -2897,6 +3088,14 @@ async fn movie_full_scan_batches_unhinted_fuzzy_candidates_at_gateway_cap() {
     let distinct_titles: std::collections::HashSet<_> =
         queries.iter().map(|query| query.query.trim()).collect();
     assert_eq!(distinct_titles.len(), 22);
+
+    let title_batches = metadata_gateway.title_batch_queries().await;
+    assert!(!title_batches.is_empty());
+    assert!(
+        title_batches
+            .iter()
+            .all(|(_, kind, create_missing)| { kind == "movie" && !create_missing })
+    );
 }
 
 #[tokio::test]
@@ -6534,17 +6733,18 @@ async fn resolve_pending_import_creates_unmonitored_movie_title_and_keeps_item_b
         .await
         .expect("seed pending import");
 
+    let mut request = pending_import_title_request(
+        MediaFacet::Movie,
+        "Matched Movie",
+        Some("123456"),
+        Some(2020),
+    );
+    request.external_ids = vec![ExternalId {
+        source: "tmdb".to_string(),
+        value: "5001".to_string(),
+    }];
     let result = app
-        .resolve_pending_import(
-            &user,
-            "movie-resolve-1",
-            pending_import_title_request(
-                MediaFacet::Movie,
-                "Matched Movie",
-                Some("123456"),
-                Some(2020),
-            ),
-        )
+        .resolve_pending_import(&user, "movie-resolve-1", request)
         .await
         .expect("resolve pending import");
 
