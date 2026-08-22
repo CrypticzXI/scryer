@@ -1,6 +1,6 @@
 use super::*;
 use crate::catalog_workflow::{
-    HYDRATION_BULK_BATCH_SIZE, HydrationSource, HydrationTarget, extract_tvdb_id,
+    HYDRATION_BULK_BATCH_SIZE, HydrationSource, HydrationTarget, extract_tvdb_id, movie_title_ref,
 };
 use crate::polling_worker::PollingWorker;
 use std::time::Duration;
@@ -14,6 +14,9 @@ const TITLE_HYDRATION_BATCH_DELAY_MAX: Duration = Duration::from_secs(30);
 const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
+const MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH: usize = 200;
+const MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY: &str =
+    "catalog.movie_smg_identity_backfill_resume_after";
 
 fn title_hydration_jitter_delay(
     seed: &str,
@@ -48,11 +51,236 @@ fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct MovieSmgIdentityBackfillSummary {
+    pub(crate) linked: usize,
+    pub(crate) unresolved: usize,
+    pub(crate) errors: usize,
+}
+
+pub(crate) enum MovieSmgIdentityBackfillTick {
+    Completed(MovieSmgIdentityBackfillSummary),
+    NotSupported,
+    Cancelled,
+    Failed(crate::AppError),
+}
+
+impl AppUseCase {
+    async fn movie_smg_identity_backfill_resume_position(&self) -> AppResult<Option<String>> {
+        let value_json = self
+            .services
+            .config
+            .settings
+            .get_setting_json_explicit(
+                SETTINGS_SCOPE_SYSTEM,
+                MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY,
+                None,
+            )
+            .await?;
+        Ok(value_json
+            .and_then(|value_json| serde_json::from_str::<String>(&value_json).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()))
+    }
+
+    async fn store_movie_smg_identity_backfill_resume_position(
+        &self,
+        position: Option<&str>,
+    ) -> AppResult<()> {
+        let value_json = serde_json::to_string(position.unwrap_or_default())
+            .map_err(|error| crate::AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY,
+                None,
+                value_json,
+                "system",
+                None,
+            )
+            .await
+    }
+}
+
+fn movie_smg_identity_backfill_not_supported(error: &crate::AppError) -> bool {
+    let crate::AppError::Repository(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("title-id")
+        && (message.contains("does not support")
+            || message.contains("not supported")
+            || message.contains("unsupported"))
+}
+
+pub(crate) async fn run_movie_smg_identity_backfill_tick(
+    app: &AppUseCase,
+    token: &tokio_util::sync::CancellationToken,
+    limit: usize,
+) -> MovieSmgIdentityBackfillTick {
+    if limit == 0 {
+        return MovieSmgIdentityBackfillTick::Completed(MovieSmgIdentityBackfillSummary::default());
+    }
+
+    let after_id = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.movie_smg_identity_backfill_resume_position() => match result {
+            Ok(after_id) => after_id,
+            Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+        },
+    };
+    let titles = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.services.catalog.titles.list_movie_titles_missing_smg_id_after_id(after_id.as_deref(), limit) => match result {
+            Ok(titles) => titles,
+            Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+        },
+    };
+
+    if titles.is_empty() {
+        if after_id.is_some()
+            && let Err(error) = tokio::select! {
+                _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+                result = app.store_movie_smg_identity_backfill_resume_position(None) => result,
+            }
+        {
+            return MovieSmgIdentityBackfillTick::Failed(error);
+        }
+        return MovieSmgIdentityBackfillTick::Completed(MovieSmgIdentityBackfillSummary::default());
+    }
+
+    let next_cursor = (titles.len() == limit)
+        .then(|| titles.last().map(|title| title.id.clone()))
+        .flatten();
+    let mut summary = MovieSmgIdentityBackfillSummary::default();
+    let candidates = titles
+        .into_iter()
+        .filter_map(|title| match movie_title_ref(&title) {
+            Some(reference) => Some((title, reference)),
+            None => {
+                summary.unresolved += 1;
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let references = candidates
+        .iter()
+        .map(|(_, reference)| reference.clone())
+        .collect::<Vec<_>>();
+
+    if !references.is_empty() {
+        let resolutions = tokio::select! {
+            _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+            result = app.services.library.metadata_gateway.resolve_movie_titles(&references, false) => match result {
+                Ok(resolutions) => resolutions,
+                Err(error) if movie_smg_identity_backfill_not_supported(&error) => {
+                    return MovieSmgIdentityBackfillTick::NotSupported;
+                }
+                Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+            },
+        };
+        let resolutions = resolutions
+            .into_iter()
+            .map(|resolution| (resolution.ref_index, resolution))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for (index, (title, _)) in candidates.iter().enumerate() {
+            let Some(resolution) = resolutions.get(&index) else {
+                summary.unresolved += 1;
+                continue;
+            };
+            let Some(smg_id) = resolution.resolved.then_some(resolution.smg_id).flatten() else {
+                summary.unresolved += 1;
+                continue;
+            };
+            let persisted = tokio::select! {
+                _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+                result = app.services.catalog.titles.persist_smg_id(&title.id, smg_id, resolution.redirected_from) => result,
+            };
+            match persisted {
+                Ok(()) => summary.linked += 1,
+                Err(error) => {
+                    summary.errors += 1;
+                    warn!(
+                        title_id = %title.id,
+                        smg_id,
+                        error = %error,
+                        "movie SMG identity backfill: failed to persist title id"
+                    );
+                }
+            }
+        }
+    }
+
+    if let Err(error) = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.store_movie_smg_identity_backfill_resume_position(next_cursor.as_deref()) => result,
+    } {
+        summary.errors += 1;
+        warn!(error = %error, "movie SMG identity backfill: failed to persist cursor");
+    }
+    MovieSmgIdentityBackfillTick::Completed(summary)
+}
+
+async fn run_movie_smg_identity_backfill_phase(
+    app: &AppUseCase,
+    token: &tokio_util::sync::CancellationToken,
+    enabled: &mut bool,
+) -> bool {
+    if !*enabled {
+        return true;
+    }
+
+    match run_movie_smg_identity_backfill_tick(app, token, MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH)
+        .await
+    {
+        MovieSmgIdentityBackfillTick::Completed(summary) => {
+            if summary.linked > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_linked_total")
+                    .increment(summary.linked as u64);
+            }
+            if summary.unresolved > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_unresolved_total")
+                    .increment(summary.unresolved as u64);
+            }
+            if summary.errors > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_errors_total")
+                    .increment(summary.errors as u64);
+            }
+            if summary.linked > 0 || summary.unresolved > 0 || summary.errors > 0 {
+                info!(
+                    linked = summary.linked,
+                    unresolved = summary.unresolved,
+                    errors = summary.errors,
+                    "movie SMG identity backfill batch complete"
+                );
+            }
+            true
+        }
+        MovieSmgIdentityBackfillTick::NotSupported => {
+            *enabled = false;
+            warn!(
+                "movie SMG identity backfill disabled because the metadata gateway does not support title-id queries"
+            );
+            true
+        }
+        MovieSmgIdentityBackfillTick::Cancelled => false,
+        MovieSmgIdentityBackfillTick::Failed(error) => {
+            metrics::counter!("scryer_movie_smg_identity_backfill_errors_total").increment(1);
+            warn!(error = %error, "movie SMG identity backfill batch failed");
+            true
+        }
+    }
+}
+
 pub async fn start_background_title_hydration_loop(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    let worker = PollingWorker::new("title_hydration", token);
+    let worker = PollingWorker::new("title_hydration", token.clone());
+    let mut movie_smg_identity_backfill_enabled = true;
     info!(
         max_batch = TITLE_HYDRATION_MAX_BATCH,
         idle_poll_secs = TITLE_HYDRATION_IDLE_POLL_INTERVAL.as_secs(),
@@ -110,6 +338,16 @@ pub async fn start_background_title_hydration_loop(
         metrics::gauge!("scryer_title_metadata_hydration_pending").set(due_titles.len() as f64);
 
         if due_titles.is_empty() {
+            if !blocked_facets.contains(&MediaFacet::Movie)
+                && !run_movie_smg_identity_backfill_phase(
+                    &app,
+                    &token,
+                    &mut movie_smg_identity_backfill_enabled,
+                )
+                .await
+            {
+                return;
+            }
             if blocked_facets.is_empty() {
                 if !worker
                     .wait_for_wake_or_timeout(
@@ -203,6 +441,16 @@ pub async fn start_background_title_hydration_loop(
         }
 
         if targets.is_empty() {
+            if !blocked_facets.contains(&MediaFacet::Movie)
+                && !run_movie_smg_identity_backfill_phase(
+                    &app,
+                    &token,
+                    &mut movie_smg_identity_backfill_enabled,
+                )
+                .await
+            {
+                return;
+            }
             continue;
         }
 
@@ -282,6 +530,17 @@ pub async fn start_background_title_hydration_loop(
                     }
                 }
             }
+        }
+
+        if !blocked_facets.contains(&MediaFacet::Movie)
+            && !run_movie_smg_identity_backfill_phase(
+                &app,
+                &token,
+                &mut movie_smg_identity_backfill_enabled,
+            )
+            .await
+        {
+            return;
         }
 
         let batch_delay = randomized_title_hydration_delay(

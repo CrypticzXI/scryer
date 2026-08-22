@@ -1117,6 +1117,23 @@ file = "postgres/migrations/0172_download_submission_release_size.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 173
+description = "backfill movie SMG identities and requeue legacy movie hydration"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0173_movie_smg_identity_backfill.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0173_movie_smg_identity_backfill.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

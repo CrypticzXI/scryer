@@ -911,3 +911,17 @@ pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
         .find(|eid| eid.source == "tvdb")
         .and_then(|eid| eid.value.parse::<i64>().ok())
 }
+
+pub(crate) fn extract_smg_id(title: &scryer_domain::Title) -> Option<i64> {
+    title
+        .external_ids
+        .iter()
+        .find(|external_id| external_id.source.eq_ignore_ascii_case("smg"))
+        .and_then(|external_id| external_id.value.trim().parse::<i64>().ok())
+}
+
+pub(crate) fn movie_title_ref(title: &scryer_domain::Title) -> Option<crate::MovieTitleRef> {
+    let mut reference = crate::MovieTitleRef::from_title(title)?;
+    reference.smg_id = extract_smg_id(title);
+    Some(reference)
+}

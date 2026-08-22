@@ -1213,6 +1213,26 @@ pub trait TitleRepository: Send + Sync {
         limit: usize,
         excluded_facets: &[MediaFacet],
     ) -> AppResult<Vec<PendingTitleHydration>>;
+    /// Ordered movie titles whose canonical external-id set can be resolved to
+    /// an SMG title id, but does not contain one yet.
+    async fn list_movie_titles_missing_smg_id_after_id(
+        &self,
+        _after_id: Option<&str>,
+        _limit: usize,
+    ) -> AppResult<Vec<Title>> {
+        Ok(Vec::new())
+    }
+    /// Merge an SMG title id into a title's canonical external-id set.
+    async fn persist_smg_id(
+        &self,
+        _title_id: &str,
+        _smg_id: i64,
+        _redirected_from: Option<i64>,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "persisting SMG title ids is not supported".into(),
+        ))
+    }
     async fn list_title_ids_with_metadata_hydration_due(
         &self,
         _facet: Option<MediaFacet>,

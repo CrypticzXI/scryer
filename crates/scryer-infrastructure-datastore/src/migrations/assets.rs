@@ -609,8 +609,8 @@ mod tests {
         let bundle =
             compile_source_bundle(&source_db_root()).expect("compile source migration bundle");
         assert!(
-            bundle.catalog.find_migration(113).is_some(),
-            "migration 0113 must be registered in migration_manifest.toml"
+            bundle.catalog.find_migration(173).is_some(),
+            "migration 0173 must be registered in migration_manifest.toml"
         );
         assert!(
             bundle
@@ -823,6 +823,31 @@ mod tests {
                 migration.key
             );
         }
+    }
+
+    #[test]
+    fn migration_0173_requeues_legacy_movie_hydration_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 173"));
+
+        let sqlite_sql =
+            fs::read_to_string(db_root.join("migrations/0173_movie_smg_identity_backfill.sql"))
+                .expect("SQLite 0173 migration should be readable");
+        assert!(sqlite_sql.contains("facet = 'movie'"));
+        assert!(sqlite_sql.contains("('tmdb', 'imdb')"));
+        assert!(sqlite_sql.contains("= 'tvdb'"));
+        assert!(sqlite_sql.contains("metadata_hydration_attempt_count = 0"));
+
+        let postgres_sql = fs::read_to_string(
+            db_root.join("postgres/migrations/0173_movie_smg_identity_backfill.sql"),
+        )
+        .expect("PostgreSQL 0173 migration should be readable");
+        assert!(postgres_sql.contains("NOW()"));
+        assert!(postgres_sql.contains("jsonb_array_elements"));
+        assert!(postgres_sql.contains("('tmdb', 'imdb')"));
+        assert!(postgres_sql.contains("= 'tvdb'"));
     }
 
     #[test]

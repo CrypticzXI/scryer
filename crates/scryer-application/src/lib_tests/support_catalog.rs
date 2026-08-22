@@ -544,6 +544,64 @@ impl TitleRepository for MockTitleRepo {
             .collect())
     }
 
+    async fn list_movie_titles_missing_smg_id_after_id(
+        &self,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> AppResult<Vec<Title>> {
+        let after_id = after_id.unwrap_or_default().trim().to_string();
+        let mut titles = self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|title| {
+                title.facet == MediaFacet::Movie
+                    && title.id > after_id
+                    && title.external_ids.iter().any(|external_id| {
+                        matches!(
+                            external_id.source.to_ascii_lowercase().as_str(),
+                            "tvdb" | "tmdb" | "imdb"
+                        ) && !external_id.value.trim().is_empty()
+                    })
+                    && !title
+                        .external_ids
+                        .iter()
+                        .any(|external_id| external_id.source.eq_ignore_ascii_case("smg"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        titles.sort_by(|left, right| left.id.cmp(&right.id));
+        titles.truncate(limit);
+        Ok(titles)
+    }
+
+    async fn persist_smg_id(
+        &self,
+        title_id: &str,
+        smg_id: i64,
+        redirected_from: Option<i64>,
+    ) -> AppResult<()> {
+        let mut titles = self.store.lock().await;
+        let title = titles
+            .iter_mut()
+            .find(|title| title.id == title_id)
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if redirected_from.is_some() {
+            title
+                .external_ids
+                .retain(|external_id| !external_id.source.eq_ignore_ascii_case("smg"));
+        }
+        title
+            .external_ids
+            .retain(|external_id| external_id.source != "smg");
+        title.external_ids.push(ExternalId {
+            source: "smg".to_string(),
+            value: smg_id.to_string(),
+        });
+        Ok(())
+    }
+
     async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
         Ok(())
     }

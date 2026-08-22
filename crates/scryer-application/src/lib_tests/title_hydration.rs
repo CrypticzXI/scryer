@@ -86,6 +86,202 @@ async fn stop_title_hydration_worker(
         .expect("title hydration worker should not panic");
 }
 
+#[derive(Default)]
+struct MovieTitleResolutionGateway {
+    unsupported: bool,
+    redirected_from: Option<i64>,
+    calls: Mutex<Vec<(Vec<MovieTitleRef>, bool)>>,
+}
+
+#[async_trait]
+impl MetadataGateway for MovieTitleResolutionGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        _queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        _movie_tvdb_ids: &[i64],
+        _series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        Err(AppError::Repository(
+            "not used by identity backfill tests".into(),
+        ))
+    }
+
+    async fn resolve_movie_titles(
+        &self,
+        refs: &[MovieTitleRef],
+        create_missing: bool,
+    ) -> AppResult<Vec<TitleResolution>> {
+        self.calls
+            .lock()
+            .await
+            .push((refs.to_vec(), create_missing));
+        if self.unsupported {
+            return Err(AppError::Repository(
+                "metadata gateway does not support title-id queries".into(),
+            ));
+        }
+
+        Ok(refs
+            .iter()
+            .enumerate()
+            .filter_map(|(ref_index, reference)| {
+                reference.tvdb_id.map(|tvdb_id| TitleResolution {
+                    ref_index,
+                    resolved: true,
+                    smg_id: Some(tvdb_id + 1_000_000),
+                    kind: "movie".to_string(),
+                    primary_source: "tvdb".to_string(),
+                    redirected_from: self.redirected_from,
+                    created: false,
+                    external_ids: vec![],
+                    reason: String::new(),
+                })
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn movie_smg_identity_backfill_links_ids_and_resumes_from_its_cursor() {
+    let gateway = Arc::new(MovieTitleResolutionGateway::default());
+    let (app, user, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    app.add_title_with_outcome(&user, hydration_test_title("Cursor A", 951_001))
+        .await
+        .expect("first title should be created");
+    app.add_title_with_outcome(&user, hydration_test_title("Cursor B", 951_002))
+        .await
+        .expect("second title should be created");
+    let token = tokio_util::sync::CancellationToken::new();
+
+    let first =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    let crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(summary) = first
+    else {
+        panic!("first backfill tick should complete");
+    };
+    assert_eq!(summary.linked, 1);
+    assert_eq!(
+        titles
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|title| {
+                title
+                    .external_ids
+                    .iter()
+                    .any(|external_id| external_id.source == "smg")
+            })
+            .count(),
+        1
+    );
+
+    let second =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    let crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(summary) = second
+    else {
+        panic!("second backfill tick should complete");
+    };
+    assert_eq!(summary.linked, 1);
+    assert!(titles.store.lock().await.iter().all(|title| {
+        title
+            .external_ids
+            .iter()
+            .any(|external_id| external_id.source == "smg")
+    }));
+
+    let calls = gateway.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|(_, create_missing)| !create_missing));
+    assert!(calls.iter().all(|(refs, _)| refs.len() == 1));
+}
+
+#[tokio::test]
+async fn movie_smg_identity_backfill_skips_the_default_not_supported_gateway_error() {
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        unsupported: true,
+        ..Default::default()
+    });
+    let (app, user, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    app.add_title_with_outcome(&user, hydration_test_title("Unsupported", 951_003))
+        .await
+        .expect("title should be created");
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let tick =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(matches!(
+        tick,
+        crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::NotSupported
+    ));
+    assert!(titles.store.lock().await.iter().all(|title| {
+        title
+            .external_ids
+            .iter()
+            .all(|external_id| !external_id.source.eq_ignore_ascii_case("smg"))
+    }));
+}
+
 #[tokio::test]
 async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     let (app, user) = bootstrap();
