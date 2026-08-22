@@ -201,7 +201,18 @@ jobs:
             -p scryer \
             -p scryer-application \
             -p scryer-domain \
-            -p scryer-infrastructure \
+            -p scryer-infrastructure-sql \
+            -p scryer-infrastructure-crypto \
+            -p scryer-infrastructure-library \
+            -p scryer-infrastructure-library-search \
+            -p scryer-infrastructure-workflow \
+            -p scryer-infrastructure-acquisition \
+            -p scryer-infrastructure-metadata \
+            -p scryer-infrastructure-configuration \
+            -p scryer-infrastructure-identity \
+            -p scryer-infrastructure-notifications \
+            -p scryer-infrastructure-datastore \
+            -p scryer-infrastructure-runtime \
             -p scryer-interface \
             -p scryer-interface-acquisition \
             -p scryer-interface-core \

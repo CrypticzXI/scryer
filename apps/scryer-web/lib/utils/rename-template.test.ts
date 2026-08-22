@@ -115,6 +115,17 @@ test("applyRenameTemplatePreview renders literal brace escapes", () => {
   );
 });
 
+test("applyRenameTemplatePreview preserves escaped folder tokens as literals", () => {
+  assert.equal(
+    applyRenameTemplatePreview(
+      "{title} ({{year}})",
+      new Set(["title", "year"]),
+      { title: "The Grey Harbor", year: "2008" },
+    ),
+    "The Grey Harbor ({year})",
+  );
+});
+
 test("applyRenameTemplatePreview renders missing sample values as empty strings", () => {
   assert.equal(
     applyRenameTemplatePreview("{title} - {season_order}.{ext}", VALID_TOKENS, SAMPLE_VALUES),
@@ -129,6 +140,16 @@ test("splitRenameTemplateSegments highlights filtered token specs", () => {
       { text: "{title|truncate:8|space:_}", isToken: true },
       { text: ".", isToken: false },
       { text: "{ext}", isToken: true },
+    ],
+  );
+});
+
+test("splitRenameTemplateSegments leaves escaped literal braces unhighlighted", () => {
+  assert.deepEqual(
+    splitRenameTemplateSegments("{title} ({{year}})", new Set(["title", "year"])),
+    [
+      { text: "{title}", isToken: true },
+      { text: " ({{year}})", isToken: false },
     ],
   );
 });
