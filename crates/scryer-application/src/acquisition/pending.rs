@@ -540,6 +540,16 @@ impl AppUseCase {
         if authorized_library_ids.is_empty() {
             return Ok((Vec::new(), 0));
         }
+        let sort = if wanted_item_id.is_some()
+            && !statuses.is_empty()
+            && statuses
+                .iter()
+                .all(|status| *status == PendingReleaseStatus::Standby)
+        {
+            PendingReleasePageSort::ReleaseScoreDesc
+        } else {
+            PendingReleasePageSort::DelayUntilAsc
+        };
         let query = PendingReleasesPageQuery {
             library_ids: authorized_library_ids,
             title_id,

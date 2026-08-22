@@ -833,6 +833,10 @@ pub struct WantedItemPayload {
     pub current_score: Option<i32>,
     /// Latest release decision, or null before a candidate decision exists.
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
+    /// Number of saved fallback candidates keyed to this scope. Season-pack
+    /// candidates are keyed to their season's anchor episode, so sibling
+    /// episodes can report zero while the anchor reports the saved candidates.
+    pub standby_count: i64,
     /// Whether a changed title match permits a recovery search.
     pub mismatch_recovery_eligible: bool,
     /// Convergence state showing whether indexer coverage is queued, searching, complete, or deferred.
@@ -955,6 +959,10 @@ pub struct PendingReleasePayload {
     pub indexer_source: Option<String>,
     /// Provider identifier, or null when the source is not linked.
     pub indexer_id: Option<ID>,
+    /// RFC3339 publication time reported by the indexer, or null when unavailable.
+    pub published_at: Option<DateTime<Utc>>,
+    /// Number of torrent seeders reported when this release was saved, or null when unknown.
+    pub seeders: Option<i64>,
     /// Time when the release entered the pending set, in UTC.
     pub added_at: DateTime<Utc>,
     /// Time before which the release is held, in UTC.

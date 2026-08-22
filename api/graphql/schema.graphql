@@ -11794,6 +11794,14 @@ type PendingReleasePayload {
 	"""
 	indexerId: ID
 	"""
+	RFC3339 publication time reported by the indexer, or null when unavailable.
+	"""
+	publishedAt: DateTime
+	"""
+	Number of torrent seeders reported when this release was saved, or null when unknown.
+	"""
+	seeders: Int
+	"""
 	Time when the release entered the pending set, in UTC.
 	"""
 	addedAt: DateTime!
@@ -19364,6 +19372,12 @@ type WantedItemPayload {
 	Latest release decision, or null before a candidate decision exists.
 	"""
 	latestReleaseDecision: ReleaseDecisionPayload
+	"""
+	Number of saved fallback candidates keyed to this scope. Season-pack
+	candidates are keyed to their season's anchor episode, so sibling
+	episodes can report zero while the anchor reports the saved candidates.
+	"""
+	standbyCount: Int!
 	"""
 	Whether a changed title match permits a recovery search.
 	"""

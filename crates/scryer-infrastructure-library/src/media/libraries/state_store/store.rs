@@ -1736,10 +1736,13 @@ impl PendingReleaseRepository for PendingReleaseStore {
             "FROM pending_releases pr"
         };
 
-        // Base set is the open-for-review statuses (`waiting` plus the parked
-        // `needs_review`), matching the list_waiting / for_wanted reads; the
-        // optional status filter narrows within that base.
-        let mut where_sql = String::from(" WHERE pr.status IN ('waiting', 'needs_review')");
+        // An explicit status filter owns the base set. Without one, preserve the
+        // historical open-for-review default (`waiting` plus `needs_review`).
+        let mut where_sql = if query.statuses.is_empty() {
+            String::from(" WHERE pr.status IN ('waiting', 'needs_review')")
+        } else {
+            String::from(" WHERE 1 = 1")
+        };
         let mut filter_args: Vec<SqlArg> = Vec::new();
         if let Some(title_id) = query.title_id.as_deref() {
             where_sql.push_str(" AND pr.title_id = {}");
@@ -1779,7 +1782,7 @@ impl PendingReleaseRepository for PendingReleaseStore {
         let order_sql = match query.sort {
             PendingReleasePageSort::DelayUntilAsc => " ORDER BY pr.delay_until ASC, pr.id ASC",
             PendingReleasePageSort::ReleaseScoreDesc => {
-                " ORDER BY pr.release_score DESC, pr.delay_until ASC, pr.id ASC"
+                " ORDER BY pr.release_score DESC, pr.added_at ASC, pr.id ASC"
             }
         };
         let page_sql = format!(

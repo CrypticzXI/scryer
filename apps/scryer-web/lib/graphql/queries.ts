@@ -3093,6 +3093,7 @@ export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!
       status
       grabbedRelease
       currentScore
+      standbyCount
       latestReleaseDecision {
         decisionCode
         createdAt
@@ -3487,6 +3488,8 @@ export const pendingReleasesQuery = `query PendingReleases($filter: PendingRelea
       releaseScore
       scoringLogJson
       indexerSource
+      publishedAt
+      seeders
       addedAt
       delayUntil
       status

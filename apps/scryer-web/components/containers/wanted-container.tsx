@@ -136,6 +136,8 @@ export const WantedContainer = memo(function WantedContainer({
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<ReleaseDecisionItem[]>([]);
   const [decisionsLoading, setDecisionsLoading] = useState(false);
+  const [standbyReleases, setStandbyReleases] = useState<PendingReleaseItem[]>([]);
+  const [standbyLoading, setStandbyLoading] = useState(false);
 
   const [, executeTriggerAcquisitionSearch] = useMutation(triggerAcquisitionSearchMutation);
   const [, executeCancelAcquisitionSearch] = useMutation(cancelAcquisitionSearchMutation);
@@ -419,24 +421,38 @@ export const WantedContainer = memo(function WantedContainer({
 
   // --- Wanted actions ---
 
-  const loadDecisions = useCallback(
-    async (wantedItemId: string) => {
+  const loadItemDetails = useCallback(
+    async (wantedItemId: string, standbyCount: number) => {
       if (expandedItemId === wantedItemId) {
         setExpandedItemId(null);
         return;
       }
       setExpandedItemId(wantedItemId);
       setDecisionsLoading(true);
+      setStandbyLoading(standbyCount > 0);
       try {
-        const { data, error } = await client
-          .query(releaseDecisionsQuery, { wantedItemId, limit: 20 })
-          .toPromise();
-        if (error) throw error;
-        setDecisions(data?.wantedItem?.releaseDecisions?.items ?? []);
+        const [decisionsResult, standbyResult] = await Promise.all([
+          client.query(releaseDecisionsQuery, { wantedItemId, limit: 20 }).toPromise(),
+          standbyCount > 0
+            ? client
+                .query(pendingReleasesQuery, {
+                  filter: { wantedItemId, statuses: ["STANDBY"] },
+                  limit: Math.min(standbyCount, 300),
+                  offset: 0,
+                })
+                .toPromise()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
+        if (decisionsResult.error) throw decisionsResult.error;
+        if (standbyResult.error) throw standbyResult.error;
+        setDecisions(decisionsResult.data?.wantedItem?.releaseDecisions?.items ?? []);
+        setStandbyReleases(standbyResult.data?.pendingReleases?.items ?? []);
       } catch {
         setDecisions([]);
+        setStandbyReleases([]);
       } finally {
         setDecisionsLoading(false);
+        setStandbyLoading(false);
       }
     },
     [client, expandedItemId],
@@ -798,7 +814,9 @@ export const WantedContainer = memo(function WantedContainer({
           expandedItemId,
           decisions,
           decisionsLoading,
-          loadDecisions,
+          standbyReleases,
+          standbyLoading,
+          loadItemDetails,
           triggerSearch,
           pauseItem,
           resumeItem,

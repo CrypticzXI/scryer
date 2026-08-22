@@ -323,6 +323,7 @@ pub fn from_wanted_item(
             .latest_release_decision
             .map(from_release_decision)
             .transpose()?,
+        standby_count: 0,
         mismatch_recovery_eligible: item.mismatch_recovery_eligible,
         // Relation-field state rows (`title.wantedItems`, `episode.wantedItem`) are
         // not the convergence display surface: the derived Missing /
@@ -396,6 +397,7 @@ pub fn from_wanted_scope_view(
             .and_then(|state| state.latest_release_decision.clone())
             .map(from_release_decision)
             .transpose()?,
+        standby_count: view.standby_count,
         mismatch_recovery_eligible: state
             .as_ref()
             .is_some_and(|state| state.mismatch_recovery_eligible),

@@ -3321,6 +3321,89 @@ async fn graphql_wanted_items_missing_view_exposes_fileless_monitored_movie() {
 }
 
 #[tokio::test]
+async fn graphql_wanted_items_reports_standby_count_for_the_scope_anchor() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Standby Count Test", "MOVIE").await;
+    let wanted_item_id = Id::new().0;
+    let now = Utc::now();
+    ctx.library_state
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: wanted_item_id.clone(),
+            title_id: title_id.clone(),
+            title_name: Some("Standby Count Test".to_string()),
+            title_slug: None,
+            title_facet: Some("movie".to_string()),
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            series_movie_link_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            last_search_at: None,
+            status: scryer_application::AcquisitionScopeStatus::Wanted,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        })
+        .await
+        .expect("seed wanted scope");
+    let pending_store =
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        );
+    for score in [500, 400] {
+        pending_store
+            .insert_pending_release(&PendingRelease {
+                id: Id::new().0,
+                wanted_item_id: wanted_item_id.clone(),
+                title_id: title_id.clone(),
+                release_title: format!("Standby.Count.Test.{score}.1080p.WEB-DL"),
+                release_url: Some(format!("https://example.invalid/{score}.nzb")),
+                source_kind: None,
+                release_size_bytes: Some(1_024),
+                release_score: score,
+                scoring_log_json: None,
+                indexer_source: Some("test-indexer".to_string()),
+                indexer_id: None,
+                release_guid: Some(format!("guid-{score}")),
+                added_at: now.to_rfc3339(),
+                delay_until: now.to_rfc3339(),
+                status: scryer_application::PendingReleaseStatus::Standby,
+                grabbed_at: None,
+                source_password: None,
+                published_at: None,
+                info_hash: None,
+                seed_minimums: Default::default(),
+                seeders: None,
+            })
+            .await
+            .expect("seed standby release");
+    }
+
+    let body = gql(
+        &ctx,
+        r#"query($wantedKind: WantedKindValue!, $titleSearch: String) {
+            wantedItems(wantedKind: $wantedKind, titleSearch: $titleSearch) {
+                items { id standbyCount }
+            }
+        }"#,
+        json!({ "wantedKind": "MISSING", "titleSearch": "Standby Count Test" }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let item = &body["data"]["wantedItems"]["items"][0];
+    assert_eq!(item["id"], wanted_item_id);
+    assert_eq!(item["standbyCount"], 2);
+}
+
+#[tokio::test]
 async fn graphql_delete_title() {
     let ctx = TestContext::new().await;
     let id = add_test_title(&ctx, "To Delete", "MOVIE").await;

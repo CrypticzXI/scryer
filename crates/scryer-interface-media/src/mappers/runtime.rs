@@ -430,6 +430,8 @@ pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
         scoring_log_json: pr.scoring_log_json.map(json_string_to_value),
         indexer_source: pr.indexer_source,
         indexer_id: pr.indexer_id.map(ID),
+        published_at: parse_optional_datetime(pr.published_at, "pending release published_at"),
+        seeders: pr.seeders,
         added_at: parse_required_datetime(&pr.added_at, "pending release added_at"),
         delay_until: parse_required_datetime(&pr.delay_until, "pending release delay_until"),
         status: PendingReleaseStatusValue::from_application(pr.status),

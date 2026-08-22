@@ -384,6 +384,83 @@ async fn standby_listing_returns_only_standby_rows() {
 }
 
 #[tokio::test]
+async fn pending_release_page_uses_explicit_standby_status_or_the_open_review_default() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-page-statuses").await;
+    let wanted =
+        seed_wanted_item(&ctx, "title-page-statuses", AcquisitionScopeStatus::Wanted).await;
+    let standby = seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        500,
+        0,
+        PendingReleaseStatus::Standby,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        400,
+        5,
+        PendingReleaseStatus::Waiting,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        300,
+        5,
+        PendingReleaseStatus::NeedsReview,
+    )
+    .await;
+
+    let (standby_page, standby_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id.clone()),
+            statuses: vec![PendingReleaseStatus::Standby.as_str().to_string()],
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::ReleaseScoreDesc,
+        })
+        .await
+        .expect("standby page");
+    assert_eq!(standby_total, 1);
+    assert_eq!(
+        standby_page
+            .iter()
+            .map(|release| &release.id)
+            .collect::<Vec<_>>(),
+        vec![&standby.id]
+    );
+
+    let (default_page, default_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id),
+            statuses: Vec::new(),
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::DelayUntilAsc,
+        })
+        .await
+        .expect("default page");
+    assert_eq!(default_total, 2);
+    assert!(
+        default_page
+            .iter()
+            .all(|release| release.status != PendingReleaseStatus::Standby)
+    );
+}
+
+#[tokio::test]
 async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     let ctx = TestContext::new().await;
 

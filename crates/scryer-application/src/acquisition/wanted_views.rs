@@ -81,6 +81,8 @@ pub struct WantedScopeView {
     /// produced by a library scan is exactly that shape. Decorating only the
     /// rows showed `currentScore: null` for the common case.
     pub landed_bar: Option<i32>,
+    /// Number of saved fallback candidates keyed to this scope.
+    pub standby_count: i64,
     pub convergence: WantedViewConvergence,
 }
 
@@ -443,6 +445,30 @@ impl AppUseCase {
         for view in page.iter_mut() {
             view.state = states_by_scope.get(&view.scope_key).cloned();
         }
+        // One grouped query for the page's items — never a read of the whole
+        // standby table, which is uncapped by design.
+        let wanted_item_ids = page
+            .iter()
+            .filter_map(|view| view.state.as_ref().map(|state| state.id.clone()))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if !wanted_item_ids.is_empty() {
+            let standby_counts = self
+                .services
+                .workflow
+                .pending_releases
+                .count_standby_pending_releases_for_wanted_items(&wanted_item_ids)
+                .await?;
+            for view in page.iter_mut() {
+                view.standby_count = view
+                    .state
+                    .as_ref()
+                    .and_then(|state| standby_counts.get(&state.id))
+                    .copied()
+                    .unwrap_or_default();
+            }
+        }
         // `landed_bar` is resolved on read, never stored, so neither the
         // projection nor the state row carries it. Decorated per **view** so a
         // scope with no state row still reports a number (D10).
@@ -641,6 +667,7 @@ fn missing_target_to_view(target: AcquisitionTarget) -> WantedScopeView {
         is_hot: target.is_hot,
         state: None,
         landed_bar: None,
+        standby_count: 0,
         convergence: pending_convergence(),
     }
 }
@@ -674,6 +701,7 @@ fn cutoff_item_to_view(item: CutoffUnmetItem) -> Option<WantedScopeView> {
         is_hot: false,
         state: None,
         landed_bar: None,
+        standby_count: 0,
         convergence: pending_convergence(),
     })
 }
