@@ -208,8 +208,15 @@ impl CommandHost {
                         Some(services.timeout),
                     )
                     .and_then(|body| {
+                        let status = services.http.status_code(&services.plugin_id)?;
+                        if status == 429 {
+                            return Err(services
+                                .http
+                                .rate_limit_message(&services.plugin_id)?
+                                .unwrap_or_else(|| "HTTP 429: rate limited".to_string()));
+                        }
                         Ok(PluginHttpResponse {
-                            status: services.http.status_code(&services.plugin_id)?,
+                            status,
                             headers: services
                                 .http
                                 .headers(&services.plugin_id)?
@@ -300,7 +307,7 @@ fn unsupported_response(request: PluginHostRequest) -> PluginHostResponse {
 }
 
 pub(crate) fn add_to_linker(linker: &mut Linker<HostCtx>) -> wasmtime::Result<()> {
-    linker.func_wrap(HOST_ABI_MODULE, "scryer_host_call", host_call)?;
+    linker.func_wrap_async(HOST_ABI_MODULE, "scryer_host_call", host_call)?;
     linker.func_wrap(
         HOST_ABI_MODULE,
         "scryer_host_response_len",
@@ -319,17 +326,23 @@ pub(crate) fn add_to_linker(linker: &mut Linker<HostCtx>) -> wasmtime::Result<()
     Ok(())
 }
 
-fn host_call(mut caller: Caller<'_, HostCtx>, request_ptr: i32, request_len: i32) -> i32 {
-    let Ok(request) = read_memory(&mut caller, request_ptr, request_len) else {
-        return 0;
-    };
-    caller
-        .data()
-        .command_host
-        .call(&request)
-        .ok()
-        .and_then(|handle| i32::try_from(handle).ok())
-        .unwrap_or(0)
+fn host_call(
+    mut caller: Caller<'_, HostCtx>,
+    (request_ptr, request_len): (i32, i32),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    let request = read_memory(&mut caller, request_ptr, request_len);
+    let command_host = caller.data().command_host.clone();
+    Box::new(async move {
+        let Ok(request) = request else {
+            return 0;
+        };
+        tokio::task::spawn_blocking(move || command_host.call(&request))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|handle| i32::try_from(handle).ok())
+            .unwrap_or(0)
+    })
 }
 
 fn host_response_len(caller: Caller<'_, HostCtx>, handle: i32) -> i32 {

@@ -2127,6 +2127,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                 self.backoff_tracker.seed_persisted(&c.id, backoff).await;
             }
             let had_persisted_system_backoff = persisted_system_backoff.is_some();
+            // Every mode respects operational backoff, interactive included —
+            // Sonarr parity (`IndexerFactory.InteractiveSearchEnabled()` filters
+            // blocked indexers and logs "Temporarily ignoring indexer … due to
+            // recent failures"). Querying a backed-off indexer from the UI would
+            // extend the very ban the backoff is protecting against; the skip is
+            // logged at info for interactive so the reason stays visible.
             if let Some(backoff) = persisted_system_backoff.as_ref()
                 && backoff.disabled_until > now
             {

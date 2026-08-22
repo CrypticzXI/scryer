@@ -47,6 +47,18 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
+    "scryer-infrastructure-acquisition",
+    "scryer-infrastructure-configuration",
+    "scryer-infrastructure-crypto",
+    "scryer-infrastructure-datastore",
+    "scryer-infrastructure-identity",
+    "scryer-infrastructure-library",
+    "scryer-infrastructure-library-search",
+    "scryer-infrastructure-metadata",
+    "scryer-infrastructure-notifications",
+    "scryer-infrastructure-runtime",
+    "scryer-infrastructure-sql",
+    "scryer-infrastructure-workflow",
     "scryer-interface",
     "scryer-mediainfo",
     "scryer-plugins",
@@ -57,6 +69,18 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
+    "scryer-infrastructure-acquisition",
+    "scryer-infrastructure-configuration",
+    "scryer-infrastructure-crypto",
+    "scryer-infrastructure-datastore",
+    "scryer-infrastructure-identity",
+    "scryer-infrastructure-library",
+    "scryer-infrastructure-library-search",
+    "scryer-infrastructure-metadata",
+    "scryer-infrastructure-notifications",
+    "scryer-infrastructure-runtime",
+    "scryer-infrastructure-sql",
+    "scryer-infrastructure-workflow",
     "scryer-interface",
     "scryer-interface-acquisition",
     "scryer-interface-core",
@@ -95,7 +119,8 @@ const OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW: &str = ".github/workflows/release-plu
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
-const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_LOCAL_PATH_TOKENS: &[&str] =
+    &["~/", "/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
 const RELEASE_MACOS_HOME_PATH_COMPONENTS: &[&str] = &[
     "Applications",
     "Desktop",
@@ -3819,6 +3844,33 @@ mod tests {
     }
 
     #[test]
+    fn release_validation_targets_include_split_infrastructure_crates() {
+        for expected in [
+            "scryer-infrastructure-acquisition",
+            "scryer-infrastructure-configuration",
+            "scryer-infrastructure-crypto",
+            "scryer-infrastructure-datastore",
+            "scryer-infrastructure-identity",
+            "scryer-infrastructure-library",
+            "scryer-infrastructure-library-search",
+            "scryer-infrastructure-metadata",
+            "scryer-infrastructure-notifications",
+            "scryer-infrastructure-runtime",
+            "scryer-infrastructure-sql",
+            "scryer-infrastructure-workflow",
+        ] {
+            assert!(
+                SCRYER_PROD_PACKAGES.contains(&expected),
+                "release Nextest packages must include {expected}"
+            );
+            assert!(
+                SCRYER_CI_CLIPPY_PACKAGES.contains(&expected),
+                "release Clippy packages must include {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn app_release_branch_must_match_target_version() {
         let version = Version::parse("0.17.4").unwrap();
         assert!(require_app_release_branch("release-0.17.4", &version).is_ok());
@@ -4791,6 +4843,22 @@ mod tests {
             violations,
             vec![
                 "crates/scryer-plugin-sdk/src/lib.rs:1: local absolute path reference: const SDK_ROOT: &str = \"/Users/example/dev/scryer-media/scryer\";"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_hygiene_flags_home_relative_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "const DESIGN: &str = \"~/private/design.md\";",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-application/src/lib.rs:1: local absolute path reference: const DESIGN: &str = \"~/private/design.md\";"
                     .to_string()
             ]
         );

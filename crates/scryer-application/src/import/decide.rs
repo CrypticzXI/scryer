@@ -13,7 +13,7 @@
 //!                                            ──hold────▶ Held      (operator decides)
 //! ```
 //!
-//! `decide_import` *is* the ImportGate transition (design §2). Everything before
+//! `decide_import` *is* the ImportGate transition. Everything before
 //! it is path-specific plumbing (which file, which destination, which rename
 //! tokens); everything after it is carrying out the plan. The three paths used
 //! to hand-assemble this sequence, which is how they drifted: the title path
@@ -31,10 +31,10 @@
 //!    explicit manual import asked for the bypass.
 //! 4. Run [`crate::admission::evaluate_admission`] — the same comparator the
 //!    grab used, under the import policy (ties accepted, no floor, no churn
-//!    threshold; invariant I4).
+//!    threshold).
 //! 5. Resolve the displaced incumbent *rows* by id from the caller's list. A
 //!    subject that says "occupied" against a list that has no matching row is a
-//!    rejection, never a panic (D14).
+//!    rejection, never a panic.
 //!
 //! ## What is deliberately not a rejection
 //!
@@ -46,12 +46,9 @@
 //! release; operator-queued lanes hold them for manual import. A file whose
 //! vetoes fired on both passes imports with its honest bar.
 //!
-//! **A tie.** Import is never stricter than grab on the same facts (I4): the
+//! **A tie.** Import is never stricter than grab on the same facts: the
 //! bytes are already on disk, and discarding a file that merely matches the
 //! incumbent wastes the download.
-//!
-//! See `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model), §3
-//! (the lane table) and §4 D17 (dispositions).
 
 use crate::AppUseCase;
 use crate::post_download_gate::{
@@ -112,9 +109,9 @@ pub(crate) struct ImportDecisionInput<'a> {
     /// requirements a single time instead of twice.
     pub scoring_context: &'a ResolvedScoringContext,
     pub scope: &'a crate::SubmissionScope,
-    /// The D4 runtime basis for this scope: the episode span's runtime, the
-    /// title's, or the linked movie's. Size scoring is runtime-derived, so this
-    /// is what keeps the import's number comparable with the grab's.
+    /// The runtime basis for this scope: the episode span's runtime, the title's,
+    /// or the linked movie's. Size scoring is runtime-derived, so this is what
+    /// keeps the import's number comparable with the grab's.
     pub scope_runtime_minutes: Option<i32>,
     /// The **announced** evidence: the canonical import parse as it came off the
     /// release name, before the probe merged its findings in.
@@ -148,10 +145,10 @@ pub(crate) struct ImportDecisionInput<'a> {
     /// Bypasses the verdict gate (blocklisting the release they chose would
     /// fight them) and selects [`crate::admission::AdmissionPolicy::manual`].
     pub operator_intent: bool,
-    /// The superset the displaced rows are resolved from (D14/A1): every primary
-    /// file of the title on the movie and link paths, the episode-scoped list on
-    /// the episode path. Never a path-filtered list — a renamed incumbent lives
-    /// at a path this import would never guess.
+    /// The superset the displaced rows are resolved from: every primary file of
+    /// the title on the movie and link paths, the episode-scoped list on the
+    /// episode path. Never a path-filtered list — a renamed incumbent lives at a
+    /// path this import would never guess.
     pub incumbent_rows: IncumbentRows<'a>,
     /// How to name this scope in an operator-facing message ("this title",
     /// "this series-movie link", "this episode").
@@ -183,9 +180,9 @@ impl SupersededIncumbents {
 
 /// An import that must go ahead *and* burn its own release.
 ///
-/// The quality-lie case for an unoccupied scope (D2): an honest 720p beats no
-/// episode at all, but the release must never be offered back as an "upgrade"
-/// to the tier it claimed.
+/// The quality-lie case for an unoccupied scope: an honest 720p beats no episode
+/// at all, but the release must never be offered back as an "upgrade" to the
+/// tier it claimed.
 #[derive(Debug, Clone)]
 pub(crate) struct BlocklistDirective {
     pub code: &'static str,
@@ -197,7 +194,7 @@ pub(crate) struct BlocklistDirective {
 /// There is no "discard" outcome to choose from: `result_state.rs` maps every
 /// non-`Imported` decision to `TrackedDownloadState::ImportBlocked`, so the
 /// download sits waiting for an operator either way. What these three differ in
-/// is the *side effects* (design §9, D17 restated).
+/// is the *side effects*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RejectionDisposition {
     /// Blocklist the release for this title and reopen the scope's search.
@@ -376,7 +373,7 @@ pub(crate) fn evaluate_import_admission(
 ///
 /// The bytes written can differ from the source's size (a repaired par2 set, a
 /// container remux at transfer), and the persisted bar has to be the score of
-/// what is on disk or a later re-derivation will not reproduce it (I7). This is
+/// what is on disk or a later re-derivation will not reproduce it. This is
 /// the same pipeline [`decide_import`] ran, over the same resolved context — no
 /// profile lookup, no rules load, no database round trip; only the term
 /// sequence, with one number changed.
@@ -432,12 +429,12 @@ pub(crate) fn disposition_for(
         // search would find candidates the same guard refuses.
         Reason::UpgradesDisabled
         // The release is fine — it just cannot be placed here without dropping
-        // coverage. That is the bounded I4 exception D8 documents: a
-        // double-episode file admitted per-member at grab, refused as a span at
-        // import. D18 keeps it from being re-grabbed while it sits held.
+        // coverage. A double-episode file can be admitted per-member at grab but
+        // refused as a span at import. Queue-aware admission keeps it from being
+        // re-grabbed while it sits held.
         | Reason::BroaderIncumbentSpan
         // Grab-only reasons, mapped honestly rather than left to a wildcard: an
-        // import policy never sets `cutoff_score` (I4) and a pack verdict cannot
+        // import policy never sets `cutoff_score`, and a pack verdict cannot
         // reach a per-file import at all. If one ever does, holding is the
         // outcome that asks a human rather than the one that shrugs.
         | Reason::FormatCutoffReached { .. }

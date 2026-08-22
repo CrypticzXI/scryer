@@ -38,14 +38,10 @@
 //!
 //! Both arrows marked "grab" and the admit arm of the import gate are this
 //! module. The comparison is lexicographic — **tier, then revision, then score**
-//! (invariant I3) — and what differs between the lanes is only the
-//! [`AdmissionPolicy`]: grab applies churn thresholds, the upgrade guard, the
-//! format cutoff and the queue; import accepts ties and refuses only downgrades
-//! (I4); manual bypasses the score entirely while the structural span guard
-//! still binds.
-//!
-//! Design: `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model
-//! and its invariants) and §3 (which lane enters where).
+//! — and what differs between the lanes is only the [`AdmissionPolicy`]: grab
+//! applies churn thresholds, the upgrade guard, the format cutoff and the
+//! queue; import accepts ties and refuses only downgrades; manual bypasses the
+//! score entirely while the structural span guard still binds.
 
 use std::collections::HashSet;
 
@@ -79,9 +75,9 @@ pub(crate) struct Incumbent {
     pub revision: i32,
     pub file_id: String,
     pub file_path: String,
-    /// The release group that produced this file, for the repack rule (D16). A
-    /// REPACK is a group re-releasing its own encode, so the comparison needs
-    /// the incumbent's group and not just its score.
+    /// The release group that produced this file. A REPACK is a group
+    /// re-releasing its own encode, so the comparison needs the incumbent's
+    /// group and not just its score.
     pub release_group: Option<String>,
     /// The incumbent's canonical landed score — its bar.
     pub score: i32,
@@ -102,8 +98,8 @@ pub(crate) struct Incumbent {
 /// Its facts are always **re-derived from the submission's release title**, never
 /// read out of the `grabbed_release` JSON. That number was computed under
 /// whatever profile, persona and rule packs were live at grab time; using it
-/// would reintroduce exactly the staleness this design removes (D13, D20, the
-/// incumbent bar), and it does not exist at all for pre-0.18 rows.
+/// would reintroduce stale decisions instead of applying the current profile,
+/// and it does not exist at all for pre-0.18 rows.
 #[derive(Debug, Clone)]
 pub(crate) struct QueuedRelease {
     /// The release name, for the operator-facing message.
@@ -142,7 +138,7 @@ pub(crate) struct AdmissionPolicy {
     /// Sonarr's `CutoffFormatScore`, and it is a **ceiling on the incumbent**,
     /// not a floor on the candidate. The two used to be the same profile field
     /// (`min_score_to_grab`), which meant "never grab anything under 100" also
-    /// said "stop upgrading once you have 100" (D19). The floor is now a veto in
+    /// said "stop upgrading once you have 100". The floor is now a veto in
     /// the scorer (`apply_min_score_gate`) and never reaches this module; the
     /// grab lanes fill this from `criteria.cutoff_score`, falling back to
     /// `min_score_to_grab` when the profile forbids upgrades — which is exactly
@@ -153,11 +149,11 @@ pub(crate) struct AdmissionPolicy {
     pub manual_override: bool,
     /// Whether the scope's in-flight submissions count as pseudo-incumbents.
     ///
-    /// **Grab only.** Import must never re-litigate the queue (I4): the bytes
+    /// **Grab only.** Import must never re-litigate the queue: the bytes
     /// are already on disk, and refusing them because something else is still
     /// downloading would discard a finished download in favour of one that may
-    /// never finish. D18's "coexist, don't cancel" — whichever lands worse is
-    /// skipped at its own import.
+    /// never finish. Queued downloads coexist rather than being canceled;
+    /// whichever lands worse is skipped at its own import.
     pub applies_to_queue: bool,
 }
 
@@ -218,7 +214,7 @@ impl AdmissionPolicy {
 
 /// What a candidate is, for admission purposes: where it sits in the profile's
 /// quality ordering, whether it is a re-release of that quality, and what it
-/// scores within that tier — compared in exactly that order (I3, D9).
+/// scores within that tier — compared in exactly that order.
 ///
 /// Three separate values rather than one number. Sonarr compares
 /// `QualityModelComparer` (quality, then revision) first and only consults the
@@ -420,7 +416,7 @@ impl AdmissionSubject {
         }
     }
 
-    /// Attach the scope's in-flight submissions as pseudo-incumbents (D18).
+    /// Attach the scope's in-flight submissions as pseudo-incumbents.
     pub(crate) fn with_queued(mut self, queued: Vec<QueuedRelease>) -> Self {
         self.queued = queued;
         self
@@ -563,7 +559,7 @@ fn queued_rejection(
         let win = queued_candidate_win(candidate, queued, policy);
         match win {
             // A revision upgrade admits regardless of `allow_upgrades`, exactly
-            // as it does over a file on disk (D9).
+            // as it does over a file on disk.
             Some(QueueWin::Revision) => None,
             // Sonarr's `QueueUpgradesNotAllowed`: the candidate would only be
             // an *upgrade* over what is already downloading, and the profile
@@ -707,7 +703,7 @@ fn evaluate_any_member(
                 return false;
             }
             // Same ladder as `evaluate_admission`, per member: tier, then
-            // revision, then score (D9). A higher revision improves the member
+            // revision, then score. A higher revision improves the member
             // whatever the profile says about upgrades — see the long note at
             // the single-file ladder.
             match tier_cmp(candidate.tier_index, incumbent.tier_index) {
@@ -769,7 +765,7 @@ fn evaluate_any_member(
     // Tier first here too. A pack every member of which is held by a *better
     // quality* file was refused as `NotAnUpgrade` with a `required_delta` the
     // candidate could never have cleared — a threshold an operator might go and
-    // tune, when the honest answer is that no score crosses a tier (I3).
+    // tune, when the honest answer is that no score crosses a tier.
     let lower_tier_than_every_member = subject.incumbents.iter().all(|incumbent| {
         tier_cmp(candidate.tier_index, incumbent.tier_index) == std::cmp::Ordering::Less
     });
@@ -902,7 +898,7 @@ pub(crate) fn evaluate_admission(
             std::cmp::Ordering::Equal => {}
         }
 
-        // Revision, between tier and score (D9). A PROPER or a REPACK of the
+        // Revision, between tier and score. A PROPER or a REPACK of the
         // quality already on disk is a re-release of the *same* thing, so it is
         // not a matter of degree: it wins outright and the score never gets a
         // say — a re-encode fixing a sync fault can easily score a few points
@@ -950,9 +946,8 @@ pub(crate) fn evaluate_admission(
         // An incumbent already past the profile's format cutoff is only worth
         // displacing by a whole tier, not by trimmings — and a whole tier
         // admitted above, without reaching this line. Reported on its own
-        // (n1/D19): a `NotAnUpgrade` naming a `required_delta` the candidate
-        // could never have cleared reads as a tunable threshold, and it is not
-        // one.
+        // because a `NotAnUpgrade` naming a `required_delta` the candidate could
+        // never have cleared reads as a tunable threshold, and it is not one.
         if let Some(cutoff_score) = policy
             .cutoff_score
             .filter(|cutoff| incumbent.score >= *cutoff)

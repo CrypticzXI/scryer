@@ -13,18 +13,15 @@
 //! Two consequences of that split are worth stating, because they are what the
 //! module is careful about:
 //!
-//! - **Listing metadata orders, it never scores** (invariant I6). Release age,
+//! - **Listing metadata orders, it never scores.** Release age,
 //!   indexer priority, seeders, votes and coverage preference decide which
 //!   candidate is looked at first and never enter a number that gets persisted
 //!   or compared across time — none of them can be reconstructed from a media
 //!   row.
-//! - **Whatever this lane grabs, import will accept** (I4). The admission call
+//! - **Whatever this lane grabs, import will accept.** The admission call
 //!   here is the same function the import gate calls, over the same subject
 //!   builder, under a *stricter* policy — so a release that clears the grab
 //!   cannot be refused at import on the same facts.
-//!
-//! Design: `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model)
-//! and §3 (the per-lane entry points).
 
 use super::acquisition::{
     collection_download_submission_scope_for_wanted_item,
@@ -41,10 +38,9 @@ use crate::quality::release_parser::ParseDisposition;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
-/// Identity ambiguity for a canonical title (Pillar A tier 0): lookup keys that
-/// cannot identify this title on their own. This includes keys shared with
-/// another library title and the bare form of an explicitly year-qualified
-/// canonical title such as `Tide Chart (2023)`.
+/// Lookup keys that cannot identify a canonical title on their own. This
+/// includes keys shared with another library title and the bare form of an
+/// explicitly year-qualified canonical title such as `Tide Chart (2023)`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TitleIdentityAmbiguity {
     pub(crate) shared_lookup_keys: Vec<String>,
@@ -77,13 +73,13 @@ impl TitleIdentityAmbiguity {
         }
     }
 
-    /// True when an auto candidate must present a positive disambiguator (A2).
+    /// True when an auto candidate must present a positive disambiguator.
     pub(crate) fn requires_disambiguator(&self) -> bool {
         !self.shared_lookup_keys.is_empty()
     }
 
     /// True when `key` is an alias only this title claims within the library
-    /// collision set — the A2(3) "unique alias hit" disambiguator.
+    /// collision set — the "unique alias hit" disambiguator.
     pub(crate) fn key_is_unique_to_title(&self, key: &str) -> bool {
         !self
             .shared_lookup_keys
@@ -111,13 +107,13 @@ impl CanonicalTitleEvidence {
     }
 }
 
-/// How a parsed release name matched a canonical title, retained so the Pillar A
-/// disambiguator check can tell a shared bare key from a unique alias.
+/// How a parsed release name matched a canonical title, retained so the identity
+/// check can tell a shared bare key from a unique alias.
 #[derive(Clone, Debug)]
 pub(crate) struct TitleEvidenceMatch {
     /// The canonical lookup key that actually matched.
     pub(crate) matched_key: String,
-    /// The release carries the title's year (A2(1)).
+    /// The release carries the title's year.
     pub(crate) year_corroborated: bool,
     /// A one-word alias is too weak to establish identity without an external
     /// id (or the title year, represented by `year_corroborated`).
@@ -188,8 +184,8 @@ impl ReleaseAutoDecisionCode {
             "title_mismatch" => Some(Self::TitleMismatch),
             "episode_mismatch" => Some(Self::EpisodeMismatch),
             "episode_not_monitored" => Some(Self::EpisodeNotMonitored),
-            // Deliberately the same string the D1 pre-submission gate records on
-            // its Failed attempts, so both category vetoes read alike.
+            // Deliberately the same string the pre-submission gate records on
+            // failed attempts, so both category vetoes read alike.
             "category_mismatch" => Some(Self::CategoryMismatch),
             "ambiguous_identity" => Some(Self::AmbiguousIdentity),
             "quality_blocked" => Some(Self::QualityBlocked),
@@ -698,7 +694,7 @@ fn extraction_decomposes_into_evidence_keys(
 
 /// Matching counterpart of [`parsed_release_matches_title_evidence`] that keeps
 /// *which* lookup key matched and whether the release year corroborated it.
-/// Pillar A needs both: a shared bare key is not identity evidence for an
+/// The identity check needs both: a shared bare key is not evidence for an
 /// ambiguous subject, while a unique alias or a year agreement is.
 pub(crate) fn match_parsed_release_to_title_evidence(
     parsed: &ParsedReleaseMetadata,
@@ -801,7 +797,7 @@ pub(crate) fn candidate_matches_title_subject(
 }
 
 /// Matching counterpart of [`candidate_matches_title_subject`] that retains the
-/// Pillar A disambiguator inputs (matched key and year agreement).
+/// disambiguator inputs (matched key and year agreement).
 pub(crate) fn candidate_title_match(
     candidate: &IndexerSearchResult,
     evidence: &CanonicalTitleEvidence,
@@ -822,11 +818,11 @@ pub(crate) fn candidate_title_match(
     })
 }
 
-/// Pillar A2: for an identity-ambiguous subject an auto candidate must present
-/// one positive disambiguator. `external_id_agreement` is the A2(2) input,
-/// computed by [`candidate_external_id_agreement`] from the captured response
-/// attrs. Per §9 decision 3 an indexer-asserted id suffices alone; a
-/// contradicting parsed year has already vetoed the match upstream in
+/// For an identity-ambiguous subject, an automatic candidate must present one
+/// positive disambiguator. `external_id_agreement` is computed by
+/// [`candidate_external_id_agreement`] from the captured response attributes.
+/// An indexer-asserted id suffices alone; a contradicting parsed year has
+/// already vetoed the match upstream in
 /// [`match_parsed_release_to_title_evidence`], so the year veto still outranks
 /// it. Only `Some(true)` satisfies the gate — a disagreement or an absent
 /// assertion is simply not a disambiguator, never a veto of its own.
@@ -836,12 +832,12 @@ pub(crate) fn candidate_presents_identity_disambiguator(
     external_id_agreement: Option<bool>,
 ) -> bool {
     if let Some(evidence_match) = title_match.evidence_match.as_ref() {
-        // A2(1) — the release carries the title's year.
+        // The release carries the title's year.
         if evidence_match.year_corroborated {
             return true;
         }
-        // A2(3) — the matched key is an alias unique to this title within the
-        // library collision set, not the shared bare key.
+        // The matched key is an alias unique to this title within the library
+        // collision set, not the shared bare key.
         if evidence
             .ambiguity
             .key_is_unique_to_title(&evidence_match.matched_key)
@@ -850,12 +846,12 @@ pub(crate) fn candidate_presents_identity_disambiguator(
         }
     }
 
-    // A2(2) — external id agreement. `title_validated_upstream` remains
-    // diagnostic provenance and cannot break an identity tie.
+    // External-id agreement can break the identity tie;
+    // `title_validated_upstream` remains diagnostic provenance and cannot.
     external_id_agreement.unwrap_or(false)
 }
 
-/// A2(2): compare the indexer's response ids against ids Scryer already holds.
+/// Compare the indexer's response ids against ids Scryer already holds.
 ///
 /// `Some(false)` when any comparable id kind disagrees, `Some(true)` when all
 /// comparable kinds agree, and `None` when there was nothing to compare. An
@@ -1122,7 +1118,7 @@ fn candidate_revision(candidate: &IndexerSearchResult) -> i32 {
 /// Tier-scoped rather than exact-quality-scoped, because Scryer's tiers are
 /// resolution-only until Part 5 — a 1080p WEB-DL PROPER therefore counts as a
 /// revision of a 1080p Bluray. Coarser than Sonarr, and the same coarseness the
-/// rest of the ladder already has (D9).
+/// rest of the ladder already has.
 ///
 /// `false` for an unoccupied scope: there is nothing to be a revision *of*.
 ///
@@ -1152,7 +1148,7 @@ fn revision_upgrade_over(
 ///
 /// Sonarr's `CutoffNotMet` is `QualityCutoffNotMet || CustomFormatCutoffNotMet`,
 /// so a scope is finished only when the quality *and* the format score have both
-/// arrived. Wiring the quality half alone made D19 inert in the other direction:
+/// arrived. Checking the quality half alone would defeat the format cutoff:
 /// `derive_format_cutoff_targets` would nominate a scope whose bar sits below
 /// `cutoff_score`, and every lane would then refuse its candidates
 /// `CutoffReached` because the quality was fine.
@@ -1173,7 +1169,7 @@ pub(crate) fn incumbent_at_cutoff(
         })
 }
 
-/// The one cutoff gate (D15).
+/// The one cutoff gate.
 ///
 /// Sonarr's `QualityCutoffNotMet` is two halves: the scope's best file has
 /// reached the profile cutoff (`incumbent_at_cutoff`, resolved per scope by the
@@ -1270,10 +1266,10 @@ pub(crate) fn evaluate_auto_candidate(
     // the wanted ones, and there is no way to take half a file.
     //
     // `EpisodeSet` only. `SingleEpisode` coverage is already monitored-filtered
-    // by target derivation and by the RSS lane, and a `Collection` is exempt
-    // (D21): a season pack's scope *is* its monitored members, and refusing a
-    // whole season because one episode is unmonitored is the partial-monitoring
-    // trap D8 exists to avoid.
+    // by target derivation and by the RSS lane. A `Collection` is exempt because
+    // a season pack's scope *is* its monitored members; refusing a whole season
+    // because one episode is unmonitored would reintroduce the partial-monitoring
+    // trap.
     if !matches!(
         context.subject.submission_scope,
         SubmissionScope::Collection { .. }
@@ -1285,12 +1281,12 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::EpisodeNotMonitored;
     }
 
-    // Pillar D2: the indexer filed this release under a category that
-    // contradicts the subject. Checked before the ambiguity gate because it is
-    // the sharper reason — an explicit contradiction rather than absent
-    // evidence — and it is the only category protection torrent/magnet grabs and
-    // out-of-band plugin NZB fetches get, since D1 only sees NZBs Scryer itself
-    // downloads before submission.
+    // The indexer filed this release under a category that contradicts the
+    // subject. Checked before the ambiguity gate because it is the sharper
+    // reason — an explicit contradiction rather than absent evidence — and it
+    // is the only category protection torrent/magnet grabs and out-of-band
+    // plugin NZB fetches get. The pre-submission gate sees only NZBs Scryer
+    // itself downloads before submission.
     // Compare against the facet the subject was SEARCHED as, not the owning
     // title's facet: a series-movie subject is movie-faceted while its owner
     // is a series, and a correctly categorized Movies release must not read
@@ -1332,8 +1328,8 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::AmbiguousIdentity;
     }
 
-    // Pillar A3: a bare release name is not identity evidence when the subject's
-    // canonical title collides with another library title.
+    // A bare release name is not identity evidence when the subject's canonical
+    // title collides with another library title.
     if context
         .subject
         .title_evidence
@@ -1362,8 +1358,8 @@ pub(crate) fn evaluate_auto_candidate(
         .as_ref()
         .map(|decision| decision.preference_score)
         .unwrap_or(0);
-    // Built before the cutoff gate because the gate is candidate-aware (D15):
-    // it needs the candidate's tier and revision, not just the scope's state.
+    // Built before the cutoff gate because that gate needs the candidate's tier
+    // and revision, not just the scope's state.
     let candidate_facts = crate::admission::CandidateFacts::new(
         crate::quality_profile::quality_tier_index(
             &context.profile.criteria,
@@ -1424,11 +1420,11 @@ pub(crate) fn evaluate_auto_candidate(
         // Sonarr reads `UpgradeAllowed ? CutoffFormatScore : MinFormatScore`
         // here; the `else` arm is unreachable in this ladder, because a
         // no-upgrade profile returns `UpgradesDisabled` before either gate
-        // consults the cutoff. So this is just the cutoff (D19).
+        // consults the cutoff. So this is just the cutoff.
         cutoff_score: context.profile.criteria.cutoff_score,
         manual_override: false,
-        // D18: the grab lanes, and only the grab lanes, treat in-flight
-        // submissions as pseudo-incumbents.
+        // The grab lanes, and only the grab lanes, treat in-flight submissions
+        // as pseudo-incumbents.
         applies_to_queue: true,
     };
     let verdict = crate::admission::evaluate_admission(context.admission, candidate_facts, &policy);
@@ -1472,10 +1468,9 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::UpgradeRejected;
     }
 
-    // After admission on purpose: with D9 a same-tier higher-revision candidate
-    // now admits above, so this rule runs on exactly the population Sonarr's
-    // `RepackSpecification` checks — the repacks that would otherwise be
-    // fetched.
+    // After admission on purpose: a same-tier higher-revision candidate now
+    // admits above, so this rule runs on exactly the population Sonarr's
+    // `RepackSpecification` checks — the repacks that would otherwise be fetched.
     if crate::acquisition_policy::repack_group_mismatch(
         candidate,
         candidate_facts,
@@ -1523,12 +1518,12 @@ fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Optio
 }
 
 impl AppUseCase {
-    /// Library-local identity ambiguity for a search subject (Pillar A tier 0).
+    /// Library-local identity ambiguity for a search subject.
     /// Reads the cached monitored-title matcher, whose normalized-title index is
     /// already built from `canonical_title_lookup_keys`, so a convergence cycle
     /// pays for one index build instead of a query per subject. Falls back to
-    /// "not ambiguous" when the index cannot be loaded — Pillar B still catches
-    /// the bad import.
+    /// "not ambiguous" when the index cannot be loaded; the import gate still
+    /// catches the mismatch.
     pub(crate) async fn title_identity_ambiguity(&self, title: &Title) -> TitleIdentityAmbiguity {
         match self.monitored_title_matcher().await {
             Ok(matcher) => TitleIdentityAmbiguity::from_shared_keys(
@@ -1674,7 +1669,7 @@ impl AppUseCase {
         };
 
         // One catalog read per scope, shared by the unmonitored-episode refusal
-        // (D21) and by the queued pseudo-incumbents' D4 runtime basis (D18).
+        // and by the queued pseudo-incumbents' runtime-basis calculation.
         let (catalog_episodes, catalog_collections) = if title.facet == MediaFacet::Movie {
             (Vec::new(), Vec::new())
         } else {
@@ -1714,7 +1709,7 @@ impl AppUseCase {
                 crate::quality::canonical_context::SubjectIntent::Grab,
             )
             .await;
-        // **What is already downloading counts too** (D18). Sonarr's
+        // **What is already downloading counts too.** Sonarr's
         // `QueueSpecification` compares a queued release the same way it
         // compares a file on disk, and the convergence lane's old answer — a
         // scope-level "something is in flight, skip" — could not tell an
@@ -2791,7 +2786,7 @@ mod tests {
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
     }
 
-    // ── Pillar A: identity ambiguity + required disambiguators ───────────────
+    // ── Identity ambiguity and required disambiguators ──────────────────────
 
     /// The incident pair: a live-action `Tide Chart` (2023, series) and the
     /// anime `Tide Chart` (1999) in the same library, both claiming the bare
@@ -2898,8 +2893,8 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_year_disambiguator() {
-        // A2(1): the release carries the live-action title's year, so it names
-        // one of the two colliding titles and clears the identity gate.
+        // The release carries the live-action title's year, so it names one of
+        // the two colliding titles and clears the identity gate.
         let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate("Tide.Chart.2023.S02E01.1080p.WEB-DL.x264-GRP", None);
@@ -2912,7 +2907,7 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_unique_alias_disambiguator() {
-        // A2(3): the matched key is an alias only the live-action title claims.
+        // The matched key is an alias only the live-action title claims.
         let (live_action, library) = tide_chart_library(vec!["Tide Chart Live Action".to_string()]);
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate("Tide.Chart.Live.Action.S02E01.1080p.WEB-DL.x264-GRP", None);
@@ -3117,7 +3112,7 @@ mod tests {
         );
     }
 
-    // ── A2(2) + D2: indexer response attributes ─────────────────────────────
+    // ── Indexer response attributes ─────────────────────────────────────────
 
     fn series_episode_candidate(
         release_title: &str,
@@ -3137,8 +3132,8 @@ mod tests {
 
     #[test]
     fn anime_only_response_category_vetoes_a_series_subject() {
-        // D2 on the response lane: the indexer filed this under anime only, and
-        // the wanted item is a plain series episode.
+        // The indexer filed this under anime only, and the wanted item is a
+        // plain series episode.
         let mut title = make_title();
         title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
@@ -3177,8 +3172,8 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_response_id_disambiguator() {
-        // A2(2): the indexer asserts the live-action title's own TVDB id, which
-        // per §9 decision 3 suffices on its own for a bare release name.
+        // The indexer asserts the live-action title's own TVDB id, which
+        // suffices on its own for a bare release name.
         let (live_action, library) = tide_chart_library(Vec::new());
         let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         subject.tvdb_id = Some("393199".to_string());
@@ -3503,7 +3498,7 @@ mod tests {
         );
     }
 
-    // ── D15: the one cutoff gate, and the PROPER escape ───────────────────
+    // ── The one cutoff gate, and the PROPER escape ──────────────────────────
 
     mod cutoff {
         use super::*;
@@ -3583,11 +3578,11 @@ mod tests {
             )
         }
 
-        /// **F-3b-1 / D15+D19.** The cutoff has two halves and a scope is
-        /// finished only when **both** have arrived, which is Sonarr's
+        /// The cutoff has two halves and a scope is finished only when **both**
+        /// have arrived, which is Sonarr's
         /// `CutoffNotMet = QualityCutoffNotMet || CustomFormatCutoffNotMet`.
         ///
-        /// Gating on the quality alone made D19 inert in the other direction:
+        /// Gating on the quality alone would defeat the format-score cutoff:
         /// `derive_format_cutoff_targets` nominates exactly the scopes whose
         /// quality is fine and whose bar is below `cutoff_score`, and every lane
         /// would then refuse their candidates `CutoffReached`.
@@ -3599,8 +3594,7 @@ mod tests {
             // Bar 600: finished.
             let at = holding_at(600);
             assert!(incumbent_at_cutoff(true, &at, Some(500)));
-            // No `cutoff_score` configured: the quality half decides alone,
-            // which is exactly the pre-D19 behaviour.
+            // No `cutoff_score` configured: the quality half decides alone.
             assert!(incumbent_at_cutoff(true, &below, None));
             assert!(!incumbent_at_cutoff(false, &at, Some(500)));
             // An unoccupied scope has no bar to fall short of; the quality half
@@ -3890,7 +3884,7 @@ mod tests {
         }
     }
 
-    /// **D21.** Sonarr's `MonitoredEpisodeSpecification`: a batch that reaches
+    /// Sonarr's `MonitoredEpisodeSpecification`: a batch that reaches
     /// into an episode nobody is monitoring brings unwanted bytes with the
     /// wanted ones, and there is no way to take half a file.
     #[test]
@@ -3945,9 +3939,9 @@ mod tests {
         );
     }
 
-    /// A **Collection** scope is exempt (D21). A season pack's scope already
-    /// *is* its monitored members, and refusing the whole season because one
-    /// episode is unmonitored is the partial-monitoring trap D8 removes.
+    /// A **Collection** scope is exempt. A season pack's scope already *is* its
+    /// monitored members, and refusing the whole season because one episode is
+    /// unmonitored would reintroduce the partial-monitoring trap.
     #[test]
     fn a_season_pack_is_exempt_from_the_unmonitored_refusal() {
         let title = make_title();
@@ -3992,7 +3986,7 @@ mod tests {
         );
     }
 
-    // ── D21: the anti-loop check, and unmonitored episodes ────────────────
+    // ── The anti-loop check and unmonitored episodes ─────────────────────────
 
     mod already_imported {
         use super::*;
@@ -4053,7 +4047,7 @@ mod tests {
         /// `.../Nightfall.S01E01.1080p-GRP.PROPER.mkv` — and the PROPER of a
         /// release already on disk reported "already active" and could never be
         /// grabbed. Comparing file *stems* exactly is what fixes it, and it is
-        /// what makes D9's revision step reachable at all.
+        /// what makes the revision comparison reachable at all.
         #[test]
         fn a_proper_of_a_release_on_disk_is_still_grabbable() {
             let mut file = make_media_file("Nightfall.S01E01.1080p.WEB-DL-GRP", Some("episode-1"));
