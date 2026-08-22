@@ -165,6 +165,7 @@ mod tests {
                 facet: "series".to_string(),
                 source_title: Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
                 observed_release_name: None,
+                release_size_bytes: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Episode {
                     episode_id: "episode-3".to_string(),
@@ -716,6 +717,7 @@ mod tests {
             facet: "movie".to_string(),
             source_title: Some(source_title.to_string()),
             observed_release_name: None,
+            release_size_bytes: None,
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Title,
         }

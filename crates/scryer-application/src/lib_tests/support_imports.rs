@@ -248,6 +248,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             role: input.role,
             file_path: input.file_path.clone(),
             size_bytes: input.size_bytes,
+            announced_size_bytes: input.announced_size_bytes,
             source_signature_scheme: input.source_signature_scheme.clone(),
             source_signature_value: input.source_signature_value.clone(),
             quality_label: input.quality_label.clone(),

@@ -664,6 +664,7 @@ fn bluey_submission_evidence(release_title: &str, scope: SubmissionScope) -> Rel
         facet: "series".to_string(),
         source_title: Some(release_title.to_string()),
         observed_release_name: None,
+        release_size_bytes: None,
         purpose: crate::DownloadSubmissionPurpose::Standard,
         scope,
     }
@@ -909,6 +910,7 @@ fn episode_identity_pack_member_resolves_anime_absolute_numbering_with_title_con
         facet: "anime".to_string(),
         source_title: Some(release_title.to_string()),
         observed_release_name: None,
+        release_size_bytes: None,
         purpose: crate::DownloadSubmissionPurpose::Standard,
         scope: SubmissionScope::Collection {
             collection_id: "season-1".to_string(),
@@ -1727,6 +1729,7 @@ fn scoped_media_file(
             role: crate::MediaFileRole::Primary,
             file_path: file_path.to_string(),
             size_bytes: 1_000,
+            announced_size_bytes: None,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: Some("1080p".to_string()),

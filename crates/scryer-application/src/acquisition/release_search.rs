@@ -2268,6 +2268,7 @@ mod tests {
             role: crate::MediaFileRole::Primary,
             file_path: format!("/data/series/{release_title}.mkv"),
             size_bytes: 1,
+            announced_size_bytes: None,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: Some("720p".to_string()),

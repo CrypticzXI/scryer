@@ -140,6 +140,7 @@ pub(crate) async fn execute_upgrade(
     old_file_media_root: Option<&str>,
     recycle_config: &RecycleBinConfig,
     import_mode: ImportMode,
+    announced_size_bytes: Option<i64>,
 ) -> AppResult<UpgradeResult> {
     let audit_actor = DomainEventActor::from(actor);
 
@@ -179,6 +180,7 @@ pub(crate) async fn execute_upgrade(
         &scoring_log,
         &source_path_string,
         import_mode,
+        announced_size_bytes,
     )
     .await?;
 
@@ -979,6 +981,7 @@ async fn prepare_replacement_before_old_removal(
     scoring_log: &str,
     source_path_string: &str,
     import_mode: ImportMode,
+    announced_size_bytes: Option<i64>,
 ) -> AppResult<PreparedUpgradeReplacement> {
     let import_path_string = path_to_stored_string(import_path);
     // The replacement is transferred exactly like a first import: through the
@@ -1008,6 +1011,10 @@ async fn prepare_replacement_before_old_removal(
         title_id: title.id.clone(),
         file_path: import_path_string.clone(),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            announced_size_bytes,
+        ),
         quality_label: stored_quality_label
             .map(str::to_string)
             .or_else(|| prepared.parsed.quality.clone()),

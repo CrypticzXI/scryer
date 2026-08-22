@@ -135,7 +135,15 @@ pub(crate) struct ImportDecisionInput<'a> {
     pub accepted: &'a ImportedFileAcceptance,
     pub prior_rescore_changes: &'a [String],
     pub landed_size_bytes: i64,
+    /// The size the release announced (`DownloadSubmission.release_size_bytes`),
+    /// when the grab recorded one. Inside the overhead band the landed pass
+    /// scores the size term on it, so grab and import agree
+    /// (`canonical_scoring::size_basis_bytes`); a real shortfall scores on what
+    /// landed.
+    pub announced_size_bytes: Option<i64>,
     pub is_filler: bool,
+    /// Guard-failure policy for the source that queued this download.
+    pub origin: ImportOrigin,
     /// `operator_initiated_import(..)` — an operator picked this file by hand.
     /// Bypasses the verdict gate (blocklisting the release they chose would
     /// fight them) and selects [`crate::admission::AdmissionPolicy::manual`].
@@ -389,7 +397,7 @@ fn score_landed(
         input.parsed,
         input.accepted,
         input.scope_runtime_minutes,
-        size_bytes,
+        crate::canonical_scoring::size_basis_bytes(size_bytes, input.announced_size_bytes),
         input.prior_rescore_changes,
         input.is_filler,
     )

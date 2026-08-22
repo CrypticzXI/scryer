@@ -697,7 +697,10 @@ pub(crate) fn analyzed_facts_from_media_file(file: &crate::TitleMediaFile) -> An
 
     AnalyzedFacts {
         analysis,
-        actual_size_bytes: file.size_bytes,
+        // The analyzed pass sets the bar (`total` collapses to it), so it must
+        // score the same size the import scored: the announced size inside
+        // the overhead band, the real size otherwise.
+        actual_size_bytes: size_basis_bytes(file.size_bytes, file.announced_size_bytes),
         rule_file_doc: Some(rule_file_doc),
     }
 }
@@ -798,6 +801,15 @@ pub(crate) const SIZE_OVERHEAD_TOLERANCE: f64 = 0.85;
 /// least [`SIZE_OVERHEAD_TOLERANCE`] of it, otherwise `landed`. Both the import
 /// decision and the incumbent bar go through here, which is what keeps I7 — the
 /// re-derived bar reproduces the import score — true for this term.
+/// What the media-file row should remember as its announced size: the
+/// announced size when the import scored on it, `None` when the landed size was
+/// the basis. Persisting only the engaged case keeps the column honest — a row
+/// never carries an "announced" number it was not scored on (a pack's total on
+/// an episode row, say).
+pub(crate) fn persisted_announced_size_bytes(landed: i64, announced: Option<i64>) -> Option<i64> {
+    announced.filter(|announced| size_basis_bytes(landed, Some(*announced)) == *announced)
+}
+
 pub(crate) fn size_basis_bytes(landed: i64, announced: Option<i64>) -> i64 {
     match announced {
         Some(announced)
@@ -820,10 +832,9 @@ pub(crate) fn size_basis_bytes(landed: i64, announced: Option<i64>) -> i64 {
 /// every row written before the column existed, a scanned file, an adopted
 /// download — is scored on its real size, exactly as before.
 pub(crate) fn evidence_from_media_file(file: &crate::TitleMediaFile) -> ReleaseEvidence {
-    // F4 step 2 (after WP F lands): `file.announced_size_bytes` replaces `None`.
     ReleaseEvidence::announced(
         announced_parse_from_media_file(file),
-        Some(size_basis_bytes(file.size_bytes, None)),
+        Some(size_basis_bytes(file.size_bytes, file.announced_size_bytes)),
     )
     .with_analysis(analyzed_facts_from_media_file(file))
 }

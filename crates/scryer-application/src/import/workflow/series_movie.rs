@@ -964,6 +964,10 @@ async fn import_additional_movie_download(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            release_evidence.announced_size_bytes(),
+        ),
         role: crate::MediaFileRole::Additional,
         quality_label: parsed.quality.clone(),
         scene_name: Some(parsed.raw_title.clone()),
@@ -1420,7 +1424,9 @@ async fn import_movie_download(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes: release_evidence.announced_size_bytes(),
         is_filler: false,
+        origin,
         operator_intent: manual_replacement,
         incumbent_rows: crate::import_decide::IncumbentRows::Title(&existing_files),
         scope_label: "this title",
@@ -1494,6 +1500,7 @@ async fn import_movie_download(
             Some(old_file_recycle_context.media_root.as_str()),
             &old_file_recycle_context.recycle_config,
             import_mode,
+            release_evidence.announced_size_bytes(),
         )
         .await
         {
@@ -1625,6 +1632,10 @@ async fn import_movie_download(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            release_evidence.announced_size_bytes(),
+        ),
         quality_label: post_download_score.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: post_download_score.parsed.release_group.clone(),
@@ -2182,7 +2193,9 @@ async fn import_series_movie_download(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes: release_evidence.announced_size_bytes(),
         is_filler: false,
+        origin,
         operator_intent: manual_replacement,
         // Every primary file of the title, not the handful that happen to sit at
         // this import's destination path: the subject holds *every* file linked
@@ -2265,6 +2278,7 @@ async fn import_series_movie_download(
                 Some(old_file_recycle_context.media_root.as_str()),
                 &old_file_recycle_context.recycle_config,
                 import_mode,
+                release_evidence.announced_size_bytes(),
             )
             .await
             {
@@ -2467,6 +2481,10 @@ async fn import_series_movie_download(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                release_evidence.announced_size_bytes(),
+            ),
             quality_label: post_download_score.parsed.quality.clone(),
             scene_name: Some(prepared.parsed.raw_title.clone()),
             release_group: post_download_score.parsed.release_group.clone(),

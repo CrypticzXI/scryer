@@ -645,6 +645,13 @@ pub struct TitleMediaFile {
     pub series_movie_link_ids: Vec<String>,
     pub file_path: String,
     pub size_bytes: i64,
+    /// The announced (indexer-advertised) size this row was scored on, kept only
+    /// when the import actually scored on it: the file landed within the normal
+    /// overhead band of what its release advertised
+    /// (`canonical_scoring::size_basis_bytes`). `None` means the row is scored
+    /// on its real size — every row written before the column existed, scanned
+    /// files, adopted downloads, and files that landed short of the band.
+    pub announced_size_bytes: Option<i64>,
     pub role: crate::MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,

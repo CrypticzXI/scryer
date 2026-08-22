@@ -868,6 +868,9 @@ pub struct InsertMediaFileInput {
     pub title_id: String,
     pub file_path: String,
     pub size_bytes: i64,
+    /// The announced size the import scored this file on, when it did
+    /// (`canonical_scoring::persisted_announced_size_bytes`); `None` otherwise.
+    pub announced_size_bytes: Option<i64>,
     pub role: MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,

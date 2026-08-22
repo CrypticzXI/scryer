@@ -5305,6 +5305,7 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
         facet: "series".to_string(),
         source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
         observed_release_name: None,
+        release_size_bytes: None,
         purpose: DownloadSubmissionPurpose::Standard,
         scope: SubmissionScope::Episode {
             episode_id: grabbed_episode.id,
@@ -5796,6 +5797,92 @@ async fn automatic_import_applies_single_episode_release_to_its_sole_obfuscated_
         );
     }
     assert!(source_file.exists());
+}
+
+/// Option c, persisted: a file that landed inside the overhead band of its
+/// announced size remembers that announced size on its media-file row (the bar
+/// re-derives the import score from it); a real shortfall, or a grab without an
+/// announced size, remembers nothing.
+#[tokio::test]
+async fn an_imported_file_remembers_the_announced_size_it_was_scored_on() {
+    let landed = PACK_VIDEO_SIZE_BYTES as i64;
+    for (announced, remembered) in [
+        // 256 MiB landed against 264 MiB announced: 97 %, inside the band.
+        (Some(landed + 8 * 1024 * 1024), true),
+        // Half of what was announced: a real shortfall, scored on the landed size.
+        (Some(landed * 2), false),
+        (None, false),
+    ] {
+        let (
+            FailClosedPackFixture {
+                app,
+                user,
+                title,
+                episode,
+                library_dir,
+                ..
+            },
+            download_submissions,
+        ) = fail_closed_pack_fixture_with_submissions().await;
+        let _keep_library = &library_dir;
+        let item_id = "announced-size-single-file";
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(PACK_IDENTITY_EPISODE_RELEASE.to_string()),
+                release_size_bytes: announced,
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: episode.id.clone(),
+                },
+            })
+            .await
+            .expect("record series submission");
+
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let _source_file = write_pack_video(
+            source_dir.path(),
+            &format!("{PACK_IDENTITY_EPISODE_RELEASE}.mkv"),
+        );
+        let completed = series_pack_completed_download(
+            item_id,
+            &title.id,
+            PACK_IDENTITY_EPISODE_RELEASE,
+            source_dir.path(),
+        );
+
+        let result = crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("completed import should run");
+        assert_eq!(
+            result.decision,
+            scryer_domain::ImportDecision::Imported,
+            "announced={announced:?}: {result:?}"
+        );
+        let media_files = app
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files");
+        assert_eq!(media_files.len(), 1, "{media_files:?}");
+        assert_eq!(media_files[0].size_bytes, landed);
+        assert_eq!(
+            media_files[0].announced_size_bytes,
+            if remembered { announced } else { None },
+            "announced={announced:?}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -73,6 +73,11 @@ pub(crate) enum ReleaseEvidence {
         /// fallback name when `source_title` is missing; never the identity.
         #[serde(default)]
         observed_release_name: Option<String>,
+        /// The size the indexer announced for this grab
+        /// (`download_submissions.release_size_bytes`); the import scores the
+        /// size term on it when the landed file is within the overhead band.
+        #[serde(default)]
+        release_size_bytes: Option<i64>,
         purpose: crate::DownloadSubmissionPurpose,
         scope: SubmissionScope,
     },
@@ -135,6 +140,7 @@ impl ReleaseEvidence {
             facet: submission.facet.clone(),
             source_title,
             observed_release_name,
+            release_size_bytes: submission.release_size_bytes,
             purpose: submission.purpose,
             scope: submission.scope.clone(),
         }
@@ -163,6 +169,17 @@ impl ReleaseEvidence {
     pub(crate) fn scope(&self) -> Option<&SubmissionScope> {
         match self {
             Self::ScryerSubmission { scope, .. } => Some(scope),
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
+    /// The size the indexer announced for a Scryer grab; `None` for adopted
+    /// downloads and grabs recorded without one.
+    pub(crate) fn announced_size_bytes(&self) -> Option<i64> {
+        match self {
+            Self::ScryerSubmission {
+                release_size_bytes, ..
+            } => *release_size_bytes,
             Self::DownloaderObservation { .. } => None,
         }
     }

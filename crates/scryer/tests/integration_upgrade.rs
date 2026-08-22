@@ -489,6 +489,7 @@ async fn seed_media_file(
         title_id: title_id.to_string(),
         file_path: file_path.to_string_lossy().to_string(),
         size_bytes: size,
+        announced_size_bytes: None,
         quality_label: Some("720p".to_string()),
         acquisition_score: Some(score),
         ..Default::default()

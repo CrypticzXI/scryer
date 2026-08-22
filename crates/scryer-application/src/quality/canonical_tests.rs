@@ -434,6 +434,7 @@ fn media_row_as_import_would_write(
         series_movie_link_ids: Vec::new(),
         file_path: "/data/Movies/Movie (2024)/Movie (2024) WEBDL-1080p.mkv".into(),
         size_bytes: analyzed.actual_size_bytes,
+        announced_size_bytes: None,
         role: crate::MediaFileRole::Primary,
         source_signature_scheme: None,
         source_signature_value: None,
@@ -1287,5 +1288,63 @@ fn inside_the_overhead_band_the_size_term_matches_the_grab() {
     assert_ne!(
         grab, landed_basis,
         "fixture precondition: a 20% shortfall must actually move the size term"
+    );
+}
+
+// ── Option c, round trip: the row remembers the size it was scored on ───────
+
+#[test]
+fn only_an_engaged_announced_size_is_persisted_on_the_row() {
+    let announced = 8 * GIB;
+    assert_eq!(
+        persisted_announced_size_bytes((7.2 * GIB as f64) as i64, Some(announced)),
+        Some(announced),
+        "inside the band the import scored on the announced size, so the row keeps it"
+    );
+    assert_eq!(
+        persisted_announced_size_bytes(6 * GIB, Some(announced)),
+        None,
+        "a real shortfall was scored on the landed size; nothing to remember"
+    );
+    assert_eq!(persisted_announced_size_bytes(6 * GIB, None), None);
+}
+
+/// I7 for option c: a file that landed inside the overhead band was scored on
+/// its announced size; the row remembers that size, so re-deriving its bar
+/// reproduces the import score — and forgetting it would not.
+#[test]
+fn a_row_that_remembers_its_announced_size_reproduces_the_import_score() {
+    let profile = movie_profile();
+    let weights = balanced_weights();
+    let tags: Vec<String> = Vec::new();
+    let context = ctx(&profile, &weights, &tags);
+
+    // Announced 8 GiB, landed 7.2 GiB (90 %): inside the band, so both of the
+    // import's passes scored the size term on 8 GiB.
+    let announced_bytes = 8 * GIB;
+    let landed_bytes = (7.2 * GIB as f64) as i64;
+    assert_eq!(
+        size_basis_bytes(landed_bytes, Some(announced_bytes)),
+        announced_bytes
+    );
+    let evidence = announced(8.0).with_analysis(analyzed(8.0, None));
+    let at_import = score_release(&evidence, &context);
+
+    let mut row = media_row_as_import_would_write(&evidence, &at_import);
+    row.size_bytes = landed_bytes;
+    row.announced_size_bytes = persisted_announced_size_bytes(landed_bytes, Some(announced_bytes));
+    let re_derived = score_media_file(&row, &context);
+    assert_eq!(
+        re_derived.total, at_import.total,
+        "the bar must reproduce the import score: import wrote {}, row yields {}",
+        at_import.total, re_derived.total
+    );
+
+    // Load-bearing: a row that forgot its announcement drifts to the landed size.
+    row.announced_size_bytes = None;
+    let landed_only = score_media_file(&row, &context);
+    assert_ne!(
+        landed_only.total, at_import.total,
+        "fixture precondition: a 10 % shortfall must move the size term"
     );
 }

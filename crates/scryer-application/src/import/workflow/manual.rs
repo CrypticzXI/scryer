@@ -1624,6 +1624,10 @@ async fn execute_manual_series_movie_import(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                release_evidence.announced_size_bytes(),
+            ),
             role: crate::MediaFileRole::Primary,
             quality_label: quality_label.clone(),
             scene_name: Some(parsed.raw_title.clone()),
@@ -2117,6 +2121,8 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             &quality_profile,
             None,
             crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+            release_evidence.announced_size_bytes(),
             false,
         )
         .await

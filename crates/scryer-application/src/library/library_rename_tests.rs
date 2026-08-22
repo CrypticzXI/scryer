@@ -865,6 +865,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         role: crate::MediaFileRole::Primary,
         file_path: path.to_string(),
         size_bytes: 1_000,
+        announced_size_bytes: None,
         source_signature_scheme: None,
         source_signature_value: None,
         quality_label: Some("720p".to_string()),

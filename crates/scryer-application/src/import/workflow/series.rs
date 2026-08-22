@@ -962,6 +962,8 @@ async fn import_single_episode_file(
         quality_profile,
         None,
         runtime_sample_mode,
+        origin,
+        release_evidence.announced_size_bytes(),
         additional_import,
     )
     .await?;

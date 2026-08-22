@@ -70,6 +70,8 @@ async fn execute_resolved_episode_import(
     quality_profile: &crate::QualityProfile,
     quality_override: Option<String>,
     runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
+    origin: crate::import_decide::ImportOrigin,
+    announced_size_bytes: Option<i64>,
     additional_import: bool,
 ) -> AppResult<EpisodeImportOutcome> {
     let use_season_folders = app.resolve_use_season_folders(title).await?;
@@ -178,6 +180,10 @@ async fn execute_resolved_episode_import(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                announced_size_bytes,
+            ),
             role: crate::MediaFileRole::Additional,
             quality_label: effective_quality_label.clone(),
             scene_name: Some(effective_parsed.raw_title.clone()),
@@ -510,7 +516,9 @@ async fn execute_resolved_episode_import(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes,
         is_filler,
+        origin,
         operator_intent: manual_replacement,
         incumbent_rows: crate::import_decide::IncumbentRows::Episodes(&existing_incumbents),
         scope_label: "this episode",
@@ -580,6 +588,7 @@ async fn execute_resolved_episode_import(
             Some(old_file_recycle_context.media_root.as_str()),
             &old_file_recycle_context.recycle_config,
             import_mode,
+            announced_size_bytes,
         )
         .await
         {
@@ -663,6 +672,10 @@ async fn execute_resolved_episode_import(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            announced_size_bytes,
+        ),
         quality_label: post_download_score.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: post_download_score.parsed.release_group.clone(),
