@@ -174,6 +174,12 @@ impl ReleaseEvidence {
         }
     }
 
+    /// Whether a completed download was selected by an operator. Client-only
+    /// observations have no such durable intent and remain automatic.
+    pub(crate) fn import_origin(&self) -> crate::import_decide::ImportOrigin {
+        crate::import_decide::ImportOrigin::from_submission_purpose(self.purpose())
+    }
+
     /// The release name to parse and score: the persisted indexer title for a
     /// Scryer grab, else the client-reported release name observed at
     /// completion, else the source video's file stem.

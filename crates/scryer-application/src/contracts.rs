@@ -16,6 +16,10 @@ pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,
     AdditionalFile,
+    /// A release an operator chose directly (interactive Queue or a redeemed
+    /// download token). It still runs import guards, but a guard failure is
+    /// held for manual import instead of burning the release.
+    OperatorQueued,
     /// A manually-queued release chosen by the operator to replace the existing
     /// primary file. On import it bypasses the required-audio gate (like a manual
     /// file-pick) and forces the upgrade/replace path regardless of score, so a
@@ -28,6 +32,7 @@ impl DownloadSubmissionPurpose {
         match self {
             Self::Standard => "standard",
             Self::AdditionalFile => "additional_file",
+            Self::OperatorQueued => "operator_queued",
             Self::ManualReplacement => "manual_replacement",
         }
     }
@@ -35,6 +40,7 @@ impl DownloadSubmissionPurpose {
     pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
+            "operator_queued" => Self::OperatorQueued,
             "manual_replacement" => Self::ManualReplacement,
             _ => Self::Standard,
         }
@@ -47,6 +53,11 @@ impl DownloadSubmissionPurpose {
     /// A manual operator-chosen replacement for the primary file.
     pub fn is_manual_replacement(self) -> bool {
         self == Self::ManualReplacement
+    }
+
+    /// A release selected by an operator rather than a convergence lane.
+    pub fn is_operator_queued(self) -> bool {
+        self == Self::OperatorQueued
     }
 }
 

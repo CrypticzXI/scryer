@@ -1222,10 +1222,11 @@ fn landed_tier_is_worse(
 /// folded in WEBDL-vs-WEBRip source noise, so honest releases tripped it. Ours
 /// cannot: [`crate::quality_profile::normalize_quality_tier`] keys on the
 /// resolution alone, so a source relabel never reads as a tier change.
-pub(crate) fn resolve_truth_verdict_action(
+pub(crate) fn resolve_truth_verdict_action_for_origin(
     verdict: &crate::canonical_scoring::TruthVerdict,
     criteria: &crate::QualityProfileCriteria,
     scope_is_occupied: bool,
+    origin: crate::import_decide::ImportOrigin,
 ) -> TruthVerdictAction {
     use crate::canonical_scoring::TruthVerdict;
 
@@ -1274,6 +1275,9 @@ pub(crate) fn resolve_truth_verdict_action(
             };
             if !landed_tier_is_worse(criteria, announced, landed) {
                 return TruthVerdictAction::Import;
+            }
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
+                return TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed));
             }
             if scope_is_occupied {
                 TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed))
@@ -2236,7 +2240,12 @@ mod tests {
     #[test]
     fn a_consistent_verdict_just_imports() {
         assert!(matches!(
-            resolve_truth_verdict_action(&TruthVerdict::Consistent, &tiered_criteria(), true),
+            resolve_truth_verdict_action_for_origin(
+                &TruthVerdict::Consistent,
+                &tiered_criteria(),
+                true,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
             TruthVerdictAction::Import
         ));
     }
@@ -2246,12 +2255,13 @@ mod tests {
     #[test]
     fn a_blocked_verdict_rejects_whether_or_not_the_scope_is_occupied() {
         for occupied in [true, false] {
-            let action = resolve_truth_verdict_action(
+            let action = resolve_truth_verdict_action_for_origin(
                 &TruthVerdict::Blocked {
                     codes: codes(&["required_audio_missing"]),
                 },
                 &tiered_criteria(),
                 occupied,
+                crate::import_decide::ImportOrigin::Automatic,
             );
             let TruthVerdictAction::Reject(rejection) = action else {
                 panic!("a hard block must refuse the import (occupied = {occupied})");
@@ -2265,17 +2275,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_operator_queued_guard_failure_is_rejected_for_manual_import() {
+        let action = resolve_truth_verdict_action_for_origin(
+            &TruthVerdict::Blocked {
+                codes: codes(&["required_audio_missing"]),
+            },
+            &tiered_criteria(),
+            false,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+        );
+        assert!(matches!(action, TruthVerdictAction::Reject(_)));
+
+        let quality_lie = resolve_truth_verdict_action_for_origin(
+            &TruthVerdict::Contradicted {
+                codes: codes(&["quality_contradicted:1080P->720P"]),
+            },
+            &tiered_criteria(),
+            false,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+        );
+        assert!(matches!(quality_lie, TruthVerdictAction::Reject(_)));
+    }
+
     /// Advertised 1080p, landed 720p, and something already occupies the scope:
     /// the tier gate would refuse it anyway, so name the reason and stop the
     /// release from being offered again.
     #[test]
     fn a_quality_lie_into_an_occupied_scope_is_rejected() {
-        let action = resolve_truth_verdict_action(
+        let action = resolve_truth_verdict_action_for_origin(
             &TruthVerdict::Contradicted {
                 codes: codes(&["size_expected", "quality_contradicted:1080P->720P"]),
             },
             &tiered_criteria(),
             true,
+            crate::import_decide::ImportOrigin::Automatic,
         );
         let TruthVerdictAction::Reject(rejection) = action else {
             panic!("a landed tier below the announced one must not overwrite a file");
@@ -2288,12 +2322,13 @@ mod tests {
     /// re-grab it and "upgrade" the scope to the tier it already has.
     #[test]
     fn a_quality_lie_into_an_empty_scope_imports_and_blocklists() {
-        let action = resolve_truth_verdict_action(
+        let action = resolve_truth_verdict_action_for_origin(
             &TruthVerdict::Contradicted {
                 codes: codes(&["quality_contradicted:1080P->720P"]),
             },
             &tiered_criteria(),
             false,
+            crate::import_decide::ImportOrigin::Automatic,
         );
         let TruthVerdictAction::ImportAndBlocklist { code, reason } = action else {
             panic!("an empty scope keeps an honest file at its real tier");
@@ -2310,12 +2345,13 @@ mod tests {
         for occupied in [true, false] {
             assert!(
                 matches!(
-                    resolve_truth_verdict_action(
+                    resolve_truth_verdict_action_for_origin(
                         &TruthVerdict::Contradicted {
                             codes: codes(&["size_slightly_small", "bitrate_low"]),
                         },
                         &tiered_criteria(),
                         occupied,
+                        crate::import_decide::ImportOrigin::Automatic,
                     ),
                     TruthVerdictAction::Import
                 ),
@@ -2329,12 +2365,13 @@ mod tests {
     #[test]
     fn a_quality_contradiction_that_landed_better_imports_normally() {
         assert!(matches!(
-            resolve_truth_verdict_action(
+            resolve_truth_verdict_action_for_origin(
                 &TruthVerdict::Contradicted {
                     codes: codes(&["quality_contradicted:720P->1080P"]),
                 },
                 &tiered_criteria(),
                 true,
+                crate::import_decide::ImportOrigin::Automatic,
             ),
             TruthVerdictAction::Import
         ));

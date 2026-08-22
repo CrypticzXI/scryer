@@ -352,7 +352,9 @@ async fn execute_resolved_episode_import(
             // source that changed under the import means the release is not
             // what it claimed, so it is burned and the scope reopened. A
             // user/system rule veto on the file is also an import failure.
-            let disposition = crate::import_decide::prepare_rejection_disposition(&rejection);
+            let rejection = origin.held_rejection(rejection);
+            let disposition =
+                crate::import_decide::prepare_rejection_disposition_for_origin(&rejection, origin);
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,
                 disposition,
@@ -377,14 +379,18 @@ async fn execute_resolved_episode_import(
             file = %source_video.display(),
             "rejecting implausible episode coverage during import"
         );
+        let rejection = crate::post_download_gate::ImportedFileRejection {
+            message: issue.message,
+            recycle_reason: super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE,
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: Vec::new(),
+        };
+        let rejection = origin.held_rejection(rejection);
         return Ok(EpisodeImportOutcome::Rejected {
-            rejection: crate::post_download_gate::ImportedFileRejection {
-                message: issue.message,
-                recycle_reason: super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE,
-                skip_reason: Some(ImportSkipReason::PolicyMismatch),
-                blocking_rule_codes: Vec::new(),
-            },
-            disposition: crate::import_decide::RejectionDisposition::Blocklist,
+            disposition: crate::import_decide::prepare_rejection_disposition_for_origin(
+                &rejection, origin,
+            ),
+            rejection,
             reason_code: Some(
                 super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
             ),

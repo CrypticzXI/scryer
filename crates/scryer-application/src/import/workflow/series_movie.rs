@@ -1144,6 +1144,7 @@ async fn import_movie_download(
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -1218,11 +1219,29 @@ async fn import_movie_download(
                 )
                 .await;
             }
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    release_evidence,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    rejection.recycle_reason,
+                    format!(
+                        "held for manual import because the file failed {}: {}",
+                        rejection.recycle_reason, rejection.message
+                    ),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 crate::post_download_gate::BlocklistAttribution::default(),
@@ -1955,6 +1974,7 @@ async fn import_series_movie_download(
         .cloned()
         .collect();
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -2033,11 +2053,29 @@ async fn import_series_movie_download(
                 )
                 .await;
             }
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    release_evidence,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    rejection.recycle_reason,
+                    format!(
+                        "held for manual import because the file failed {}: {}",
+                        rejection.recycle_reason, rejection.message
+                    ),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 crate::post_download_gate::BlocklistAttribution {

@@ -7232,6 +7232,8 @@ struct DispositionFixture {
     title_folder: PathBuf,
     completed: CompletedDownload,
     blocklist_repo: Arc<MockBlocklistRepo>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    import_repo: Arc<TrackingImportRepo>,
     scope_id: String,
     _library_dir: tempfile::TempDir,
     _download_dir: tempfile::TempDir,
@@ -7259,6 +7261,73 @@ impl DispositionFixture {
             .map(|entry| entry.source_title.clone().unwrap_or_default())
             .collect()
     }
+
+    async fn set_submission_purpose(&self, purpose: crate::DownloadSubmissionPurpose) {
+        let mut submissions = self.download_submissions.store.lock().await;
+        let submission = submissions
+            .iter_mut()
+            .find(|submission| {
+                submission.download_client_item_id == self.completed.download_client_item_id
+            })
+            .expect("fixture submission exists");
+        submission.purpose = purpose;
+    }
+
+    fn tracked_import_pending(&self) -> crate::tracked_downloads::TrackedDownload {
+        let mut client_item = queue_history_fixture_item(
+            &self.completed.download_client_item_id,
+            DownloadQueueState::Completed,
+            300 * 1024 * 1024,
+        );
+        client_item.client_id = self.completed.client_id.clone();
+        client_item.client_type = self.completed.client_type.clone();
+        client_item.client_name = "Primary NZBGet".to_string();
+        client_item.title_id = Some(self.title.id.clone());
+        client_item.title_name = self.title.name.clone();
+        client_item.facet = Some("movie".to_string());
+
+        crate::tracked_downloads::TrackedDownload {
+            id: crate::tracked_downloads::tracked_download_id(
+                Some(self.completed.client_id.as_str()),
+                &self.completed.client_type,
+                &self.completed.download_client_item_id,
+            ),
+            client_id: self.completed.client_id.clone(),
+            client_type: self.completed.client_type.clone(),
+            client_item,
+            completed_source: None,
+            state: TrackedDownloadState::ImportPending,
+            status: scryer_domain::TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some(self.title.id.clone()),
+            facet: Some("movie".to_string()),
+            source_title: Some(self.completed.name.clone()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: scryer_domain::TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
+            snapshot_missing_since: None,
+        }
+    }
+
+    async fn latest_import_result(&self) -> crate::ImportResult {
+        let records = self.import_repo.records.lock().await;
+        let result_json = records
+            .iter()
+            .rev()
+            .find_map(|record| record.result_json.as_deref())
+            .expect("completed import stores a result");
+        serde_json::from_str(result_json).expect("stored import result deserializes")
+    }
 }
 
 async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixture {
@@ -7272,9 +7341,10 @@ async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixt
     );
     let media_files = Arc::new(MockMediaFileRepo::default());
     let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let import_repo = Arc::new(TrackingImportRepo::default());
     let app = base_app.with_test_overrides(|services| {
         services
-            .with_imports(Arc::new(TrackingImportRepo::default()))
+            .with_imports(import_repo.clone())
             .with_file_importer(Arc::new(CopyingFileImporter))
             .with_media_files(media_files)
             .with_blocklist_repo(blocklist_repo.clone())
@@ -7408,6 +7478,8 @@ async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixt
         title_folder,
         completed,
         blocklist_repo,
+        download_submissions,
+        import_repo,
         scope_id,
         _library_dir: library_dir,
         _download_dir: download_dir,
@@ -7591,13 +7663,12 @@ score_entry["operator_refuses_this_file"] := -10000 if {
         },
     );
 
-    let result = crate::import_workflow::import_completed_download(
-        &fixture.app,
-        &fixture.user,
-        &fixture.completed,
-    )
-    .await
-    .expect("the import runs to a decision");
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a burned import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
 
     assert_eq!(
         result.decision,
@@ -7616,9 +7687,101 @@ score_entry["operator_refuses_this_file"] := -10000 if {
         AcquisitionScopeStatus::Wanted,
         "a burned veto must reopen the scope so convergence can try another release"
     );
+    assert_eq!(tracked.state, TrackedDownloadState::Failed);
     assert!(
         primary_movie_files(&fixture).await.is_empty(),
         "a held file is not imported"
+    );
+}
+
+/// The same file-rule rejection remains a guard for an operator-chosen release,
+/// but it is held for manual import instead of being burned and retried.
+#[tokio::test]
+async fn operator_queued_file_rule_veto_is_held_without_blocklisting_or_reopening() {
+    let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
+    fixture
+        .set_submission_purpose(crate::DownloadSubmissionPurpose::OperatorQueued)
+        .await;
+
+    let policy = scryer_rules::UserPolicy {
+        id: "no_probe_files".to_string(),
+        name: "No probe files".to_string(),
+        rego_source: scryer_rules::rewrite_package_declaration(
+            r#"
+score_entry["operator_refuses_this_file"] := -10000 if {
+    input.file != null
+}
+"#,
+            "no_probe_files",
+        ),
+        origin: scryer_rules::PolicyOrigin::User,
+        applied_facets: vec!["movie".to_string()],
+    };
+    *fixture
+        .app
+        .services
+        .customization
+        .user_rules
+        .write()
+        .expect("user rules lock should be writable") =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("rule fixture should compile");
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1920);
+    analysis.video_height = Some(1080);
+    let rule_file_doc = crate::user_rule_input::file_doc_from_analysis(&analysis);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: Some(rule_file_doc),
+            audio_language_warning: None,
+        },
+    );
+
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a held import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
+
+    assert_eq!(
+        // A held import is `Skipped` (the manual-import hold), never `Rejected`:
+        // `result_state` parks it as ImportBlocked for the operator.
+        result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
+    assert!(
+        result.error_message.as_deref().is_some_and(
+            |message| message.starts_with("held for manual import because the file failed")
+        ),
+        "{result:?}"
+    );
+    assert!(
+        fixture.blocklisted_titles().await.is_empty(),
+        "an operator-held release must not be blocklisted"
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Grabbed,
+        "a held release leaves the scope alone"
+    );
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        tracked
+            .status_messages
+            .iter()
+            .any(|message| message.starts_with("held for manual import because the file failed")),
+        "{tracked:?}"
+    );
+    assert!(
+        primary_movie_files(&fixture).await.is_empty(),
+        "held files are not imported automatically"
     );
 }
 

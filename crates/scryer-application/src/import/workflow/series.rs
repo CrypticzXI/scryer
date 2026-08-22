@@ -933,6 +933,7 @@ async fn import_single_episode_file(
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     let additional_import = import_purpose.is_additional_file();
     let runtime_sample_mode = if import_purpose.is_manual_replacement() {
         crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck

@@ -191,6 +191,10 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
         Some(DownloadSourceKind::NzbUrl),
     );
     assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].purpose,
+        crate::DownloadSubmissionPurpose::OperatorQueued
+    );
     assert_eq!(submissions[0].request_signature, expected_signature);
     assert_eq!(
         download_client

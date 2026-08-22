@@ -56,10 +56,49 @@
 use crate::AppUseCase;
 use crate::post_download_gate::{
     ImportedFileAcceptance, ImportedFileRejection, PostDownloadAcquisitionDecision,
-    compute_post_download_acquisition_decision, resolve_truth_verdict_action,
+    compute_post_download_acquisition_decision, resolve_truth_verdict_action_for_origin,
 };
 use crate::quality::canonical_context::ResolvedScoringContext;
 use scryer_domain::{ImportSkipReason, Title};
+
+/// The origin determines what a failed import guard costs the release.
+/// Explicit manual import keeps its separate `operator_intent` bypass; this
+/// value describes normal post-download guard handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportOrigin {
+    Automatic,
+    OperatorQueued,
+}
+
+impl ImportOrigin {
+    pub(crate) fn from_submission_purpose(purpose: crate::DownloadSubmissionPurpose) -> Self {
+        if purpose.is_operator_queued() || purpose.is_manual_replacement() {
+            Self::OperatorQueued
+        } else {
+            Self::Automatic
+        }
+    }
+
+    fn rejection_disposition(self) -> RejectionDisposition {
+        match self {
+            Self::Automatic => RejectionDisposition::Blocklist,
+            Self::OperatorQueued => RejectionDisposition::Hold,
+        }
+    }
+
+    pub(crate) fn held_rejection(
+        self,
+        mut rejection: ImportedFileRejection,
+    ) -> ImportedFileRejection {
+        if self == Self::OperatorQueued {
+            rejection.message = format!(
+                "held for manual import because the file failed {}: {}",
+                rejection.recycle_reason, rejection.message
+            );
+        }
+        rejection
+    }
+}
 
 /// Everything the decision needs, and nothing about where the bytes go.
 ///
@@ -217,14 +256,15 @@ pub(crate) async fn decide_import(
 
     let scored = score_landed(input, input.landed_size_bytes);
 
-    // The verdict is about the release, so it is resolved before admission —
-    // a release that lied is burned whether or not the scope had room for it.
+    // The verdict is about the release, so it is resolved before admission.
+    // Automatic failures burn; operator-queued failures are held for review.
     let mut blocklist_after_import = None;
     if !input.operator_intent {
-        match resolve_truth_verdict_action(
+        match resolve_truth_verdict_action_for_origin(
             &scored.truth_verdict,
             &input.scoring_context.profile().criteria,
             !subject.is_unoccupied(),
+            input.origin,
         ) {
             crate::post_download_gate::TruthVerdictAction::Import => {}
             crate::post_download_gate::TruthVerdictAction::ImportAndBlocklist { code, reason } => {
@@ -232,8 +272,8 @@ pub(crate) async fn decide_import(
             }
             crate::post_download_gate::TruthVerdictAction::Reject(rejection) => {
                 return ImportDecisionOutcome::Reject {
-                    rejection,
-                    disposition: RejectionDisposition::Blocklist,
+                    rejection: input.origin.held_rejection(rejection),
+                    disposition: input.origin.rejection_disposition(),
                 };
             }
         }
@@ -409,11 +449,12 @@ pub(crate) fn disposition_for(
 /// the gate not fired first — operator policy on the file, not a
 /// misrepresentation — it is still an import failure. The release is
 /// blocklisted and the scope reopens so the next search cannot retry it.
-pub(crate) fn prepare_rejection_disposition(
+pub(crate) fn prepare_rejection_disposition_for_origin(
     rejection: &ImportedFileRejection,
+    origin: ImportOrigin,
 ) -> RejectionDisposition {
     let _ = rejection;
-    RejectionDisposition::Blocklist
+    origin.rejection_disposition()
 }
 
 /// Translate a shared admission refusal into the import layer's rejection shape.
@@ -538,5 +579,38 @@ fn resolve_superseded_rows(rows: &IncumbentRows<'_>, ranked: &[String]) -> Super
                 })
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejection() -> ImportedFileRejection {
+        ImportedFileRejection {
+            message: "required audio language is missing".to_string(),
+            recycle_reason: "language_mismatch",
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn operator_queued_guard_rejections_are_held_with_an_actionable_message() {
+        let held = ImportOrigin::OperatorQueued.held_rejection(rejection());
+        assert_eq!(
+            prepare_rejection_disposition_for_origin(&held, ImportOrigin::OperatorQueued),
+            RejectionDisposition::Hold
+        );
+        assert!(held.message.contains("held for manual import"));
+        assert!(held.message.contains("language_mismatch"));
+    }
+
+    #[test]
+    fn automatic_guard_rejections_still_burn_the_release() {
+        assert_eq!(
+            prepare_rejection_disposition_for_origin(&rejection(), ImportOrigin::Automatic),
+            RejectionDisposition::Blocklist
+        );
     }
 }

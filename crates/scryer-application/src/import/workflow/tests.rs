@@ -1709,7 +1709,10 @@ mod pack_blocklist_ledger_tests {
             blocking_rule_codes: vec!["no_eight_bit".to_string()],
         };
         assert_eq!(
-            crate::import_decide::prepare_rejection_disposition(&rule_veto),
+            crate::import_decide::prepare_rejection_disposition_for_origin(
+                &rule_veto,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
             crate::import_decide::RejectionDisposition::Blocklist
         );
 
@@ -1720,7 +1723,10 @@ mod pack_blocklist_ledger_tests {
             blocking_rule_codes: Vec::new(),
         };
         assert_eq!(
-            crate::import_decide::prepare_rejection_disposition(&corrupt),
+            crate::import_decide::prepare_rejection_disposition_for_origin(
+                &corrupt,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
             crate::import_decide::RejectionDisposition::Blocklist
         );
     }

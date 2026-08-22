@@ -865,7 +865,7 @@ impl AppUseCase {
                 queued_release,
                 SubmissionScope::Title,
                 SubmissionConflictPolicy::Abort,
-                DownloadSubmissionPurpose::Standard,
+                DownloadSubmissionPurpose::OperatorQueued,
             )
             .await?;
         let QueueDownloadOutcome::Queued(queued) = queued else {
@@ -1166,6 +1166,11 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Ask the scorer to choose a release for this scope.
+    ///
+    /// Although an operator starts this action, the scorer—not the operator—
+    /// selects the release, so its submission purpose remains `Standard` and
+    /// import guard failures use the automatic convergence policy.
     pub async fn queue_best_release(
         &self,
         actor: &User,
