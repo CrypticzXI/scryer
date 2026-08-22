@@ -322,7 +322,6 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         let mut store = self.store.lock().await;
@@ -333,7 +332,6 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         item.status = AcquisitionScopeStatus::parse(status)
             .ok_or_else(|| AppError::Repository(format!("invalid wanted status {status}")))?;
         item.last_search_at = last_search_at.map(str::to_string);
-        item.current_score = current_score;
         item.grabbed_release = grabbed_release.map(str::to_string);
         item.updated_at = Utc::now().to_rfc3339();
         drop(store);
@@ -609,7 +607,6 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
                     wanted_item_id,
                     AcquisitionScopeStatus::Grabbed.as_str(),
                     commit.last_search_at.as_deref(),
-                    commit.current_score,
                     Some(&commit.grabbed_release),
                 )
                 .await?;
@@ -996,6 +993,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: None,
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Orphan,
             });

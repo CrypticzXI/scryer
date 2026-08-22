@@ -154,17 +154,10 @@ impl AcquisitionScopeStateRepository for TestLibraryStateStore {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         self.wanted
-            .update_acquisition_scope_status(
-                id,
-                status,
-                last_search_at,
-                current_score,
-                grabbed_release,
-            )
+            .update_acquisition_scope_status(id, status, last_search_at, grabbed_release)
             .await
     }
 

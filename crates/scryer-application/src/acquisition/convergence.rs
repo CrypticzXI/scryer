@@ -551,7 +551,6 @@ impl AppUseCase {
         let context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
-                subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
                 None,
             )
@@ -915,6 +914,45 @@ mod tests {
             profile_criteria_version(&base),
             profile_criteria_version(&audio_edited),
             "a required-audio change must change the version"
+        );
+    }
+
+    /// **D19.** Adding a field to `QualityProfileCriteria` must not move the
+    /// fingerprint of a profile that does not set it.
+    ///
+    /// This hash feeds `compute_search_fingerprint`, which decides whether a
+    /// scope's convergence coverage is still valid. A new key in the
+    /// serialization invalidates **every scope in the library** on upgrade and
+    /// triggers a full re-search — a library-wide indexer sweep as the side
+    /// effect of a settings field nobody set. `cutoff_score` therefore carries
+    /// `skip_serializing_if = "Option::is_none"`, and this pins it two ways: the
+    /// builtin 4K profile's fingerprint is hard-coded, and the key must be
+    /// absent from the serialization entirely — which is what makes the
+    /// hard-coded value the same one the profile hashed to before the field
+    /// existed. Any future criteria field has to clear both.
+    #[test]
+    fn an_unset_new_criteria_field_does_not_move_the_profile_fingerprint() {
+        let base = test_criteria();
+        assert_eq!(base.cutoff_score, None);
+        assert_eq!(
+            profile_criteria_version(&base),
+            "797bd8459663cb2b52ed3bd9601946f5f8baf570a93f59d686eb959cd987c3f8",
+            "the fingerprint of a profile that sets no new field must not move"
+        );
+
+        let serialized =
+            serde_json::to_value(&base).expect("criteria serialize for the fingerprint");
+        assert!(
+            serialized.get("cutoff_score").is_none(),
+            "an unset `cutoff_score` must not appear in the fingerprint input at all"
+        );
+
+        // …and a profile that *does* set it is genuinely a different profile.
+        let mut with_cutoff = base.clone();
+        with_cutoff.cutoff_score = Some(400);
+        assert_ne!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&with_cutoff)
         );
     }
 }

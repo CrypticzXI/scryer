@@ -816,7 +816,20 @@ pub struct WantedItemPayload {
     pub grabbed_release: Option<String>,
     /// Safe provider label extracted from grabbed-release metadata, with sensitive release details omitted.
     pub source_provider: Option<String>,
-    /// Current acquisition score, or null before a candidate is scored.
+    /// The bar this scope's landed file sets, or null when nothing occupies it.
+    ///
+    /// The re-derived canonical score of the primary media file occupying the
+    /// scope: computed on read from the row, never read back from the persisted
+    /// `acquisition_score`, which is display history and is only valid while the
+    /// profile, persona, rule packs and scoring algorithm that wrote it are all
+    /// unchanged. This is the same number the admission gate compares a
+    /// candidate against, so the value shown here and the value a grab or import
+    /// decision used cannot disagree.
+    ///
+    /// It used to be a per-scope ledger column that only held a landed score in
+    /// one of its five lifecycle states; after a rejected import it held the
+    /// score of a release that never landed, which read lower than the
+    /// incumbent.
     pub current_score: Option<i32>,
     /// Latest release decision, or null before a candidate decision exists.
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
@@ -893,7 +906,11 @@ pub struct ReleaseDecisionPayload {
     pub decision_code: String,
     /// Candidate score assigned by the scoring rules.
     pub candidate_score: i32,
-    /// Existing scope score used for comparison, or null when no current score exists.
+    /// The bar this decision was measured against: the re-derived canonical
+    /// score of the primary media file occupying the scope at decision time,
+    /// never the persisted `acquisition_score`. Null when the decision was
+    /// recorded before any comparison ran (a parse or identity refusal), or when
+    /// nothing occupied the scope.
     pub current_score: Option<i32>,
     /// Candidate minus current score, or null when no current score exists.
     pub score_delta: Option<i32>,

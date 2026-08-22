@@ -600,6 +600,7 @@ fn normalize_quality_profile(profile: QualityProfile) -> QualityProfile {
                 .map(|value| value.trim().to_ascii_uppercase())
                 .filter(|value| !value.is_empty()),
             min_score_to_grab: criteria.min_score_to_grab,
+            cutoff_score: criteria.cutoff_score,
             facet_persona_overrides,
         },
     }
@@ -658,6 +659,15 @@ fn quality_profile_from_input(
             scoring_overrides: criteria.scoring_overrides.into_application(),
             cutoff_tier: criteria.cutoff_tier,
             min_score_to_grab: criteria.min_score_to_grab,
+            // Preserved from the stored profile, like `atmos_preferred` above:
+            // the quality-profile editor does not send `cutoffScore` yet (D19
+            // says web exposure is a follow-on), so reading it from the input
+            // would let any UI save silently clear a value set through the API.
+            // TODO(web): surface `cutoffScore` in
+            // `settings-quality-profiles-section.tsx` and read it from the input.
+            cutoff_score: criteria
+                .cutoff_score
+                .or_else(|| existing.and_then(|profile| profile.criteria.cutoff_score)),
             facet_persona_overrides: std::collections::HashMap::new(),
         },
     });

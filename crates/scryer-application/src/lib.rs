@@ -83,6 +83,7 @@ mod types;
 pub mod upstream_scheduler;
 
 pub(crate) use acquisition::acquisition as acquisition_workflow;
+pub(crate) use acquisition::admission;
 pub(crate) use acquisition::coverage as acquisition_coverage;
 pub(crate) use acquisition::decision_helpers as acquisition_decision_helpers;
 pub(crate) use acquisition::delay_profile;
@@ -99,6 +100,7 @@ pub(crate) use events::domain_events;
 pub(crate) use events::event_views;
 pub(crate) use import::archive_extractor;
 pub(crate) use import::checks as import_checks;
+pub(crate) use import::decide as import_decide;
 pub(crate) use import::import as import_workflow;
 pub(crate) use import::parameters as import_parameters;
 pub(crate) use import::post_download_gate;
@@ -112,6 +114,7 @@ pub(crate) use library::rename as library_rename;
 pub(crate) use library::title_matching;
 pub(crate) use media::audio_requirements;
 pub(crate) use media::language_data as media_language_data;
+pub(crate) use quality::canonical as canonical_scoring;
 pub(crate) use quality::profile as quality_profile;
 pub(crate) use quality::release_group_db;
 pub(crate) use quality::release_parser;
@@ -370,8 +373,7 @@ pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
     await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
     normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
-    parsed_episode_lookup_season, release_password_protection_hint, sanitize_ids, sha256_hex,
-    to_hex,
+    parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};

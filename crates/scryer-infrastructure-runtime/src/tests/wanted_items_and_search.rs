@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
+async fn completing_a_scope_clears_the_grab_only_when_a_file_landed() {
     let db = std::env::temp_dir().join(format!(
         "scryer_complete_wanted_item_for_title_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -21,14 +21,13 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     sqlx::query(
         "INSERT INTO wanted_items
          (id, title_id, media_type, status,
-          current_score, grabbed_release, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          grabbed_release, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("wanted-episode")
     .bind("title-series")
     .bind("movie")
     .bind("wanted")
-    .bind(42i64)
     .bind("Existing Release")
     .bind(&now)
     .bind(&now)
@@ -36,20 +35,21 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
     .await
     .expect("wanted item should insert");
 
+    // A passive completion — a scan noticing a file, or a manual close — leaves
+    // any in-flight grab alone: nothing landed through it.
     let completed = workflow
         .complete_acquisition_scope_for_title(
             "title-series",
             None,
             Some("2026-04-20T00:00:00Z"),
-            None,
+            false,
         )
         .await
         .expect("completion should succeed");
-
     assert!(completed);
 
     let row = sqlx::query(
-        "SELECT status, last_search_at, current_score, grabbed_release
+        "SELECT status, last_search_at, grabbed_release
          FROM wanted_items
          WHERE id = ?",
     )
@@ -63,76 +63,43 @@ async fn complete_wanted_item_for_title_updates_matching_row_in_one_step() {
         row.get::<Option<String>, _>("last_search_at"),
         Some("2026-04-20T00:00:00Z".to_string())
     );
-    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(42));
     assert_eq!(
         row.get::<Option<String>, _>("grabbed_release"),
-        Some("Existing Release".to_string())
+        Some("Existing Release".to_string()),
+        "a passive completion must not erase an in-flight grab"
     );
 
+    // A landed import clears it. That cleared grab is the signal the search and
+    // convergence paths read, now that no score is stored on the row.
     sqlx::query("UPDATE wanted_items SET status = ?, grabbed_release = ? WHERE id = ?")
         .bind("wanted")
         .bind("Stale Grabbed Release")
         .bind("wanted-episode")
         .execute(services.pool())
         .await
-        .expect("wanted item should reset for scored completion");
+        .expect("wanted item should reset");
 
     workflow
         .complete_acquisition_scope_for_title(
             "title-series",
             None,
             Some("2026-04-20T01:00:00Z"),
-            Some(720),
+            true,
         )
         .await
-        .expect("scored completion should succeed");
+        .expect("landed completion should succeed");
 
-    let row = sqlx::query(
-        "SELECT current_score, grabbed_release
-         FROM wanted_items
-         WHERE id = ?",
-    )
-    .bind("wanted-episode")
-    .fetch_one(services.pool())
-    .await
-    .expect("wanted item should load after scored completion");
-
-    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(720));
-    assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
-
-    sqlx::query(
-        "UPDATE wanted_items SET status = ?, current_score = ?, grabbed_release = ? WHERE id = ?",
-    )
-    .bind("wanted")
-    .bind(720i64)
-    .bind("Negative Score Release")
-    .bind("wanted-episode")
-    .execute(services.pool())
-    .await
-    .expect("wanted item should reset for negative scored completion");
-
-    workflow
-        .complete_acquisition_scope_for_title(
-            "title-series",
-            None,
-            Some("2026-04-20T02:00:00Z"),
-            Some(-15),
-        )
+    let row = sqlx::query("SELECT grabbed_release FROM wanted_items WHERE id = ?")
+        .bind("wanted-episode")
+        .fetch_one(services.pool())
         .await
-        .expect("negative scored completion should succeed");
+        .expect("wanted item should load after landed completion");
 
-    let row = sqlx::query(
-        "SELECT current_score, grabbed_release
-         FROM wanted_items
-         WHERE id = ?",
-    )
-    .bind("wanted-episode")
-    .fetch_one(services.pool())
-    .await
-    .expect("wanted item should load after negative scored completion");
-
-    assert_eq!(row.get::<Option<i64>, _>("current_score"), Some(-15));
-    assert_eq!(row.get::<Option<String>, _>("grabbed_release"), None);
+    assert_eq!(
+        row.get::<Option<String>, _>("grabbed_release"),
+        None,
+        "a landed import clears the in-flight grab"
+    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -171,7 +138,7 @@ async fn list_wanted_items_filters_on_latest_decision_code() {
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.to_rfc3339(),
@@ -511,7 +478,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.to_rfc3339(),

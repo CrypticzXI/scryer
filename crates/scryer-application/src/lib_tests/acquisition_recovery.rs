@@ -189,7 +189,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -247,6 +247,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -266,7 +267,6 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         .expect("get wanted")
         .expect("wanted exists");
     assert_eq!(updated.status, AcquisitionScopeStatus::Grabbed);
-    assert_eq!(updated.current_score, None);
     assert!(
         updated
             .grabbed_release
@@ -385,7 +385,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -417,6 +417,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(source_title.to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Episode {
                     episode_id: episode_id.to_string(),
@@ -542,7 +543,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -593,6 +594,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -753,7 +755,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -789,6 +791,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -903,7 +906,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -935,6 +938,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Duplicate.Failed.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1116,7 +1120,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
             })
             .to_string(),
         ),
-        current_score: Some(100),
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -1147,6 +1151,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Manual.Failed.Only.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1254,6 +1259,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(source_title.to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             })
@@ -1370,6 +1376,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Pals.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1492,7 +1499,7 @@ async fn parse_matched_observed_failed_download_does_not_blocklist_or_requeue() 
             })
             .to_string(),
         ),
-        current_score: Some(100),
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -1681,7 +1688,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             last_search_at: Some((Utc::now() - chrono::Duration::minutes(30)).to_rfc3339()),
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -1721,6 +1728,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Collection {
                 collection_id: season.id.clone(),
@@ -1974,7 +1982,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
                     })
                     .to_string(),
                 ),
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -1997,6 +2005,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Shared.Release".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -2151,7 +2160,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
                 last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
                 status: AcquisitionScopeStatus::Grabbed,
                 grabbed_release: Some(grabbed_release.clone()),
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -2174,6 +2183,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some(pack_title.to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Collection {
                 collection_id: season.id.clone(),
@@ -2413,7 +2423,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -2435,7 +2445,8 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("Episode.Blocking.Scope.S01E01".to_string()),
+            source_title: Some("Episode.Blocking.Scope.S01E01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Episode {
                 episode_id: episode_one.id.clone(),
@@ -2486,12 +2497,43 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
 
     app.run_convergence_cycle_once().await;
 
+    // **D18.** An in-flight submission no longer freezes its scope: both
+    // episodes are searched, and the one with a download in the queue is
+    // refused by the admission ladder instead — with a reason that says so.
     let searches = indexer_client.searches.lock().await.clone();
-    assert!(!searches.is_empty());
     assert!(
         searches
             .iter()
-            .all(|search| search.season == Some(2) && search.episode == Some(1))
+            .any(|search| search.season == Some(1) && search.episode == Some(1)),
+        "the scope with a download in flight is searched again: {searches:?}"
+    );
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(2) && search.episode == Some(1)),
+        "and its sibling is unaffected: {searches:?}"
+    );
+
+    let decisions = wanted_items.release_decisions.lock().await.clone();
+    let blocked = decisions
+        .iter()
+        .find(|decision| decision.release_title.contains("S01E01"))
+        .expect("the queued episode is still evaluated");
+    assert_eq!(blocked.decision_code, "queued_better_or_equal");
+    assert!(
+        !download_submissions
+            .store
+            .lock()
+            .await
+            .iter()
+            .any(
+                |submission| submission.download_client_item_id != "episode-one-active"
+                    && matches!(
+                        &submission.scope,
+                        SubmissionScope::Episode { episode_id } if *episode_id == episode_one.id
+                    )
+            ),
+        "an equal release must not be grabbed beside the one already downloading"
     );
 }
 
@@ -2619,7 +2661,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -2641,7 +2683,8 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("Season.Pack.Blocking.Scope.S01".to_string()),
+            source_title: Some("Season.Pack.Blocking.Scope.S01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Collection {
                 collection_id: season_one.id.clone(),
@@ -2692,12 +2735,29 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
 
     app.run_convergence_cycle_once().await;
 
+    // **D18.** A season pack in the queue no longer freezes its season: the
+    // season is searched again, and every candidate it turns up is compared
+    // against the pack that is already downloading. The neighbouring season was
+    // never its business and still is not.
     let searches = indexer_client.searches.lock().await.clone();
-    assert!(!searches.is_empty());
+    assert!(
+        searches.iter().any(|search| search.season == Some(1)),
+        "the season with a pack in flight is searched again: {searches:?}"
+    );
     assert!(
         searches
             .iter()
-            .all(|search| search.season == Some(2) && search.episode == Some(1))
+            .any(|search| search.season == Some(2) && search.episode == Some(1)),
+        "and the neighbouring season is unaffected: {searches:?}"
+    );
+
+    let decisions = wanted_items.release_decisions.lock().await.clone();
+    assert!(
+        decisions
+            .iter()
+            .filter(|decision| decision.release_title.contains("Season 1"))
+            .all(|decision| decision.decision_code == "queued_better_or_equal"),
+        "an equal pack must be refused against the one already downloading: {decisions:?}"
     );
 }
 
@@ -2782,6 +2842,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                             allowed: true,
                             block_codes: Vec::new(),
                             preference_score: 100,
+                            tier_index: Some(0),
                         },
                     ),
                     extra: Default::default(),
@@ -2794,6 +2855,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                     auto_decision_summary: None,
                     candidate_token: None,
                     queue_scope: None,
+                    coverage_scope: None,
                 }],
                 api_current: None,
                 api_max: None,
@@ -2920,7 +2982,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -3079,7 +3141,7 @@ async fn seed_recent_failed_season_pack_fixture() -> (AppUseCase, Title, Arc<Tra
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),
@@ -3266,7 +3328,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
                 })
                 .to_string(),
             ),
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -3292,6 +3354,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Pals.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: Some(
                 "nzb_url|https://example.com/pals-s05.nzb|Pals.S05.720p.BluRay.DD5.1.x264-NTb"
                     .to_string(),
@@ -4553,6 +4616,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
                 auto_decision_summary: None,
                 candidate_token: None,
                 queue_scope: None,
+                coverage_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -5175,7 +5239,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -5252,6 +5316,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Swarm.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -5792,7 +5857,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -5933,7 +5998,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6020,7 +6085,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6041,7 +6106,8 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("Movie.Blocking.Scope".to_string()),
+            source_title: Some("Movie.Blocking.Scope.2024.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -6090,7 +6156,22 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
 
     app.run_convergence_cycle_once().await;
 
-    assert!(indexer_client.searches.lock().await.is_empty());
+    // **D18.** A title-scoped download in flight no longer suppresses the
+    // search; it becomes a pseudo-incumbent covering everything under the
+    // title, and an equal candidate is refused with a reason an operator can
+    // read rather than by a silent scope-level skip.
+    assert!(
+        !indexer_client.searches.lock().await.is_empty(),
+        "the scope is searchable while a download is in flight"
+    );
+    let decisions = wanted_items.release_decisions.lock().await.clone();
+    assert!(!decisions.is_empty());
+    assert!(
+        decisions
+            .iter()
+            .all(|decision| decision.decision_code == "queued_better_or_equal"),
+        "an equal release must not be grabbed beside the one already downloading: {decisions:?}"
+    );
 }
 
 #[tokio::test]
@@ -6164,7 +6245,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6231,7 +6312,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6412,7 +6493,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6540,7 +6621,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -6615,7 +6696,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -6666,6 +6747,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -6740,7 +6822,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_during_unrelated_active_sca
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -6851,7 +6933,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -6875,7 +6957,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
         last_search_at: Some("2026-04-21T00:00:00Z".to_string()),
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -7023,7 +7105,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -7208,7 +7290,7 @@ fn rfc119_wanted_state(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: now.clone(),
@@ -7242,7 +7324,7 @@ async fn completing_absent_acquisition_state_row_does_not_materialize_completed_
         .await
         .expect("create passive import title");
 
-    crate::import_workflow::mark_wanted_completed(&app, &title.id, None, Some(1234)).await;
+    crate::import_workflow::mark_wanted_completed(&app, &title.id, None, true).await;
 
     assert!(
         wanted_items.store.lock().await.is_empty(),
@@ -8075,6 +8157,7 @@ impl IndexerClient for AmbiguousIdentityIndexerClient {
                                 allowed: true,
                                 block_codes: Vec::new(),
                                 preference_score: 100,
+                                tier_index: Some(0),
                             },
                         ),
                         extra: Default::default(),
@@ -8087,6 +8170,7 @@ impl IndexerClient for AmbiguousIdentityIndexerClient {
                         auto_decision_summary: None,
                         candidate_token: None,
                         queue_scope: None,
+                        coverage_scope: None,
                     }
                 })
                 .collect(),
@@ -8270,10 +8354,21 @@ async fn convergence_cycle_parks_ambiguous_candidate_without_skipping_eligible_r
             .iter()
             .map(|decision| format!("{}:{}", decision.release_title, decision.decision_code))
             .collect::<Vec<_>>();
-        assert_eq!(
-            decision_codes,
-            [format!("{eligible}:eligible")],
-            "the eligible candidate must remain eligible"
+        // Results are ordered by quality tier before score (Sonarr's comparer
+        // order), so the higher-resolution ambiguous release is now considered
+        // — and recorded as ambiguous — before the eligible one. What matters is
+        // that it is still parked rather than queued, and that the eligible
+        // candidate is still recorded eligible and still the one submitted.
+        assert!(
+            decision_codes.contains(&format!("{eligible}:eligible")),
+            "the eligible candidate must remain eligible, got {decision_codes:?}"
+        );
+        assert!(
+            decision_codes
+                .iter()
+                .all(|code| code == &format!("{eligible}:eligible")
+                    || code == &format!("{ambiguous}:ambiguous_identity")),
+            "no candidate may be recorded with an unexpected code, got {decision_codes:?}"
         );
         drop(decisions);
         assert_eq!(
@@ -8847,4 +8942,120 @@ async fn rss_defers_typed_failover_exhaustion() {
 #[tokio::test]
 async fn rss_treats_legacy_failover_text_as_definitive() {
     assert_rss_submit_decision(legacy_failover_repository_text(), false).await;
+}
+
+/// **D13/D20.** A parked release is re-scored against the *current* profile when
+/// its delay elapses, not grabbed on the number it was parked with.
+///
+/// A delay profile can hold a release for hours, and the operator can edit a
+/// quality profile in the meantime. The stored `release_score` was computed
+/// under whatever profile, persona, rule packs and scoring algorithm were live
+/// when it was parked; grabbing on it means fetching a release the library would
+/// refuse if it saw it now. Sonarr re-runs its whole decision engine over
+/// pending releases on every sync.
+#[tokio::test]
+async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Pending Rescore".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: None,
+        library_id: None,
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: Some((Utc::now() - chrono::Duration::days(7)).to_rfc3339()),
+        status: AcquisitionScopeStatus::Wanted,
+        grabbed_release: None,
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed wanted item");
+
+    let now = Utc::now();
+
+    // A release the profile accepts: 1080p is in the built-in default's tiers.
+    let allowed = pending_movie_release(
+        &wanted.id,
+        &title,
+        "Pending.Rescore.2024.1080p.WEB-DL.H.264-GRP",
+        PendingReleaseStatus::Waiting,
+    );
+    assert_eq!(
+        app.try_grab_pending_release(
+            &wanted,
+            &allowed,
+            &now,
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("pending grab should resolve"),
+        crate::acquisition::pending::PendingGrabOutcome::Grabbed
+    );
+
+    // The same fixture, same generous stored `release_score`, but a quality the
+    // profile does not list. Under the old code the stored number went straight
+    // into admission and the release was grabbed; re-scoring finds
+    // `quality_not_in_profile_tiers` and expires it.
+    let blocked = pending_movie_release(
+        &wanted.id,
+        &title,
+        "Pending.Rescore.2024.480p.WEB-DL.H.264-GRP",
+        PendingReleaseStatus::Waiting,
+    );
+    assert_eq!(
+        blocked.release_score, allowed.release_score,
+        "fixture precondition: only the release name differs"
+    );
+    assert_eq!(
+        app.try_grab_pending_release(
+            &wanted,
+            &blocked,
+            &now,
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("pending grab should resolve"),
+        crate::acquisition::pending::PendingGrabOutcome::Rejected,
+        "a release the current profile vetoes must expire, not be grabbed"
+    );
 }

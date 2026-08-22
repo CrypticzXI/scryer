@@ -81,7 +81,9 @@ fn additional_import_dest_path(
     canonical_dest_path: &Path,
     parsed: &ParsedReleaseMetadata,
 ) -> PathBuf {
-    let parent = canonical_dest_path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = canonical_dest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let stem = canonical_dest_path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -114,8 +116,9 @@ fn additional_import_dest_path(
     }
 
     for suffix in 2..=999 {
-        let name =
-            sanitize_filesystem_component(&format!("{stem} - {label} {hash} ({suffix}).{extension}"));
+        let name = sanitize_filesystem_component(&format!(
+            "{stem} - {label} {hash} ({suffix}).{extension}"
+        ));
         candidate = parent.join(name);
         if !candidate.exists() {
             return candidate;
@@ -143,10 +146,9 @@ fn stamp_scryer_submission_origin(
     submission: &DownloadSubmission,
 ) -> CompletedDownload {
     let mut resolved = completed.clone();
-    resolved.parameters =
-        authoritative_scryer_origin_parameters(&completed.parameters, submission);
-    resolved.release_name = submission_source_title(submission)
-        .or_else(|| completed_observed_release_name(completed));
+    resolved.parameters = authoritative_scryer_origin_parameters(&completed.parameters, submission);
+    resolved.release_name =
+        submission_source_title(submission).or_else(|| completed_observed_release_name(completed));
     resolved
 }
 
@@ -184,7 +186,9 @@ fn authoritative_scryer_origin_parameters(
                 collection_id.clone(),
             ));
         }
-        SubmissionScope::SeriesMovie { series_movie_link_id } => {
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => {
             resolved.push((
                 SCRYER_SERIES_MOVIE_LINK_ID_PARAM.to_string(),
                 series_movie_link_id.clone(),
@@ -577,9 +581,6 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     )
     .await
 }
-fn media_file_score(file: &crate::TitleMediaFile) -> i32 {
-    file.acquisition_score.unwrap_or(0)
-}
 /// Scryer's own transient markers on a *non-`Failed`* import result.
 ///
 /// Execution-phase failures never come through here: they arrive as
@@ -652,6 +653,21 @@ async fn resolve_import_quality_profile(
     })
 }
 const SAMPLE_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024;
+
+/// The sample filter and the scorer's minimum-size veto floor are the same
+/// number, and they have to stay that way: the veto refuses "too small to be
+/// what it claims" and stops exactly where the sample filter takes over ("not
+/// media at all"). A gap between them is either a sample the scorer vetoes as a
+/// lie — a blocklist for a file the pipeline was going to discard anyway — or a
+/// band of files neither rule covers.
+///
+/// The assert lives here rather than beside the constant so the dependency runs
+/// one way: the import module already knows about scoring, scoring must never
+/// know about import.
+const _: () = assert!(
+    SAMPLE_SIZE_THRESHOLD as i64 == crate::quality_profile::MINIMUM_SIZE_VETO_FLOOR_BYTES,
+    "the sample-file threshold and the minimum-size veto floor must stay identical"
+);
 fn non_empty_string(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }

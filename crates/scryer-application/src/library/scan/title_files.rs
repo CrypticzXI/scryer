@@ -511,6 +511,8 @@ mod tests {
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: analyzed.then(|| "aac".into()),

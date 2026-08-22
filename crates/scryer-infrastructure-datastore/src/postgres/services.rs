@@ -888,6 +888,8 @@ mod tests {
                         video_bitrate_kbps: None,
                         video_bit_depth: Some(10),
                         video_hdr_format: Some("HDR10".to_string()),
+                        dovi_profile: None,
+                        dovi_bl_compat_id: None,
                         video_frame_rate: Some("23.976".to_string()),
                         video_profile: Some("Main 10".to_string()),
                         audio_codec: Some("aac".to_string()),

@@ -79,9 +79,12 @@ type AcquisitionSettingsPayload {
 	"""
 	sameTierMinDelta: Int!
 	"""
-	Minimum score delta for cross-tier upgrades.
+	Deprecated and inert. Quality tier is compared before score, so no
+	score delta ever sees a cross-tier comparison; the stored value is
+	returned unchanged and ignored by acquisition. Scheduled for removal in
+	a later minor.
 	"""
-	crossTierMinDelta: Int!
+	crossTierMinDelta: Int! @deprecated(reason: "Inert since 0.18.17: quality tier is compared before score, so no cross-tier delta is consulted. The value is stored and ignored; the field will be removed in a later minor.")
 	"""
 	Score delta that bypasses normal forced-upgrade thresholds.
 	"""
@@ -12653,6 +12656,12 @@ input QualityProfileCriteriaInput {
 	Optional minimum score required to grab a release.
 	"""
 	minScoreToGrab: Int
+	"""
+	Optional score past which same-tier upgrades stop. Omitting it keeps the
+	stored value rather than clearing it, so a UI save cannot wipe a value
+	set through the API before the editor exposes the field.
+	"""
+	cutoffScore: Int
 }
 
 """
@@ -12724,9 +12733,15 @@ type QualityProfileCriteriaPayload {
 	"""
 	cutoffTier: String
 	"""
-	Minimum score required to grab, or null when no threshold is configured.
+	Minimum score required to grab, or null when no threshold is configured
+	(Sonarr's `MinFormatScore`).
 	"""
 	minScoreToGrab: Int
+	"""
+	Score past which a file is good enough and same-tier upgrades stop, or
+	null when upgrades never stop (Sonarr's `CutoffFormatScore`).
+	"""
+	cutoffScore: Int
 }
 
 """
@@ -14548,7 +14563,11 @@ type ReleaseDecisionPayload {
 	"""
 	candidateScore: Int!
 	"""
-	Existing scope score used for comparison, or null when no current score exists.
+	The bar this decision was measured against: the re-derived canonical
+	score of the primary media file occupying the scope at decision time,
+	never the persisted `acquisition_score`. Null when the decision was
+	recorded before any comparison ran (a parse or identity refusal), or when
+	nothing occupied the scope.
 	"""
 	currentScore: Int
 	"""
@@ -18256,7 +18275,9 @@ input UpdateAcquisitionSettingsInput {
 	"""
 	sameTierMinDelta: Int!
 	"""
-	Minimum score improvement for a cross-tier upgrade.
+	Deprecated and inert: accepted and stored for compatibility, ignored by
+	acquisition (quality tier is compared before score, so no cross-tier
+	delta is ever consulted). Will be removed in a later minor.
 	"""
 	crossTierMinDelta: Int!
 	"""
@@ -19319,7 +19340,20 @@ type WantedItemPayload {
 	"""
 	sourceProvider: String
 	"""
-	Current acquisition score, or null before a candidate is scored.
+	The bar this scope's landed file sets, or null when nothing occupies it.
+	
+	The re-derived canonical score of the primary media file occupying the
+	scope: computed on read from the row, never read back from the persisted
+	`acquisition_score`, which is display history and is only valid while the
+	profile, persona, rule packs and scoring algorithm that wrote it are all
+	unchanged. This is the same number the admission gate compares a
+	candidate against, so the value shown here and the value a grab or import
+	decision used cannot disagree.
+	
+	It used to be a per-scope ledger column that only held a landed score in
+	one of its five lifecycle states; after a rejected import it held the
+	score of a release that never landed, which read lower than the
+	incumbent.
 	"""
 	currentScore: Int
 	"""

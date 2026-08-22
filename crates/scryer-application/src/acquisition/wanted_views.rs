@@ -72,6 +72,15 @@ pub struct WantedScopeView {
     pub is_hot: bool,
     /// The activity-driven acquisition-state row, when one exists for this scope.
     pub state: Option<AcquisitionScopeState>,
+    /// The re-derived canonical bar of the file occupying this scope, or `None`
+    /// when nothing does.
+    ///
+    /// It lives on the **view**, not on `state`, because the Wanted page's rows
+    /// come from the projection: a scope that was never searched or grabbed has
+    /// no `acquisition_scope_states` row, and an occupied cutoff-unmet scope
+    /// produced by a library scan is exactly that shape. Decorating only the
+    /// rows showed `currentScore: null` for the common case.
+    pub landed_bar: Option<i32>,
     pub convergence: WantedViewConvergence,
 }
 
@@ -434,6 +443,25 @@ impl AppUseCase {
         for view in page.iter_mut() {
             view.state = states_by_scope.get(&view.scope_key).cloned();
         }
+        // `landed_bar` is resolved on read, never stored, so neither the
+        // projection nor the state row carries it. Decorated per **view** so a
+        // scope with no state row still reports a number (D10).
+        let scopes: Vec<crate::acquisition_workflow::LandedBarScope> = page
+            .iter()
+            .map(|view| crate::acquisition_workflow::LandedBarScope {
+                title_id: view.title_id.clone(),
+                episode_id: view.episode_id.clone(),
+                collection_id: view.collection_id.clone(),
+                series_movie_link_id: view.series_movie_link_id.clone(),
+            })
+            .collect();
+        let bars = self.landed_bars_for_scopes(&scopes).await;
+        for (view, bar) in page.iter_mut().zip(bars) {
+            view.landed_bar = bar;
+            if let Some(state) = view.state.as_mut() {
+                state.landed_bar = bar;
+            }
+        }
         Ok(())
     }
 
@@ -612,6 +640,7 @@ fn missing_target_to_view(target: AcquisitionTarget) -> WantedScopeView {
         library_slug: None,
         is_hot: target.is_hot,
         state: None,
+        landed_bar: None,
         convergence: pending_convergence(),
     }
 }
@@ -644,6 +673,7 @@ fn cutoff_item_to_view(item: CutoffUnmetItem) -> Option<WantedScopeView> {
         library_slug: item.library_slug,
         is_hot: false,
         state: None,
+        landed_bar: None,
         convergence: pending_convergence(),
     })
 }

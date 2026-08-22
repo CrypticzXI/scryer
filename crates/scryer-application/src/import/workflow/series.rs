@@ -114,6 +114,9 @@ async fn import_series_download(
     // `video_files` came from `find_video_files(dir, true)`: samples are already
     // excluded, so this is the count Sonarr's `OtherVideoFiles` rule wants.
     let video_file_count = video_files.len();
+    // One release, one blocklist row — accumulated across the members and
+    // written once after the loop. See [`DownloadBlocklistLedger`].
+    let mut blocklist_ledger = DownloadBlocklistLedger::for_download(release_evidence);
 
     for source_video in video_files {
         match import_single_episode_file(
@@ -133,6 +136,7 @@ async fn import_series_download(
             nfo_enabled,
             expected_episode_ids.as_ref(),
             video_file_count,
+            &mut blocklist_ledger,
         )
         .await
         {
@@ -168,12 +172,15 @@ async fn import_series_download(
             }
             Ok(EpisodeImportOutcome::Rejected {
                 rejection,
-                finalize_before_import,
+                disposition,
                 episode_ids,
                 ..
             }) => {
                 rejected_count += 1;
-                release_burned |= finalize_before_import;
+                release_burned |= matches!(
+                    disposition,
+                    crate::import_decide::RejectionDisposition::Blocklist
+                );
                 append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
                 last_error = Some(rejection.message.clone());
                 last_rejection_skip_reason = rejection.skip_reason.clone();
@@ -190,6 +197,8 @@ async fn import_series_download(
             }
         }
     }
+
+    blocklist_ledger.finalize(app, actor, title, completed).await;
 
     if imported_count > 0 {
         persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
@@ -300,6 +309,14 @@ enum EpisodeImportOutcome {
         /// Bytes written for this file, so multi-file imports can report a
         /// total without re-stating the destination paths.
         size_bytes: Option<i64>,
+        /// The file was imported *and* its release must be burned (D2: an
+        /// honest 720p fills an empty scope, but must never come back as an
+        /// "upgrade" to the 1080p it advertised).
+        ///
+        /// Reported rather than carried out, because the write is deduplicated
+        /// per download: twelve members of a pack that all trip this must not
+        /// write twelve identical blocklist rows. See [`DownloadBlocklistLedger`].
+        blocklist_after_import: Option<crate::import_decide::BlocklistDirective>,
     },
     Skipped {
         message: String,
@@ -309,10 +326,179 @@ enum EpisodeImportOutcome {
     },
     Rejected {
         rejection: crate::post_download_gate::ImportedFileRejection,
-        finalize_before_import: bool,
+        /// What the refusal costs the release (D17). Replaces a
+        /// `finalize_before_import: bool` that could only say "blocklist and
+        /// reopen" or "do nothing", and so had no way to express a hold — the
+        /// third case the import gate genuinely produces.
+        disposition: crate::import_decide::RejectionDisposition,
         reason_code: Option<String>,
         episode_ids: Vec<String>,
     },
+}
+
+/// One blocklist row per completed download, not one per member file.
+///
+/// A twelve-file season pack that trips a truth verdict used to write twelve
+/// identical blocklist entries, each attributed to the one episode its member
+/// happened to cover — so the operator saw the same release burned a dozen
+/// times and no single row said which season it was. The release is the unit
+/// being blocklisted, and a download carries exactly one, so the write is
+/// deferred to the end of the file loop and attributed to the *union* of the
+/// members' episode ids plus the download's collection scope (review m9).
+///
+/// The release attempt and the `ImportRejected` domain event ride along with the
+/// blocklist for the same reason: one download, one recorded failure.
+#[derive(Default)]
+pub(super) struct DownloadBlocklistLedger {
+    release_title: Option<String>,
+    source_path: Option<PathBuf>,
+    /// Set by the first member that was *refused*. A refusal outranks an
+    /// imported-but-mis-advertised member: it carries the recycle reason and it
+    /// is what reopens the scopes.
+    rejection: Option<crate::post_download_gate::ImportedFileRejection>,
+    /// Reason text from an imported-and-blocklisted member, used only when no
+    /// member was refused outright.
+    import_reason: Option<String>,
+    episode_ids: Vec<String>,
+    /// The members whose import was *refused* — the only scopes a reopen may
+    /// touch. `episode_ids` above is the union the blocklist row is attributed
+    /// to; a member that imported mis-advertised is in that union but has already
+    /// been marked completed and must not be flipped back to `wanted`.
+    rejected_episode_ids: Vec<String>,
+    collection_id: Option<String>,
+}
+
+impl DownloadBlocklistLedger {
+    fn for_download(release_evidence: &ReleaseEvidence) -> Self {
+        let collection_id = match release_evidence.scope() {
+            Some(SubmissionScope::Collection { collection_id }) => Some(collection_id.clone()),
+            _ => None,
+        };
+        Self {
+            collection_id,
+            ..Self::default()
+        }
+    }
+
+    fn note_release(&mut self, release_title: &str, source_path: &Path, episode_ids: &[String]) {
+        if self.release_title.is_none() {
+            self.release_title = Some(release_title.to_string());
+            self.source_path = Some(source_path.to_path_buf());
+        }
+        append_unique_episode_ids(&mut self.episode_ids, episode_ids);
+    }
+
+    fn record_rejection(
+        &mut self,
+        release_title: &str,
+        source_path: &Path,
+        episode_ids: &[String],
+        rejection: &crate::post_download_gate::ImportedFileRejection,
+    ) {
+        self.note_release(release_title, source_path, episode_ids);
+        append_unique_episode_ids(&mut self.rejected_episode_ids, episode_ids);
+        if self.rejection.is_none() {
+            self.rejection = Some(crate::post_download_gate::ImportedFileRejection {
+                message: rejection.message.clone(),
+                recycle_reason: rejection.recycle_reason,
+                skip_reason: rejection.skip_reason.clone(),
+                blocking_rule_codes: rejection.blocking_rule_codes.clone(),
+            });
+        }
+    }
+
+    fn record_import_blocklist(
+        &mut self,
+        release_title: &str,
+        source_path: &Path,
+        episode_ids: &[String],
+        reason: String,
+    ) {
+        self.note_release(release_title, source_path, episode_ids);
+        if self.import_reason.is_none() {
+            self.import_reason = Some(reason);
+        }
+    }
+
+    /// The one write this download earned, or `None` if it earned none.
+    ///
+    /// Separated from carrying it out so the accumulation — one release, one
+    /// row, the union of the members' episodes — is testable without an app.
+    fn planned_write(&self) -> Option<PlannedBlocklistWrite<'_>> {
+        let release_title = self.release_title.as_deref()?;
+        let source_path = self.source_path.as_deref()?;
+        Some(PlannedBlocklistWrite {
+            release_title,
+            source_path,
+            rejection: self.rejection.as_ref(),
+            import_reason: self.import_reason.as_deref(),
+            attribution: crate::post_download_gate::BlocklistAttribution {
+                episode_ids: &self.episode_ids,
+                collection_id: self.collection_id.as_deref(),
+                series_movie_link_id: None,
+            },
+            reopen_episode_ids: &self.rejected_episode_ids,
+        })
+    }
+
+    /// Write the single entry this download earned, if any.
+    async fn finalize(
+        self,
+        app: &AppUseCase,
+        actor: &User,
+        title: &scryer_domain::Title,
+        completed: &CompletedDownload,
+    ) {
+        let Some(write) = self.planned_write() else {
+            return;
+        };
+        if let Some(rejection) = write.rejection {
+            crate::post_download_gate::reject_source_file_before_import(
+                app,
+                crate::domain_events::DomainEventActor::from(actor),
+                title,
+                completed,
+                write.release_title,
+                write.source_path,
+                write.attribution,
+                // Reopen only the refused members; the row is attributed to
+                // the whole union. Empty cannot happen for a recorded
+                // rejection, but `None` keeps the default path if it did.
+                (!write.reopen_episode_ids.is_empty()).then_some(write.reopen_episode_ids),
+                rejection,
+            )
+            .await;
+            return;
+        }
+        if let Some(reason) = write.import_reason {
+            crate::post_download_gate::blocklist_release_for_title(
+                app,
+                title,
+                write.release_title,
+                Some(reason.to_string()),
+                write.attribution,
+            )
+            .await;
+        }
+    }
+}
+
+/// The single blocklist write a download earned, resolved but not yet performed.
+pub(super) struct PlannedBlocklistWrite<'a> {
+    pub release_title: &'a str,
+    pub source_path: &'a Path,
+    /// `Some` when a member was refused: the write recycles, reopens and
+    /// blocklists. `None` with an `import_reason` means every member imported
+    /// and one of them was mis-advertised — blocklist only.
+    pub rejection: Option<&'a crate::post_download_gate::ImportedFileRejection>,
+    pub import_reason: Option<&'a str>,
+    pub attribution: crate::post_download_gate::BlocklistAttribution<'a>,
+    /// The refused members — the only scopes the write may reopen. The
+    /// attribution above is the union of every member the download covered, so
+    /// the blocklist row names the whole release, but a member that imported
+    /// mis-advertised has already been marked completed and must not be
+    /// flipped back to `wanted` with a file on disk.
+    pub reopen_episode_ids: &'a [String],
 }
 
 /// A skipped episode file whose destination already holds the identical file
@@ -336,12 +522,6 @@ fn append_unique_episode_ids(target: &mut Vec<String>, source: &[String]) {
             target.push(episode_id.clone());
         }
     }
-}
-#[derive(Clone, Debug)]
-struct EpisodeUpgradePlan {
-    primary_incumbent: crate::EpisodeScopedMediaFile,
-    additional_superseded: Vec<crate::EpisodeScopedMediaFile>,
-    previous_best_score: i32,
 }
 async fn expected_episode_ids_for_completed_download(
     app: &AppUseCase,
@@ -375,7 +555,9 @@ pub(crate) async fn expected_episode_ids_from_submission_scope(
                 None => episode_ids_for_collection(app, title, collection_id, false).await,
             }
         }
-        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => None,
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => {
+            None
+        }
     }
 }
 async fn expected_episode_ids_from_release_title(
@@ -449,82 +631,6 @@ async fn episode_ids_for_collection(
         }
     }
 }
-fn reject_broader_episode_incumbent(
-    incumbent: &crate::EpisodeScopedMediaFile,
-) -> crate::post_download_gate::ImportedFileRejection {
-    crate::post_download_gate::ImportedFileRejection {
-        message: format!(
-            "existing episode file {} spans a broader episode set and cannot be replaced by this import",
-            incumbent.media_file.file_path
-        ),
-        recycle_reason: "policy_mismatch",
-        skip_reason: Some(ImportSkipReason::PolicyMismatch),
-        blocking_rule_codes: Vec::new(),
-    }
-}
-fn reject_non_upgrade_episode_incumbent(
-    incumbent: &crate::EpisodeScopedMediaFile,
-    new_score: i32,
-) -> crate::post_download_gate::ImportedFileRejection {
-    let old_score = media_file_score(&incumbent.media_file);
-    crate::post_download_gate::ImportedFileRejection {
-        message: format!(
-            "existing episode file {} is equal or better (score {} >= {})",
-            incumbent.media_file.file_path, old_score, new_score
-        ),
-        recycle_reason: "already_imported",
-        skip_reason: Some(ImportSkipReason::AlreadyImported),
-        blocking_rule_codes: Vec::new(),
-    }
-}
-fn build_episode_upgrade_plan(
-    incumbents: &[crate::EpisodeScopedMediaFile],
-    target_episode_ids: &[String],
-    new_score: i32,
-    force_replace: bool,
-) -> Result<EpisodeUpgradePlan, crate::post_download_gate::ImportedFileRejection> {
-    let target_episode_ids = target_episode_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let mut sorted_incumbents = incumbents.to_vec();
-    sorted_incumbents.sort_by(|left, right| {
-        media_file_score(&right.media_file)
-            .cmp(&media_file_score(&left.media_file))
-            .then_with(|| right.media_file.created_at.cmp(&left.media_file.created_at))
-            .then_with(|| right.media_file.id.cmp(&left.media_file.id))
-    });
-
-    for incumbent in &sorted_incumbents {
-        let incumbent_episode_ids = incumbent
-            .episode_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
-        if !incumbent_episode_ids.is_subset(&target_episode_ids) {
-            return Err(reject_broader_episode_incumbent(incumbent));
-        }
-
-        // A manual operator replacement always lands, even at a lower score; the
-        // structural broader-episode-set guard above still applies.
-        if !force_replace && new_score <= media_file_score(&incumbent.media_file) {
-            return Err(reject_non_upgrade_episode_incumbent(incumbent, new_score));
-        }
-    }
-
-    let previous_best_score = sorted_incumbents
-        .iter()
-        .map(|incumbent| media_file_score(&incumbent.media_file))
-        .max()
-        .unwrap_or(0);
-    let primary_incumbent = sorted_incumbents.remove(0);
-
-    Ok(EpisodeUpgradePlan {
-        primary_incumbent,
-        additional_superseded: sorted_incumbents,
-        previous_best_score,
-    })
-}
 async fn cleanup_superseded_episode_incumbents(
     app: &AppUseCase,
     title: &scryer_domain::Title,
@@ -534,27 +640,27 @@ async fn cleanup_superseded_episode_incumbents(
 ) {
     for incumbent in superseded {
         let mut recycle_result = None;
-        let old_path = crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
+        let old_path =
+            crate::stored_paths::stored_path_to_path_buf(&incumbent.media_file.file_path);
         if old_path.exists() {
-            let old_file_recycle_context =
-                match crate::upgrade::resolve_old_file_recycle_context(
-                    app,
-                    title,
-                    &incumbent.media_file,
-                )
-                .await
-                {
-                    Ok(context) => context,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            path = %old_path.display(),
-                            file_id = %incumbent.media_file.id,
-                            "failed to resolve recycle context for superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
-                        );
-                        continue;
-                    }
-                };
+            let old_file_recycle_context = match crate::upgrade::resolve_old_file_recycle_context(
+                app,
+                title,
+                &incumbent.media_file,
+            )
+            .await
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        path = %old_path.display(),
+                        file_id = %incumbent.media_file.id,
+                        "failed to resolve recycle context for superseded episode incumbent; keeping its database record to avoid orphaning the on-disk file"
+                    );
+                    continue;
+                }
+            };
             let metadata = crate::recycle_bin::ReplacedMediaRecycleMetadata {
                 original_path: &incumbent.media_file.file_path,
                 original_file_id: &incumbent.media_file.id,
@@ -702,6 +808,7 @@ async fn import_single_episode_file(
     nfo_enabled: bool,
     expected_episode_ids: Option<&HashSet<String>>,
     video_file_count: usize,
+    blocklist_ledger: &mut DownloadBlocklistLedger,
 ) -> AppResult<EpisodeImportOutcome> {
     // Sonarr's `OtherVideoFiles`: with more than one (non-sample) video in the
     // download, each file must identify itself.
@@ -788,8 +895,9 @@ async fn import_single_episode_file(
             },
             // The file stays in the completed-download directory: leaving the
             // rest of the pack importable is Sonarr-compatible, and burning the
-            // release for one stray file would be wrong.
-            finalize_before_import: false,
+            // release for one stray file would be wrong. An operator decides
+            // through Manual Import, so this is a hold rather than a skip.
+            disposition: crate::import_decide::RejectionDisposition::Hold,
             reason_code: Some("episode_not_found_for_title".to_string()),
             episode_ids: Vec::new(),
         });
@@ -815,7 +923,7 @@ async fn import_single_episode_file(
                 skip_reason: Some(ImportSkipReason::PolicyMismatch),
                 blocking_rule_codes: vec!["episode_outside_grabbed_release".to_string()],
             },
-            finalize_before_import: false,
+            disposition: crate::import_decide::RejectionDisposition::Hold,
             reason_code: Some("episode_outside_grabbed_release".to_string()),
             episode_ids: target_episode_ids.clone(),
         });
@@ -869,8 +977,28 @@ async fn import_single_episode_file(
             dest_path,
             imported_media_file_id,
             reason_code,
+            blocklist_after_import,
             ..
         } => {
+            // Imported, but the release lied about its quality: burn it so the
+            // next upgrade search cannot re-grab the same lie. Recorded, not
+            // written — one row per download, not one per member.
+            if let Some(directive) = blocklist_after_import {
+                tracing::info!(
+                    title_id = %title.id,
+                    code = directive.code,
+                    "{}",
+                    directive.reason
+                );
+                blocklist_ledger.record_import_blocklist(
+                    &release_evidence
+                        .release_title(Some(source_video))
+                        .unwrap_or_default(),
+                    source_video,
+                    &target_episode_ids,
+                    directive.reason.clone(),
+                );
+            }
             persist_file_import_artifact(
                 app,
                 import_id,
@@ -885,8 +1013,7 @@ async fn import_single_episode_file(
             )
             .await;
 
-            if imported_media_file_id.is_some()
-                && reason_code.as_deref() != Some("additional_file")
+            if imported_media_file_id.is_some() && reason_code.as_deref() != Some("additional_file")
             {
                 if nfo_enabled {
                     let nfo_path = std::path::Path::new(dest_path).with_extension("nfo");
@@ -932,14 +1059,12 @@ async fn import_single_episode_file(
             skip_reason,
             ..
         } => {
-            let artifact_result = if episode_skip_is_already_present(
-                reason_code.as_deref(),
-                skip_reason.as_ref(),
-            ) {
-                "already_present"
-            } else {
-                "rejected"
-            };
+            let artifact_result =
+                if episode_skip_is_already_present(reason_code.as_deref(), skip_reason.as_ref()) {
+                    "already_present"
+                } else {
+                    "rejected"
+                };
             persist_file_import_artifact(
                 app,
                 import_id,
@@ -956,25 +1081,27 @@ async fn import_single_episode_file(
         }
         EpisodeImportOutcome::Rejected {
             rejection,
-            finalize_before_import,
+            disposition,
             reason_code,
             ..
         } => {
-            if *finalize_before_import {
+            // Only a release that provably lied is burned, and only once per
+            // download. `Skip` and `Hold` record the decision and stop: the
+            // download sits in `ImportBlocked` for the operator either way, and
+            // reopening a scope whose refusal will repeat is pure churn (D17).
+            if matches!(
+                disposition,
+                crate::import_decide::RejectionDisposition::Blocklist
+            ) {
                 let source_title = release_evidence
                     .release_title(Some(source_video))
                     .unwrap_or_default();
-                crate::post_download_gate::reject_source_file_before_import(
-                    app,
-                    crate::domain_events::DomainEventActor::from(actor),
-                    title,
-                    completed,
+                blocklist_ledger.record_rejection(
                     &source_title,
                     source_video,
                     &target_episode_ids,
                     rejection,
-                )
-                .await;
+                );
             }
 
             persist_file_import_artifact(
@@ -1669,8 +1796,7 @@ fn build_augmented_episode_import_metadata_for_title(
         .take()
         .or_else(|| parse_release_metadata(&release_title).episode);
     let release_is_season_pack = release_episode.as_ref().is_some_and(|episode| {
-        episode.full_season
-            || episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+        episode.full_season || episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
     });
     parsed.episode = if other_video_files || release_is_season_pack {
         file_episode_identity_for_title(source_video, title)

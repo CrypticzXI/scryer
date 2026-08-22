@@ -55,7 +55,7 @@ async fn rejection_fixture() -> (
         last_search_at: None,
         status: AcquisitionScopeStatus::Grabbed,
         grabbed_release: Some("Rejected.Import.Coverage.2024.1080p.WEB-DL".to_string()),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -102,7 +102,8 @@ async fn reject_import(
         completed,
         &completed.name,
         std::path::Path::new("/downloads/rejected-import/video.mkv"),
-        &[],
+        crate::post_download_gate::BlocklistAttribution::default(),
+        None,
         &crate::post_download_gate::ImportedFileRejection {
             message: "required audio language is missing".to_string(),
             recycle_reason: "language_mismatch",
@@ -138,6 +139,7 @@ async fn rejected_import_prunes_only_the_attributed_indexer_coverage() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some(completed.name.clone()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Collection {
                 collection_id: collection_id.to_string(),

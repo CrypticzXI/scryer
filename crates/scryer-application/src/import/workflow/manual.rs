@@ -1746,7 +1746,7 @@ async fn execute_manual_series_movie_import(
         }
     }
 
-    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, None).await;
+    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, false).await;
     spawn_post_processing(PostProcessingContext {
         app: app.clone(),
         actor: crate::domain_events::DomainEventActor::from(actor),
@@ -1981,6 +1981,10 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     release_evidence,
                     std::slice::from_ref(&source),
                     Utc::now(),
+                    // An operator picked this file. The same bypass the manual
+                    // episode path passes: no automatic sample rail, and no
+                    // truth-verdict rejection that would blocklist their choice.
+                    crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
                 )
                 .await;
                 let file_result = match result {

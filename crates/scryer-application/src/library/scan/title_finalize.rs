@@ -362,7 +362,7 @@ pub(crate) async fn finalize_title_scan_file(
                 );
             }
         }
-        crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), None)
+        crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), false)
             .await;
     }
 
@@ -689,7 +689,7 @@ pub(super) async fn finalize_movie_scan_file(
                 error = %err,
                 "failed to list collections during movie scan"
             );
-            crate::import_workflow::mark_wanted_completed(app, &title.id, None, None).await;
+            crate::import_workflow::mark_wanted_completed(app, &title.id, None, false).await;
             if persisted_file.title_updated {
                 app.emit_title_updated_activity(None, title).await;
             }
@@ -709,7 +709,7 @@ pub(super) async fn finalize_movie_scan_file(
         return;
     }
 
-    crate::import_workflow::mark_wanted_completed(app, &title.id, None, None).await;
+    crate::import_workflow::mark_wanted_completed(app, &title.id, None, false).await;
     if persisted_file.title_updated {
         app.emit_title_updated_activity(None, title).await;
     }

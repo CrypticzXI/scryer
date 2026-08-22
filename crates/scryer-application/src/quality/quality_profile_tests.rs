@@ -247,33 +247,56 @@ fn parse_profile_invalid_json() {
 
 // ── evaluate_against_profile: quality tier scoring ────────────────────────
 
+/// Tier membership is a gate, not a score.
+///
+/// A listed quality contributes no points at all: ordering by tier happens
+/// before any score is consulted, in the admission gate and in search ranking.
+/// It used to add 3200/900/300 by position, which let a size penalty or a
+/// custom-format bonus argue across a whole resolution step.
 #[test]
-fn tier_0_gets_3200_bonus() {
+fn a_listed_quality_scores_no_tier_points() {
     let profile = QualityProfile::parse(
         r#"{"id":"t","name":"T","criteria":{"quality_tiers":["2160P","1080P"],"allow_upgrades":true}}"#,
     ).unwrap();
     let w = balanced_weights();
-    let release = parse_release_metadata("Movie.2024.2160p.WEB-DL.H.265");
-    let d = evaluate_against_profile(&profile, &release, false, &w);
-    assert!(
-        d.scoring_log
-            .iter()
-            .any(|e| e.code == "quality_tier_0" && e.delta == 3200)
-    );
+
+    for title in [
+        "Movie.2024.2160p.WEB-DL.H.265",
+        "Movie.2024.1080p.WEB-DL.H.265",
+    ] {
+        let release = parse_release_metadata(title);
+        let d = evaluate_against_profile(&profile, &release, false, &w);
+        assert!(
+            !d.scoring_log
+                .iter()
+                .any(|e| e.code.starts_with("quality_tier_")),
+            "{title} still scored a tier bonus: {:?}",
+            d.scoring_log
+        );
+        assert!(d.allowed, "{title} is in the profile and must be allowed");
+    }
 }
 
+/// The profile's ordering is what says one quality beats another, and it is the
+/// same lookup both the admission gate and search ranking use.
 #[test]
-fn tier_1_gets_900_bonus() {
+fn the_profile_orders_its_tiers() {
     let profile = QualityProfile::parse(
         r#"{"id":"t","name":"T","criteria":{"quality_tiers":["2160P","1080P"],"allow_upgrades":true}}"#,
     ).unwrap();
-    let w = balanced_weights();
-    let release = parse_release_metadata("Movie.2024.1080p.WEB-DL.H.265");
-    let d = evaluate_against_profile(&profile, &release, false, &w);
-    assert!(
-        d.scoring_log
-            .iter()
-            .any(|e| e.code == "quality_tier_1" && e.delta == 900)
+
+    assert_eq!(
+        crate::quality_profile::quality_tier_index(&profile.criteria, Some("2160p")),
+        Some(0)
+    );
+    assert_eq!(
+        crate::quality_profile::quality_tier_index(&profile.criteria, Some("1080p")),
+        Some(1)
+    );
+    assert_eq!(
+        crate::quality_profile::quality_tier_index(&profile.criteria, Some("720p")),
+        None,
+        "a quality the profile does not list has no position"
     );
 }
 
@@ -918,6 +941,438 @@ fn size_scoring_anime_ova_runtime_scales_expectation() {
 
     // OVA should score better (higher) because 3 GB is less of an outlier for 50 min
     assert!(d_ova.release_score >= d_standard.release_score);
+}
+
+/// Releases spanning the facets, qualities, codecs and sources the size model
+/// distinguishes, each sized the way a real release of that shape is sized.
+///
+/// Used by the drift property below: the point of a continuous size term is that
+/// *realistic* releases stop jumping a whole bucket when the landed byte count
+/// comes in a few percent under the announced one. The test asserts each entry
+/// lands in a healthy band, so a miscalibrated fixture fails loudly instead of
+/// quietly testing the flat ends of the curve.
+const SIZE_DRIFT_CORPUS: &[(&str, Option<&str>, i32, f64)] = &[
+    // (release, category hint, runtime minutes, announced size in GiB)
+    (
+        "Portmere.2024.2160p.WEB-DL.DDP5.1.H.265-GRP",
+        None,
+        118,
+        32.0,
+    ),
+    ("Portmere.2024.2160p.BluRay.REMUX.HDR-GRP", None, 118, 112.0),
+    ("Portmere.2024.1080p.WEB-DL.H.264-GRP", None, 118, 8.4),
+    ("Portmere.2024.1080p.BluRay.x265-GRP", None, 118, 12.0),
+    ("Portmere.2024.720p.WEB-DL.H.264-GRP", None, 96, 2.5),
+    ("Portmere.2024.1080p.WEB-DL.AV1-GRP", None, 141, 6.5),
+    (
+        "Glass.Harbor.S02E04.1080p.WEB-DL.DDP5.1.H.264-GRP",
+        Some("series"),
+        44,
+        2.8,
+    ),
+    (
+        "Glass.Harbor.S02E04.2160p.WEB-DL.H.265-GRP",
+        Some("series"),
+        44,
+        5.0,
+    ),
+    (
+        "Glass.Harbor.S01E01.720p.HDTV.x264-GRP",
+        Some("series"),
+        58,
+        1.7,
+    ),
+    (
+        "Glass.Harbor.S03E09.1080p.BluRay.REMUX-GRP",
+        Some("series"),
+        52,
+        7.5,
+    ),
+    (
+        "Umibe.Signal.S01E11.1080p.WEB-DL.H.265-GRP",
+        Some("anime"),
+        24,
+        1.0,
+    ),
+    (
+        "Umibe.Signal.S01E11.720p.BluRay.x264-GRP",
+        Some("anime"),
+        24,
+        1.0,
+    ),
+    (
+        "Umibe.Signal.OVA.1080p.BluRay.H.265-GRP",
+        Some("anime"),
+        52,
+        3.6,
+    ),
+];
+
+/// Every band the curve can report, weakest first.
+const SIZE_BANDS: [&str; 9] = [
+    "size_tiny_for_quality",
+    "size_very_small_for_quality",
+    "size_small_for_quality",
+    "size_slightly_small_for_quality",
+    "size_expected_for_quality",
+    "size_large_for_quality",
+    "size_very_large_for_quality",
+    "size_massive_for_quality",
+    "size_excessive_for_quality",
+];
+
+fn size_band_index(code: &str) -> usize {
+    SIZE_BANDS
+        .iter()
+        .position(|candidate| *candidate == code)
+        .unwrap_or_else(|| panic!("unexpected size band {code}"))
+}
+
+fn size_delta(release: &str, category: Option<&str>, runtime: i32, size_gib: f64) -> (String, i32) {
+    let parsed = parse_release_metadata(release);
+    let weights = balanced_weights();
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &parsed,
+        Some((size_gib * 1024.0 * 1024.0 * 1024.0) as i64),
+        category,
+        Some(runtime),
+        &weights,
+    );
+    let entry = decision
+        .scoring_log
+        .first()
+        .expect("size scoring always logs exactly one entry for a positive size");
+    (entry.code.clone(), entry.delta)
+}
+
+/// **The D3 property.** A landed file is routinely a few percent smaller than
+/// the size the NZB advertised (par2 and RAR overhead are counted in the
+/// announcement but not in the video file). Under the old step function that
+/// drift could cross a bucket boundary and move the score by a whole bucket
+/// weight — up to 700 points on the Balanced curve, against a +200 grab
+/// threshold — so a release admitted at grab was refused at import as a
+/// downgrade. The term is now continuous, so the same drift moves the number by
+/// tens of points.
+#[test]
+fn realistic_landed_drift_moves_the_size_term_only_slightly() {
+    // A deterministic sweep rather than a random draw: a property test that
+    // fails one run in fifty is worse than no test.
+    let factors = [0.88_f64, 0.90, 0.93, 0.95, 0.97, 0.99, 1.0];
+    let healthy = size_band_index("size_slightly_small_for_quality")
+        ..=size_band_index("size_very_large_for_quality");
+
+    let mut worst = 0;
+    for (release, category, runtime, announced_gib) in SIZE_DRIFT_CORPUS {
+        let (announced_code, announced_delta) =
+            size_delta(release, *category, *runtime, *announced_gib);
+        assert!(
+            healthy.contains(&size_band_index(&announced_code)),
+            "corpus entry `{release}` at {announced_gib} GiB is not a plausible \
+             size for what it claims: it lands in {announced_code}"
+        );
+        for factor in factors {
+            let (landed_code, landed_delta) =
+                size_delta(release, *category, *runtime, announced_gib * factor);
+            let moved = (landed_delta - announced_delta).abs();
+            worst = worst.max(moved);
+            assert!(
+                moved <= 100,
+                "`{release}` at ×{factor} moved the size term by {moved} \
+                 ({announced_code} {announced_delta} → {landed_code} {landed_delta})"
+            );
+            let bands = size_band_index(&landed_code).abs_diff(size_band_index(&announced_code));
+            assert!(
+                bands <= 1,
+                "`{release}` at ×{factor} skipped a band: {announced_code} → {landed_code}"
+            );
+        }
+    }
+    assert!(worst > 0, "the corpus must actually exercise the curve");
+}
+
+/// The same drift, swept across the **whole** curve rather than the bands a
+/// healthy release occupies.
+///
+/// The bound here is 300 rather than 100, and that is a property of the Balanced
+/// weight table, not of the interpolation: `size_small` is −700 where
+/// `size_slightly_small` is 0, and one bucket is only 1.35× wide, so the gentlest
+/// curve that still honours both weights moves ~300 points across a 12 % drift
+/// there. It was 700 before, discontinuously, which is the regression this pins.
+/// Closing the remaining gap means re-baselining those weights, which is a
+/// separate product decision.
+#[test]
+fn no_drift_anywhere_on_the_curve_cliffs_the_way_a_bucket_step_did() {
+    let release = "Boundary.2024.1080p.WEB-DL.H.264-GRP";
+    let mut bands_seen = std::collections::HashSet::new();
+    let mut worst = 0;
+
+    // 0.9 GiB to 60 GiB against a ~7 GiB expectation covers tiny through
+    // excessive. The sweep starts above the minimum-size veto (0.10 × expected
+    // ≈ 0.70 GiB) and stops below the maximum one: those are steps by design.
+    let mut gib = 0.9_f64;
+    while gib < 55.0 {
+        let (announced_code, announced_delta) = size_delta(release, None, 120, gib);
+        let (landed_code, landed_delta) = size_delta(release, None, 120, gib * 0.88);
+        bands_seen.insert(announced_code.clone());
+        let moved = (landed_delta - announced_delta).abs();
+        worst = worst.max(moved);
+        assert!(
+            moved <= 300,
+            "a 12% drift at {gib:.2} GiB moved the size term by {moved} \
+             ({announced_code} {announced_delta} → {landed_code} {landed_delta})"
+        );
+        let bands = size_band_index(&landed_code).abs_diff(size_band_index(&announced_code));
+        assert!(
+            bands <= 1,
+            "a 12% drift at {gib:.2} GiB skipped a band: {announced_code} → {landed_code}"
+        );
+        gib *= 1.05;
+    }
+
+    assert!(
+        bands_seen.len() >= 7,
+        "the sweep must cross most of the curve to be worth anything: {bands_seen:?}"
+    );
+    assert!(worst > 0);
+}
+
+/// **D21.** A release far below anything its quality and runtime could produce
+/// is refused, not merely penalised: it is not that release.
+#[test]
+fn size_implausibly_small_blocks_a_release_a_tenth_of_its_size() {
+    // 1080p WEB-DL, 120 min → expected ≈ 7.5 GiB. 400 MiB is ~5% of that.
+    let release = parse_release_metadata("Portmere.2024.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &release,
+        Some(400 * 1024 * 1024),
+        None,
+        Some(120),
+        &weights,
+    );
+
+    assert!(!decision.allowed);
+    assert!(
+        decision
+            .block_codes
+            .contains(&"size_implausibly_small_for_quality".to_string()),
+        "{:?}",
+        decision.block_codes
+    );
+}
+
+/// **BL2.** A veto is a verdict *on top of* the honest number, never instead of
+/// it.
+///
+/// `total` — the bar every later comparison uses — is the pass's score with the
+/// `BLOCK_SCORE` entries stripped out. If the veto replaced the band entry, a
+/// vetoed file would carry **no** size term, and at import (where both passes
+/// see the same bytes, so nothing is "introduced" and the verdict is
+/// `Consistent`) it would land with a bar 2500 points above the same file just
+/// the other side of the threshold.
+#[test]
+fn a_vetoed_release_still_carries_the_size_penalty_it_earned() {
+    let release = parse_release_metadata("Portmere.2024.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &release,
+        Some(400 * 1024 * 1024),
+        None,
+        Some(120),
+        &weights,
+    );
+
+    assert!(!decision.allowed, "the 400 MiB movie is still vetoed");
+    let non_block: i32 = decision
+        .scoring_log
+        .iter()
+        .filter(|entry| entry.delta != BLOCK_SCORE)
+        .map(|entry| entry.delta)
+        .sum();
+    assert_eq!(
+        non_block, weights.size_tiny,
+        "the band the veto replaced must still be in the log: {:?}",
+        decision.scoring_log
+    );
+}
+
+/// The same property stated as monotonicity: crossing the veto threshold
+/// *downwards* must never improve the bar. It used to improve it by 2500.
+#[test]
+fn the_bar_is_monotone_across_the_minimum_size_veto_threshold() {
+    let release = parse_release_metadata("Portmere.2024.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    // Expected ≈ 7.04 GiB for a 120-minute 1080p WEB-DL H.264 movie, so the
+    // 0.10 veto sits at ≈ 721 MiB. One sample either side of it.
+    let bar_at = |size_mib: i64| {
+        let mut decision = QualityProfileDecision::new();
+        apply_size_scoring_for_category(
+            &mut decision,
+            &release,
+            Some(size_mib * 1024 * 1024),
+            None,
+            Some(120),
+            &weights,
+        );
+        let total: i32 = decision
+            .scoring_log
+            .iter()
+            .filter(|entry| entry.delta != BLOCK_SCORE)
+            .map(|entry| entry.delta)
+            .sum();
+        (total, decision.allowed)
+    };
+
+    let (just_above, allowed_above) = bar_at(760);
+    let (just_below, allowed_below) = bar_at(680);
+    assert!(allowed_above, "760 MiB is above the veto");
+    assert!(!allowed_below, "680 MiB is below the veto");
+    assert!(
+        just_below <= just_above,
+        "the smaller file scored better: {just_below} > {just_above}"
+    );
+}
+
+/// **MA5.** The episodic floor is calibrated against Sonarr's shipped
+/// `QualityDefinition.MinSize` (4 MB/min at 1080p). At the old 0.10 the implied
+/// floor was 9.5 MB/min for a Bluray episode and an ordinary 4.5 MB/min WEB-DL
+/// episode was vetoed on every cycle.
+#[test]
+fn an_ordinary_episode_at_sonarrs_minimum_bitrate_is_not_vetoed() {
+    let release = parse_release_metadata("Portmere.S01E04.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    // 45 minutes at 4.5 MB/min = 202.5 MB.
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &release,
+        Some(202_500_000),
+        Some("series"),
+        Some(45),
+        &weights,
+    );
+
+    assert!(
+        decision.allowed,
+        "an episode above Sonarr's own MinSize was vetoed: {:?}",
+        decision.block_codes
+    );
+    assert_eq!(decision.scoring_log[0].code, "size_tiny_for_quality");
+}
+
+/// …and the veto still fires below the calibrated floor.
+#[test]
+fn an_episode_far_under_the_calibrated_floor_is_still_vetoed() {
+    let release = parse_release_metadata("Portmere.S01E04.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    // 45 minutes at ~1.5 MB/min.
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &release,
+        Some(67_500_000),
+        Some("series"),
+        Some(45),
+        &weights,
+    );
+
+    assert!(!decision.allowed);
+    assert!(
+        decision
+            .block_codes
+            .contains(&"size_implausibly_small_for_quality".to_string())
+    );
+}
+
+/// Sonarr skips the size check entirely for specials
+/// (`AcceptableSizeSpecification.cs:29-33`). A seven-minute S00 short in a
+/// 45-minute series has no recorded runtime, so the model expects the series
+/// average and vetoes a perfectly genuine file.
+#[test]
+fn a_special_is_never_vetoed_on_size() {
+    let weights = balanced_weights();
+    let special = parse_release_metadata("Portmere.S00E03.1080p.WEB-DL.H.264-GRP");
+    assert_eq!(
+        special.episode.as_ref().and_then(|episode| episode.season),
+        Some(0)
+    );
+
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &special,
+        Some(60 * 1024 * 1024),
+        Some("series"),
+        Some(45),
+        &weights,
+    );
+
+    assert!(
+        decision.allowed,
+        "a special must not be vetoed on a runtime nobody recorded: {:?}",
+        decision.block_codes
+    );
+    // The penalty side of the curve still fires — only the veto is skipped.
+    assert_eq!(decision.scoring_log[0].code, "size_tiny_for_quality");
+    assert_eq!(decision.scoring_log[0].delta, weights.size_tiny);
+
+    // The same bytes under an ordinary episode number are still vetoed, so the
+    // exemption is the special and not the size.
+    let ordinary = parse_release_metadata("Portmere.S01E03.1080p.WEB-DL.H.264-GRP");
+    let mut decision = QualityProfileDecision::new();
+    apply_size_scoring_for_category(
+        &mut decision,
+        &ordinary,
+        Some(60 * 1024 * 1024),
+        Some("series"),
+        Some(45),
+        &weights,
+    );
+    assert!(!decision.allowed);
+}
+
+/// The veto stops short of the range the import pipeline's sample filter owns.
+///
+/// A `.strm` stream pointer holds a URL, not media, and its byte count says
+/// nothing about the release. Vetoing it would make stream-pointer imports fail
+/// on the length of their own filename.
+#[test]
+fn a_file_too_small_to_be_media_at_all_is_penalised_but_not_vetoed() {
+    let release = parse_release_metadata("Portmere.2024.1080p.WEB-DL.H.264-GRP");
+    let weights = balanced_weights();
+
+    for size_bytes in [96_i64, 4 * 1024 * 1024, 49 * 1024 * 1024] {
+        let mut decision = QualityProfileDecision::new();
+        apply_size_scoring_for_category(
+            &mut decision,
+            &release,
+            Some(size_bytes),
+            None,
+            Some(120),
+            &weights,
+        );
+        assert!(
+            decision.allowed,
+            "{size_bytes} bytes was vetoed: {:?}",
+            decision.block_codes
+        );
+        assert_eq!(
+            decision.scoring_log[0].code, "size_tiny_for_quality",
+            "{size_bytes} bytes should still take the full tiny penalty"
+        );
+        assert_eq!(decision.scoring_log[0].delta, weights.size_tiny);
+    }
 }
 
 #[test]
@@ -1672,55 +2127,38 @@ fn min_score_none_does_not_block() {
 }
 
 // ── Phase F: cutoff tier ────────────────────────────────────────────────
+//
+// The `has_reached_cutoff` pair is gone (MA2). A scope's cutoff is decided by
+// what is on **disk**, through `quality_meets_or_exceeds_cutoff` over the
+// weakest member's quality; parsing the anchor row's `grabbed_release` said a
+// twelve-episode season had reached cutoff on the strength of one member's
+// unlanded grab. "Something is already in flight" is D18's question now.
 
 #[test]
 fn cutoff_reached_when_current_quality_at_cutoff() {
-    let reached = has_reached_cutoff(
-        Some("Movie.2024.1080p.WEB-DL.H.265-GRP"),
-        Some("1080P"),
+    assert!(quality_meets_or_exceeds_cutoff(
+        "1080p",
+        "1080P",
         &["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
-    );
-    assert!(reached);
+    ));
 }
 
 #[test]
 fn cutoff_reached_when_current_quality_above_cutoff() {
-    let reached = has_reached_cutoff(
-        Some("Movie.2024.2160p.WEB-DL.H.265-GRP"),
-        Some("1080P"),
+    assert!(quality_meets_or_exceeds_cutoff(
+        "2160p",
+        "1080P",
         &["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
-    );
-    assert!(reached);
+    ));
 }
 
 #[test]
 fn cutoff_not_reached_when_below() {
-    let reached = has_reached_cutoff(
-        Some("Movie.2024.720p.WEB-DL.H.265-GRP"),
-        Some("1080P"),
+    assert!(!quality_meets_or_exceeds_cutoff(
+        "720p",
+        "1080P",
         &["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
-    );
-    assert!(!reached);
-}
-
-#[test]
-fn cutoff_not_reached_when_no_grabbed_release() {
-    let reached = has_reached_cutoff(
-        None,
-        Some("1080P"),
-        &["2160P".to_string(), "1080P".to_string()],
-    );
-    assert!(!reached);
-}
-
-#[test]
-fn cutoff_not_reached_when_no_cutoff_set() {
-    let reached = has_reached_cutoff(
-        Some("Movie.2024.2160p.WEB-DL.H.265-GRP"),
-        None,
-        &["2160P".to_string(), "1080P".to_string()],
-    );
-    assert!(!reached);
+    ));
 }
 
 #[test]

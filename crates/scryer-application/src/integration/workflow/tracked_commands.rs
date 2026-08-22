@@ -694,6 +694,8 @@ impl AppUseCase {
             download_client_id: client_id.map(str::to_string),
             download_client_type: client_type.to_string(),
             download_client_item_id: download_client_item_id.to_string(),
+            // Operator-driven, so there is no announced size.
+            release_size_bytes: None,
             source_hint: None,
             source_provider_id: None,
             source_provider_name: None,

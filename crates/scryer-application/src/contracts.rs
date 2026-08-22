@@ -175,6 +175,15 @@ pub struct DownloadSubmission {
     pub source_provider_name: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+    /// The size the indexer announced for this release, when it announced one.
+    ///
+    /// D18 scores an in-flight submission as a pseudo-incumbent, and size is a
+    /// term in that score. Without it the queued release carries no size term
+    /// while the candidate beside it does, so any candidate in a larger size
+    /// band reads as an upgrade over an identical release already downloading.
+    /// `None` on rows written before the column existed; a size-less queued
+    /// release is then compared size-less, which is the honest reading.
+    pub release_size_bytes: Option<i64>,
     pub request_signature: Option<String>,
     pub purpose: DownloadSubmissionPurpose,
     pub scope: SubmissionScope,
@@ -278,7 +287,6 @@ impl DownloadSourceIdentity {
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,
     pub covered_wanted_item_ids: Vec<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
     pub download_submission: DownloadSubmission,
@@ -811,6 +819,13 @@ pub struct MediaFileAnalysis {
     pub video_bitrate_kbps: Option<i32>,
     pub video_bit_depth: Option<i32>,
     pub video_hdr_format: Option<String>,
+    /// Dolby Vision profile and BL-compatibility id. Serialized with the rest of
+    /// the analysis, so rows written before these existed simply read as `None`
+    /// rather than needing a migration.
+    #[serde(default)]
+    pub dovi_profile: Option<u8>,
+    #[serde(default)]
+    pub dovi_bl_compat_id: Option<u8>,
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,

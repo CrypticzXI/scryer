@@ -1569,6 +1569,10 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         video_bitrate_kbps: row.opt_i32("video_bitrate_kbps")?,
         video_bit_depth: row.opt_i32("video_bit_depth")?,
         video_hdr_format: row.opt_text("video_hdr_format")?,
+        // Dolby Vision has no dedicated column: it rides in the serialized
+        // analysis, so rows written before it was captured read as `None`.
+        dovi_profile: analysis_u8_field(&analysis, "dovi_profile"),
+        dovi_bl_compat_id: analysis_u8_field(&analysis, "dovi_bl_compat_id"),
         video_frame_rate: row.opt_text("video_frame_rate")?,
         video_profile: row.opt_text("video_profile")?,
         audio_codec: row.opt_text("audio_codec")?,
@@ -1666,6 +1670,13 @@ fn analysis_json_from_row(row: &SqlRow) -> JsonValue {
         .ok()
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or(JsonValue::Null)
+}
+
+fn analysis_u8_field(analysis: &JsonValue, field: &str) -> Option<u8> {
+    analysis
+        .get(field)
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
 }
 
 fn analysis_array_field<T: DeserializeOwned>(analysis: &JsonValue, field: &str) -> Vec<T> {
@@ -2324,6 +2335,8 @@ mod tests {
                     video_bitrate_kbps: None,
                     video_bit_depth: None,
                     video_hdr_format: None,
+                    dovi_profile: None,
+                    dovi_bl_compat_id: None,
                     video_frame_rate: None,
                     video_profile: None,
                     audio_codec: None,
@@ -2448,6 +2461,8 @@ mod tests {
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
@@ -2995,6 +3010,8 @@ mod tests {
                     video_bitrate_kbps: None,
                     video_bit_depth: Some(10),
                     video_hdr_format: Some("HDR10".to_string()),
+                    dovi_profile: None,
+                    dovi_bl_compat_id: None,
                     video_frame_rate: Some("23.976".to_string()),
                     video_profile: Some("Main 10".to_string()),
                     audio_codec: Some("dts".to_string()),

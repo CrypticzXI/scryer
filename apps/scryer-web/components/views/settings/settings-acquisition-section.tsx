@@ -10,6 +10,11 @@ export type AcquisitionSettings = {
   enabled: boolean;
   upgradeCooldownHours: number;
   sameTierMinDelta: number;
+  /**
+   * Deprecated and inert: tier is compared before score, so no cross-tier
+   * delta is ever consulted. Kept so the stored value round-trips through the
+   * settings mutation unchanged; no control is rendered for it.
+   */
   crossTierMinDelta: number;
   forcedUpgradeDeltaBypass: number;
   pollIntervalSeconds: number;
@@ -130,14 +135,13 @@ export function SettingsAcquisitionSection({
           disabled={disabled}
           onChange={(sameTierMinDelta) => update({ sameTierMinDelta })}
         />
-        <NumberField
-          id="settings-acquisition-cross-tier-delta"
-          label={t("settings.acquisitionCrossTierMinDelta")}
-          help={t("settings.acquisitionCrossTierMinDeltaHelp")}
-          value={draft.crossTierMinDelta}
-          disabled={disabled}
-          onChange={(crossTierMinDelta) => update({ crossTierMinDelta })}
-        />
+        {/*
+          The cross-tier minimum delta control is deliberately absent. Quality
+          tier is compared before score, so no score delta ever sees a
+          cross-tier comparison and the setting is inert; the value is still
+          carried in `AcquisitionSettings` so the saved draft round-trips the
+          stored (ignored) number until the field is removed from the API.
+        */}
         <NumberField
           id="settings-acquisition-forced-upgrade-bypass"
           label={t("settings.acquisitionForcedUpgradeDeltaBypass")}

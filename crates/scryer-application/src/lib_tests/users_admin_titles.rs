@@ -736,6 +736,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         source_provider_name: None,
         source_kind: None,
         source_title: Some(created.name.clone()),
+        release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::Title,
     };
@@ -751,6 +752,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         source_provider_name: None,
         source_kind: None,
         source_title: Some(created.name.clone()),
+        release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::Title,
     };

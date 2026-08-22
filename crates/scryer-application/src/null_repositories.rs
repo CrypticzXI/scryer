@@ -1122,7 +1122,6 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
         _id: &str,
         _status: &str,
         _last_search_at: Option<&str>,
-        _current_score: Option<i32>,
         _grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         Err(AppError::Repository(

@@ -69,7 +69,13 @@ pub struct AcquisitionSettingsPayload {
     pub upgrade_cooldown_hours: i32,
     /// Minimum score delta for same-tier upgrades.
     pub same_tier_min_delta: i32,
-    /// Minimum score delta for cross-tier upgrades.
+    /// Deprecated and inert. Quality tier is compared before score, so no
+    /// score delta ever sees a cross-tier comparison; the stored value is
+    /// returned unchanged and ignored by acquisition. Scheduled for removal in
+    /// a later minor.
+    #[graphql(
+        deprecation = "Inert since 0.18.17: quality tier is compared before score, so no cross-tier delta is consulted. The value is stored and ignored; the field will be removed in a later minor."
+    )]
     pub cross_tier_min_delta: i32,
     /// Score delta that bypasses normal forced-upgrade thresholds.
     pub forced_upgrade_delta_bypass: i32,
@@ -456,8 +462,12 @@ pub struct QualityProfileCriteriaPayload {
     pub scoring_overrides: ScoringOverridesPayload,
     /// Cutoff quality tier, or null when no cutoff is configured.
     pub cutoff_tier: Option<String>,
-    /// Minimum score required to grab, or null when no threshold is configured.
+    /// Minimum score required to grab, or null when no threshold is configured
+    /// (Sonarr's `MinFormatScore`).
     pub min_score_to_grab: Option<i32>,
+    /// Score past which a file is good enough and same-tier upgrades stop, or
+    /// null when upgrades never stop (Sonarr's `CutoffFormatScore`).
+    pub cutoff_score: Option<i32>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -849,7 +859,9 @@ pub struct UpdateAcquisitionSettingsInput {
     pub upgrade_cooldown_hours: i32,
     /// Minimum score improvement for a same-tier upgrade.
     pub same_tier_min_delta: i32,
-    /// Minimum score improvement for a cross-tier upgrade.
+    /// Deprecated and inert: accepted and stored for compatibility, ignored by
+    /// acquisition (quality tier is compared before score, so no cross-tier
+    /// delta is ever consulted). Will be removed in a later minor.
     pub cross_tier_min_delta: i32,
     /// Score delta that bypasses the forced-upgrade guard.
     pub forced_upgrade_delta_bypass: i32,
@@ -913,6 +925,10 @@ pub struct QualityProfileCriteriaInput {
     pub cutoff_tier: Option<String>,
     /// Optional minimum score required to grab a release.
     pub min_score_to_grab: Option<i32>,
+    /// Optional score past which same-tier upgrades stop. Omitting it keeps the
+    /// stored value rather than clearing it, so a UI save cannot wipe a value
+    /// set through the API before the editor exposes the field.
+    pub cutoff_score: Option<i32>,
 }
 
 #[derive(InputObject, Clone)]

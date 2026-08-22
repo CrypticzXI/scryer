@@ -318,7 +318,7 @@ pub fn from_wanted_item(
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
         source_provider,
-        current_score: item.current_score,
+        current_score: item.landed_bar,
         latest_release_decision: item
             .latest_release_decision
             .map(from_release_decision)
@@ -386,7 +386,11 @@ pub fn from_wanted_scope_view(
             .unwrap_or(WantedStatusValue::Wanted),
         grabbed_release,
         source_provider,
-        current_score: state.as_ref().and_then(|state| state.current_score),
+        // From the **view**: a scope with no persisted state row still has a
+        // file occupying it, and that file still has a bar.
+        current_score: view
+            .landed_bar
+            .or_else(|| state.as_ref().and_then(|state| state.landed_bar)),
         latest_release_decision: state
             .as_ref()
             .and_then(|state| state.latest_release_decision.clone())

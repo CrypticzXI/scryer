@@ -16,11 +16,6 @@ use tracing::warn;
 
 const SOURCE_CHANGED_AFTER_PROBE_CODE: &str = "source_changed_after_probe";
 
-/// Score boost added to a manually-grabbed/replaced file's acquisition score so a
-/// deliberate operator pick is not immediately re-replaced by a marginally-higher
-/// automatic upgrade. A far-better (cross-tier) release can still win.
-pub(crate) const MANUAL_GRAB_BOOST: i32 = 500;
-
 pub(crate) enum ImportedFileGateDecision {
     Accepted(Box<ImportedFileAcceptance>),
     #[cfg_attr(not(feature = "runtime-media-analysis"), allow(dead_code))]
@@ -48,6 +43,18 @@ pub(crate) struct PreparedImportCandidate {
 pub(crate) struct PostDownloadAcquisitionDecision {
     pub parsed: crate::ParsedReleaseMetadata,
     pub score: i32,
+    /// Where the imported file's quality sits in the profile's ordering.
+    /// Admission compares this before it looks at the score.
+    pub tier_index: Option<usize>,
+    /// PROPER/REPACK rank of the release, compared between tier and score (D9).
+    /// From the same scoring pass as `score`, so the import side cannot read a
+    /// different revision than the grab side did for the same release.
+    pub revision: i32,
+    /// Whether the analyzed evidence contradicted the announcement.
+    ///
+    /// Acted on before admission by [`resolve_truth_verdict_action`], which is
+    /// the only place that turns a verdict into an import decision.
+    pub truth_verdict: crate::canonical_scoring::TruthVerdict,
     pub scoring_log: Option<String>,
 }
 
@@ -301,10 +308,17 @@ pub(crate) fn replace_runtime_band_block(
     None
 }
 
+/// The profile decision handed to the import-time **rule** input.
+///
+/// Not a score: `total` comes from [`crate::canonical_scoring::score_release`]
+/// on both sides of every comparison. This exists only because
+/// `build_rule_input` wants a `QualityProfileDecision` to expose to rules, and
+/// it is built from the same terms the canonical pass uses.
 #[expect(
     clippy::too_many_arguments,
     reason = "post-download scoring needs the complete import context to match search-time policy decisions"
 )]
+#[cfg(feature = "runtime-media-analysis")]
 pub(crate) fn build_import_profile_decision(
     profile: &crate::QualityProfile,
     required_audio_languages: &[String],
@@ -363,6 +377,8 @@ pub(crate) fn build_media_file_analysis(
         video_bitrate_kbps: analysis.video_bitrate_kbps,
         video_bit_depth: analysis.video_bit_depth,
         video_hdr_format: analysis.video_hdr_format.clone(),
+        dovi_profile: analysis.dovi_profile,
+        dovi_bl_compat_id: analysis.dovi_bl_compat_id,
         video_frame_rate: analysis.video_frame_rate.clone(),
         video_profile: analysis.video_profile.clone(),
         audio_codec: analysis.audio_codec.clone(),
@@ -416,6 +432,8 @@ pub(crate) fn build_stream_pointer_media_file_analysis() -> crate::MediaFileAnal
         video_bitrate_kbps: None,
         video_bit_depth: None,
         video_hdr_format: None,
+        dovi_profile: None,
+        dovi_bl_compat_id: None,
         video_frame_rate: None,
         video_profile: None,
         audio_codec: None,
@@ -447,6 +465,8 @@ fn build_synthetic_media_file_analysis(
         video_bitrate_kbps: None,
         video_bit_depth: None,
         video_hdr_format: None,
+        dovi_profile: None,
+        dovi_bl_compat_id: None,
         video_frame_rate: None,
         video_profile: None,
         audio_codec: None,
@@ -521,6 +541,13 @@ pub(crate) async fn probe_and_validate(
     is_filler: bool,
     runtime_sample_validation: RuntimeSampleValidation,
 ) -> ImportedFileGateDecision {
+    // Before anything touches the file, and on the calling thread (the override
+    // is thread-local, and the real probe hands off to `spawn_blocking`).
+    #[cfg(test)]
+    if let Some(acceptance) = probe_override::take() {
+        return ImportedFileGateDecision::Accepted(Box::new(acceptance));
+    }
+
     if path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -660,7 +687,15 @@ pub(crate) async fn probe_and_validate(
             crate::ScoringPersona::default()
         });
 
-    let rule_file_doc = crate::user_rule_input::build_file_doc(&analysis);
+    // **One FileDoc constructor** (D5). Built from `accepted_analysis` — the
+    // same `MediaFileAnalysis` this import persists on the row — so the document
+    // a rule sees at import is byte-for-byte the one it sees when the bar is
+    // re-derived from that row. The import path used to build its doc straight
+    // from `scryer_mediainfo::MediaAnalysis`, whose `video_codec` is the raw
+    // probe string (`"h264"`), while re-derivation goes through
+    // `VideoCodec::as_str()` (`"H.264"`): any rule reading
+    // `input.file.video_codec` scored differently on the two sides, permanently.
+    let rule_file_doc = crate::user_rule_input::file_doc_from_analysis(&accepted_analysis);
     let accepted_for_rules = ImportedFileAcceptance {
         analysis: Some(accepted_analysis.clone()),
         scan_error: None,
@@ -798,6 +833,11 @@ pub(crate) async fn probe_and_validate(
     _is_filler: bool,
     _runtime_sample_validation: RuntimeSampleValidation,
 ) -> ImportedFileGateDecision {
+    #[cfg(test)]
+    if let Some(acceptance) = probe_override::take() {
+        return ImportedFileGateDecision::Accepted(Box::new(acceptance));
+    }
+
     ImportedFileGateDecision::Accepted(Box::new(ImportedFileAcceptance {
         analysis: Some(build_synthetic_media_file_analysis(
             parsed,
@@ -807,6 +847,63 @@ pub(crate) async fn probe_and_validate(
         rule_file_doc: None,
         audio_language_warning: None,
     }))
+}
+
+/// Test hook: what the probe reports for the next file.
+///
+/// Without it, `Blocked`, `Vetoed` and `Contradicted` are unreachable end to
+/// end in the default test build. `scryer-application`'s `default = []` leaves
+/// `runtime-media-analysis` off, so `probe_and_validate` returns
+/// [`build_synthetic_media_file_analysis`] — an analysis derived *from the
+/// release name*, which by construction agrees with it. Every truth-verdict
+/// consequence (blocklist rows, reopened scopes, the disposition table) was
+/// therefore only ever tested against hand-built verdicts, never through the
+/// real import path.
+///
+/// **Both** `probe_and_validate` bodies consult it, feature-on and feature-off,
+/// because which one compiles is not the test's choice: Cargo unifies features
+/// across a workspace build, and `crates/scryer` depends on this crate with
+/// `runtime`, which pulls in `runtime-media-analysis`. So
+/// `cargo test -p scryer-application --lib` builds the synthetic body while
+/// `cargo test --workspace --lib` builds the mediainfo one, and a hook on only
+/// one of them makes the same test pass or fail depending on how it was invoked
+/// — the mediainfo body would run a real probe against a sparse fixture and
+/// reject it for having no readable duration.
+///
+/// Thread-local rather than a global: `#[tokio::test]` bodies run on the
+/// current thread and lib tests run in parallel, so a shared cell would
+/// cross-contaminate. That is also why the feature-on body reads it as its very
+/// first statement, before the real probe hands the file to `spawn_blocking`.
+/// Consumed once per probe, and the RAII guard clears it on drop, so a test that
+/// panics mid-import cannot leak an override into whatever runs next on that
+/// thread.
+#[cfg(test)]
+pub(crate) mod probe_override {
+    use super::ImportedFileAcceptance;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static NEXT: RefCell<Option<ImportedFileAcceptance>> = const { RefCell::new(None) };
+    }
+
+    /// Install the analysis the next probe on this thread will report.
+    #[must_use = "the override is cleared when the guard drops"]
+    pub(crate) fn install(acceptance: ImportedFileAcceptance) -> ProbeOverrideGuard {
+        NEXT.with(|slot| *slot.borrow_mut() = Some(acceptance));
+        ProbeOverrideGuard
+    }
+
+    pub(super) fn take() -> Option<ImportedFileAcceptance> {
+        NEXT.with(|slot| slot.borrow_mut().take())
+    }
+
+    pub(crate) struct ProbeOverrideGuard;
+
+    impl Drop for ProbeOverrideGuard {
+        fn drop(&mut self) {
+            NEXT.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
 }
 
 /// Probe a source file once, apply the existing gate, and merge detected media
@@ -909,7 +1006,20 @@ pub(crate) fn rescore_from_mediainfo(
     parsed: &crate::ParsedReleaseMetadata,
     acceptance: &ImportedFileAcceptance,
 ) -> (crate::ParsedReleaseMetadata, Vec<String>) {
-    let Some(ref analysis) = acceptance.analysis else {
+    rescore_parsed_from_analysis(parsed, acceptance.analysis.as_ref())
+}
+
+/// The same rescore, reachable from a bare `MediaFileAnalysis`.
+///
+/// Canonical scoring re-derives an incumbent's bar from a media row, which
+/// carries the stored analysis but no import-time acceptance. Keeping one body
+/// behind both entry points is what makes the re-derived score identical to the
+/// one the import originally wrote.
+pub(crate) fn rescore_parsed_from_analysis(
+    parsed: &crate::ParsedReleaseMetadata,
+    analysis: Option<&crate::MediaFileAnalysis>,
+) -> (crate::ParsedReleaseMetadata, Vec<String>) {
+    let Some(analysis) = analysis else {
         return (parsed.clone(), vec![]);
     };
 
@@ -1021,26 +1131,282 @@ pub(crate) fn rescore_from_mediainfo(
 
     (merged, changes)
 }
-/// Compute acquisition score from a gate acceptance, applying mediainfo rescoring.
-/// Returns the final score and the rescored parsed metadata (for logging).
+/// Recycle reason for an import the analyzed pass vetoed outright.
+pub(crate) const TRUTH_BLOCKED_CODE: &str = "truth_blocked";
+/// Recycle reason for a release that landed in a worse quality tier than it
+/// advertised.
+pub(crate) const TRUTH_QUALITY_DOWNGRADE_CODE: &str = "truth_quality_downgrade";
+/// Recycle reason for a file the profile vetoes over a property its release name
+/// never disclosed. Held for the operator, never blocklisted (design §9,
+/// "Truth verdicts").
+pub(crate) const TRUTH_VETOED_CODE: &str = "truth_vetoed";
+
+/// Prefix of the verdict code [`crate::canonical_scoring::score_release`] emits
+/// when the landed quality differs from the announced one.
+const QUALITY_CONTRADICTED_PREFIX: &str = "quality_contradicted:";
+
+/// What a truth verdict means for the import in front of it.
 ///
-/// Order is fixed: canonical (grab-equivalent) parse supplied by the caller →
-/// mediainfo deltas → profile decision + user rules + min-score gate → final
-/// score. `parsed` is not re-parsed here.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "post-download scoring needs the full import context to match search-time policy decisions"
-)]
-pub(crate) async fn compute_post_download_acquisition_decision(
+/// One enum, one resolver, three call sites (episode, title, series-movie link)
+/// — the decision is the release's, not the scope's, so it must not be spelled
+/// three ways.
+#[derive(Debug)]
+pub(crate) enum TruthVerdictAction {
+    /// Nothing the verdict says stops this import.
+    Import,
+    /// Import it — the scope is empty and an honest file at its real tier beats
+    /// nothing — but blocklist the release for this title so the next upgrade
+    /// search cannot re-grab the same lie and "upgrade" the scope to the tier it
+    /// already has. Sonarr loops here; we do not.
+    ImportAndBlocklist { code: &'static str, reason: String },
+    /// Refuse it: recycle the bytes, blocklist the release for this title, and
+    /// reopen the scope's search so it seeks a different candidate.
+    Reject(ImportedFileRejection),
+    /// Refuse it, but blame the profile rather than the release: the file
+    /// violates a veto the announcement never disclosed
+    /// ([`crate::canonical_scoring::TruthVerdict::Vetoed`]). No blocklist and no
+    /// reopen — the next silent release would land in exactly the same place, so
+    /// burning this one buys nothing and reopening the scope only fetches
+    /// another one. The download is held for the operator.
+    Hold(ImportedFileRejection),
+}
+
+/// The `(announced, landed)` pair from a quality-contradiction code, if one is
+/// present.
+fn quality_contradiction(codes: &[String]) -> Option<(&str, &str)> {
+    codes.iter().find_map(|code| {
+        code.strip_prefix(QUALITY_CONTRADICTED_PREFIX)
+            .and_then(|pair| pair.split_once("->"))
+    })
+}
+
+/// Whether the landed quality sits below the announced one in this profile's
+/// ordering. A quality the profile does not list ranks below every quality it
+/// does, matching [`crate::admission`]'s tier comparison.
+fn landed_tier_is_worse(
+    criteria: &crate::QualityProfileCriteria,
+    announced: &str,
+    landed: &str,
+) -> bool {
+    let announced_index = crate::quality_profile::quality_tier_index(criteria, Some(announced));
+    let landed_index = crate::quality_profile::quality_tier_index(criteria, Some(landed));
+    match (announced_index, landed_index) {
+        (Some(announced_index), Some(landed_index)) => landed_index > announced_index,
+        // Announced a tier the profile ranks, landed something it does not.
+        (Some(_), None) => true,
+        // The announcement was already unranked; landing somewhere ranked, or
+        // somewhere equally unranked, is not a downgrade.
+        (None, _) => false,
+    }
+}
+
+/// Turn a truth verdict into an action. **The only place that decision is made.**
+///
+/// Two things earn a blocklist, and they are matched on explicitly rather than
+/// inferred from the size of a number:
+///
+/// 1. [`crate::canonical_scoring::TruthVerdict::Blocked`] — the announcement
+///    asserted a field and the file contradicts it: a stated codec that is not
+///    the stream's codec and is on the profile's blocklist, a measured
+///    resolution outside the profile's tiers. The release is not what it claimed
+///    and no scope should take it.
+/// 2. A `quality_contradicted:<announced>-><landed>` code whose landed tier is
+///    *worse* than the announced one. An occupied scope would refuse it on tier
+///    anyway, so naming the reason costs nothing; an empty scope keeps the file
+///    (an honest 720p beats no episode) but must never be offered the same
+///    release again as an upgrade.
+///
+/// A third outcome refuses without blaming the release.
+/// [`crate::canonical_scoring::TruthVerdict::Vetoed`] — the probe surfaced a
+/// fact the name never stated (HDR, Dolby Vision, a codec on a silent name, a
+/// file rule reading `input.file.*`) and the profile forbids it — becomes
+/// [`TruthVerdictAction::Hold`]: no blocklist, no reopen. Burning the release
+/// would only make room for the next release with the same undisclosed
+/// property.
+///
+/// A score-only `Contradicted` is deliberately **not** a blocklist: one size
+/// bucket of drift is the ordinary case for usenet (par2/RAR overhead, a short
+/// episode), and treating it as a lie would burn good releases. This is where
+/// Radarr gave up and removed its equivalent check — its quality comparison
+/// folded in WEBDL-vs-WEBRip source noise, so honest releases tripped it. Ours
+/// cannot: [`crate::quality_profile::normalize_quality_tier`] keys on the
+/// resolution alone, so a source relabel never reads as a tier change.
+pub(crate) fn resolve_truth_verdict_action(
+    verdict: &crate::canonical_scoring::TruthVerdict,
+    criteria: &crate::QualityProfileCriteria,
+    scope_is_occupied: bool,
+) -> TruthVerdictAction {
+    use crate::canonical_scoring::TruthVerdict;
+
+    match verdict {
+        TruthVerdict::Consistent => TruthVerdictAction::Import,
+        TruthVerdict::Blocked { codes } => TruthVerdictAction::Reject(ImportedFileRejection {
+            message: format!(
+                "the downloaded file contradicts what the release advertised and cannot be imported: {}",
+                if codes.is_empty() {
+                    "file evidence blocked by the quality profile".to_string()
+                } else {
+                    codes.join(", ")
+                }
+            ),
+            recycle_reason: TRUTH_BLOCKED_CODE,
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: codes.clone(),
+        }),
+        // The profile refuses the file over something the name never claimed.
+        // Held, not burned — but a *proven* tier downgrade in the same verdict
+        // still outranks it: that half is a lie, and the release must not be
+        // offered back as an upgrade. The file is refused either way, so the
+        // unoccupied-scope "import it honestly" branch does not apply here.
+        TruthVerdict::Vetoed { codes } => {
+            if let Some((announced, landed)) = quality_contradiction(codes)
+                && landed_tier_is_worse(criteria, announced, landed)
+            {
+                return TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed));
+            }
+            TruthVerdictAction::Hold(ImportedFileRejection {
+                message: format!(
+                    "the downloaded file carries something this quality profile refuses, which the release never advertised: {}",
+                    if codes.is_empty() {
+                        "file evidence blocked by the quality profile".to_string()
+                    } else {
+                        codes.join(", ")
+                    }
+                ),
+                recycle_reason: TRUTH_VETOED_CODE,
+                skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                blocking_rule_codes: codes.clone(),
+            })
+        }
+        TruthVerdict::Contradicted { codes } => {
+            let Some((announced, landed)) = quality_contradiction(codes) else {
+                // Size-only drift. Accept it and score it honestly.
+                return TruthVerdictAction::Import;
+            };
+            if !landed_tier_is_worse(criteria, announced, landed) {
+                return TruthVerdictAction::Import;
+            }
+            if scope_is_occupied {
+                TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed))
+            } else {
+                TruthVerdictAction::ImportAndBlocklist {
+                    code: TRUTH_QUALITY_DOWNGRADE_CODE,
+                    reason: format!(
+                        "release advertised {announced} but the file is {landed}; imported at its \
+                         real quality and blocklisted so it is never re-grabbed as an upgrade"
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// The refusal for a release whose file landed in a worse tier than it claimed.
+/// One shape, so the `Contradicted` and `Vetoed` paths cannot word the same
+/// finding two ways.
+fn quality_downgrade_rejection(announced: &str, landed: &str) -> ImportedFileRejection {
+    ImportedFileRejection {
+        message: format!(
+            "release advertised {announced} but the file is {landed}; refusing the import and \
+             looking for another release"
+        ),
+        recycle_reason: TRUTH_QUALITY_DOWNGRADE_CODE,
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        blocking_rule_codes: vec![format!(
+            "{QUALITY_CONTRADICTED_PREFIX}{announced}->{landed}"
+        )],
+    }
+}
+
+/// Which scope a blocklisted release belongs to.
+///
+/// The same three fields every grab-side failure writer persists
+/// (`crate::decision_helpers::blocklist_entry_data`), so an import rejection and
+/// a grab failure for the same release group together in the UI instead of the
+/// import one filing itself under the linked episode.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BlocklistAttribution<'a> {
+    pub episode_ids: &'a [String],
+    /// Season-pack scope. Always `None` from import today: a pack is imported
+    /// member by member, so each rejection is attributed to its episodes.
+    pub collection_id: Option<&'a str>,
+    pub series_movie_link_id: Option<&'a str>,
+}
+
+/// Blocklist a release for one title. The single writer, shared by the rejection
+/// path and by an accepted-but-mis-advertised import.
+pub(crate) async fn blocklist_release_for_title(
     app: &AppUseCase,
+    title: &Title,
+    release_title: &str,
+    reason: Option<String>,
+    attribution: BlocklistAttribution<'_>,
+) {
+    let normalized_source_title = normalize_release_attempt_title(Some(release_title));
+    let blocklist_data = crate::acquisition::decision_helpers::blocklist_entry_data(
+        attribution.episode_ids,
+        attribution.collection_id,
+        attribution.series_movie_link_id,
+    );
+    if let Err(error) = app
+        .services
+        .workflow
+        .blocklist_repo
+        .add(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            source_title: normalized_source_title.clone(),
+            source_hint: None,
+            quality: crate::parse_release_metadata(release_title).quality,
+            download_id: None,
+            reason,
+            data: blocklist_data,
+        })
+        .await
+    {
+        warn!(
+            error = %error,
+            title_id = %title.id,
+            source_title = normalized_source_title.as_deref().unwrap_or(""),
+            "failed to persist blocklist entry for rejected import"
+        );
+    }
+}
+
+/// Score an imported file, canonically.
+///
+/// Delegates to [`crate::canonical_scoring::score_release`] — the same function
+/// and the same resolved context the grab path uses. That shared calculator is
+/// what stops grab and import disagreeing about the same release; this function
+/// only assembles the evidence and shapes the result for the import flow.
+///
+/// Note what is *not* here: `has_existing_file` and `existing_score` are gone.
+/// What is already on disk is an admission question, decided in
+/// [`crate::admission`] against the real incumbent set. A score that moved with
+/// the state of the library could never serve as the next comparison's bar.
+///
+/// `announced_size_bytes` is the landed size: by import time the advertised size
+/// is no longer plumbed here. The variance therefore still catches a release
+/// whose *streams* contradict its name — the anime case — but not one that lied
+/// about its size. Plumbing the advertised size through the download record is a
+/// prerequisite for acting on `truth_verdict`, not for scoring.
+/// `context` is resolved by the caller and reused: the first-import paths score
+/// twice (once to decide, once over the size that actually landed), and
+/// resolving the profile, weights, rules and language requirements for each of
+/// those was a database round trip buying nothing. With the context handed in,
+/// this function is a pure term-pipeline run — which is also what makes
+/// [`crate::import_decide::rescore_landed_size`] free.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "import scoring needs the full file context; the incumbent-state \
+              arguments are already gone"
+)]
+pub(crate) fn compute_post_download_acquisition_decision(
+    context: &crate::quality::canonical_context::ResolvedScoringContext,
+    title: &Title,
     parsed: &crate::ParsedReleaseMetadata,
     acceptance: &ImportedFileAcceptance,
-    profile: &crate::QualityProfile,
-    title: &Title,
     runtime_minutes: Option<i32>,
     size_bytes: i64,
-    has_existing_file: bool,
-    existing_score: Option<i32>,
     prior_rescore_changes: &[String],
     is_filler: bool,
 ) -> PostDownloadAcquisitionDecision {
@@ -1054,45 +1420,37 @@ pub(crate) async fn compute_post_download_acquisition_decision(
             rescore_changes.push(change);
         }
     }
-    let category = facet_to_category_hint(&title.facet);
-    let required_audio_languages = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(title.library_id.as_str()),
-            Some(category),
-        )
-        .await
-        .unwrap_or_default();
-    let persona = app
-        .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category))
-        .await
-        .unwrap_or_default();
-    let mut decision = build_import_profile_decision(
-        profile,
-        &required_audio_languages,
-        &persona,
-        &rescored,
-        category,
-        runtime_minutes,
-        Some(size_bytes),
-        has_existing_file,
-    );
-    append_post_download_user_rule_scores(
-        app,
+
+    let view = context.view(runtime_minutes, is_filler);
+
+    // **Parse parity with the grab lane.** Most release names say nothing about
+    // audio, and the grab path fills that in from the title's original language
+    // (`announced_metadata_for_title`) before scoring. Import did not, so a
+    // profile with `required_audio_languages` raised
+    // `required_audio_language_missing` against every release the grab side had
+    // just accepted — a veto on the announced pass of a file that is fine. The
+    // dedicated `classify_required_audio` gate, which reads the file's real
+    // audio streams, is the one that should speak here, and it already ran.
+    let announced_parsed = crate::quality::canonical_context::announced_metadata_for_title(
         title,
-        profile,
-        &rescored,
-        &mut decision,
-        acceptance,
-        size_bytes,
-        has_existing_file,
-        existing_score,
-        is_filler,
-        runtime_minutes,
-    )
-    .await;
-    crate::quality_profile::apply_min_score_gate(profile, &mut decision);
-    let score = decision.preference_score;
+        parsed,
+        context.profile(),
+        None,
+    );
+
+    let mut evidence =
+        crate::canonical_scoring::ReleaseEvidence::announced(announced_parsed, Some(size_bytes));
+    if let Some(analysis) = acceptance.analysis.as_ref() {
+        evidence = evidence.with_analysis(crate::canonical_scoring::AnalyzedFacts {
+            analysis: analysis.clone(),
+            actual_size_bytes: size_bytes,
+            rule_file_doc: acceptance.rule_file_doc.clone(),
+        });
+    }
+
+    let scored = crate::canonical_scoring::score_release(&evidence, &view);
+    let score = scored.total;
+
     if !rescore_changes.is_empty() {
         tracing::debug!(
             title = %title.name,
@@ -1101,133 +1459,27 @@ pub(crate) async fn compute_post_download_acquisition_decision(
             "mediainfo rescore applied to acquisition score"
         );
     }
-    let scoring_log = serialize_post_download_scoring_log(&decision, &rescore_changes);
+
+    // Log the pass that set the number: with analysis present that is the
+    // analyzed pass, otherwise the announced one is all there was.
+    let logged = scored
+        .analyzed_decision
+        .as_ref()
+        .unwrap_or(&scored.announced_decision);
+    let scoring_log = serialize_post_download_scoring_log(logged, &rescore_changes);
+
+    let tier_index = crate::quality_profile::quality_tier_index(
+        &context.profile().criteria,
+        scored.parsed_quality.as_deref(),
+    );
+
     PostDownloadAcquisitionDecision {
         parsed: rescored,
         score,
+        tier_index,
+        revision: scored.revision,
+        truth_verdict: scored.truth_verdict,
         scoring_log,
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "post-download user-rule scoring needs the same context as import policy scoring"
-)]
-async fn append_post_download_user_rule_scores(
-    app: &AppUseCase,
-    title: &Title,
-    profile: &crate::QualityProfile,
-    parsed: &crate::ParsedReleaseMetadata,
-    decision: &mut crate::QualityProfileDecision,
-    acceptance: &ImportedFileAcceptance,
-    size_bytes: i64,
-    has_existing_file: bool,
-    existing_score: Option<i32>,
-    is_filler: bool,
-    runtime_minutes: Option<i32>,
-) {
-    let user_rules_engine = app
-        .services
-        .customization
-        .user_rules
-        .read()
-        .map(|guard| guard.clone())
-        .unwrap_or_else(|_| scryer_rules::UserRulesEngine::empty());
-    if user_rules_engine.is_empty() {
-        return;
-    }
-
-    let library_name = match app
-        .services
-        .catalog
-        .libraries
-        .get_by_id(&title.library_id)
-        .await
-    {
-        Ok(Some(library)) => Some(library.name),
-        Ok(None) => None,
-        Err(error) => {
-            warn!(
-                error = %error,
-                library_id = %title.library_id,
-                "failed to resolve library name for post-download score rule context"
-            );
-            None
-        }
-    };
-    let category = facet_to_category_hint(&title.facet);
-    let file_doc = acceptance.rule_file_doc.clone();
-    let input = crate::user_rule_input::build_rule_input(
-        parsed,
-        profile,
-        decision,
-        crate::user_rule_input::ReleaseRuntimeInfo {
-            size_bytes: Some(size_bytes),
-            published_at: None,
-            thumbs_up: None,
-            thumbs_down: None,
-            is_password_protected: None,
-            extra: None,
-            indexer_languages: None,
-        },
-        crate::user_rule_input::RuleContextInfo {
-            title_id: Some(&title.id),
-            library_name: library_name.as_deref(),
-            category: Some(category),
-            original_language: title.language.as_deref(),
-            original_country: title.country.as_deref(),
-            title_tags: &title.tags,
-            has_existing_file,
-            existing_score,
-            search_mode: "post_download",
-            runtime_minutes,
-            is_filler,
-        },
-        file_doc,
-    );
-    let mut evaluator = user_rules_engine.evaluator();
-    match evaluator.evaluate(&input, category) {
-        Ok(result) => {
-            for entry in result.entries {
-                let source = match entry.origin {
-                    scryer_rules::PolicyOrigin::User => crate::ScoringSource::UserRule {
-                        id: entry.rule_set_id,
-                        name: entry.rule_set_name,
-                    },
-                    scryer_rules::PolicyOrigin::System => crate::ScoringSource::SystemRule {
-                        id: entry.rule_set_id,
-                        name: entry.rule_set_name,
-                    },
-                };
-                decision.log_with_source(&entry.code, entry.delta, source);
-            }
-            for err in result.errors {
-                let (code, source) = match err.origin {
-                    scryer_rules::PolicyOrigin::User => (
-                        "user_rule_error",
-                        crate::ScoringSource::UserRule {
-                            id: err.rule_set_id,
-                            name: err.rule_set_name,
-                        },
-                    ),
-                    scryer_rules::PolicyOrigin::System => (
-                        "system_rule_error",
-                        crate::ScoringSource::SystemRule {
-                            id: err.rule_set_id,
-                            name: err.rule_set_name,
-                        },
-                    ),
-                };
-                decision.log_with_source(code, 0, source);
-            }
-        }
-        Err(error) => {
-            warn!(
-                error = %error,
-                title_id = %title.id,
-                "post-download score rule evaluation failed; scoring built-in decision only"
-            );
-        }
     }
 }
 
@@ -1297,7 +1549,9 @@ pub(crate) async fn persist_media_analysis_result(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the import caller supplies the rejection context already resolved for one source file"
+    reason = "a refusal needs the actor, the title, the release name and path, the blocklist \
+              attribution, the narrower reopen set and the rejection itself; bundling them would \
+              only move the same eight facts into a struct every caller builds once"
 )]
 pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
@@ -1306,7 +1560,13 @@ pub(crate) async fn reject_source_file_before_import(
     completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
-    episode_ids: &[String],
+    attribution: BlocklistAttribution<'_>,
+    // `Some` narrows the reopen to these episode scopes while the blocklist row
+    // keeps the full `attribution`: a pack that imported some members and
+    // refused others names the whole release on the row but may only reopen
+    // the refused members — the imported ones are already marked completed.
+    // `None` reopens whatever the attribution names.
+    reopen_episode_ids: Option<&[String]>,
     rejection: &ImportedFileRejection,
 ) {
     finalize_import_rejection(
@@ -1316,7 +1576,8 @@ pub(crate) async fn reject_source_file_before_import(
         completed,
         completed_name,
         path,
-        episode_ids,
+        attribution,
+        reopen_episode_ids,
         rejection,
     )
     .await;
@@ -1324,7 +1585,7 @@ pub(crate) async fn reject_source_file_before_import(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "finalization carries the same resolved import context without reconstructing it"
+    reason = "mirrors `reject_source_file_before_import`, which is its only caller"
 )]
 async fn finalize_import_rejection(
     app: &AppUseCase,
@@ -1333,9 +1594,11 @@ async fn finalize_import_rejection(
     completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
-    episode_ids: &[String],
+    attribution: BlocklistAttribution<'_>,
+    reopen_episode_ids: Option<&[String]>,
     rejection: &ImportedFileRejection,
 ) {
+    let episode_ids = attribution.episode_ids;
     let normalized_source_title = normalize_release_attempt_title(Some(completed_name));
     let failure_reason = Some(rejection.message.clone());
     let _ = app
@@ -1361,33 +1624,12 @@ async fn finalize_import_rejection(
             format!(" [{}]", rejection.blocking_rule_codes.join(", "))
         }
     ));
-    let mut blocklist_data = std::collections::HashMap::new();
-    if !episode_ids.is_empty() {
-        blocklist_data.insert("episode_ids".to_string(), serde_json::json!(episode_ids));
-    }
-    if let Err(error) = app
-        .services
-        .workflow
-        .blocklist_repo
-        .add(&NewBlocklistEntry {
-            title_id: title.id.clone(),
-            source_title: normalized_source_title.clone(),
-            source_hint: None,
-            quality: crate::parse_release_metadata(completed_name).quality,
-            download_id: None,
-            reason: reason.clone(),
-            data: blocklist_data,
-        })
-        .await
-    {
-        warn!(
-            error = %error,
-            title_id = %title.id,
-            source_title = normalized_source_title.as_deref().unwrap_or(""),
-            "failed to persist blocklist entry for rejected import"
-        );
-    }
+    blocklist_release_for_title(app, title, completed_name, reason.clone(), attribution).await;
 
+    // Invalidate the source indexer's convergence coverage (or the whole scope
+    // when the grab cannot be attributed) only *after* the blocklist row exists,
+    // then re-open the refused scopes so the cursor seeks a different candidate
+    // from that indexer rather than re-grabbing the burned release.
     let coverage = match app
         .services
         .workflow
@@ -1421,8 +1663,24 @@ async fn finalize_import_rejection(
             CoverageReopen::All
         }
     };
-    reset_wanted_items_for_retry(app, &title.id, episode_ids, coverage).await;
-
+    match reopen_episode_ids {
+        // A pack reopens only the members that were refused; the row written
+        // above is still attributed to every member the download covered.
+        Some(episode_ids) => {
+            reset_scopes_for_retry(
+                app,
+                &title.id,
+                BlocklistAttribution {
+                    episode_ids,
+                    collection_id: None,
+                    series_movie_link_id: None,
+                },
+                &coverage,
+            )
+            .await;
+        }
+        None => reset_scopes_for_retry(app, &title.id, attribution, &coverage).await,
+    }
     let _ = app
         .append_domain_event(new_title_domain_event(
             actor,
@@ -1438,53 +1696,165 @@ async fn finalize_import_rejection(
                 dest_path: None,
                 quality: None,
                 reason,
-                skip_reason: Some(ImportSkipReason::PostDownloadRuleBlocked),
+                // The rejection's own reason: a truth-verdict blocklist and a
+                // quality lie are not rule blocks, and D17 makes the reason
+                // load-bearing for whoever reads the event.
+                skip_reason: rejection.skip_reason.clone(),
                 episode_ids: episode_ids.to_vec(),
             }),
         ))
         .await;
 }
 
-// Re-opens a scope's convergence after a rejected import, invalidating the
-// source indexer's coverage when known (or all coverage otherwise). For a
-// `language_mismatch` rejection this is intentional: the rejected release is
-// blocklisted by title (a provable absence — it genuinely lacks the required
-// audio), so the re-opened search seeks a *different*, correct candidate
-// rather than re-grabbing the same one. Trustworthy verdicts (see
-// `classify_required_audio`) keep this from churning on falsely-rejected files.
-async fn reset_wanted_items_for_retry(
+/// Re-open the scopes a rejected import belongs to, so convergence looks for a
+/// different candidate.
+///
+/// Only the `Blocklist` disposition reaches here (see
+/// [`crate::import::decide::RejectionDisposition`]): the release has been burned
+/// for this title, so the re-opened search seeks a *different* candidate rather
+/// than re-grabbing the same lie. `Skip` and `Hold` deliberately do not reopen —
+/// nothing about the scope changed and the next search would fetch the same
+/// class of file.
+///
+/// **Which** scopes is read from the same [`BlocklistAttribution`] the blocklist
+/// entry is filed under, so the row that is reopened and the row the operator
+/// sees the blocklist against are the same row. Before this, a rejection with no
+/// episode ids always reopened the *title* scope: correct for a movie, a no-op
+/// for a series-movie link (whose scope row carries a link id), and wrong for a
+/// season pack (whose members are episode scopes). Both gaps were live — a
+/// refused link import left the link permanently un-searched.
+///
+/// `coverage` is the convergence-coverage invalidation applied to each re-opened
+/// scope: only the indexer the burned release came from (so just that indexer is
+/// re-queried), or the whole scope when the grab cannot be attributed.
+async fn reset_scopes_for_retry(
+    app: &AppUseCase,
+    title_id: &str,
+    attribution: BlocklistAttribution<'_>,
+    coverage: &CoverageReopen,
+) {
+    if !attribution.episode_ids.is_empty() {
+        reopen_episode_scopes(app, title_id, attribution.episode_ids, coverage).await;
+        return;
+    }
+
+    if let Some(series_movie_link_id) = attribution.series_movie_link_id {
+        reopen_series_movie_link_scope(app, title_id, series_movie_link_id, coverage).await;
+        return;
+    }
+
+    if let Some(collection_id) = attribution.collection_id {
+        match app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(collection_id)
+            .await
+        {
+            Ok(episodes) => {
+                let episode_ids: Vec<String> = episodes
+                    .into_iter()
+                    .filter(|episode| episode.title_id == title_id)
+                    .map(|episode| episode.id)
+                    .collect();
+                reopen_episode_scopes(app, title_id, &episode_ids, coverage).await;
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = %title_id,
+                    collection_id,
+                    "failed to resolve collection members while re-opening scopes"
+                );
+            }
+        }
+        return;
+    }
+
+    reopen_episode_scope(app, title_id, None, coverage).await;
+}
+
+async fn reopen_episode_scopes(
     app: &AppUseCase,
     title_id: &str,
     episode_ids: &[String],
-    coverage: CoverageReopen,
+    coverage: &CoverageReopen,
 ) {
-    let targets: Vec<Option<&str>> = if episode_ids.is_empty() {
-        vec![None]
-    } else {
-        let mut seen = HashSet::new();
-        episode_ids
-            .iter()
-            .filter(|episode_id| seen.insert((*episode_id).clone()))
-            .map(|episode_id| Some(episode_id.as_str()))
-            .collect()
-    };
+    let mut seen = HashSet::new();
+    for episode_id in episode_ids {
+        if !seen.insert(episode_id.as_str()) {
+            continue;
+        }
+        reopen_episode_scope(app, title_id, Some(episode_id.as_str()), coverage).await;
+    }
+}
 
-    for episode_id in targets {
-        match app
-            .services
-            .workflow
-            .acquisition_scope_states
-            .get_acquisition_scope_state_for_title(title_id, episode_id)
-            .await
-        {
-            Ok(Some(item)) => {
-                app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
-                    .await;
+async fn reopen_episode_scope(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_id: Option<&str>,
+    coverage: &CoverageReopen,
+) {
+    match app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .get_acquisition_scope_state_for_title(title_id, episode_id)
+        .await
+    {
+        Ok(Some(item)) => {
+            app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
+                .await;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            warn!(error = %error, title_id = %title_id, "failed to reset wanted item")
+        }
+    }
+}
+
+/// A link scope has no episode id of its own, so it can only be found by
+/// listing the title's series-movie scope rows and matching the link.
+///
+/// `limit: i64::MAX` on purpose: the paged default of 100 silently truncates a
+/// title with many linked movies, and a truncated page here is a scope that is
+/// never searched again. No `statuses` filter either — the row this rejection
+/// belongs to is whatever state the grab left it in (`grabbed`, not `wanted`),
+/// and the per-episode lookup above does not filter on status either.
+async fn reopen_series_movie_link_scope(
+    app: &AppUseCase,
+    title_id: &str,
+    series_movie_link_id: &str,
+    coverage: &CoverageReopen,
+) {
+    match app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states(crate::AcquisitionScopeStatesQuery {
+            media_types: vec!["series_movie".into()],
+            title_id: Some(title_id.to_string()),
+            limit: i64::MAX,
+            ..crate::AcquisitionScopeStatesQuery::default()
+        })
+        .await
+    {
+        Ok(items) => {
+            for item in items {
+                if item.series_movie_link_id.as_deref() == Some(series_movie_link_id) {
+                    app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
+                        .await;
+                    return;
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                warn!(error = %error, title_id = %title_id, "failed to reset wanted item")
-            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                title_id = %title_id,
+                series_movie_link_id,
+                "failed to look up series-movie link scope while re-opening it"
+            );
         }
     }
 }
@@ -1506,6 +1876,71 @@ mod tests {
     // parse (`import_workflow::parse_import_release_for_title`); see
     // `canonical_import_parse_derives_title_facet_guide_facts` in
     // `import/app_usecase_import_tests.rs`.
+
+    fn criteria(tiers: &[&str]) -> crate::QualityProfileCriteria {
+        let tiers = tiers
+            .iter()
+            .map(|tier| format!("\"{tier}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        crate::QualityProfile::parse(&format!(
+            r#"{{"id":"t","name":"T","criteria":{{"quality_tiers":[{tiers}],"allow_upgrades":true}}}}"#
+        ))
+        .expect("profile fixture should parse")
+        .criteria
+    }
+
+    /// The tier comparison behind a `quality_contradicted:` blocklist. It reads
+    /// the *profile's* ordering, not a global one, so its edge cases are the
+    /// profile's: an unlisted quality, a single-tier profile, and the casing the
+    /// verdict code happens to carry.
+    #[test]
+    fn landed_tier_is_worse_only_when_the_profile_ranks_it_lower() {
+        let c = criteria(&["2160P", "1080P", "720P"]);
+        assert!(landed_tier_is_worse(&c, "1080p", "720p"));
+        assert!(!landed_tier_is_worse(&c, "720p", "1080p"));
+        assert!(!landed_tier_is_worse(&c, "1080p", "1080p"));
+    }
+
+    /// The code the scorer emits is already normalized (`1080P`), but nothing
+    /// stops a stored or hand-written one carrying the lowercase form. Both must
+    /// read as the same tier — treating `1080p` and `1080P` as different would
+    /// make an identical-quality import look like a downgrade and blocklist a
+    /// release that told the truth.
+    #[test]
+    fn landed_tier_is_worse_is_case_insensitive_about_the_resolution_suffix() {
+        let c = criteria(&["2160P", "1080P"]);
+        assert!(!landed_tier_is_worse(&c, "1080P", "1080p"));
+        assert!(!landed_tier_is_worse(&c, "1080p", "1080P"));
+    }
+
+    /// A single-tier profile ranks exactly one quality. Anything else the file
+    /// turns out to be is outside the profile, which is a downgrade — and the
+    /// reverse (announced unranked, landed ranked) is not, because there was
+    /// never a claim to fall short of.
+    #[test]
+    fn landed_tier_is_worse_handles_a_single_tier_profile() {
+        let c = criteria(&["1080P"]);
+        assert!(
+            landed_tier_is_worse(&c, "1080p", "720p"),
+            "landing outside the only tier the profile ranks is a downgrade"
+        );
+        assert!(
+            !landed_tier_is_worse(&c, "720p", "1080p"),
+            "an unranked announcement cannot be fallen short of"
+        );
+        assert!(!landed_tier_is_worse(&c, "1080p", "1080p"));
+    }
+
+    /// An empty tier list ranks nothing, so nothing can be a tier downgrade —
+    /// and `quality_not_in_profile_tiers` cannot fire either. The verdict falls
+    /// through to the honest size/score comparison instead of burning releases
+    /// against an ordering the operator never set.
+    #[test]
+    fn landed_tier_is_worse_is_never_true_without_a_tier_list() {
+        let c = criteria(&[]);
+        assert!(!landed_tier_is_worse(&c, "1080p", "480p"));
+    }
 
     #[test]
     fn automatic_movie_import_rejects_twenty_second_runtime_for_normal_movie() {
@@ -1826,6 +2261,152 @@ mod tests {
                 incumbent_replace_runtime_seconds([Some(1320), Some(1320)]),
             )
             .is_none()
+        );
+    }
+
+    // ── Truth verdicts become import actions (D2) ─────────────────────────────
+
+    use crate::canonical_scoring::TruthVerdict;
+
+    fn tiered_criteria() -> crate::QualityProfileCriteria {
+        crate::QualityProfileCriteria {
+            quality_tiers: vec!["2160P".to_string(), "1080P".to_string(), "720P".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn codes(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn a_consistent_verdict_just_imports() {
+        assert!(matches!(
+            resolve_truth_verdict_action(&TruthVerdict::Consistent, &tiered_criteria(), true),
+            TruthVerdictAction::Import
+        ));
+    }
+
+    /// The analyzed pass vetoed the file. No scope takes it, occupied or not,
+    /// and the release is blocklisted so the reopened search seeks another one.
+    #[test]
+    fn a_blocked_verdict_rejects_whether_or_not_the_scope_is_occupied() {
+        for occupied in [true, false] {
+            let action = resolve_truth_verdict_action(
+                &TruthVerdict::Blocked {
+                    codes: codes(&["required_audio_missing"]),
+                },
+                &tiered_criteria(),
+                occupied,
+            );
+            let TruthVerdictAction::Reject(rejection) = action else {
+                panic!("a hard block must refuse the import (occupied = {occupied})");
+            };
+            assert_eq!(rejection.recycle_reason, TRUTH_BLOCKED_CODE);
+            assert_eq!(
+                rejection.skip_reason,
+                Some(ImportSkipReason::PolicyMismatch)
+            );
+            assert!(rejection.message.contains("required_audio_missing"));
+        }
+    }
+
+    /// Advertised 1080p, landed 720p, and something already occupies the scope:
+    /// the tier gate would refuse it anyway, so name the reason and stop the
+    /// release from being offered again.
+    #[test]
+    fn a_quality_lie_into_an_occupied_scope_is_rejected() {
+        let action = resolve_truth_verdict_action(
+            &TruthVerdict::Contradicted {
+                codes: codes(&["size_expected", "quality_contradicted:1080P->720P"]),
+            },
+            &tiered_criteria(),
+            true,
+        );
+        let TruthVerdictAction::Reject(rejection) = action else {
+            panic!("a landed tier below the announced one must not overwrite a file");
+        };
+        assert_eq!(rejection.recycle_reason, TRUTH_QUALITY_DOWNGRADE_CODE);
+    }
+
+    /// Same lie into an empty scope: an honest 720p beats no file at all, so it
+    /// lands — but the release is blocklisted so a later upgrade search cannot
+    /// re-grab it and "upgrade" the scope to the tier it already has.
+    #[test]
+    fn a_quality_lie_into_an_empty_scope_imports_and_blocklists() {
+        let action = resolve_truth_verdict_action(
+            &TruthVerdict::Contradicted {
+                codes: codes(&["quality_contradicted:1080P->720P"]),
+            },
+            &tiered_criteria(),
+            false,
+        );
+        let TruthVerdictAction::ImportAndBlocklist { code, reason } = action else {
+            panic!("an empty scope keeps an honest file at its real tier");
+        };
+        assert_eq!(code, TRUTH_QUALITY_DOWNGRADE_CODE);
+        assert!(reason.contains("1080P"));
+        assert!(reason.contains("720P"));
+    }
+
+    /// One size bucket of drift is the ordinary usenet case (par2/RAR overhead,
+    /// a short episode). Treating it as a lie would burn good releases.
+    #[test]
+    fn a_size_only_contradiction_imports_normally() {
+        for occupied in [true, false] {
+            assert!(
+                matches!(
+                    resolve_truth_verdict_action(
+                        &TruthVerdict::Contradicted {
+                            codes: codes(&["size_slightly_small", "bitrate_low"]),
+                        },
+                        &tiered_criteria(),
+                        occupied,
+                    ),
+                    TruthVerdictAction::Import
+                ),
+                "a score-only contradiction must never blocklist (occupied = {occupied})"
+            );
+        }
+    }
+
+    /// The other direction is not a lie worth punishing: the file turned out
+    /// *better* than advertised.
+    #[test]
+    fn a_quality_contradiction_that_landed_better_imports_normally() {
+        assert!(matches!(
+            resolve_truth_verdict_action(
+                &TruthVerdict::Contradicted {
+                    codes: codes(&["quality_contradicted:720P->1080P"]),
+                },
+                &tiered_criteria(),
+                true,
+            ),
+            TruthVerdictAction::Import
+        ));
+    }
+
+    /// A landed quality the profile does not rank at all is below every quality
+    /// it does, matching the admission gate's tier comparison.
+    #[test]
+    fn landing_outside_the_profiles_tiers_counts_as_a_downgrade() {
+        assert!(landed_tier_is_worse(&tiered_criteria(), "1080P", "480P"));
+        assert!(landed_tier_is_worse(&tiered_criteria(), "1080P", "unknown"));
+        // An unranked announcement cannot be downgraded from.
+        assert!(!landed_tier_is_worse(&tiered_criteria(), "unknown", "480P"));
+    }
+
+    #[test]
+    fn only_the_quality_contradiction_code_is_parsed_as_a_tier_change() {
+        assert_eq!(
+            quality_contradiction(&codes(&["quality_contradicted:1080P->720P"])),
+            Some(("1080P", "720P"))
+        );
+        assert_eq!(quality_contradiction(&codes(&["size_very_small"])), None);
+        // A malformed code is data, not a panic.
+        assert_eq!(
+            quality_contradiction(&codes(&["quality_contradicted:garbage"])),
+            None
         );
     }
 }
