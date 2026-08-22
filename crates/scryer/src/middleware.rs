@@ -2179,6 +2179,13 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::Validation(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::NoAutoEligibleRelease { .. } => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "no auto-eligible release found".to_string(),
+            )),
+        )
+            .into_response(),
         AppError::PluginInstallInProgress(message) => {
             (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
         }
