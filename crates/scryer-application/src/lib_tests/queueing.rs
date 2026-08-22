@@ -164,6 +164,7 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
         source_title: Some("Queued.Once.2026.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -232,6 +233,7 @@ async fn add_title_and_queue_download_records_accepted_torrent_hash_fingerprint(
         source_title: Some("Queued.Torrent.2026.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -282,6 +284,7 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
         source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -377,6 +380,7 @@ async fn queue_existing_title_download_submits_source_password_hint() {
                 source_title: Some("Protected.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: Some(" archive-password ".to_string()),
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -444,6 +448,7 @@ async fn queue_existing_title_download_drops_source_password_flags() {
                     source_title: Some(format!("Flag.Queue.{index}.2026.1080p-WEB")),
                     source_password: Some(marker.to_string()),
 
+                    size_bytes: None,
                     seeders: None,
                 },
                 SubmissionScope::Title,
@@ -537,6 +542,7 @@ async fn queue_existing_title_download_episode_scope_records_grabbed_history_con
                 source_title: Some(source_title.to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Episode {
@@ -618,6 +624,7 @@ async fn queue_existing_title_download_records_configured_provider_in_grabbed_hi
             source_title: Some("Provider.History.2026.1080p.WEB-DL".to_string()),
             source_password: None,
 
+            size_bytes: None,
             seeders: None,
         },
         SubmissionScope::Title,
@@ -714,6 +721,7 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
                 source_title: Some("Manual.Deferred.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -808,6 +816,7 @@ async fn queue_existing_title_download_definitive_submit_error_records_failed_an
                 source_title: Some("Manual.Rejected.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -900,6 +909,7 @@ async fn queue_existing_title_download_whose_submission_tracking_fails_burns_the
                 source_title: Some("Manual.Untracked.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -978,6 +988,7 @@ async fn queue_existing_title_download_ignores_stale_matching_submission() {
         source_title: Some("Stale.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1086,6 +1097,7 @@ async fn queue_existing_title_download_conflicts_for_state(state: DownloadQueueS
                 source_title: Some("Blocked.Queue.Replacement.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -1201,6 +1213,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
                 source_title: Some("Additional.Queue.Directors.Cut.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -1315,6 +1328,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
                 ),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             scope.clone(),
@@ -1370,6 +1384,7 @@ async fn queue_existing_title_download_additional_file_dedupes_by_scope() {
         source_title: Some("Additional.Episode.Dedupe.S01E01.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1465,6 +1480,7 @@ async fn queue_existing_title_download_additional_file_rejects_collection_scope(
                 source_title: Some("Additional.Collection.Reject.S01.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Collection {
@@ -1533,6 +1549,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_movie_title_s
                     source_title: Some(format!("{}.2026.1080p.WEB-DL", name.replace(' ', "."))),
                     source_password: None,
 
+                    size_bytes: None,
                     seeders: None,
                 },
                 SubmissionScope::Title,
@@ -1611,6 +1628,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_single_episod
                     ),
                     source_password: None,
 
+                    size_bytes: None,
                     seeders: None,
                 },
                 scope,
@@ -1695,6 +1713,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
                 source_title: Some("Replace.Queue.New.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -1779,6 +1798,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
                 source_title: Some("Replace.All.Queue.New.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,
@@ -2231,6 +2251,7 @@ async fn queue_replacement_release_from_candidate_token_marks_manual_replacement
         source_title: Some("Token.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let candidate_token = app
@@ -2249,6 +2270,7 @@ async fn queue_replacement_release_from_candidate_token_marks_manual_replacement
             &title.id,
             &candidate_token,
             SubmissionConflictPolicy::Abort,
+            None,
         )
         .await
         .expect("queue replacement release from candidate token");
@@ -2331,6 +2353,7 @@ async fn queue_existing_title_download_additional_file_uses_signed_candidate_sco
         source_title: Some("Signed.Episode.Queue.S01E01.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let signed_scope = SubmissionScope::Episode {
@@ -2351,6 +2374,7 @@ async fn queue_existing_title_download_additional_file_uses_signed_candidate_sco
             },
             SubmissionConflictPolicy::Abort,
             crate::DownloadSubmissionPurpose::AdditionalFile,
+            None,
         )
         .await
         .expect("signed single-episode scope should allow additional queue");
@@ -2421,6 +2445,7 @@ async fn queue_existing_title_download_additional_file_rejects_signed_episode_se
         source_title: Some("Signed.Episode.Set.Reject.S01.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let candidate_token = app
@@ -2445,6 +2470,7 @@ async fn queue_existing_title_download_additional_file_rejects_signed_episode_se
             },
             SubmissionConflictPolicy::Abort,
             crate::DownloadSubmissionPurpose::AdditionalFile,
+            None,
         )
         .await
         .expect_err("signed episode-set scope should be rejected for additional queue");
@@ -3681,6 +3707,7 @@ async fn assert_queue_existing_title_submit_decision(
                 source_title: Some(source_title.to_string()),
                 source_password: None,
 
+                size_bytes: None,
                 seeders: None,
             },
             SubmissionScope::Title,

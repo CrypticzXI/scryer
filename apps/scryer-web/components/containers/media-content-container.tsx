@@ -3716,6 +3716,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           titleId: title.id,
           scope: releaseQueueScopeInput(release, { title: true }),
           candidateToken: release.candidateToken,
+          sizeBytes: release.sizeBytes ?? null,
         };
         const replacesPrimary = hasPrimaryMediaFile(title.mediaFiles);
         const mutation = replacesPrimary
@@ -3766,6 +3767,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
               titleId: title.id,
               scope: releaseQueueScopeInput(release, { title: true }),
               candidateToken: release.candidateToken,
+              sizeBytes: release.sizeBytes ?? null,
               purpose: "ADDITIONAL_FILE",
             },
           })

@@ -725,6 +725,7 @@ export const WantedContainer = memo(function WantedContainer({
         titleId: item.titleId,
         scope: releaseQueueScopeInput(release, cutoffQueueScope(item)),
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
 
       try {

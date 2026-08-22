@@ -14128,6 +14128,10 @@ input QueueDownloadInput {
 	"""
 	candidateToken: String!
 	"""
+	Indexer-announced release size, checked against the signed candidate when present.
+	"""
+	sizeBytes: Long
+	"""
 	Acquisition scope targeted by the submission.
 	"""
 	scope: QueueDownloadScopeInput!

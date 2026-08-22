@@ -1041,6 +1041,7 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some(" release-password ".to_string()),
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1107,6 +1108,7 @@ async fn release_candidate_token_rejects_missing_password_ticket() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("release-password".to_string()),
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1164,6 +1166,7 @@ async fn release_candidate_token_drops_placeholder_password_flags() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("protected".to_string()),
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1213,6 +1216,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let scope = SubmissionScope::EpisodeSet {
@@ -1237,7 +1241,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
 }
 
 #[tokio::test]
-async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
+async fn release_candidate_token_carries_size_and_seeder_count_to_redemption() {
     let (app, admin) = bootstrap();
     let (_created, authenticated_user) = create_authenticated_user(
         &app,
@@ -1255,6 +1259,7 @@ async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
         source_kind: Some(DownloadSourceKind::MagnetUri),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        size_bytes: Some(1_234_567_890),
         seeders: Some(42),
     };
 
@@ -1281,6 +1286,7 @@ async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
         Some(42),
         "redemption must be able to re-judge admission from the token alone"
     );
+    assert_eq!(decoded.size_bytes, Some(1_234_567_890));
 }
 
 #[tokio::test]
@@ -1305,6 +1311,7 @@ async fn a_token_minted_before_this_feature_still_redeems() {
         source_kind: Some(DownloadSourceKind::MagnetUri),
         source_title: Some("Example.Legacy.1080p.WEB-DL".to_string()),
         source_password: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1347,6 +1354,7 @@ async fn release_candidate_token_rejects_tampering() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1400,6 +1408,7 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1468,6 +1477,7 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let token = app
@@ -1516,6 +1526,7 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
 
+        size_bytes: None,
         seeders: None,
     };
     let token = app

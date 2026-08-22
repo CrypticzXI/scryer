@@ -549,6 +549,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: { episode: episode.id },
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(mediaFilesByEpisode[episode.id]);
       const mutation = replacesPrimary
@@ -604,6 +605,7 @@ export function SeriesOverviewView({
             titleId: title.id,
             scope: { episode: episode.id },
             candidateToken: release.candidateToken,
+            sizeBytes: release.sizeBytes ?? null,
             purpose: "ADDITIONAL_FILE",
           },
         }).toPromise();
@@ -733,6 +735,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(
         mediaFilesBySeriesMovieLink[link.id],
@@ -795,6 +798,7 @@ export function SeriesOverviewView({
               titleId: title.id,
               scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
               candidateToken: release.candidateToken,
+              sizeBytes: release.sizeBytes ?? null,
               purpose: "ADDITIONAL_FILE",
             },
           })

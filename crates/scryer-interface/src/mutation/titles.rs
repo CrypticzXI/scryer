@@ -319,6 +319,7 @@ impl TitleMutations {
             source_title: source_title.clone(),
             source_password: None,
 
+            size_bytes: None,
             seeders: None,
         };
         let result = if let Some(library_id) = library_id {

@@ -1053,6 +1053,7 @@ impl AppUseCase {
             source_kind: selection.source_kind,
             source_title: source_title.to_string(),
             password_ref,
+            size_bytes: selection.size_bytes,
             seeders: selection.seeders,
         };
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
@@ -1278,6 +1279,7 @@ impl AppUseCase {
                 source_kind: claims.source_kind,
                 source_title: Some(claims.source_title),
                 source_password,
+                size_bytes: claims.size_bytes,
                 seeders: claims.seeders,
             },
             claimed_scope,

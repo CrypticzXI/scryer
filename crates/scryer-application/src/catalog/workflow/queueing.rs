@@ -417,6 +417,7 @@ impl AppUseCase {
             source_kind,
             source_title,
             source_password,
+            size_bytes,
             seeders,
         } = queued_release;
         let source_provider_name = if let Some(indexer_id) = indexer_id.as_deref() {
@@ -467,6 +468,7 @@ impl AppUseCase {
                         source_kind,
                         source_title,
                         source_password,
+                        size_bytes,
                         seeders,
                     },
                     reused_existing: true,
@@ -612,10 +614,7 @@ impl AppUseCase {
                             source_provider_name: source_provider_name.clone(),
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
-                            // An operator's selection carries no announced
-                            // size, so this submission compares size-less if it
-                            // is ever read back as a queued pseudo-incumbent.
-                            release_size_bytes: None,
+                            release_size_bytes: size_bytes,
                             request_signature: request_signature.clone(),
                             purpose,
                             scope: scope.clone(),
@@ -800,6 +799,7 @@ impl AppUseCase {
                 source_kind,
                 source_title: source_title_for_attempt,
                 source_password,
+                size_bytes,
                 seeders,
             },
             reused_existing: false,
@@ -997,10 +997,18 @@ impl AppUseCase {
         title_id: &str,
         candidate_token: &str,
         conflict_policy: SubmissionConflictPolicy,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_replacement_release(
                 actor,
@@ -1108,10 +1116,15 @@ impl AppUseCase {
             scope,
             conflict_policy,
             DownloadSubmissionPurpose::Standard,
+            None,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the candidate token, caller scope, queue policy, purpose, and announced size are independently validated inputs"
+    )]
     pub async fn queue_existing_title_download_from_candidate_token_with_purpose(
         &self,
         actor: &User,
@@ -1120,10 +1133,18 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
         purpose: DownloadSubmissionPurpose,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_existing_title_download_with_purpose(
                 actor,
@@ -1320,6 +1341,7 @@ impl AppUseCase {
                 source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
+                size_bytes: best.size_bytes,
                 seeders: crate::acquisition::seed_goals::seeders_from_extra(&best.extra),
             },
             queue_scope,
@@ -1475,8 +1497,9 @@ mod grab_time_release_title_tests {
                 source_kind: None,
                 source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
                 source_password: None,
-            
-                seeders: None,},
+                size_bytes: Some(1_234_567),
+                seeders: None,
+            },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
         )
@@ -1487,6 +1510,7 @@ mod grab_time_release_title_tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].title_id, title.id);
         assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(rows[0].release_size_bytes, Some(1_234_567));
         assert_eq!(
             rows[0].source_title.as_deref(),
             Some("Paper.Lantern.2012.1080p.WEB-DL-GRP"),
@@ -1514,8 +1538,9 @@ mod grab_time_release_title_tests {
                     source_kind: None,
                     source_title: None,
                     source_password: None,
-                
-                    seeders: None,},
+                    size_bytes: None,
+                    seeders: None,
+                },
             )
             .await
             .expect("add title and queue");

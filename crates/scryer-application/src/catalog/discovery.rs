@@ -1253,6 +1253,7 @@ impl AppUseCase {
                     .or(result.source_kind),
                 source_title: Some(result.title.clone()),
                 source_password: result.password_hint.clone(),
+                size_bytes: result.size_bytes,
                 seeders: crate::acquisition::seed_goals::seeders_from_extra(&result.extra),
             };
             result.candidate_token = if selection.source_hint.is_some() {
