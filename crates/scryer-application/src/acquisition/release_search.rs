@@ -1807,6 +1807,7 @@ impl AppUseCase {
         let tvdb_id = tvdb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
+        let tmdb_id = tmdb_id_from_external_ids(&title.external_ids);
         let anidb_id = anidb_id_from_external_ids(&title.external_ids)
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
@@ -1816,7 +1817,14 @@ impl AppUseCase {
         } else {
             title.name.trim().to_string()
         };
-        if query.is_empty() && imdb_id.is_none() && tvdb_id.is_none() && anidb_id.is_none() {
+        if !Self::has_release_search_input(
+            &title.facet,
+            &query,
+            imdb_id.as_deref(),
+            tmdb_id.as_deref(),
+            tvdb_id.as_deref(),
+            anidb_id.as_deref(),
+        ) {
             return Err(AppError::Validation(
                 "title has no name or external IDs".into(),
             ));
@@ -1838,7 +1846,7 @@ impl AppUseCase {
                 .with_ambiguity(self.title_identity_ambiguity(title).await),
             queries: vec![query],
             imdb_id,
-            tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
+            tmdb_id,
             tvdb_id,
             anidb_id,
             mal_id: mal_id_from_external_ids(&title.external_ids),
@@ -1855,6 +1863,22 @@ impl AppUseCase {
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
             submission_scope: SubmissionScope::Title,
         })
+    }
+
+    fn has_release_search_input(
+        facet: &MediaFacet,
+        query: &str,
+        imdb_id: Option<&str>,
+        tmdb_id: Option<&str>,
+        tvdb_id: Option<&str>,
+        anidb_id: Option<&str>,
+    ) -> bool {
+        !query.is_empty()
+            || imdb_id.is_some()
+            || tvdb_id.is_some()
+            || anidb_id.is_some()
+            // TMDB identifies movies, but does not make a series searchable.
+            || (*facet == MediaFacet::Movie && tmdb_id.is_some())
     }
 
     pub(crate) async fn resolve_release_search_subject_for_episode(
@@ -2222,6 +2246,50 @@ mod tests {
             digital_release_date: None,
             folder_path: None,
         }
+    }
+
+    #[test]
+    fn tmdb_only_movie_is_searchable_without_tvdb() {
+        let mut title = make_title();
+        title.name.clear();
+        title.facet = MediaFacet::Movie;
+        title.external_ids = vec![
+            scryer_domain::ExternalId {
+                source: "smg".to_string(),
+                value: "101".to_string(),
+            },
+            scryer_domain::ExternalId {
+                source: "tmdb".to_string(),
+                value: "603".to_string(),
+            },
+        ];
+
+        let query_result = build_movie_search_queries(&title, "movie", "movie".to_string());
+
+        assert!(AppUseCase::has_release_search_input(
+            &title.facet,
+            "",
+            None,
+            query_result.tmdb_id.as_deref(),
+            None,
+            None,
+        ));
+        assert_eq!(query_result.queries, vec![String::new()]);
+        assert_eq!(query_result.tmdb_id.as_deref(), Some("603"));
+        assert_eq!(query_result.imdb_id, None);
+        assert_eq!(query_result.tvdb_id, None);
+    }
+
+    #[test]
+    fn tmdb_only_id_does_not_make_a_series_searchable() {
+        assert!(!AppUseCase::has_release_search_input(
+            &MediaFacet::Series,
+            "",
+            None,
+            Some("603"),
+            None,
+            None,
+        ));
     }
 
     fn make_candidate(
