@@ -921,11 +921,12 @@ async fn import_single_episode_file(
             episode_ids: target_episode_ids.clone(),
         });
     }
-    let ep_num_str = ep_meta
-        .episode_numbers
-        .first()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let ep_num_str = episode_number_token_for_import(
+        &ep_meta.episode_numbers,
+        target_episodes
+            .first()
+            .and_then(|episode| episode.episode_number.as_deref()),
+    );
     let abs_str = ep_meta.absolute_episode.map(|n| n.to_string()).or_else(|| {
         target_episodes
             .first()
@@ -1119,6 +1120,54 @@ async fn import_single_episode_file(
     }
 
     Ok(outcome)
+}
+
+fn episode_number_token_for_import(
+    parsed_episode_numbers: &[u32],
+    resolved_episode_number: Option<&str>,
+) -> String {
+    parsed_episode_numbers
+        .first()
+        .map(ToString::to_string)
+        .or_else(|| {
+            resolved_episode_number
+                .map(str::trim)
+                .filter(|number| !number.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod episode_number_token_for_import_tests {
+    use super::*;
+
+    #[test]
+    fn parsed_regular_episode_number_takes_precedence() {
+        assert_eq!(episode_number_token_for_import(&[7], Some("1")), "7");
+    }
+
+    #[test]
+    fn resolved_episode_number_fills_an_absolute_only_parse() {
+        assert_eq!(episode_number_token_for_import(&[], Some("1")), "1");
+    }
+
+    #[test]
+    fn episode_number_token_stays_empty_without_a_regular_number() {
+        assert_eq!(episode_number_token_for_import(&[], Some("  ")), "");
+        assert_eq!(episode_number_token_for_import(&[], None), "");
+    }
+
+    #[test]
+    fn resolved_episode_number_renders_a_padded_destination_token() {
+        let episode = episode_number_token_for_import(&[], Some("1"));
+        let tokens = BTreeMap::from([
+            ("season".to_string(), "1".to_string()),
+            ("episode".to_string(), episode),
+        ]);
+
+        assert_eq!(render_rename_template("S{season:2}E{episode:2}", &tokens), "S01E01");
+    }
 }
 /// Resolve media root path and rename template for a title's facet.
 pub(crate) async fn resolve_import_paths(

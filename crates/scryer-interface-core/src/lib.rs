@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
+use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, value};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
     OAuthAuthorizationSource,
@@ -301,6 +301,28 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::Validation(message) => {
             coded_gql_error(format!("validation: {message}"), "VALIDATION_ERROR")
         }
+        AppError::NoAutoEligibleRelease {
+            candidate_count,
+            reasons,
+        } => {
+            Error::new("validation: no auto-eligible release found").extend_with(|_, extensions| {
+                extensions.set("code", "VALIDATION_ERROR");
+                extensions.set("autoCandidateCount", candidate_count as i64);
+                extensions.set(
+                    "autoDecisionReasons",
+                    reasons
+                        .into_iter()
+                        .map(|reason| {
+                            value!({
+                                "code": reason.code,
+                                "summary": reason.summary,
+                                "count": reason.count as i64,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            })
+        }
         AppError::DownloadFeedbackTimeout(message) => {
             coded_gql_error(message, "DOWNLOAD_FEEDBACK_TIMEOUT")
         }
@@ -397,6 +419,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
     match err {
         AppError::Unauthorized(_) => "Unauthorized",
         AppError::Validation(_) => "Validation",
+        AppError::NoAutoEligibleRelease { .. } => "NoAutoEligibleRelease",
         AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
@@ -749,6 +772,36 @@ mod tests {
             .and_then(|extensions| extensions.get("retryAfterSeconds"))
             .expect("retryAfterSeconds extension should be present");
         assert_eq!(retry_after.to_string(), "120");
+    }
+
+    #[test]
+    fn no_auto_eligible_release_graphql_error_includes_reason_counts() {
+        let error = to_gql_error(AppError::NoAutoEligibleRelease {
+            candidate_count: 3,
+            reasons: vec![scryer_application::AutoEligibilityReason {
+                code: "title_mismatch".to_string(),
+                summary: "release title does not match the target title".to_string(),
+                count: 2,
+            }],
+        });
+
+        assert_eq!(error.message, "validation: no auto-eligible release found");
+        assert_eq!(graphql_error_code(&error), Some("VALIDATION_ERROR"));
+        let extensions = error.extensions.as_ref().expect("extensions are present");
+        assert_eq!(
+            extensions
+                .get("autoCandidateCount")
+                .expect("candidate count extension is present")
+                .to_string(),
+            "3"
+        );
+        assert_eq!(
+            extensions
+                .get("autoDecisionReasons")
+                .expect("reason counts extension is present")
+                .to_string(),
+            "[{code: \"title_mismatch\", summary: \"release title does not match the target title\", count: 2}]"
+        );
     }
 
     #[test]

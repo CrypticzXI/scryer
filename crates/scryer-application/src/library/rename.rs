@@ -214,8 +214,11 @@ const RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY: &str = "rename.missing_metadata
 const DEFAULT_COLLISION_POLICY: RenameCollisionPolicy = RenameCollisionPolicy::Skip;
 const DEFAULT_MISSING_METADATA_POLICY: RenameMissingMetadataPolicy =
     RenameMissingMetadataPolicy::FallbackTitle;
+#[cfg(windows)]
 const GENERATED_COMPONENT_MAX_BYTES: usize = 240;
+#[cfg(windows)]
 const GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES: usize = 24;
+const MAX_RENAME_TEMPLATE_PADDING_WIDTH: usize = 240;
 
 #[derive(Default)]
 struct RenamePersistenceState {
@@ -2950,7 +2953,7 @@ fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTo
                 return None;
             }
             let pad_width = fmt.parse::<usize>().ok()?;
-            if pad_width > GENERATED_COMPONENT_MAX_BYTES {
+            if pad_width > MAX_RENAME_TEMPLATE_PADDING_WIDTH {
                 return None;
             }
             (n.trim().to_lowercase(), Some(pad_width))
@@ -3029,6 +3032,7 @@ fn truncate_generated_folder_component(component: &str) -> String {
     truncate_generated_component(component, false)
 }
 
+#[cfg(windows)]
 fn truncate_generated_component(component: &str, preserve_extension: bool) -> String {
     let budget =
         GENERATED_COMPONENT_MAX_BYTES.saturating_sub(GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES);
@@ -3066,6 +3070,12 @@ fn truncate_generated_component(component: &str, preserve_extension: bool) -> St
     }
 }
 
+#[cfg(not(windows))]
+fn truncate_generated_component(component: &str, _preserve_extension: bool) -> String {
+    component.to_string()
+}
+
+#[cfg(windows)]
 fn truncate_utf8_bytes(value: &str, budget: usize) -> String {
     if value.len() <= budget {
         return value.to_string();
@@ -3082,6 +3092,7 @@ fn truncate_utf8_bytes(value: &str, budget: usize) -> String {
     value[..end].to_string()
 }
 
+#[cfg(windows)]
 fn trim_truncated_component_end(value: &str) -> String {
     value
         .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '.' | '-' | '_'))

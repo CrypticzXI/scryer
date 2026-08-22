@@ -2598,6 +2598,143 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
 }
 
 #[tokio::test]
+async fn queue_best_release_reports_auto_eligibility_reason_counts() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
+        "Wrong.Show.2026.1080p.WEB-DL",
+        "Other.Show.2026.720p.WEB-DL",
+    ]));
+    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+        indexer_client,
+    );
+
+    app.create_download_client_config(
+        &user,
+        NewDownloadClientConfig {
+            name: "NZBGet".to_string(),
+            client_type: "nzbget".to_string(),
+            config_json: "{}".to_string(),
+            client_priority: 1,
+            is_enabled: true,
+        },
+    )
+    .await
+    .expect("create download client config");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Target Show".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_best_release(
+            &user,
+            &title.id,
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("mismatched releases should not be auto-eligible");
+    let crate::AppError::NoAutoEligibleRelease {
+        candidate_count,
+        reasons,
+    } = error
+    else {
+        panic!("expected auto-eligibility diagnostics");
+    };
+
+    assert_eq!(candidate_count, 2);
+    assert_eq!(
+        reasons,
+        vec![crate::AutoEligibilityReason {
+            code: "title_mismatch".to_string(),
+            summary: "release title does not match the target title".to_string(),
+            count: 2,
+        }]
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn queue_best_release_reports_zero_auto_candidates() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![]));
+    let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+        indexer_client,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Target Show".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_best_release(
+            &user,
+            &title.id,
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("an empty search should not have an auto-eligible release");
+    let crate::AppError::NoAutoEligibleRelease {
+        candidate_count,
+        reasons,
+    } = error
+    else {
+        panic!("expected auto-eligibility diagnostics");
+    };
+
+    assert_eq!(candidate_count, 0);
+    assert!(reasons.is_empty());
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn queue_best_release_supports_series_movie_scope() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

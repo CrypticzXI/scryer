@@ -522,6 +522,7 @@ fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn truncate_generated_filename_preserves_extension_and_byte_budget() {
     let long_stem = "長".repeat(120);
@@ -537,6 +538,15 @@ fn truncate_generated_filename_preserves_extension_and_byte_budget() {
     assert!(std::str::from_utf8(result.as_bytes()).is_ok());
 }
 
+#[cfg(not(windows))]
+#[test]
+fn truncate_generated_filename_preserves_long_utf8_component() {
+    let long_stem = "長".repeat(120);
+    let filename = format!("{long_stem}.mkv");
+
+    assert_eq!(truncate_generated_filename_component(&filename), filename);
+}
+
 #[test]
 fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
     let result = finalize_generated_filename_component("../Unsafe\\Title:Name.mkv");
@@ -547,6 +557,7 @@ fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
     assert_eq!(result, "Unsafe Title Name.mkv");
 }
 
+#[cfg(windows)]
 #[test]
 fn configured_title_folder_path_truncates_generated_folder_component() {
     let title = test_movie_title(&"Long ".repeat(100));
@@ -557,6 +568,19 @@ fn configured_title_folder_path_truncates_generated_folder_component() {
         folder.len() <= GENERATED_COMPONENT_MAX_BYTES - GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES,
         "truncated folder exceeded budget: {} bytes",
         folder.len()
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn configured_title_folder_path_preserves_long_component() {
+    let title_name = "Long ".repeat(100);
+    let title = test_movie_title(&title_name);
+    let path = configured_title_folder_path("/library", &title, "{title}", None);
+
+    assert_eq!(
+        path.file_name().and_then(|folder| folder.to_str()),
+        Some(title_name.as_str())
     );
 }
 

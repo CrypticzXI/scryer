@@ -1305,10 +1305,19 @@ impl AppUseCase {
             )
             .await;
         }
+        let Some(best_index) = results
+            .iter()
+            .position(|candidate| candidate.auto_eligible == Some(true))
+        else {
+            return Err(AppError::NoAutoEligibleRelease {
+                candidate_count: results.len(),
+                reasons: summarize_auto_eligibility_reasons(&results),
+            });
+        };
         let best = results
             .into_iter()
-            .find(|candidate| candidate.auto_eligible == Some(true))
-            .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
+            .nth(best_index)
+            .expect("eligible release index came from results");
         let queue_scope = if matches!(
             &scope,
             SubmissionScope::Collection { .. } | SubmissionScope::SeriesMovie { .. }
@@ -1370,6 +1379,41 @@ impl AppUseCase {
         .await
     }
 }
+fn summarize_auto_eligibility_reasons(
+    results: &[IndexerSearchResult],
+) -> Vec<crate::AutoEligibilityReason> {
+    let mut reasons = std::collections::BTreeMap::new();
+    for candidate in results {
+        let code = candidate
+            .auto_decision_code
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
+        let summary = candidate
+            .auto_decision_summary
+            .as_deref()
+            .unwrap_or("automatic eligibility was not evaluated")
+            .to_string();
+        reasons
+            .entry(code.clone())
+            .and_modify(|reason: &mut crate::AutoEligibilityReason| reason.count += 1)
+            .or_insert(crate::AutoEligibilityReason {
+                code,
+                summary,
+                count: 1,
+            });
+    }
+
+    let mut reasons: Vec<_> = reasons.into_values().collect();
+    reasons.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    reasons
+}
+
 fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)

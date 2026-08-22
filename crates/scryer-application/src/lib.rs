@@ -602,6 +602,13 @@ pub use types::{
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoEligibilityReason {
+    pub code: String,
+    pub summary: String,
+    pub count: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("unauthorized: {0}")]
@@ -609,6 +616,12 @@ pub enum AppError {
 
     #[error("validation: {0}")]
     Validation(String),
+
+    #[error("no auto-eligible release found")]
+    NoAutoEligibleRelease {
+        candidate_count: usize,
+        reasons: Vec<AutoEligibilityReason>,
+    },
 
     #[error("plugin install already in progress for '{0}'")]
     PluginInstallInProgress(String),
