@@ -1,83 +1,75 @@
 /// Result of one scheduled automatic plugin-update cycle.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PluginAutoUpdateReport {
-    pub(crate) enabled: bool,
-    pub(crate) considered: usize,
     pub(crate) updated: Vec<PluginAutoUpdateUpgrade>,
-    pub(crate) skipped_in_progress: Vec<String>,
     pub(crate) failed: Vec<PluginAutoUpdateFailure>,
-    pub(crate) rollback_failures: Vec<PluginAutoUpdateRollbackFailure>,
-    pub(crate) errors: Vec<String>,
+    /// Candidate selection itself failed (nothing per-plugin ran).
+    pub(crate) error: Option<String>,
 }
 impl PluginAutoUpdateReport {
     pub(crate) fn did_work(&self) -> bool {
-        !self.updated.is_empty()
-            || !self.skipped_in_progress.is_empty()
-            || !self.failed.is_empty()
-            || !self.errors.is_empty()
+        !self.updated.is_empty() || !self.failed.is_empty() || self.error.is_some()
     }
 
     pub(crate) fn has_failures(&self) -> bool {
-        !self.failed.is_empty() || !self.rollback_failures.is_empty() || !self.errors.is_empty()
+        !self.failed.is_empty() || self.error.is_some()
     }
 }
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PluginAutoUpdateUpgrade {
     pub(crate) plugin_id: String,
     pub(crate) from_version: String,
     pub(crate) to_version: String,
 }
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PluginAutoUpdateFailure {
     pub(crate) plugin_id: String,
     pub(crate) error: String,
     pub(crate) rolled_back: bool,
+    pub(crate) rollback_error: Option<String>,
 }
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct PluginAutoUpdateRollbackFailure {
-    pub(crate) plugin_id: String,
-    pub(crate) error: String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PluginAutoUpdateKind {
-    Patch,
-    OptimizedArtifact,
-}
-#[derive(Clone, Debug, Default)]
-struct PluginAutoUpdateRollback {
-    restored: bool,
-    error: Option<String>,
+/// A candidate that did not survive its upgrade, plus what compensating it did.
+struct PluginAutoUpdateFailed {
+    error: AppError,
+    rolled_back: bool,
+    rollback_error: Option<String>,
 }
 /// Eligibility of the release the catalog already selected for this plugin.
 ///
-/// Automation never picks an alternative release: it either takes the same
-/// candidate the update badge and a manual upgrade would take, or it skips.
-fn plugin_auto_update_candidate_kind(
+/// Automation takes exactly the candidate the update badge and a manual upgrade
+/// would take, restricted to stable releases on the installed major.minor.
+fn plugin_auto_update_candidate(
     installation: &PluginInstallation,
     resolved: &CatalogPluginResolution,
-) -> Option<PluginAutoUpdateKind> {
-    let selected = parse_catalog_release_version(&resolved.catalog_entry.id, &resolved.release)?;
-    let installed = semver::Version::parse(installation.version.as_str()).ok()?;
-
-    if !selected.pre.is_empty() {
-        return None;
+) -> bool {
+    if !catalog_plugin_update_available(installation, resolved) {
+        return false;
     }
-    if selected.major == installed.major
+    let Some(selected) =
+        parse_catalog_release_version(&resolved.catalog_entry.id, &resolved.release)
+    else {
+        return false;
+    };
+    let Ok(installed) = semver::Version::parse(installation.version.as_str()) else {
+        return false;
+    };
+    selected.pre.is_empty()
+        && selected.major == installed.major
         && selected.minor == installed.minor
-        && selected.patch > installed.patch
-    {
-        return Some(PluginAutoUpdateKind::Patch);
-    }
-    if selected == installed
-        && same_version_simd_artifact_update_available(
-            installation,
-            &resolved.release,
-            &resolved.artifact,
-        )
-    {
-        return Some(PluginAutoUpdateKind::OptimizedArtifact);
-    }
-    None
+}
+/// The prior row as the upgrade left it: unchanged means nothing to compensate.
+fn plugin_installation_matches_snapshot(
+    current: &PluginInstallation,
+    prior: &PluginInstallation,
+) -> bool {
+    current.version == prior.version
+        && current.wasm_digest == prior.wasm_digest
+        && current.artifact_digest == prior.artifact_digest
+        && current.plugin_type == prior.plugin_type
+        && current.provider_type == prior.provider_type
+        && current.updated_at == prior.updated_at
 }
 impl AppUseCase {
     async fn collect_plugin_auto_update_candidates(
@@ -111,7 +103,9 @@ impl AppUseCase {
                 if !catalog_resolution_is_first_party(resolved) {
                     return None;
                 }
-                plugin_auto_update_candidate_kind(&installation, resolved)?;
+                if !plugin_auto_update_candidate(&installation, resolved) {
+                    return None;
+                }
                 Some((installation, resolved.clone()))
             })
             .collect())
@@ -124,8 +118,11 @@ impl AppUseCase {
     pub(crate) async fn run_scheduled_plugin_auto_update(&self) -> PluginAutoUpdateReport {
         let mut report = PluginAutoUpdateReport::default();
         match self.load_plugin_auto_update_settings().await {
-            Ok(settings) if settings.enabled => report.enabled = true,
-            Ok(_) => return report,
+            Ok(settings) => {
+                if !settings.enabled {
+                    return report;
+                }
+            }
             Err(error) => {
                 warn!(
                     error = %error,
@@ -139,11 +136,10 @@ impl AppUseCase {
             Ok(candidates) => candidates,
             Err(error) => {
                 warn!(error = %error, "automatic plugin update candidate selection failed");
-                report.errors.push(error.to_string());
+                report.error = Some(error.to_string());
                 return report;
             }
         };
-        report.considered = candidates.len();
 
         let actor = User::system_execution_actor();
         for (installation, resolved) in candidates {
@@ -158,20 +154,19 @@ impl AppUseCase {
             {
                 // An interactive operation owns the slot; the next scheduled
                 // cycle retries this plugin.
-                report.skipped_in_progress.push(plugin_id);
+                report.failed.push(PluginAutoUpdateFailure {
+                    plugin_id,
+                    error: "an install or upgrade is already in progress".to_string(),
+                    rolled_back: false,
+                    rollback_error: None,
+                });
                 continue;
             }
 
             let reporter = PluginInstallProgressReporter::new(self, &actor.id, &plugin_id);
             let from_version = installation.version.clone();
-            let mut rollback = PluginAutoUpdateRollback::default();
             match self
-                .upgrade_catalog_plugin_with_rollback(
-                    resolved,
-                    installation,
-                    &reporter,
-                    &mut rollback,
-                )
+                .upgrade_catalog_plugin_with_rollback(resolved, installation, &reporter)
                 .await
             {
                 Ok(updated) => {
@@ -188,25 +183,18 @@ impl AppUseCase {
                         to_version: updated.version,
                     });
                 }
-                Err(error) => {
-                    reporter.failed(&error).await;
+                Err(failure) => {
+                    reporter.failed(&failure.error).await;
                     warn!(
                         plugin_id = plugin_id.as_str(),
-                        error = %error,
+                        error = %failure.error,
                         "automatic plugin update failed"
                     );
-                    if let Some(rollback_error) = rollback.error {
-                        report
-                            .rollback_failures
-                            .push(PluginAutoUpdateRollbackFailure {
-                                plugin_id: plugin_id.clone(),
-                                error: rollback_error,
-                            });
-                    }
                     report.failed.push(PluginAutoUpdateFailure {
                         plugin_id,
-                        error: error.to_string(),
-                        rolled_back: rollback.restored,
+                        error: failure.error.to_string(),
+                        rolled_back: failure.rolled_back,
+                        rollback_error: failure.rollback_error,
                     });
                 }
             }
@@ -221,23 +209,36 @@ impl AppUseCase {
         resolved: CatalogPluginResolution,
         installation: PluginInstallation,
         reporter: &PluginInstallProgressReporter,
-        rollback: &mut PluginAutoUpdateRollback,
-    ) -> AppResult<PluginInstallation> {
+    ) -> Result<PluginInstallation, PluginAutoUpdateFailed> {
         let prior_record = installation.clone();
         // Automation only touches a plugin it can put back: without the prior
         // artifact in hand there is nothing to compensate a failed upgrade with.
-        let prior_wasm = self
+        let prior_wasm = match self
             .services
             .customization
             .plugin_installations
             .get_plugin_installation_wasm_payload(&prior_record.plugin_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "plugin '{}' is missing persisted WASM payload",
-                    prior_record.plugin_id
-                ))
-            })?;
+            .await
+        {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                return Err(PluginAutoUpdateFailed {
+                    error: AppError::Validation(format!(
+                        "plugin '{}' is missing persisted WASM payload",
+                        prior_record.plugin_id
+                    )),
+                    rolled_back: false,
+                    rollback_error: None,
+                });
+            }
+            Err(error) => {
+                return Err(PluginAutoUpdateFailed {
+                    error,
+                    rolled_back: false,
+                    rollback_error: None,
+                });
+            }
+        };
 
         let error = match self
             .upgrade_catalog_plugin(resolved, installation, reporter)
@@ -247,56 +248,75 @@ impl AppUseCase {
             Err(error) => error,
         };
 
-        match self
-            .restore_plugin_installation_snapshot(&prior_record, &prior_wasm)
+        // The upgrade persists the installation row before it touches the
+        // runtime, so a row that still matches the snapshot proves the runtime
+        // was never re-registered either: there is nothing to compensate.
+        let current = match self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(&prior_record.plugin_id)
             .await
         {
-            Ok(()) => rollback.restored = true,
+            Ok(current) => current,
+            Err(read_error) => {
+                warn!(
+                    plugin_id = prior_record.plugin_id.as_str(),
+                    error = %read_error,
+                    "failed to read back a plugin installation after a failed automatic update"
+                );
+                return Err(PluginAutoUpdateFailed {
+                    error,
+                    rolled_back: false,
+                    rollback_error: Some(read_error.to_string()),
+                });
+            }
+        };
+        let Some(current) = current
+            .filter(|current| !plugin_installation_matches_snapshot(current, &prior_record))
+        else {
+            return Err(PluginAutoUpdateFailed {
+                error,
+                rolled_back: false,
+                rollback_error: None,
+            });
+        };
+
+        match self
+            .restore_plugin_installation_snapshot(&prior_record, &prior_wasm, &current)
+            .await
+        {
+            Ok(()) => Err(PluginAutoUpdateFailed {
+                error,
+                rolled_back: true,
+                rollback_error: None,
+            }),
             Err(rollback_error) => {
                 warn!(
                     plugin_id = prior_record.plugin_id.as_str(),
                     error = %rollback_error,
                     "failed to roll back automatic plugin update"
                 );
-                rollback.error = Some(rollback_error.to_string());
+                Err(PluginAutoUpdateFailed {
+                    error,
+                    rolled_back: false,
+                    rollback_error: Some(rollback_error.to_string()),
+                })
             }
         }
-
-        Err(error)
     }
 }
 impl AppUseCase {
+    /// Puts the prior record, its artifact, and its runtime registration back
+    /// after an upgrade that already persisted `current`. A disabled plugin was
+    /// never handed to the runtime by the upgrade (`runtime_touched =
+    /// result.is_enabled`), so only its row needs restoring.
     async fn restore_plugin_installation_snapshot(
         &self,
         prior_record: &PluginInstallation,
         prior_wasm: &PersistedPluginWasmPayload,
+        current: &PluginInstallation,
     ) -> AppResult<()> {
-        // A failed upgrade can leave the runtime holding a replacement under a
-        // different plugin/provider type; drop that before the prior one is
-        // re-registered.
-        let replacement_runtime_types = self
-            .services
-            .customization
-            .plugin_installations
-            .get_plugin_installation(&prior_record.plugin_id)
-            .await
-            .ok()
-            .flatten()
-            .filter(|current| {
-                current.plugin_type != prior_record.plugin_type
-                    || current.provider_type != prior_record.provider_type
-            })
-            .map(|current| (current.plugin_type, current.provider_type));
-        if let Some((plugin_type, provider_type)) = replacement_runtime_types.as_ref()
-            && let Err(error) = self.apply_runtime_plugin_removal_for_values(plugin_type, provider_type)
-        {
-            warn!(
-                plugin_id = prior_record.plugin_id.as_str(),
-                error = %error,
-                "failed to remove replacement plugin runtime registration during rollback"
-            );
-        }
-
         let restored = self
             .services
             .customization
@@ -306,16 +326,15 @@ impl AppUseCase {
 
         if restored.is_enabled {
             let runtime_plugin = self.load_runtime_plugin_for_installation(&restored).await?;
-            self.apply_runtime_plugin_upsert(&restored, runtime_plugin)?;
+            self.apply_runtime_plugin_replace(current, &restored, runtime_plugin)?;
         }
 
-        let mut plugin_types = vec![restored.plugin_type.clone()];
-        if let Some((plugin_type, _)) = replacement_runtime_types {
-            plugin_types.push(plugin_type);
-        }
         self.finalize_runtime_plugin_mutation_for_types(
-            plugin_types.iter().map(String::as_str),
-            restored.is_enabled || plugin_types.len() > 1,
+            [
+                current.plugin_type.as_str(),
+                restored.plugin_type.as_str(),
+            ],
+            restored.is_enabled,
         )
         .await
     }

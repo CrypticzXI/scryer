@@ -195,16 +195,11 @@ impl PluginInstallOrchestrator {
             .map(|handle| handle.tx.subscribe())
     }
 
-    pub async fn active_plugin_ids_for_actor(&self, actor_user_id: &str) -> HashSet<String> {
+    /// Plugins whose install/upgrade slot is currently held, by any actor —
+    /// including the system actor that runs scheduled automatic updates.
+    pub async fn active_plugin_ids(&self) -> HashSet<String> {
         let state = self.state.lock().await;
-        state
-            .snapshots_by_actor_plugin
-            .iter()
-            .filter(|((snapshot_actor, _), handle)| {
-                snapshot_actor == actor_user_id && handle.active
-            })
-            .map(|((_, plugin_id), _)| plugin_id.clone())
-            .collect()
+        state.active_by_plugin.keys().cloned().collect()
     }
 
     pub async fn transition(

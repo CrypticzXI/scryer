@@ -1008,9 +1008,7 @@ const ja: LocaleDictionary = {
   "settings.pluginsRefresh": "レジストリを更新",
   "settings.pluginAutoUpdateEnabled": "プラグインのパッチを自動更新",
   "settings.pluginAutoUpdateEnabledHelp":
-    "有効にすると、プラグインを公開されている最新のパッチ バージョンに自動更新します（例: 1.0.1 => 1.0.2）。マイナー バージョンとメジャー バージョンは運用者が管理します。",
-  "settings.pluginAutoUpdateEnabledReadonly":
-    "プラグインの自動更新は、構成を管理できるユーザーが制御します。",
+    "有効にすると、スケジュールされたジョブ「Plugin Catalog Refresh」（手動実行も含む）が公式プラグインを最新のパッチ バージョンに更新し（例: 1.0.1 → 1.0.2）、インストール済みバージョンの最適化ビルドがある場合はそれをインストールします。マイナー バージョンとメジャー バージョンは運用者が管理します。",
   "settings.host": "ホスト",
   "settings.port": "ポート",
   "settings.baseUrl": "ベースURL",
