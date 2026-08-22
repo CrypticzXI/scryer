@@ -796,6 +796,39 @@ pub struct AcquisitionSearchJobView {
 /// Map a terminal/running job-run status onto the acquisition-search job state
 /// vocabulary. Partial failures use `Warning` internally but are still a
 /// completed search; only the explicit cancellation signal is cancelled.
+/// Whether a scope's search error counts against the job. A search that finds
+/// nothing grabbable — nothing at all, or nothing auto-eligible — is a completed
+/// search, not a failure: the typed `NoAutoEligibleRelease` expresses the same
+/// outcome the old `Validation("no auto-eligible release found")` did.
+fn scope_search_error_is_failure(error: &AppError) -> bool {
+    !matches!(
+        error,
+        AppError::Validation(_) | AppError::NoAutoEligibleRelease { .. }
+    )
+}
+/// The job's terminal status. It completes when no scope failed; it fails when
+/// nothing was grabbed and either every scope failed or a scope could not submit
+/// because its download client was unavailable (a mapped client that is
+/// disabled fails the job, even though the release itself is only parked —
+/// `Pending`, never blocklisted — for convergence); otherwise it carries a
+/// warning for the partial result.
+fn acquisition_search_job_status(
+    grabbed: usize,
+    processed: usize,
+    failed: usize,
+    submit_unavailable: bool,
+    cancelled: bool,
+) -> JobRunStatus {
+    if cancelled {
+        JobRunStatus::Warning
+    } else if failed == 0 {
+        JobRunStatus::Completed
+    } else if grabbed == 0 && (processed == failed || submit_unavailable) {
+        JobRunStatus::Failed
+    } else {
+        JobRunStatus::Warning
+    }
+}
 fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) -> &'static str {
     if cancelled {
         return "cancelled";
@@ -811,6 +844,57 @@ fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) ->
 #[cfg(test)]
 mod acquisition_search_state_tests {
     use super::*;
+    #[test]
+    fn a_search_that_finds_nothing_grabbable_is_not_a_failed_scope() {
+        assert!(!scope_search_error_is_failure(&AppError::Validation(
+            "no auto-eligible release found".into()
+        )));
+        assert!(!scope_search_error_is_failure(
+            &AppError::NoAutoEligibleRelease {
+                candidate_count: 3,
+                reasons: Vec::new(),
+            }
+        ));
+        assert!(scope_search_error_is_failure(&AppError::Repository(
+            "indexer exploded".into()
+        )));
+        assert!(scope_search_error_is_failure(
+            &AppError::download_submit_unavailable("mapped download client is globally disabled")
+        ));
+    }
+    #[test]
+    fn an_all_empty_search_completes_and_a_disabled_mapped_client_fails_it() {
+        // 98 scopes, none grabbable: completed, not failed.
+        assert_eq!(
+            acquisition_search_job_status(0, 98, 0, false, false),
+            JobRunStatus::Completed
+        );
+        // One scope could not submit (mapped client disabled), the rest found
+        // nothing: the job fails even though only one scope counted against it.
+        assert_eq!(
+            acquisition_search_job_status(0, 98, 1, true, false),
+            JobRunStatus::Failed
+        );
+        // A definitive failure on one scope among many is a warning.
+        assert_eq!(
+            acquisition_search_job_status(0, 98, 1, false, false),
+            JobRunStatus::Warning
+        );
+        // Every scope failed: failed.
+        assert_eq!(
+            acquisition_search_job_status(0, 2, 2, false, false),
+            JobRunStatus::Failed
+        );
+        // Something was grabbed elsewhere: a partial result, not a failure.
+        assert_eq!(
+            acquisition_search_job_status(1, 98, 1, true, false),
+            JobRunStatus::Warning
+        );
+        assert_eq!(
+            acquisition_search_job_status(0, 98, 1, true, true),
+            JobRunStatus::Warning
+        );
+    }
 
     #[test]
     fn warning_is_completed_unless_the_search_was_cancelled() {
@@ -1292,6 +1376,7 @@ impl AppUseCase {
         let mut processed = 0usize;
         let mut grabbed = 0usize;
         let mut failed = 0usize;
+        let mut submit_unavailable = false;
         let mut cancelled = false;
 
         for scope in scopes {
@@ -1328,9 +1413,12 @@ impl AppUseCase {
             {
                 Ok(QueueDownloadOutcome::Queued(_)) => grabbed += 1,
                 Ok(QueueDownloadOutcome::Conflict(_)) => {}
-                Err(AppError::Validation(_)) => {}
+                Err(error) if !scope_search_error_is_failure(&error) => {}
                 Err(error) => {
                     failed += 1;
+                    if error.is_retryable_download_submit_failure() {
+                        submit_unavailable = true;
+                    }
                     tracing::warn!(
                         title_id = scope.title_id.as_str(),
                         error = %error,
@@ -1348,6 +1436,7 @@ impl AppUseCase {
             processed,
             grabbed,
             failed,
+            submit_unavailable,
             cancelled,
         )
         .await;
@@ -1379,17 +1468,16 @@ impl AppUseCase {
         processed: usize,
         grabbed: usize,
         failed: usize,
+        submit_unavailable: bool,
         cancelled: bool,
     ) {
-        let status = if cancelled {
-            JobRunStatus::Warning
-        } else if failed == 0 {
-            JobRunStatus::Completed
-        } else if grabbed == 0 && processed == failed {
-            JobRunStatus::Failed
-        } else {
-            JobRunStatus::Warning
-        };
+        let status = acquisition_search_job_status(
+            grabbed,
+            processed,
+            failed,
+            submit_unavailable,
+            cancelled,
+        );
         let state = acquisition_search_state_for_status(status, cancelled);
         let completed_at = chrono::Utc::now();
         run.status = status;
