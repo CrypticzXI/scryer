@@ -778,14 +778,54 @@ pub(crate) fn audio_channels_label(channels: i32) -> String {
     }
 }
 
+/// The landed-size tolerance that still counts as "the release it announced".
+///
+/// A usenet payload loses par2/RAR/container overhead between what the indexer
+/// advertised and what is written to disk, and a torrent rarely arrives with
+/// exactly its announced byte count either. Inside this band the grab and the
+/// import are looking at the same release, so the import scores the size term
+/// on the **announced** size (option c of the grab-vs-import size decision):
+/// the number the grab admitted is the number the import sees. Below it the
+/// shortfall is real — a truncated, stripped or mislabelled payload — and the
+/// import scores what actually landed.
+pub(crate) const SIZE_OVERHEAD_TOLERANCE: f64 = 0.85;
+
+/// The byte count the size term is scored on for a landed file.
+///
+/// `announced` is the release's advertised size (`download_submissions.release_size_bytes`
+/// at import, `media_files.announced_size_bytes` when the bar is re-derived);
+/// `landed` is the file on disk. Returns `announced` when the landed file is at
+/// least [`SIZE_OVERHEAD_TOLERANCE`] of it, otherwise `landed`. Both the import
+/// decision and the incumbent bar go through here, which is what keeps I7 — the
+/// re-derived bar reproduces the import score — true for this term.
+pub(crate) fn size_basis_bytes(landed: i64, announced: Option<i64>) -> i64 {
+    match announced {
+        Some(announced)
+            if announced > 0
+                && landed > 0
+                && (landed as f64) >= SIZE_OVERHEAD_TOLERANCE * (announced as f64) =>
+        {
+            announced
+        }
+        _ => landed,
+    }
+}
+
 /// Everything a stored row knows about the release it holds.
 ///
-/// The announced size is the file's real size because no other size survives on
-/// the row — which is exactly right for re-deriving a *bar*: the bar is what the
-/// file turned out to be, not what it was once advertised as.
+/// The size the row is scored on follows the import's rule ([`size_basis_bytes`]):
+/// the announced size the row remembers when the file landed inside the overhead
+/// band, otherwise the file's real size. That is what lets a re-derived bar
+/// reproduce the import score (I7). A row that remembers no announced size —
+/// every row written before the column existed, a scanned file, an adopted
+/// download — is scored on its real size, exactly as before.
 pub(crate) fn evidence_from_media_file(file: &crate::TitleMediaFile) -> ReleaseEvidence {
-    ReleaseEvidence::announced(announced_parse_from_media_file(file), Some(file.size_bytes))
-        .with_analysis(analyzed_facts_from_media_file(file))
+    // F4 step 2 (after WP F lands): `file.announced_size_bytes` replaces `None`.
+    ReleaseEvidence::announced(
+        announced_parse_from_media_file(file),
+        Some(size_basis_bytes(file.size_bytes, None)),
+    )
+    .with_analysis(analyzed_facts_from_media_file(file))
 }
 
 /// Re-derive a stored file's canonical score.
