@@ -1186,6 +1186,44 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .collect())
     }
 
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        let mut counts = std::collections::HashMap::<String, i64>::new();
+        for release in self.store.lock().await.iter() {
+            if release.status == PendingReleaseStatus::Standby
+                && wanted_item_ids.contains(&release.wanted_item_id)
+            {
+                *counts.entry(release.wanted_item_id.clone()).or_default() += 1;
+            }
+        }
+        Ok(counts)
+    }
+
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        let mut releases = self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| {
+                release.title_id == title_id && release.status == PendingReleaseStatus::Standby
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        releases.sort_by(|left, right| {
+            right
+                .release_score
+                .cmp(&left.release_score)
+                .then_with(|| left.added_at.cmp(&right.added_at))
+        });
+        Ok(releases)
+    }
+
     async fn delete_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

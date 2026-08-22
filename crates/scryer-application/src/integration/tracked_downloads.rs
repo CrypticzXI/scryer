@@ -487,7 +487,17 @@ impl TrackedDownloadService {
     /// path after it has remained continuously warned for a full day.
     ///
     /// `now` is passed in so the timeout stays deterministic in tests.
-    pub(crate) fn fail_persistent_warning(&mut self, id: &str, now: DateTime<Utc>) -> bool {
+    ///
+    /// `timeout_applies` is decided by the caller (`warning_timeout_applies`):
+    /// a torrent grabbed under a seeding profile is never timed out — its
+    /// indexer's rules own it and the warning stays visible for the operator.
+    /// When it is `false` the clock is dropped and nothing changes.
+    pub(crate) fn fail_persistent_warning(
+        &mut self,
+        id: &str,
+        now: DateTime<Utc>,
+        timeout_applies: bool,
+    ) -> bool {
         let Some(tracked) = self.cache.get(id) else {
             self.warning_since.remove(id);
             return false;
@@ -501,7 +511,7 @@ impl TrackedDownloadService {
                     | TrackedDownloadState::ImportBlocked
             )
             && tracked.client_item.state == DownloadQueueState::Warning;
-        if !warning_is_actionable {
+        if !warning_is_actionable || !timeout_applies {
             self.warning_since.remove(id);
             return false;
         }
@@ -4690,7 +4700,7 @@ mod tests {
             now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
         );
 
-        assert!(tracker.fail_persistent_warning(&id, now));
+        assert!(tracker.fail_persistent_warning(&id, now, true));
         let tracked = tracker.find(&id).expect("tracked download");
         assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
         assert_eq!(tracked.status, TrackedDownloadStatus::Error);
@@ -4714,7 +4724,7 @@ mod tests {
             now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
         );
 
-        assert!(!tracker.fail_persistent_warning(&id, now));
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
         let tracked = tracker.find(&id).expect("tracked download");
         assert_eq!(tracked.state, TrackedDownloadState::Downloading);
         assert!(tracked.status_messages.is_empty());
@@ -4734,9 +4744,9 @@ mod tests {
             now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
         );
 
-        assert!(tracker.fail_persistent_warning(&id, now));
+        assert!(tracker.fail_persistent_warning(&id, now, true));
         assert!(!tracker.warning_since.contains_key(&id));
-        assert!(!tracker.fail_persistent_warning(&id, now));
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
         assert_eq!(
             tracker
                 .find(&id)
@@ -4760,7 +4770,7 @@ mod tests {
             now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT + chrono::Duration::seconds(1),
         );
 
-        assert!(!tracker.fail_persistent_warning(&id, now));
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
         assert_eq!(
             tracker.find(&id).expect("tracked download").state,
             TrackedDownloadState::Downloading
@@ -4782,7 +4792,7 @@ mod tests {
             .client_item
             .state = DownloadQueueState::Downloading;
 
-        assert!(!tracker.fail_persistent_warning(&id, now));
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
         assert!(!tracker.warning_since.contains_key(&id));
     }
 
@@ -4804,10 +4814,33 @@ mod tests {
                 now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
             );
 
-            assert!(!tracker.fail_persistent_warning(&id, now));
+            assert!(!tracker.fail_persistent_warning(&id, now, true));
             assert_eq!(tracker.find(&id).expect("tracked download").state, state);
             assert!(!tracker.warning_since.contains_key(&id));
         }
+    }
+
+    #[test]
+    fn a_warned_download_under_a_seeding_profile_is_never_timed_out() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warned-seeding-profile");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        tracked.client_item.attention_reason = Some("stalled".to_string());
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+        );
+
+        // The caller decided the timeout does not apply (a seeding profile owns
+        // this torrent): nothing fails, the clock is dropped, the warning stays.
+        assert!(!tracker.fail_persistent_warning(&id, now, false));
+        let tracked = tracker.find(&id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(tracked.status_messages.is_empty());
+        assert!(!tracker.warning_since.contains_key(&id));
     }
 
     #[test]

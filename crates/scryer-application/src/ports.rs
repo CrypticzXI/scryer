@@ -4424,10 +4424,27 @@ pub trait PendingReleaseRepository: Send + Sync {
         status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<()>;
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()>;
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
     ) -> AppResult<Vec<PendingRelease>>;
+    /// Standby rows for a title, ordered best-first for cross-episode pack
+    /// recovery.
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>>;
+    /// `standby` row counts grouped by wanted item, for the given items only —
+    /// one query, so a Wanted page never reads the whole standby table.
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>>;
     async fn delete_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

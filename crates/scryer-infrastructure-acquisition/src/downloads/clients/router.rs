@@ -175,10 +175,8 @@ fn parse_bencode_dict(
             return Err(());
         }
         let after_value = parse_bencode_value(bytes, after_key, depth + 1)?;
-        if is_top_level_info {
-            if info_span.replace((after_key, after_value)).is_some() {
-                return Err(());
-            }
+        if is_top_level_info && info_span.replace((after_key, after_value)).is_some() {
+            return Err(());
         }
         cursor = after_value;
     }

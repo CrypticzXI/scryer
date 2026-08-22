@@ -1982,11 +1982,26 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn update_pending_release_delay_until(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         _: &str,
     ) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
+    }
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        _: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        Ok(vec![])
+    }
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        _: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        Ok(std::collections::HashMap::new())
     }
     async fn delete_standby_pending_releases_for_wanted_item(&self, _: &str) -> AppResult<()> {
         Ok(())

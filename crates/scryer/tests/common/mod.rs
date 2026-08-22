@@ -355,6 +355,24 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_standby_pending_releases_for_title(title_id)
+            .await
+    }
+
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        self.pending_releases
+            .count_standby_pending_releases_for_wanted_items(wanted_item_ids)
+            .await
+    }
+
     async fn delete_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

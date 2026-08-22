@@ -1841,6 +1841,51 @@ impl PendingReleaseRepository for PendingReleaseStore {
         .await
     }
 
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        if wanted_item_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders = placeholders(wanted_item_ids.len());
+        let sql = format!(
+            "SELECT wanted_item_id, COUNT(*) AS cnt
+               FROM pending_releases
+              WHERE status = 'standby' AND wanted_item_id IN ({placeholders})
+              GROUP BY wanted_item_id"
+        );
+        let args = wanted_item_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        rows.iter()
+            .map(|row| Ok((row.text("wanted_item_id")?, row.i64("cnt")?)))
+            .collect()
+    }
+
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        let sql = format!(
+            "SELECT {PENDING_RELEASE_COLUMNS}
+               FROM pending_releases
+              WHERE title_id = {{}} AND status = 'standby'
+              ORDER BY release_score DESC, added_at ASC"
+        );
+        let encryption_key = self.encryption_key()?;
+        fetch_pending_releases(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Text(title_id.to_string())],
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
     async fn delete_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

@@ -730,6 +730,42 @@ impl AppUseCase {
     }
 }
 
+/// Whether the 24 h client-warning timeout may fail this download.
+///
+/// Operator rule: the timeout applies only when **no seeding profile is
+/// attached** to the download. A torrent grabbed under a seeding profile (the
+/// indexer's, a Prowlarr-managed one, a routing entry's or the global default —
+/// anything the grab persisted with a resolution source) is governed by that
+/// profile's rules; failing and removing it after a day would expose private
+/// tracker users to hit-and-run penalties. Such a torrent keeps its warning for
+/// the operator and is never auto-failed here. Usenet downloads and torrents
+/// grabbed with no profile keep the timeout. Anything that is not a warned,
+/// Scryer-origin download is irrelevant and reports `true` (the tracker then
+/// ignores it on its own checks).
+pub(crate) async fn warning_timeout_applies(
+    app: &AppUseCase,
+    td: &crate::tracked_downloads::TrackedDownload,
+) -> bool {
+    if td.client_item.state != scryer_domain::DownloadQueueState::Warning
+        || !td.client_item.is_scryer_origin
+        || !crate::seeding_gate::client_type_is_torrent(app, &td.client_type)
+    {
+        return true;
+    }
+    use crate::seeding_gate::{SeedGoalLookupKey, SeedGoalsRead};
+    let key = SeedGoalLookupKey {
+        client_id: td.client_id.trim().to_string(),
+        client_type: td.client_type.trim().to_string(),
+        client_item_id: td.client_item.download_client_item_id.trim().to_string(),
+        info_hash: crate::normalize_torrent_info_hash(Some(
+            td.client_item.download_client_item_id.as_str(),
+        )),
+    };
+    !app.resolved_seed_goals(&key, None)
+        .await
+        .is_some_and(|goals| goals.resolution_source != crate::SeedGoalResolutionSource::None)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "snapshot processing owns tracker, dispatch, projection, and source-specific pruning"
@@ -758,7 +794,10 @@ async fn process_tracked_download_snapshot(
         // import the operator queued against a blocked download stayed
         // invisible and the row stayed fully interactive. Overlay the same
         // import/delete state here so every source renders the same way.
-        if matches!(source, DownloadQueueProjectionSource::AuthoritativeBridge { .. }) {
+        if matches!(
+            source,
+            DownloadQueueProjectionSource::AuthoritativeBridge { .. }
+        ) {
             enrich_queue_item_import_states(app, &mut items).await;
         }
         publish_download_queue_source_projection(app, runtime, source.clone(), &items).await;
@@ -803,7 +842,14 @@ async fn process_tracked_download_snapshot(
             }
         }
 
-        if runtime.tracker.fail_persistent_warning(&id, Utc::now()) {
+        let warning_timeout_applies = match runtime.tracker.find(&id) {
+            Some(td) => warning_timeout_applies(app, td).await,
+            None => true,
+        };
+        if runtime
+            .tracker
+            .fail_persistent_warning(&id, Utc::now(), warning_timeout_applies)
+        {
             tracing::info!(
                 id = %id,
                 "tracked: client warning persisted for 24h; queueing failed-download handling"
@@ -1705,8 +1751,7 @@ fn trackable_import_work_completed_lookup_items(
         .filter(|id| !tracked_work_in_flight.contains(*id))
         .filter_map(|id| {
             tracker.find(id).and_then(|td| {
-                if td.state == TrackedDownloadState::ImportPending
-                    && !td.import_retry_deferred(now)
+                if td.state == TrackedDownloadState::ImportPending && !td.import_retry_deferred(now)
                 {
                     Some(td.client_item.clone())
                 } else {
@@ -2408,8 +2453,7 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
             // Keep the burned release visibly failed while its torrent remains
             // under the same seeding obligation as an imported download; it
             // deliberately records no seeding history while it is held.
-            const HELD_BURNED_TORRENT_MESSAGE: &str =
-                "Kept in the download client until its seeding goal is met; the entry and its data are removed then.";
+            const HELD_BURNED_TORRENT_MESSAGE: &str = "Kept in the download client until its seeding goal is met; the entry and its data are removed then.";
             if let Some(tracked) = tracker.find_mut(id)
                 && !tracked
                     .status_messages
@@ -2444,11 +2488,10 @@ pub(crate) async fn finalize_tracked_terminal_state_with(
         // on the transition, because a handed-off entry stays in the client and
         // is re-offered to the gate on every subsequent poll.
         let records_seeding_history = state == TrackedDownloadState::ImportedSeeding
-            || (cleanup.outcome == crate::import::import::TerminalDownloadCleanupOutcome::HandedOff
+            || (cleanup.outcome
+                == crate::import::import::TerminalDownloadCleanupOutcome::HandedOff
                 && trigger == TerminalSettleTrigger::Transition);
-        if records_seeding_history
-            && let Some(td) = tracker.find(id)
-        {
+        if records_seeding_history && let Some(td) = tracker.find(id) {
             record_seeding_completed_event(app, td, cleanup.seeding).await;
         }
         // A held torrent that has now discharged its obligation graduates to
@@ -2646,8 +2689,7 @@ async fn reconcile_terminal_tracked_downloads(
         .iter()
         .filter_map(|tracked| tracked_download_source_identity(tracked))
         .collect();
-    let cache =
-        crate::import::import::TerminalCleanupTickCache::prefetch(app, &identities).await;
+    let cache = crate::import::import::TerminalCleanupTickCache::prefetch(app, &identities).await;
 
     for (id, state) in terminal_ids {
         finalize_tracked_terminal_state_with(
