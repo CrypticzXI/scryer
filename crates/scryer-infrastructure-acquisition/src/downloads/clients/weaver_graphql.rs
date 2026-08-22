@@ -11,6 +11,8 @@ pub const PAUSE_JOB_MUTATION: &str = include_str!("weaver/pause_job.graphql");
 pub const RESUME_QUEUE_ITEM_MUTATION: &str = include_str!("weaver/resume_queue_item.graphql");
 pub const RESUME_JOB_MUTATION: &str = include_str!("weaver/resume_job.graphql");
 pub const REMOVE_HISTORY_ITEMS_MUTATION: &str = include_str!("weaver/remove_history_items.graphql");
+pub const REMOVE_HISTORY_ITEMS_DELETE_FILES_MUTATION: &str =
+    include_str!("weaver/remove_history_items_delete_files.graphql");
 pub const DELETE_HISTORY_BATCH_MUTATION: &str = include_str!("weaver/delete_history_batch.graphql");
 pub const CANCEL_QUEUE_ITEM_MUTATION: &str = include_str!("weaver/cancel_queue_item.graphql");
 pub const CANCEL_JOB_MUTATION: &str = include_str!("weaver/cancel_job.graphql");

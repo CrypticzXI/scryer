@@ -353,6 +353,29 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.text("tracked_state")).transpose()
     }
 
+    async fn get_identity_tracked_state_reason(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT reason
+             FROM download_identity_states
+             WHERE identity_key = {}
+             LIMIT 1",
+            &[SqlArg::Text(identity_key)],
+        )
+        .await?;
+        row.map(|row| row.opt_text("reason"))
+            .transpose()
+            .map(Option::flatten)
+    }
+
     async fn get_identity_tracked_state_detail(
         &self,
         identity: &DownloadSubmissionIdentity,

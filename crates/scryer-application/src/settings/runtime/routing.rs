@@ -238,7 +238,7 @@ fn default_download_client_routing_entry_json(priority: i64) -> serde_json::Valu
         "recentQueuePriority": "",
         "olderQueuePriority": "",
         "removeCompleted": true,
-        "removeFailed": false,
+        "removeFailed": true,
         "priority": priority,
     })
 }
@@ -288,7 +288,7 @@ fn normalize_download_client_routing_entry_in_place(
         changed = true;
     }
     if !entry.contains_key("removeFailed") {
-        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(false));
+        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(true));
         changed = true;
     }
     if !entry.contains_key("priority") {

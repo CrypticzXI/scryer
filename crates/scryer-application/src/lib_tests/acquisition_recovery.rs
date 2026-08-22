@@ -144,6 +144,9 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         pending_releases.clone(),
         wanted_items.clone(),
     );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::default());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let title = app
         .add_title(
@@ -196,6 +199,13 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
+    let scope_key = format!("title:{}", title.id);
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        coverage
+            .record_coverage(&scope_key, "movie", indexer_id, "fp")
+            .await
+            .expect("seed coverage");
+    }
 
     pending_releases
         .insert_pending_release(&PendingRelease {
@@ -233,7 +243,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
-            source_provider_id: None,
+            source_provider_id: Some("indexer-a".to_string()),
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
@@ -316,6 +326,11 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             .await
             .clone(),
         vec!["Standby.Release.1080p.WEB-DL".to_string()]
+    );
+    assert_eq!(
+        coverage.indexers_for_scope(&scope_key).await,
+        vec!["indexer-b".to_string()],
+        "standby recovery re-opens only the failed indexer for a fresh search"
     );
 }
 
@@ -610,6 +625,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -845,6 +861,9 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         pending_releases,
         wanted_items.clone(),
     );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::default());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let title = app
         .add_title(
@@ -897,6 +916,13 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
+    let scope_key = format!("title:{}", title.id);
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        coverage
+            .record_coverage(&scope_key, "movie", indexer_id, "fp")
+            .await
+            .expect("seed coverage");
+    }
     let wanted_id = wanted.id.clone();
 
     download_submissions
@@ -908,7 +934,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-duplicate".to_string(),
             source_hint: None,
-            source_provider_id: None,
+            source_provider_id: Some("indexer-a".to_string()),
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Duplicate.Failed.Release.1080p.WEB-DL".to_string()),
@@ -936,9 +962,32 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         None,
     )
     .await;
-    assert_ne!(
+    assert_eq!(
         first,
-        crate::acquisition_workflow::FailureHandlingOutcome::AlreadyHandled
+        crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
+    );
+    let reopened = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted_id)
+        .await
+        .expect("get reopened wanted item")
+        .expect("reopened wanted item exists");
+    assert_eq!(reopened.status, AcquisitionScopeStatus::Wanted);
+    assert_eq!(
+        coverage.indexers_for_scope(&scope_key).await,
+        vec!["indexer-b".to_string()],
+        "exhausted standby recovery invalidates only the failed indexer"
+    );
+    let blocklist_before_duplicate = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist before duplicate handling");
+    assert!(
+        blocklist_before_duplicate
+            .iter()
+            .any(|entry| { entry.download_id.as_deref() == Some("failed-duplicate") })
     );
 
     let second = crate::acquisition_workflow::process_download_failure(
@@ -1026,6 +1075,9 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         pending_releases,
         wanted_items.clone(),
     );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::default());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let title = app
         .add_title(
@@ -1078,6 +1130,13 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         .upsert_acquisition_scope_state(&wanted)
         .await
         .expect("seed wanted item");
+    let scope_key = format!("title:{}", title.id);
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        coverage
+            .record_coverage(&scope_key, "movie", indexer_id, "fp")
+            .await
+            .expect("seed coverage");
+    }
 
     download_submissions
         .record_submission(DownloadSubmission {
@@ -1139,6 +1198,11 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
     assert_eq!(blocklist[0].download_id.as_deref(), Some("failed-only"));
+    assert_eq!(
+        coverage.indexers_for_scope(&scope_key).await,
+        vec!["indexer-a".to_string(), "indexer-b".to_string()],
+        "a no-reacquire failure preserves coverage because it must not schedule a retry"
+    );
 }
 
 #[tokio::test]
@@ -1343,6 +1407,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -1474,6 +1539,7 @@ async fn parse_matched_observed_failed_download_does_not_blocklist_or_requeue() 
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: true,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -1532,6 +1598,9 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         pending_releases,
         wanted_items.clone(),
     );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::default());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
 
     let title = app
         .add_title(
@@ -1570,6 +1639,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         .expect("create season");
 
     let mut expected_wanted_ids = Vec::new();
+    let mut expected_episode_ids = Vec::new();
     for (episode_number, label) in [("23", "S07E23"), ("24", "S07E24")] {
         let episode = app
             .services
@@ -1610,7 +1680,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             library_name: None,
             library_slug: None,
             episode_id: Some(episode.id.clone()),
-            collection_id: None,
+            collection_id: Some(season.id.clone()),
             series_movie_link_id: None,
             season_number: Some("7".to_string()),
             episode_number: None,
@@ -1625,10 +1695,24 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             updated_at: Utc::now().to_rfc3339(),
         };
         expected_wanted_ids.push(wanted.id.clone());
+        expected_episode_ids.push(episode.id.clone());
         wanted_items
             .upsert_acquisition_scope_state(&wanted)
             .await
             .expect("seed episode wanted item");
+    }
+    let coverage_scope_keys: Vec<String> = expected_episode_ids
+        .iter()
+        .map(|episode_id| format!("episode:{episode_id}"))
+        .chain(std::iter::once(format!("collection:{}", season.id)))
+        .collect();
+    for scope_key in &coverage_scope_keys {
+        for indexer_id in ["indexer-a", "indexer-b"] {
+            coverage
+                .record_coverage(scope_key, "anime", indexer_id, "fp")
+                .await
+                .expect("seed coverage");
+        }
     }
 
     download_submissions
@@ -1640,7 +1724,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-season-pack".to_string(),
             source_hint: None,
-            source_provider_id: None,
+            source_provider_id: Some("indexer-a".to_string()),
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string()),
@@ -1684,6 +1768,13 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         first,
         crate::acquisition_workflow::FailureHandlingOutcome::RequeuedFreshSearch
     );
+    for scope_key in &coverage_scope_keys {
+        assert_eq!(
+            coverage.indexers_for_scope(scope_key).await,
+            vec!["indexer-b".to_string()],
+            "only the failed pack indexer's coverage is invalidated for {scope_key}"
+        );
+    }
 
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
         id: "nzbget:failed-season-pack".to_string(),
@@ -1712,6 +1803,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -5225,6 +5317,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Swarm.Release.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })

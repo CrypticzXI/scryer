@@ -1313,10 +1313,9 @@ impl DownloadClient for NzbgetDownloadClient {
         self.edit_queue("GroupResume", vec![nzb_id]).await
     }
 
-    /// `_remove_data` is accepted and not acted on: usenet has no seeding
-    /// obligation, and what NZBGet keeps after a delete is its own
-    /// `DeleteCleanupDisk` setting. Data removal for the first-party usenet
-    /// clients is deliberately out of scope for the seeding work.
+    /// NZBGet has no per-call file-deletion option for history entries.
+    /// Scryer deletes a burned download's job data itself (see
+    /// `import_workflow::delete_burned_download_data`) before issuing this delete.
     async fn delete_queue_item(
         &self,
         id: &str,

@@ -5,8 +5,9 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
-    normalize_release_attempt_title,
+    AppUseCase, DownloadSourceIdentity, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
+    acquisition::convergence::{CoverageReopen, convergence_scope_key},
+    normalize_release_attempt_hint, normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -1556,6 +1557,7 @@ pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
+    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1571,6 +1573,7 @@ pub(crate) async fn reject_source_file_before_import(
         app,
         actor,
         title,
+        completed,
         completed_name,
         path,
         attribution,
@@ -1588,6 +1591,7 @@ async fn finalize_import_rejection(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
+    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1611,24 +1615,6 @@ async fn finalize_import_rejection(
         )
         .await;
 
-    match reopen_episode_ids {
-        // A pack reopens only the members that were refused; the row written
-        // below is still attributed to every member the download covered.
-        Some(episode_ids) => {
-            reset_scopes_for_retry(
-                app,
-                &title.id,
-                BlocklistAttribution {
-                    episode_ids,
-                    collection_id: None,
-                    series_movie_link_id: None,
-                },
-            )
-            .await;
-        }
-        None => reset_scopes_for_retry(app, &title.id, attribution).await,
-    }
-
     let reason = Some(format!(
         "{}{}",
         rejection.message,
@@ -1639,6 +1625,62 @@ async fn finalize_import_rejection(
         }
     ));
     blocklist_release_for_title(app, title, completed_name, reason.clone(), attribution).await;
+
+    // Invalidate the source indexer's convergence coverage (or the whole scope
+    // when the grab cannot be attributed) only *after* the blocklist row exists,
+    // then re-open the refused scopes so the cursor seeks a different candidate
+    // from that indexer rather than re-grabbing the burned release.
+    let coverage = match app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(&DownloadSourceIdentity::new(
+            Some(completed.client_id.as_str()),
+            &completed.client_type,
+            &completed.download_client_item_id,
+        ))
+        .await
+    {
+        Ok(Some(submission)) => {
+            let indexer_id = submission.source_provider_id.clone();
+            if let Some(scope_key) = convergence_scope_key(&submission.scope, &title.id) {
+                app.prune_scope_key_coverage(&scope_key, indexer_id.as_deref())
+                    .await;
+            }
+            indexer_id
+                .map(CoverageReopen::Indexer)
+                .unwrap_or(CoverageReopen::All)
+        }
+        Ok(None) => CoverageReopen::All,
+        Err(error) => {
+            warn!(
+                error = %error,
+                client_id = %completed.client_id,
+                client_type = %completed.client_type,
+                download_client_item_id = %completed.download_client_item_id,
+                "failed to resolve indexer for rejected import coverage invalidation"
+            );
+            CoverageReopen::All
+        }
+    };
+    match reopen_episode_ids {
+        // A pack reopens only the members that were refused; the row written
+        // above is still attributed to every member the download covered.
+        Some(episode_ids) => {
+            reset_scopes_for_retry(
+                app,
+                &title.id,
+                BlocklistAttribution {
+                    episode_ids,
+                    collection_id: None,
+                    series_movie_link_id: None,
+                },
+                &coverage,
+            )
+            .await;
+        }
+        None => reset_scopes_for_retry(app, &title.id, attribution, &coverage).await,
+    }
     let _ = app
         .append_domain_event(new_title_domain_event(
             actor,
@@ -1681,18 +1723,23 @@ async fn finalize_import_rejection(
 /// for a series-movie link (whose scope row carries a link id), and wrong for a
 /// season pack (whose members are episode scopes). Both gaps were live — a
 /// refused link import left the link permanently un-searched.
+///
+/// `coverage` is the convergence-coverage invalidation applied to each re-opened
+/// scope: only the indexer the burned release came from (so just that indexer is
+/// re-queried), or the whole scope when the grab cannot be attributed.
 async fn reset_scopes_for_retry(
     app: &AppUseCase,
     title_id: &str,
     attribution: BlocklistAttribution<'_>,
+    coverage: &CoverageReopen,
 ) {
     if !attribution.episode_ids.is_empty() {
-        reopen_episode_scopes(app, title_id, attribution.episode_ids).await;
+        reopen_episode_scopes(app, title_id, attribution.episode_ids, coverage).await;
         return;
     }
 
     if let Some(series_movie_link_id) = attribution.series_movie_link_id {
-        reopen_series_movie_link_scope(app, title_id, series_movie_link_id).await;
+        reopen_series_movie_link_scope(app, title_id, series_movie_link_id, coverage).await;
         return;
     }
 
@@ -1710,7 +1757,7 @@ async fn reset_scopes_for_retry(
                     .filter(|episode| episode.title_id == title_id)
                     .map(|episode| episode.id)
                     .collect();
-                reopen_episode_scopes(app, title_id, &episode_ids).await;
+                reopen_episode_scopes(app, title_id, &episode_ids, coverage).await;
             }
             Err(error) => {
                 warn!(
@@ -1724,20 +1771,30 @@ async fn reset_scopes_for_retry(
         return;
     }
 
-    reopen_episode_scope(app, title_id, None).await;
+    reopen_episode_scope(app, title_id, None, coverage).await;
 }
 
-async fn reopen_episode_scopes(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {
+async fn reopen_episode_scopes(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_ids: &[String],
+    coverage: &CoverageReopen,
+) {
     let mut seen = HashSet::new();
     for episode_id in episode_ids {
         if !seen.insert(episode_id.as_str()) {
             continue;
         }
-        reopen_episode_scope(app, title_id, Some(episode_id.as_str())).await;
+        reopen_episode_scope(app, title_id, Some(episode_id.as_str()), coverage).await;
     }
 }
 
-async fn reopen_episode_scope(app: &AppUseCase, title_id: &str, episode_id: Option<&str>) {
+async fn reopen_episode_scope(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_id: Option<&str>,
+    coverage: &CoverageReopen,
+) {
     match app
         .services
         .workflow
@@ -1746,7 +1803,8 @@ async fn reopen_episode_scope(app: &AppUseCase, title_id: &str, episode_id: Opti
         .await
     {
         Ok(Some(item)) => {
-            app.reopen_wanted_scope_for_acquisition(&item).await;
+            app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
+                .await;
         }
         Ok(None) => {}
         Err(error) => {
@@ -1767,6 +1825,7 @@ async fn reopen_series_movie_link_scope(
     app: &AppUseCase,
     title_id: &str,
     series_movie_link_id: &str,
+    coverage: &CoverageReopen,
 ) {
     match app
         .services
@@ -1783,7 +1842,8 @@ async fn reopen_series_movie_link_scope(
         Ok(items) => {
             for item in items {
                 if item.series_movie_link_id.as_deref() == Some(series_movie_link_id) {
-                    app.reopen_wanted_scope_for_acquisition(&item).await;
+                    app.reopen_wanted_scope_for_acquisition(&item, coverage.clone())
+                        .await;
                     return;
                 }
             }

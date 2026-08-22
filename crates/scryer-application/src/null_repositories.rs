@@ -170,6 +170,14 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
         Ok(Vec::new())
     }
 
+    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn prune_scope_indexer(&self, _scope_key: &str, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn list_coverage_for_scope_keys(
         &self,
         _scope_keys: &[String],

@@ -2959,91 +2959,6 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
     );
 }
 
-// ── convergence coverage write-hook ────────────────────────────────
-
-/// Capturing `ScopeIndexerCoverageRepository` recording every `record_coverage`
-/// call as `(scope_key, facet, indexer_id, fingerprint)`.
-struct RecordingScopeIndexerCoverageRepo {
-    rows: Mutex<Vec<(String, String, String, String)>>,
-}
-
-impl RecordingScopeIndexerCoverageRepo {
-    fn new() -> Self {
-        Self {
-            rows: Mutex::new(Vec::new()),
-        }
-    }
-
-    async fn recorded(&self) -> Vec<(String, String, String, String)> {
-        self.rows.lock().await.clone()
-    }
-}
-
-#[async_trait]
-impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
-    async fn record_coverage(
-        &self,
-        scope_key: &str,
-        facet: &str,
-        indexer_id: &str,
-        fingerprint: &str,
-    ) -> AppResult<()> {
-        // Upsert: a re-search under a new fingerprint replaces the old row,
-        // matching the real store's ON CONFLICT semantics.
-        let mut rows = self.rows.lock().await;
-        rows.retain(|(sk, f, id, _)| !(sk == scope_key && f == facet && id == indexer_id));
-        rows.push((
-            scope_key.to_string(),
-            facet.to_string(),
-            indexer_id.to_string(),
-            fingerprint.to_string(),
-        ));
-        Ok(())
-    }
-
-    async fn covered_indexers(
-        &self,
-        scope_key: &str,
-        facet: &str,
-        fingerprint: &str,
-        _stale_before: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> AppResult<Vec<String>> {
-        // The reconverge backstop (stale_before) is exercised by the store-level
-        // test; it is off by default here.
-        Ok(self
-            .rows
-            .lock()
-            .await
-            .iter()
-            .filter(|(sk, f, _, fp)| sk == scope_key && f == facet && fp == fingerprint)
-            .map(|(_, _, indexer_id, _)| indexer_id.clone())
-            .collect())
-    }
-
-    async fn list_coverage_for_scope_keys(
-        &self,
-        scope_keys: &[String],
-    ) -> AppResult<Vec<crate::ScopeCoverageRow>> {
-        let wanted: std::collections::HashSet<&str> =
-            scope_keys.iter().map(String::as_str).collect();
-        Ok(self
-            .rows
-            .lock()
-            .await
-            .iter()
-            .filter(|(sk, _, _, _)| wanted.contains(sk.as_str()))
-            .map(
-                |(scope_key, _, indexer_id, fingerprint)| crate::ScopeCoverageRow {
-                    scope_key: scope_key.clone(),
-                    indexer_id: indexer_id.clone(),
-                    fingerprint: fingerprint.clone(),
-                    searched_at: String::new(),
-                },
-            )
-            .collect())
-    }
-}
-
 /// Build a series-movie wanted item and resolve its search subject (a
 /// `SeriesMovie` convergence scope) for the coverage write-hook tests.
 async fn convergence_test_title_and_subject(
@@ -3241,6 +3156,233 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
     assert!(
         scope_is_converged(&app, &title, &subject).await,
         "scope converges once every routed indexer is covered under the current fingerprint"
+    );
+}
+
+#[tokio::test]
+async fn coverage_reopen_policies_preserve_the_required_indexers() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let configs = vec![
+        synthetic_direct_nab_indexer_config("indexer-a", "newznab"),
+        synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
+    ];
+    let (app, user) = bootstrap_with_search_settings_indexer_and_configs(
+        settings,
+        Arc::new(MockIndexerClient),
+        configs,
+    );
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app =
+        app.with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage));
+    let (title, subject) = convergence_test_title_and_subject(&app, &user).await;
+    let convergence = app
+        .resolve_scope_convergence(&title, &subject)
+        .await
+        .expect("routed convergence coordinates");
+
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+        .await;
+    app.prune_scope_key_coverage(&convergence.scope_key, Some("indexer-a"))
+        .await;
+    assert_eq!(
+        app.uncovered_indexers_for_scope(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+        .unwrap(),
+        vec!["indexer-a".to_string()]
+    );
+
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+        .await;
+    let SubmissionScope::SeriesMovie {
+        series_movie_link_id,
+    } = &subject.submission_scope
+    else {
+        panic!("fixture must resolve a series-movie scope");
+    };
+    let item = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: None,
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: Some(series_movie_link_id.clone()),
+        season_number: Some("0".to_string()),
+        episode_number: None,
+        media_type: "series_movie".to_string(),
+        last_search_at: None,
+        status: AcquisitionScopeStatus::Wanted,
+        grabbed_release: None,
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+
+    app.reopen_wanted_scope_for_acquisition(
+        &item,
+        crate::acquisition::convergence::CoverageReopen::All,
+    )
+    .await;
+    assert_eq!(
+        app.uncovered_indexers_for_scope(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+        .unwrap(),
+        vec!["indexer-a".to_string(), "indexer-b".to_string()]
+    );
+
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+        .await;
+    app.reopen_wanted_scope_for_acquisition(
+        &item,
+        crate::acquisition::convergence::CoverageReopen::Keep,
+    )
+    .await;
+    assert!(
+        app.uncovered_indexers_for_scope(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "Keep preserves full coverage and leaves the scope converged"
+    );
+}
+
+#[tokio::test]
+async fn convergence_cursor_requeries_only_the_pruned_indexer() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(
+        FixedReleaseIndexerClient::new("Cursor Coverage Fixture.2024.1080p.WEB-DL")
+            .with_fired_indexers(["indexer-a"])
+            .with_empty_response(),
+    );
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        download_submissions,
+        pending_releases,
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+    app.services
+        .integrations
+        .indexer_configs
+        .delete("acquisition-indexer")
+        .await
+        .expect("remove bootstrap indexer");
+    for indexer_id in ["indexer-a", "indexer-b"] {
+        app.services
+            .integrations
+            .indexer_configs
+            .create(synthetic_direct_nab_indexer_config(indexer_id, "newznab"))
+            .await
+            .expect("create routed indexer");
+    }
+    let coverage = Arc::new(RecordingScopeIndexerCoverageRepo::new());
+    let app = app
+        .with_test_overrides(|builder| builder.with_scope_indexer_coverage_store(coverage.clone()));
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Cursor Coverage Fixture".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some("movie".to_string()),
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: None,
+        status: AcquisitionScopeStatus::Wanted,
+        grabbed_release: None,
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed fileless wanted movie");
+    let search_title = app
+        .release_search_title_for_wanted_item(&title, &wanted, None)
+        .await;
+    let subject = app
+        .resolve_release_search_subject_for_wanted_item(&title, &search_title, &wanted, None)
+        .await;
+    let convergence = app
+        .resolve_scope_convergence(&title, &subject)
+        .await
+        .expect("resolve live convergence coordinates");
+    app.record_search_coverage(&title, &subject, &convergence.routed_indexer_ids)
+        .await;
+    app.prune_scope_key_coverage(&convergence.scope_key, Some("indexer-a"))
+        .await;
+    let indexer_b_before = coverage
+        .recorded()
+        .await
+        .into_iter()
+        .find(|(_, _, indexer_id, _)| indexer_id == "indexer-b")
+        .expect("indexer-b remains covered before the cursor runs");
+
+    app.run_convergence_cycle_once().await;
+
+    assert_eq!(
+        indexer_client.requested_indexer_id_sets().await,
+        vec![vec!["indexer-a".to_string()]],
+        "the cursor sent only the uncovered indexer through the routing plan"
+    );
+    let rows = coverage.recorded().await;
+    assert!(
+        rows.iter()
+            .any(|(_, _, indexer_id, _)| indexer_id == "indexer-a"),
+        "the cursor re-recorded coverage for the sole uncovered indexer"
+    );
+    assert!(
+        rows.iter().any(|row| row == &indexer_b_before),
+        "the covered peer row was untouched by the restricted cursor search"
     );
 }
 

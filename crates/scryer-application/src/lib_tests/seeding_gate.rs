@@ -129,6 +129,7 @@ fn tracked_for(
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     }
 }
@@ -392,6 +393,253 @@ async fn a_failed_torrent_its_client_will_release_takes_its_data_with_it() {
             true,
             true
         )]
+    );
+}
+
+#[tokio::test]
+async fn a_burned_usenet_failure_removes_history_with_data() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Burned Usenet").await;
+    let mut tracked = tracked_for(
+        &config.id,
+        "nzbget",
+        "nzb-burned-1",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    tracked.burned_by_import_gate = true;
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "nzb-burned-1".to_string(),
+            true,
+            true,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_restart_recovers_burned_usenet_failure_cleanup_origin() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, download_submissions) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Restart Burned Usenet").await;
+    let mut tracked = tracked_for(
+        &config.id,
+        "nzbget",
+        "nzb-burned-restart-1",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    tracked.client_item.download_id = Some("scryer-download:nzb-burned-restart-1".to_string());
+    let identity = crate::tracked_downloads::observed_queue_item_identity(&tracked.client_item);
+    let source_identity = crate::DownloadSourceIdentity::new(
+        Some(config.id.as_str()),
+        "nzbget",
+        "nzb-burned-restart-1",
+    );
+    download_submissions
+        .record_identity_tracked_state(
+            &identity,
+            Some(&source_identity),
+            TrackedDownloadState::Failed.as_str(),
+            Some("import_gate_rejected"),
+            Some("release language does not match the title"),
+        )
+        .await
+        .expect("record durable import-gate failure");
+    assert_eq!(
+        download_submissions
+            .get_identity_tracked_state_reason(&identity, Some(&source_identity))
+            .await
+            .expect("read durable import-gate failure")
+            .as_deref(),
+        Some("import_gate_rejected")
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "nzb-burned-restart-1".to_string(),
+            true,
+            true,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_restart_without_burned_origin_keeps_client_failure_cleanup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Restart Client Failure").await;
+    let mut tracked = tracked_for(
+        &config.id,
+        "nzbget",
+        "nzb-client-failure-restart-1",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    tracked.client_item.download_id =
+        Some("scryer-download:nzb-client-failure-restart-1".to_string());
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client.deleted_requests.lock().await.clone(),
+        vec![(
+            Some(config.id.clone()),
+            None,
+            "nzb-client-failure-restart-1".to_string(),
+            true,
+            false,
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_burned_usenet_failure_respects_remove_failed_routing() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, _) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "NZBGet", "nzbget").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, false).await;
+    let title = movie_title(&app, &user, "Keep Burned Usenet").await;
+    let mut tracked = tracked_for(
+        &config.id,
+        "nzbget",
+        "nzb-burned-2",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    tracked.burned_by_import_gate = true;
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::NotConfigured);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_burned_torrent_failure_holds_until_its_seed_goal_is_met() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Burned Torrent Hold",
+        "torrent-burned-hold",
+        Some(persisted_goals(false)),
+    )
+    .await;
+    tracked.state = TrackedDownloadState::Failed;
+    tracked.burned_by_import_gate = true;
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.7),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::HeldForSeeding);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_burned_torrent_failure_removes_entry_and_data_when_its_seed_goal_is_met() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, mut tracked) = torrent_cleanup_fixture(
+        download_client.clone(),
+        "Burned Torrent Released",
+        "torrent-burned-release",
+        Some(persisted_goals(false)),
+    )
+    .await;
+    tracked.state = TrackedDownloadState::Failed;
+    tracked.burned_by_import_gate = true;
+    observed(
+        DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.4),
+            ..DownloadSeedingSnapshot::default()
+        },
+        &mut tracked,
+    );
+
+    let outcome = crate::import::import::reconcile_terminal_download_cleanup_for_tracked(
+        &app,
+        &tracked,
+        TrackedDownloadState::Failed,
+        None,
+    )
+    .await;
+
+    assert_eq!(outcome, TerminalDownloadCleanupOutcome::Removed);
+    assert_eq!(
+        download_client
+            .deleted_requests
+            .lock()
+            .await
+            .iter()
+            .map(|(_, _, item_id, is_history, remove_data)| {
+                (item_id.clone(), *is_history, *remove_data)
+            })
+            .collect::<Vec<_>>(),
+        vec![("torrent-burned-release".to_string(), true, true)]
     );
 }
 
@@ -727,6 +975,82 @@ async fn a_configured_hardlink_or_copy_is_never_upgraded_by_the_gate() {
 }
 
 // ── tracked-state transition ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_restarted_burned_torrent_stays_failed_while_held_for_seeding() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let (app, user, submissions) = bootstrap_with_torrent_clients(download_client.clone());
+    let config = create_enabled_download_client_config(&app, &user, "qBit", "qbittorrent").await;
+    set_download_client_cleanup_routing(&app, &user, "movie", &config.id, true, true).await;
+    let title = movie_title(&app, &user, "Restarted Burned Torrent").await;
+    let message = "post-download rule(s) blocked import: language policy";
+    let mut before_restart = tracked_for(
+        &config.id,
+        "qbittorrent",
+        "torrent-burned-restart-1",
+        &title,
+        TrackedDownloadState::Failed,
+        true,
+    );
+    before_restart.client_item.download_id =
+        Some("scryer-download:torrent-burned-restart-1".to_string());
+    before_restart.status = scryer_domain::TrackedDownloadStatus::Error;
+    before_restart.status_messages = vec![message.to_string()];
+    let id = crate::tracked_downloads::tracked_download_id_for_item(&before_restart.client_item);
+    let identity =
+        crate::tracked_downloads::observed_queue_item_identity(&before_restart.client_item);
+    let source_identity = crate::DownloadSourceIdentity::new(
+        Some(before_restart.client_id.as_str()),
+        &before_restart.client_type,
+        &before_restart.client_item.download_client_item_id,
+    );
+    submissions
+        .record_identity_tracked_state(
+            &identity,
+            Some(&source_identity),
+            TrackedDownloadState::Failed.as_str(),
+            Some("import_gate_rejected"),
+            Some(message),
+        )
+        .await
+        .expect("persist burned failure before restart");
+
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker
+        .track(&app, before_restart.client_item.clone())
+        .await;
+
+    let restored = tracker.find(&id).expect("reconstructed tracked download");
+    assert_eq!(restored.state, TrackedDownloadState::Failed);
+    assert!(restored.burned_by_import_gate);
+    assert_eq!(restored.status, scryer_domain::TrackedDownloadStatus::Error);
+    assert_eq!(restored.status_messages, vec![message.to_string()]);
+
+    crate::app_usecase_integration::finalize_tracked_terminal_state(
+        &app,
+        &mut tracker,
+        &id,
+        TrackedDownloadState::Failed,
+    )
+    .await;
+
+    let held = tracker
+        .find(&id)
+        .expect("held burned torrent stays tracked");
+    assert_eq!(held.state, TrackedDownloadState::Failed);
+    assert!(held.burned_by_import_gate);
+    assert_eq!(held.status, scryer_domain::TrackedDownloadStatus::Error);
+    assert_eq!(held.status_messages, vec![message.to_string()]);
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    assert_eq!(
+        submissions
+            .get_identity_tracked_state_reason(&identity, Some(&source_identity))
+            .await
+            .expect("read durable failure reason")
+            .as_deref(),
+        Some("import_gate_rejected")
+    );
+}
 
 #[tokio::test]
 async fn a_held_torrent_is_parked_in_imported_seeding_and_stays_tracked() {

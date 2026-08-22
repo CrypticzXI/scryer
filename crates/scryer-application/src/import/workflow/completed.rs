@@ -490,6 +490,43 @@ async fn should_remove_completed_download_cached(
     resolved
 }
 
+async fn terminal_failure_origin_for_tracked(
+    app: &AppUseCase,
+    tracked: &crate::tracked_downloads::TrackedDownload,
+    state: TrackedDownloadState,
+) -> TerminalFailureOrigin {
+    if tracked.burned_by_import_gate {
+        return TerminalFailureOrigin::ImportGate;
+    }
+    if state != TrackedDownloadState::Failed {
+        return TerminalFailureOrigin::ClientFailure;
+    }
+
+    let identity = crate::tracked_downloads::observed_queue_item_identity(&tracked.client_item);
+    if crate::download_submission_identity_is_empty(&identity) {
+        return TerminalFailureOrigin::ClientFailure;
+    }
+    let source_identity = DownloadSourceIdentity::new(
+        Some(tracked.client_id.as_str()),
+        &tracked.client_type,
+        &tracked.client_item.download_client_item_id,
+    );
+    let import_gate_rejection = app
+        .services
+        .workflow
+        .download_submissions
+        .get_identity_tracked_state_reason(&identity, Some(&source_identity))
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|reason| reason == "import_gate_rejected");
+    if import_gate_rejection {
+        TerminalFailureOrigin::ImportGate
+    } else {
+        TerminalFailureOrigin::ClientFailure
+    }
+}
+
 pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     app: &AppUseCase,
     tracked: &crate::tracked_downloads::TrackedDownload,
@@ -499,6 +536,27 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     let (library_id, resolved_facet) =
         cleanup_routing_scope_for_title_id_cached(app, tracked.title_id.as_deref(), cache).await;
     let facet = resolved_facet.or_else(|| facet_from_tracked_label(tracked.facet.as_deref()));
+    let precomputed_should_remove = if state == TrackedDownloadState::Failed
+        && !tracked.burned_by_import_gate
+    {
+        let should_remove = crate::import_workflow::should_remove_terminal_download(
+            app,
+            &tracked.client_id,
+            &tracked.client_type,
+            library_id.as_deref(),
+            facet.as_ref(),
+            state,
+            cache,
+        )
+        .await;
+        if !should_remove {
+            return TerminalDownloadCleanup::bare(TerminalDownloadCleanupOutcome::NotConfigured);
+        }
+        Some(should_remove)
+    } else {
+        None
+    };
+    let failure_origin = terminal_failure_origin_for_tracked(app, tracked, state).await;
     reconcile_terminal_download_cleanup(
         app,
         &tracked.client_id,
@@ -507,6 +565,8 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
         library_id.as_deref(),
         facet.as_ref(),
         state,
+        failure_origin,
+        precomputed_should_remove,
         // The tracker already answers "is this still in the client?": a row
         // absent from the client's snapshot past the grace window is marked
         // untrackable. Reusing that avoids a per-item listing call every tick.
@@ -537,14 +597,30 @@ fn completed_import_error_message_is_retryable(message: &str) -> bool {
         "still being unpacked",
         "still_unpacking",
         "source changed",
-        "locked",
         "temporarily",
         "not found or inaccessible",
     ];
     SCRYER_TRANSIENT_PHRASES
         .iter()
         .any(|needle| normalized.contains(needle))
+        || contains_word(&normalized, "locked")
 }
+
+fn contains_word(haystack: &str, word: &str) -> bool {
+    haystack.match_indices(word).any(|(start, _)| {
+        let end = start + word.len();
+        let before_is_word = haystack[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric);
+        let after_is_word = haystack[end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric);
+        !before_is_word && !after_is_word
+    })
+}
+
 async fn resolve_import_quality_profile(
     app: &AppUseCase,
     title: &scryer_domain::Title,

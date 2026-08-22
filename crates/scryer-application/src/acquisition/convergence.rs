@@ -434,6 +434,20 @@ pub(crate) struct ScopeConvergence {
     pub routed_indexer_ids: Vec<String>,
 }
 
+/// Coverage invalidation policy used when an acquisition scope is re-opened.
+///
+/// Operator-triggered searches and mismatch recovery use [`Self::All`] to
+/// override convergence. Failed grabs and rejected imports use
+/// [`Self::Indexer`] to retry only the provider that failed. [`Self::Keep`]
+/// resets only the state row, retaining deliberately-valid coverage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoverageReopen {
+    #[allow(dead_code)] // Retained for state-reset-only convergence policy tests.
+    Keep,
+    All,
+    Indexer(String),
+}
+
 /// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
 /// derivable target identity), which is never a convergence unit. Episode sets /
 /// season packs converge as first-class units keyed on their canonical member set
@@ -463,6 +477,21 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
         }
         SubmissionScope::Orphan => None,
     }
+}
+
+/// Stable convergence key derived from a persisted acquisition scope state.
+/// Returns `None` only when the state has no derivable target identity.
+pub(crate) fn convergence_scope_key_for_state(item: &AcquisitionScopeState) -> Option<String> {
+    convergence_scope_key(
+        &SubmissionScope::from_persisted(
+            &item.title_id,
+            item.episode_id.clone(),
+            item.collection_id.clone(),
+            item.series_movie_link_id.clone(),
+            None,
+        ),
+        &item.title_id,
+    )
 }
 
 /// Deterministic version string for a quality profile's acceptance criteria. Any
@@ -650,10 +679,15 @@ impl AppUseCase {
         }
     }
 
-    /// Re-open a scope after a failed grab, rejected import, or operator
-    /// replacement. The acquisition state returns to `wanted`, but convergence
-    /// coverage remains intact because it records searches that already occurred.
-    pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &AcquisitionScopeState) {
+    /// Re-open an acquisition state row and apply its coverage invalidation
+    /// policy before waking the convergence cursor. Operator triggers use
+    /// [`CoverageReopen::All`]; failures use `Indexer` when their source is
+    /// known (or `All` when it is not); fingerprint rematches use `Keep`.
+    pub(crate) async fn reopen_wanted_scope_for_acquisition(
+        &self,
+        item: &AcquisitionScopeState,
+        coverage: CoverageReopen,
+    ) {
         if let Err(error) = self
             .services
             .workflow
@@ -667,7 +701,48 @@ impl AppUseCase {
                 "failed to reset wanted state row while re-opening scope"
             );
         }
+
+        if let Some(scope_key) = convergence_scope_key_for_state(item) {
+            match coverage {
+                CoverageReopen::Keep => {}
+                CoverageReopen::All => self.prune_scope_key_coverage(&scope_key, None).await,
+                CoverageReopen::Indexer(indexer_id) => {
+                    self.prune_scope_key_coverage(&scope_key, Some(&indexer_id))
+                        .await;
+                }
+            }
+        }
         self.runtime.acquisition.acquisition_wake.notify_one();
+    }
+
+    /// Best-effort coverage invalidation for a caller that already has a
+    /// convergence scope key. `None` removes the whole scope; `Some` removes
+    /// only that indexer's coverage row.
+    pub(crate) async fn prune_scope_key_coverage(&self, scope_key: &str, indexer_id: Option<&str>) {
+        let result = match indexer_id {
+            Some(indexer_id) => {
+                self.services
+                    .integrations
+                    .scope_indexer_coverage
+                    .prune_scope_indexer(scope_key, indexer_id)
+                    .await
+            }
+            None => {
+                self.services
+                    .integrations
+                    .scope_indexer_coverage
+                    .prune_scope(scope_key)
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                scope_key,
+                indexer_id = indexer_id.unwrap_or(""),
+                error = %error,
+                "failed to prune convergence coverage while re-opening acquisition scope"
+            );
+        }
     }
 }
 

@@ -19,6 +19,7 @@ fn base_completed_import_result(
         file_size_bytes: None,
         link_type: None,
         error_message: None,
+        release_burned: false,
         started_at,
         completed_at: Utc::now(),
     }
@@ -94,6 +95,7 @@ async fn import_series_download(
     let mut imported_count: usize = 0;
     let mut skipped_count: usize = 0;
     let mut rejected_count: usize = 0;
+    let mut release_burned = false;
     let mut failed_count: usize = 0;
     let mut last_error: Option<String> = None;
     let mut last_rejection_skip_reason: Option<ImportSkipReason> = None;
@@ -170,10 +172,15 @@ async fn import_series_download(
             }
             Ok(EpisodeImportOutcome::Rejected {
                 rejection,
+                disposition,
                 episode_ids,
                 ..
             }) => {
                 rejected_count += 1;
+                release_burned |= matches!(
+                    disposition,
+                    crate::import_decide::RejectionDisposition::Blocklist
+                );
                 append_unique_episode_ids(&mut attributed_episode_ids, &episode_ids);
                 last_error = Some(rejection.message.clone());
                 last_rejection_skip_reason = rejection.skip_reason.clone();
@@ -191,7 +198,7 @@ async fn import_series_download(
         }
     }
 
-    blocklist_ledger.finalize(app, actor, title).await;
+    blocklist_ledger.finalize(app, actor, title, completed).await;
 
     if imported_count > 0 {
         persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
@@ -221,6 +228,7 @@ async fn import_series_download(
             last_skipped_skip_reason,
         )
     };
+    let release_burned = matches!(&decision, ImportDecision::Rejected) && release_burned;
 
     let error_message = if imported_count == 0
         && failed_count == 0
@@ -255,6 +263,7 @@ async fn import_series_download(
         file_size_bytes: None,
         link_type: imported_link_type,
         error_message,
+        release_burned,
         started_at,
         completed_at: Utc::now(),
     };
@@ -433,7 +442,13 @@ impl DownloadBlocklistLedger {
     }
 
     /// Write the single entry this download earned, if any.
-    async fn finalize(self, app: &AppUseCase, actor: &User, title: &scryer_domain::Title) {
+    async fn finalize(
+        self,
+        app: &AppUseCase,
+        actor: &User,
+        title: &scryer_domain::Title,
+        completed: &CompletedDownload,
+    ) {
         let Some(write) = self.planned_write() else {
             return;
         };
@@ -442,6 +457,7 @@ impl DownloadBlocklistLedger {
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
+                completed,
                 write.release_title,
                 write.source_path,
                 write.attribution,

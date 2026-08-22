@@ -108,3 +108,76 @@ async fn coverage_stale_before_excludes_old_rows() {
 
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn prune_scope_indexer_removes_only_that_indexer() {
+    let (services, db) = temp_services("scryer_scope_coverage_prune_indexer").await;
+    let store = ScopeIndexerCoverageStore::new(services.datastore());
+    for (scope_key, indexer_id) in [
+        ("episode-1", "indexer-a"),
+        ("episode-1", "indexer-b"),
+        ("episode-2", "indexer-a"),
+    ] {
+        store
+            .record_coverage(scope_key, "series", indexer_id, "fp")
+            .await
+            .unwrap();
+    }
+
+    store
+        .prune_scope_indexer("episode-1", "indexer-a")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .covered_indexers("episode-1", "series", "fp", None)
+            .await
+            .unwrap(),
+        vec!["indexer-b".to_string()]
+    );
+    assert_eq!(
+        store
+            .covered_indexers("episode-2", "series", "fp", None)
+            .await
+            .unwrap(),
+        vec!["indexer-a".to_string()]
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn prune_scope_removes_all_rows_for_only_that_scope() {
+    let (services, db) = temp_services("scryer_scope_coverage_prune_scope").await;
+    let store = ScopeIndexerCoverageStore::new(services.datastore());
+    for (scope_key, indexer_id) in [
+        ("episode-1", "indexer-a"),
+        ("episode-1", "indexer-b"),
+        ("episode-2", "indexer-a"),
+    ] {
+        store
+            .record_coverage(scope_key, "series", indexer_id, "fp")
+            .await
+            .unwrap();
+    }
+
+    store.prune_scope("episode-1").await.unwrap();
+
+    assert!(
+        store
+            .covered_indexers("episode-1", "series", "fp", None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .covered_indexers("episode-2", "series", "fp", None)
+            .await
+            .unwrap(),
+        vec!["indexer-a".to_string()]
+    );
+
+    let _ = std::fs::remove_file(db);
+}

@@ -262,6 +262,8 @@ pub(super) struct TrackingDownloadSubmissionRepo {
     pub(super) record_submission_error: Arc<Mutex<Option<String>>>,
     pub(super) identities: DownloadSubmissionIdentities,
     pub(super) identity_states: DownloadIdentityStates,
+    pub(super) identity_state_reasons: Arc<Mutex<HashMap<String, String>>>,
+    pub(super) identity_state_details: Arc<Mutex<HashMap<String, String>>>,
     pub(super) tracked_states: TrackedDownloadStates,
     pub(super) deleted_title_ids: Arc<Mutex<Vec<String>>>,
     pub(super) list_for_title_calls: Arc<Mutex<Vec<String>>>,
@@ -812,14 +814,26 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         identity: &DownloadSubmissionIdentity,
         source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
-        _reason: Option<&str>,
-        _detail: Option<&str>,
+        reason: Option<&str>,
+        detail: Option<&str>,
     ) -> AppResult<()> {
         if let Some(key) = download_identity_state_key(identity, source_identity) {
             self.identity_states
                 .lock()
                 .await
-                .insert(key, tracked_state.to_string());
+                .insert(key.clone(), tracked_state.to_string());
+            let mut reasons = self.identity_state_reasons.lock().await;
+            if let Some(reason) = reason {
+                reasons.insert(key.clone(), reason.to_string());
+            } else {
+                reasons.remove(&key);
+            }
+            let mut details = self.identity_state_details.lock().await;
+            if let Some(detail) = detail {
+                details.insert(key, detail.to_string());
+            } else {
+                details.remove(&key);
+            }
         }
         Ok(())
     }
@@ -833,6 +847,28 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             return Ok(None);
         };
         Ok(self.identity_states.lock().await.get(&key).cloned())
+    }
+
+    async fn get_identity_tracked_state_reason(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+        Ok(self.identity_state_reasons.lock().await.get(&key).cloned())
+    }
+
+    async fn get_identity_tracked_state_detail(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+        Ok(self.identity_state_details.lock().await.get(&key).cloned())
     }
 
     async fn list_for_client_items(
