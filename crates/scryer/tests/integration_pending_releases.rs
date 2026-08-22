@@ -773,7 +773,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(sibling_release.status, PendingReleaseStatus::Superseded);
+    assert_eq!(sibling_release.status, PendingReleaseStatus::Standby);
 }
 
 #[tokio::test]

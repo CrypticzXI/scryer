@@ -881,27 +881,40 @@ pub(crate) async fn probe_and_validate(
 pub(crate) mod probe_override {
     use super::ImportedFileAcceptance;
     use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     thread_local! {
-        static NEXT: RefCell<Option<ImportedFileAcceptance>> = const { RefCell::new(None) };
+        static NEXT: RefCell<VecDeque<ImportedFileAcceptance>> = const { RefCell::new(VecDeque::new()) };
     }
 
     /// Install the analysis the next probe on this thread will report.
     #[must_use = "the override is cleared when the guard drops"]
     pub(crate) fn install(acceptance: ImportedFileAcceptance) -> ProbeOverrideGuard {
-        NEXT.with(|slot| *slot.borrow_mut() = Some(acceptance));
+        install_sequence([acceptance])
+    }
+
+    /// Install the analyses successive probes on this thread will report.
+    #[must_use = "the override is cleared when the guard drops"]
+    pub(crate) fn install_sequence(
+        acceptances: impl IntoIterator<Item = ImportedFileAcceptance>,
+    ) -> ProbeOverrideGuard {
+        NEXT.with(|slot| {
+            let mut queued = slot.borrow_mut();
+            queued.clear();
+            queued.extend(acceptances);
+        });
         ProbeOverrideGuard
     }
 
     pub(super) fn take() -> Option<ImportedFileAcceptance> {
-        NEXT.with(|slot| slot.borrow_mut().take())
+        NEXT.with(|slot| slot.borrow_mut().pop_front())
     }
 
     pub(crate) struct ProbeOverrideGuard;
 
     impl Drop for ProbeOverrideGuard {
         fn drop(&mut self) {
-            NEXT.with(|slot| *slot.borrow_mut() = None);
+            NEXT.with(|slot| slot.borrow_mut().clear());
         }
     }
 }

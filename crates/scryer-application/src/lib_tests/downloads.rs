@@ -4644,9 +4644,12 @@ async fn automatic_episode_upgrade_rejection_is_not_burned() {
         "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
         initial_source.path(),
     );
-    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
-        .await
-        .expect("initial completed import should run");
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
     assert_eq!(
         initial_result.decision,
         scryer_domain::ImportDecision::Imported
@@ -4663,9 +4666,12 @@ async fn automatic_episode_upgrade_rejection_is_not_burned() {
         "Fail.Closed.Pack.S01E01.720p.WEB-DL",
         rejected_source.path(),
     );
-    let result = crate::import::import::import_completed_download(&app, &user, &rejected)
-        .await
-        .expect("lower-quality completed import should run");
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &rejected)
+            .await
+            .expect("lower-quality completed import should run")
+    };
 
     assert_eq!(
         result.decision,
@@ -4708,9 +4714,12 @@ async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
         "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
         initial_source.path(),
     );
-    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
-        .await
-        .expect("initial completed import should run");
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
     assert_eq!(
         initial_result.decision,
         scryer_domain::ImportDecision::Imported
@@ -4731,18 +4740,19 @@ async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
         "Fail.Closed.Pack.S01.1080p.WEB-DL",
         mixed_source.path(),
     );
-    let result = crate::import::import::import_completed_download(&app, &user, &mixed)
-        .await
-        .expect("mixed completed import should run");
+    let result = {
+        let _probes = probe_sequence_agrees_with_the_names([(1280, 720), (1920, 1080)]);
+        crate::import::import::import_completed_download(&app, &user, &mixed)
+            .await
+            .expect("mixed completed import should run")
+    };
 
-    if cfg!(not(feature = "runtime-media-analysis")) {
-        assert_eq!(
-            result.decision,
-            scryer_domain::ImportDecision::Imported,
-            "{result:?}"
-        );
-        assert!(!result.release_burned, "{result:?}");
-    }
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
 }
 
 #[tokio::test]
@@ -5860,9 +5870,12 @@ async fn an_imported_file_remembers_the_announced_size_it_was_scored_on() {
             source_dir.path(),
         );
 
-        let result = crate::import::import::import_completed_download(&app, &user, &completed)
-            .await
-            .expect("completed import should run");
+        let result = {
+            let _probe = probe_agrees_with_the_name(1280, 720);
+            crate::import::import::import_completed_download(&app, &user, &completed)
+                .await
+                .expect("completed import should run")
+        };
         assert_eq!(
             result.decision,
             scryer_domain::ImportDecision::Imported,
@@ -7616,21 +7629,33 @@ async fn seed_primary_movie_file(
 /// `post_download_gate::probe_override`), and the real probe rejects a sparse
 /// fixture for having no readable duration. Installing the agreement explicitly
 /// makes the same test mean the same thing in both builds.
-fn probe_agrees_with_the_name(
-    width: i32,
-    height: i32,
-) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+fn probe_agreement(width: i32, height: i32) -> crate::post_download_gate::ImportedFileAcceptance {
     let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
     analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
     analysis.video_width = Some(width);
     analysis.video_height = Some(height);
-    crate::post_download_gate::probe_override::install(
-        crate::post_download_gate::ImportedFileAcceptance {
-            analysis: Some(analysis),
-            scan_error: None,
-            rule_file_doc: None,
-            audio_language_warning: None,
-        },
+    crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(analysis),
+        scan_error: None,
+        rule_file_doc: None,
+        audio_language_warning: None,
+    }
+}
+
+fn probe_agrees_with_the_name(
+    width: i32,
+    height: i32,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install(probe_agreement(width, height))
+}
+
+fn probe_sequence_agrees_with_the_names(
+    dimensions: impl IntoIterator<Item = (i32, i32)>,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install_sequence(
+        dimensions
+            .into_iter()
+            .map(|(width, height)| probe_agreement(width, height)),
     )
 }
 
