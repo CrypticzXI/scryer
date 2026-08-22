@@ -907,3 +907,119 @@ impl AppUseCase {
         Ok(())
     }
 }
+
+/// Change only explicit `removeFailed: false` values, preserving every other
+/// routing field and leaving missing values to their existing default path.
+fn flip_explicit_remove_failed_defaults_in_place(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+) -> usize {
+    let mut flipped = 0;
+    for value in payload.values_mut() {
+        let Some(entry) = value.as_object_mut() else {
+            continue;
+        };
+        if entry.get("removeFailed") == Some(&serde_json::Value::Bool(false)) {
+            entry.insert("removeFailed".to_string(), serde_json::Value::Bool(true));
+            flipped += 1;
+        }
+    }
+    flipped
+}
+
+impl AppUseCase {
+    /// One-shot migration helper for the historic, normalization-written
+    /// `removeFailed: false` default. Both facet routes and library overrides
+    /// are explicit routing scopes and must be visited.
+    pub async fn flip_explicit_remove_failed_defaults(&self) -> AppResult<usize> {
+        const MIGRATION_SOURCE: &str = "startup_remove_failed_default_flip";
+
+        let mut scope_ids = ["movie", "series", "anime"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        scope_ids.extend(
+            self.services
+                .catalog
+                .libraries
+                .list(None)
+                .await?
+                .into_iter()
+                .map(|library| library.id),
+        );
+
+        let routing_values = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                &scope_ids,
+            )
+            .await?;
+        let mut flipped = 0;
+        for (scope_id, raw_json) in routing_values {
+            let Some(mut payload) = parse_json_object(&raw_json) else {
+                continue;
+            };
+            let changed = flip_explicit_remove_failed_defaults_in_place(&mut payload);
+            if changed == 0 {
+                continue;
+            }
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                    Some(scope_id),
+                    serde_json::Value::Object(payload).to_string(),
+                    MIGRATION_SOURCE,
+                    None,
+                )
+                .await?;
+            flipped += changed;
+        }
+        Ok(flipped)
+    }
+}
+
+#[cfg(test)]
+mod remove_failed_default_tests {
+    use super::*;
+
+    #[test]
+    fn flips_only_explicit_false_remove_failed_values() {
+        let mut payload = serde_json::json!({
+            "flip": {
+                "enabled": false,
+                "category": "movies",
+                "removeCompleted": false,
+                "removeFailed": false,
+                "priority": 7
+            },
+            "keep_true": { "removeFailed": true, "priority": 3 },
+            "keep_missing": { "enabled": true, "priority": 4 },
+            "not_an_entry": "ignored"
+        })
+        .as_object()
+        .expect("routing payload object")
+        .clone();
+
+        assert_eq!(flip_explicit_remove_failed_defaults_in_place(&mut payload), 1);
+        assert_eq!(
+            payload["flip"]["removeFailed"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(payload["flip"]["enabled"], serde_json::Value::Bool(false));
+        assert_eq!(payload["flip"]["category"], serde_json::Value::String("movies".to_string()));
+        assert_eq!(payload["flip"]["removeCompleted"], serde_json::Value::Bool(false));
+        assert_eq!(payload["flip"]["priority"], serde_json::Value::from(7));
+        assert_eq!(
+            payload["keep_true"]["removeFailed"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(payload["keep_missing"].get("removeFailed").is_none());
+        assert_eq!(payload["not_an_entry"], serde_json::Value::String("ignored".to_string()));
+    }
+}

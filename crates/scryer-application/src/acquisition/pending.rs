@@ -32,6 +32,18 @@ pub(crate) enum PendingGrabTrigger {
     Operator,
 }
 
+/// A parked release with an observed empty swarm can never satisfy the current
+/// minimum-seeders admission floor. Unknown swarm data remains eligible.
+pub(crate) fn should_expire_zero_seeder_pending_release(
+    status: PendingReleaseStatus,
+    seeders: Option<i64>,
+) -> bool {
+    matches!(
+        status,
+        PendingReleaseStatus::Waiting | PendingReleaseStatus::Standby
+    ) && seeders == Some(0)
+}
+
 impl AppUseCase {
     /// Load delay profiles from settings.
     pub(crate) async fn load_delay_profiles(&self) -> Vec<DelayProfile> {
@@ -519,6 +531,44 @@ impl AppUseCase {
             }
         }
         Ok(allowed)
+    }
+
+    /// Expire delayed releases whose recorded swarm had no seeders.
+    ///
+    /// This is intentionally a system-facing operation for the startup
+    /// migration; normal delay promotion continues to use its regular policy
+    /// evaluation.
+    pub async fn expire_zero_seeder_pending_releases(&self) -> AppResult<usize> {
+        let waiting = self
+            .services
+            .workflow
+            .pending_releases
+            .list_waiting_pending_releases()
+            .await?;
+        let standby = self
+            .services
+            .workflow
+            .pending_releases
+            .list_all_standby_pending_releases()
+            .await?;
+        let release_ids = waiting
+            .into_iter()
+            .chain(standby)
+            .filter(|release| {
+                should_expire_zero_seeder_pending_release(release.status, release.seeders)
+            })
+            .map(|release| release.id)
+            .collect::<Vec<_>>();
+
+        for release_id in &release_ids {
+            self.services
+                .workflow
+                .pending_releases
+                .update_pending_release_status(release_id, PendingReleaseStatus::Expired, None)
+                .await?;
+        }
+
+        Ok(release_ids.len())
     }
 
     /// Paged, storage-side counterpart to [`Self::list_pending_releases`]. The
@@ -1396,5 +1446,34 @@ impl AppUseCase {
                 Ok(PendingGrabOutcome::Rejected)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_waiting_or_standby_zero_seeder_releases_expire() {
+        assert!(should_expire_zero_seeder_pending_release(
+            PendingReleaseStatus::Waiting,
+            Some(0)
+        ));
+        assert!(should_expire_zero_seeder_pending_release(
+            PendingReleaseStatus::Standby,
+            Some(0)
+        ));
+        assert!(!should_expire_zero_seeder_pending_release(
+            PendingReleaseStatus::Waiting,
+            None
+        ));
+        assert!(!should_expire_zero_seeder_pending_release(
+            PendingReleaseStatus::Standby,
+            Some(1)
+        ));
+        assert!(!should_expire_zero_seeder_pending_release(
+            PendingReleaseStatus::Processing,
+            Some(0)
+        ));
     }
 }

@@ -1351,6 +1351,16 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0009_expire_zero_seeder_pending_releases::expire_zero_seeder_pending_releases(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+    )
+    .await;
+    startup_migrations::_0010_download_client_remove_failed_default::flip_download_client_remove_failed_default(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),
