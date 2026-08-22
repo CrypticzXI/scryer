@@ -307,7 +307,8 @@ pub fn to_gql_error(err: AppError) -> Error {
         // Failover exhaustion is a distinct internal kind for diagnostics but
         // the same external contract: the submission is retryable later.
         AppError::DownloadSubmitUnavailable(message)
-        | AppError::DownloadSubmitFailoverExhausted(message) => {
+        | AppError::DownloadSubmitFailoverExhausted(message)
+        | AppError::DownloadSourceGone(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
         AppError::ArchiveExtractionPluginRequired {
@@ -402,6 +403,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::DownloadSourceGone(_) => "DownloadSourceGone",
         AppError::DownloadSubmitFailoverExhausted(_) => "DownloadSubmitFailoverExhausted",
         AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",

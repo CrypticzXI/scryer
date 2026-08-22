@@ -628,6 +628,12 @@ pub enum AppError {
     #[error("{0}")]
     DownloadSubmitUnavailable(String),
 
+    /// The indexer accepted the search result but no longer serves its download
+    /// artifact. This is neither retryable client unavailability nor a release
+    /// failure worth blocklisting.
+    #[error("{0}")]
+    DownloadSourceGone(String),
+
     /// Every eligible download client in the routing order was tried and none
     /// enqueued the release. A retryable submission failure like
     /// `DownloadSubmitUnavailable`, kept distinct for diagnostics; the payload
@@ -722,13 +728,18 @@ impl AppError {
             Self::DownloadSubmitUnavailable(_)
             | Self::DownloadSubmitFailoverExhausted(_)
             | Self::DownloadSubmitAmbiguous(_)
-            | Self::DownloadSubmitRejected(_) => self,
+            | Self::DownloadSubmitRejected(_)
+            | Self::DownloadSourceGone(_) => self,
             _ => Self::DownloadSubmitUnavailable(self.to_string()),
         }
     }
 
     pub fn is_download_submit_unavailable(&self) -> bool {
         matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
+
+    pub fn is_download_source_gone(&self) -> bool {
+        matches!(self, Self::DownloadSourceGone(_))
     }
 
     /// The typed retryable download-submission failures: the submitter was

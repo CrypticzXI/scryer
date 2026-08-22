@@ -346,6 +346,16 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()> {
+        self.pending_releases
+            .update_pending_release_delay_until(id, delay_until)
+            .await
+    }
+
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

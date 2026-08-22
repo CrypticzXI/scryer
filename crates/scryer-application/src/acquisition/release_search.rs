@@ -1484,7 +1484,7 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::RepackGroupMismatch;
     }
 
-    if let Some(delay_decision) = crate::delay_profile::resolve_delay_decision(
+    if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
         context.delay_profiles,
         &context.title.tags,
         &context.title.facet,
@@ -1494,6 +1494,7 @@ pub(crate) fn evaluate_auto_candidate(
             .as_deref()
             .and_then(crate::quality_profile::parse_published_at),
         candidate_score,
+        None,
         context.now,
     ) && delay_decision.should_hold()
     {

@@ -1594,10 +1594,31 @@ impl PrioritizedDownloadClientRouter {
                 });
             }
             if !response.status().is_success() {
-                return Err(AppError::DownloadSubmitUnavailable(format!(
-                    "The download artifact fetch returned HTTP {}.",
-                    response.status().as_u16()
-                )));
+                let status = response.status();
+                return Err(
+                    if matches!(
+                        status,
+                        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+                    ) {
+                        AppError::DownloadSourceGone(format!(
+                            "The download artifact is no longer available (HTTP {}).",
+                            status.as_u16()
+                        ))
+                    } else if matches!(
+                        status,
+                        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                    ) {
+                        AppError::DownloadSubmitUnavailable(format!(
+                            "The download artifact fetch was rejected by indexer '{provider_name}'; check its credentials (HTTP {}).",
+                            status.as_u16()
+                        ))
+                    } else {
+                        AppError::DownloadSubmitUnavailable(format!(
+                            "The download artifact fetch returned HTTP {}.",
+                            status.as_u16()
+                        ))
+                    },
+                );
             }
             let final_url = Some(response.url().to_string());
             let mut header_map = serde_json::Map::new();
@@ -2467,6 +2488,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         {
             Ok(request) => request,
             Err(error) => {
+                if error.is_download_source_gone() {
+                    self.delete_staged_nzb(request.staged_nzb.as_ref(), "artifact_source_gone")
+                        .await;
+                    return Err(error);
+                }
                 if let (Some(indexer), Some(mapped_client_id)) =
                     (indexer_config.as_ref(), mapped_client_id)
                 {

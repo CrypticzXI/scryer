@@ -184,6 +184,51 @@ pub fn resolve_delay_decision(
     })
 }
 
+/// The one grab-time delay gate for every automatic acquisition lane.
+///
+/// Search evaluation uses this before it parks a candidate, and RSS, standby
+/// recovery, and waiting-release promotion use it immediately before a grab.
+/// Keeping those paths behind this wrapper prevents a policy edit from making
+/// one of them observe a different delay decision than the others.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the canonical grab-time check deliberately mirrors the shared delay decision inputs"
+)]
+pub(crate) fn grab_time_delay_decision(
+    profiles: &[DelayProfile],
+    title_tags: &[String],
+    facet: &MediaFacet,
+    source_kind: Option<DownloadSourceKind>,
+    published_at: Option<DateTime<Utc>>,
+    candidate_score: i32,
+    delay_started_at: Option<DateTime<Utc>>,
+    now: &DateTime<Utc>,
+) -> Option<DelayDecision> {
+    let mut decision = resolve_delay_decision(
+        profiles,
+        title_tags,
+        facet,
+        source_kind,
+        published_at,
+        candidate_score,
+        now,
+    )?;
+
+    // Protocol delay is measured from the first automatic observation, while
+    // minimum age is measured from publication. A waiting row carries that
+    // observation time in `added_at`; using it here lets promotion re-check a
+    // changed profile without re-applying an unchanged delay forever.
+    if let Some(delay_started_at) = delay_started_at {
+        let elapsed_minutes = (*now - delay_started_at).num_minutes().max(0);
+        decision.protocol_hold_minutes = (decision.protocol_hold_minutes - elapsed_minutes).max(0);
+        decision.effective_delay_minutes = decision
+            .min_age_hold_minutes
+            .max(decision.protocol_hold_minutes);
+    }
+
+    Some(decision)
+}
+
 impl DelayProfile {
     /// Get the delay in minutes for the given source kind's protocol.
     pub fn get_protocol_delay(&self, source_kind: Option<DownloadSourceKind>) -> i64 {

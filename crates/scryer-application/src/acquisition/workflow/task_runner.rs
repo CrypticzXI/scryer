@@ -440,9 +440,18 @@ async fn process_single_target(
     // re-judged against the blocklist, the swarm and admission. Only an
     // exhausted list (or a scope that never saved one) reaches the convergence
     // gate below.
-    if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
+    let stale_standby_indexer_ids = if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
         match try_saved_candidates(app, item, None, dl_snapshot, now).await {
-            StandbyRecoveryOutcome::Recovered => {
+            StandbyRecoveryOutcome::Recovered { season_pack } => {
+                if season_pack
+                    && let Some(season) = target
+                        .season_number
+                        .as_deref()
+                        .or(episode.as_ref().and_then(|episode| episode.season_number.as_deref()))
+                        .and_then(|season| season.parse::<u32>().ok())
+                {
+                    season_pack_grabbed.insert((title.id.clone(), season));
+                }
                 info!(
                     title = title.name.as_str(),
                     scope_key = target.scope_key.as_str(),
@@ -458,9 +467,19 @@ async fn process_single_target(
                 );
                 return Ok(());
             }
-            StandbyRecoveryOutcome::Exhausted => {}
+            StandbyRecoveryOutcome::Parked => {
+                info!(
+                    title = title.name.as_str(),
+                    scope_key = target.scope_key.as_str(),
+                    "best saved search result is held by its delay profile"
+                );
+                return Ok(());
+            }
+            StandbyRecoveryOutcome::Exhausted { stale_indexer_ids } => stale_indexer_ids,
         }
-    }
+    } else {
+        Vec::new()
+    };
 
     let search_title = app
         .release_search_title_for_wanted_item(&title, item, episode.as_ref())
@@ -487,6 +506,21 @@ async fn process_single_target(
         );
         return Ok(());
     };
+    if !stale_standby_indexer_ids.is_empty() {
+        info!(
+            title_id = title.id.as_str(),
+            scope_key = convergence.scope_key.as_str(),
+            stale_indexer_ids = ?stale_standby_indexer_ids,
+            "background acquisition: pruned stale standby coverage; the next cycle will refresh these indexers"
+        );
+        for indexer_id in stale_standby_indexer_ids {
+            app.prune_scope_key_coverage(&convergence.scope_key, Some(&indexer_id))
+                .await;
+        }
+        // A stale standby list earns a fresh view from only the affected
+        // indexer, but never within the same walk that exhausted it.
+        return Ok(());
+    }
     let uncovered = match app
         .uncovered_indexers_for_scope(
             &convergence.scope_key,
@@ -690,8 +724,10 @@ async fn process_single_target(
                     }
                 }
 
-                'season_pack_candidates: for best_pack in
-                    pack_results.iter().filter(|candidate| {
+                'season_pack_candidates: for (best_pack_index, best_pack) in pack_results
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| {
                         candidate_is_season_pack_for_season(candidate, season_num)
                             && candidate.auto_eligible == Some(true)
                     })
@@ -905,6 +941,24 @@ async fn process_single_target(
                                         grabbed_at: Some(now.to_rfc3339()),
                                     })
                                     .await?;
+                                let pack_blocklist = app
+                                    .load_title_release_blocklist_signatures(&title.id)
+                                    .await
+                                    .source_titles;
+                                persist_standby_candidates(
+                                    app,
+                                    item,
+                                    &title,
+                                    &pack_results,
+                                    best_pack_index + 1,
+                                    now,
+                                    failed_routes,
+                                    &pack_blocklist,
+                                    |candidate| {
+                                        candidate_is_season_pack_for_season(candidate, season_num)
+                                    },
+                                )
+                                .await;
                                 let pack_score = best_pack
                                     .quality_profile_decision
                                     .as_ref()
@@ -973,7 +1027,8 @@ async fn process_single_target(
                                 // (request may have been accepted) submits are
                                 // deferred: Pending attempt, never blocklisted.
                                 // Only a definitive failure burns the pack.
-                                let defer = submit_unavailable || ambiguous;
+                                let source_gone = err.is_download_source_gone();
+                                let defer = submit_unavailable || ambiguous || source_gone;
                                 let _ = app
                                     .services
                                     .workflow
@@ -1392,7 +1447,7 @@ async fn process_single_target(
                     Some(candidate.source.as_str()),
                     candidate.indexer_id.as_deref(),
                     candidate.guid.as_deref(),
-                    crate::delay_profile::resolve_delay_decision(
+                    crate::delay_profile::grab_time_delay_decision(
                         &delay_profiles,
                         &search_title.tags,
                         &search_title.facet,
@@ -1402,6 +1457,7 @@ async fn process_single_target(
                             .as_deref()
                             .and_then(crate::quality_profile::parse_published_at),
                         candidate_score,
+                        None,
                         now,
                     )
                     .map(|delay| delay.effective_delay_minutes)
@@ -1690,6 +1746,7 @@ async fn process_single_target(
                     now,
                     failed_routes,
                     &db_blocklist,
+                    |_| true,
                 )
                 .await;
 
@@ -1745,7 +1802,15 @@ async fn process_single_target(
                     "grab failed for '{}' (attempt {}/10, trying next): {}",
                     candidate.title, grab_attempts, err
                 );
-                let submit_unavailable = is_download_submit_unavailable_error(&err);
+                let source_gone = err.is_download_source_gone();
+                let submit_unavailable = is_download_submit_unavailable_error(&err) || source_gone;
+
+                if source_gone {
+                    info!(
+                        release = candidate.title.as_str(),
+                        "download source gone; leaving it unblocked outside standby recovery"
+                    );
+                }
 
                 if submit_unavailable {
                     let _ = app

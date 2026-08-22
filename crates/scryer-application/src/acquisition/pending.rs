@@ -15,6 +15,13 @@ use std::collections::HashSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PendingGrabOutcome {
     Grabbed,
+    /// The release remains the best choice, but its delay profile still holds
+    /// it. The caller must not try a lower-ranked release.
+    Parked,
+    /// The indexer no longer serves this artifact. A standby walk expires only
+    /// that row and tries the next candidate; other callers defer without a
+    /// blocklist entry.
+    SourceGone,
     Rejected,
     Deferred,
 }
@@ -455,6 +462,20 @@ impl AppUseCase {
                         );
                         break;
                     }
+                    Ok(PendingGrabOutcome::SourceGone) => {
+                        info!(
+                            release = pr.release_title.as_str(),
+                            "pending release: source gone outside standby walk; keeping it pending"
+                        );
+                        break;
+                    }
+                    Ok(PendingGrabOutcome::Parked) => {
+                        info!(
+                            release = pr.release_title.as_str(),
+                            "pending release: delay profile still holds the best release"
+                        );
+                        break;
+                    }
                     Err(e) => {
                         warn!(
                             error = %e,
@@ -560,7 +581,7 @@ impl AppUseCase {
                 .collect(),
             limit,
             offset,
-            sort: PendingReleasePageSort::DelayUntilAsc,
+            sort,
         };
         self.services
             .workflow
@@ -1125,11 +1146,76 @@ impl AppUseCase {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
-        // Submit to download client
         let source_hint = pr.release_url.clone();
         let source_kind = pr
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()));
+
+        // A pending row is not grandfathered into the old delay decision. The
+        // row may have waited because of a different profile, and an operator
+        // may lengthen that profile before the promotion or standby walk gets
+        // here. Evaluate only after admission/cooldown so a held row is one
+        // that would otherwise be grabbed.
+        if trigger == PendingGrabTrigger::Automatic {
+            let delay_profiles = self.load_delay_profiles().await;
+            if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
+                &delay_profiles,
+                &title.tags,
+                &title.facet,
+                source_kind,
+                pr.published_at
+                    .as_deref()
+                    .and_then(crate::quality_profile::parse_published_at),
+                candidate_score,
+                crate::quality_profile::parse_published_at(&pr.added_at),
+                now,
+            ) && delay_decision.should_hold()
+            {
+                let delay_until = *now + Duration::minutes(delay_decision.effective_delay_minutes);
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_delay_until(&pr.id, &delay_until.to_rfc3339())
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        release = pr.release_title.as_str(),
+                        "pending release: failed to extend delay; keeping current row intact"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_status(&pr.id, PendingReleaseStatus::Waiting, None)
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        release = pr.release_title.as_str(),
+                        "pending release: failed to park delayed release"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+                crate::acquisition_workflow::record_pending_release_decision(
+                    self,
+                    wanted,
+                    &title,
+                    pr,
+                    candidate_score,
+                    crate::acquisition_release_search::ReleaseAutoDecisionCode::PendingDelay,
+                    admission.best_score(),
+                    now,
+                )
+                .await;
+                return Ok(PendingGrabOutcome::Parked);
+            }
+        }
+
+        // Submit to download client
         let source_title = Some(pr.release_title.clone());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
@@ -1346,10 +1432,11 @@ impl AppUseCase {
 
                 // An ambiguous submit (the request may have been accepted but
                 // the response was lost) is deferred exactly like an
-                // unavailable client: keep the release, retry next cycle, and
-                // never blocklist. Only a definitive failure expires it.
+                // unavailable client. A gone source is similarly never a
+                // blocklist reason, although a standby walk may skip that row.
                 let defer = is_download_submit_unavailable_error(&err)
                     || err.is_download_submit_ambiguous();
+                let source_gone = err.is_download_source_gone();
 
                 let _ = self
                     .services
@@ -1359,7 +1446,7 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint.clone(),
                         source_title.clone(),
-                        if defer {
+                        if defer || source_gone {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
                             ReleaseDownloadAttemptOutcome::Failed
@@ -1368,6 +1455,14 @@ impl AppUseCase {
                         source_password.clone(),
                     )
                     .await;
+
+                if source_gone {
+                    info!(
+                        release = pr.release_title.as_str(),
+                        "pending release: download source is gone"
+                    );
+                    return Ok(PendingGrabOutcome::SourceGone);
+                }
 
                 if defer {
                     return Ok(PendingGrabOutcome::Deferred);

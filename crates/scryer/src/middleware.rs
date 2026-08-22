@@ -2196,7 +2196,8 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitRejected(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }
-        AppError::DownloadSubmitUnavailable(message)
+        AppError::DownloadSourceGone(message)
+        | AppError::DownloadSubmitUnavailable(message)
         | AppError::DownloadSubmitFailoverExhausted(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }

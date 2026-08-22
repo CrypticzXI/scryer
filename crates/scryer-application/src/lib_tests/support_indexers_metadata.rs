@@ -169,6 +169,17 @@ pub(super) struct RecordedIndexerSearch {
 #[derive(Default, Clone)]
 pub(super) struct TrackingIndexerClient {
     pub(super) searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
+    pub(super) season_pack_titles: Vec<String>,
+}
+
+impl TrackingIndexerClient {
+    pub(super) fn with_season_pack_titles(
+        mut self,
+        titles: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.season_pack_titles = titles.into_iter().collect();
+        self
+    }
 }
 
 #[async_trait]
@@ -203,41 +214,54 @@ impl IndexerClient for TrackingIndexerClient {
             (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
             (None, _) => format!("{query}.2024.1080p.WEB-DL"),
         };
-        let release_slug = release_title.replace([' ', '/'], ".");
+        let release_titles =
+            if season.is_some() && episode.is_none() && !self.season_pack_titles.is_empty() {
+                self.season_pack_titles.clone()
+            } else {
+                vec![release_title]
+            };
 
         Ok(IndexerSearchResponse {
             indexer_outcomes: Vec::new(),
-            results: vec![IndexerSearchResult {
-                indexer_id: None,
-                source: "nzbgeek".into(),
-                title: release_title.clone(),
-                link: Some(format!("https://example.invalid/info/{release_slug}")),
-                download_url: Some(format!(
-                    "https://example.invalid/download/{release_slug}.nzb"
-                )),
-                source_kind: Some(DownloadSourceKind::NzbUrl),
-                size_bytes: None,
-                published_at: Some("1970-01-01T00:00:00Z".into()),
-                thumbs_up: None,
-                thumbs_down: None,
-                indexer_languages: None,
-                indexer_subtitles: None,
-                indexer_grabs: None,
-                password_hint: None,
-                parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
-                quality_profile_decision: None,
-                extra: Default::default(),
-                response_attributes: Default::default(),
-                guid: Some(format!("guid-{release_slug}")),
-                info_url: Some(format!("https://example.invalid/info/{release_slug}")),
-                provenance: None,
-                auto_eligible: None,
-                auto_decision_code: None,
-                auto_decision_summary: None,
-                candidate_token: None,
-                queue_scope: None,
-                coverage_scope: None,
-            }],
+            results: release_titles
+                .into_iter()
+                .map(|release_title| {
+                    let release_slug = release_title.replace([' ', '/'], ".");
+                    IndexerSearchResult {
+                        indexer_id: None,
+                        source: "nzbgeek".into(),
+                        title: release_title.clone(),
+                        link: Some(format!("https://example.invalid/info/{release_slug}")),
+                        download_url: Some(format!(
+                            "https://example.invalid/download/{release_slug}.nzb"
+                        )),
+                        source_kind: Some(DownloadSourceKind::NzbUrl),
+                        size_bytes: None,
+                        published_at: Some("1970-01-01T00:00:00Z".into()),
+                        thumbs_up: None,
+                        thumbs_down: None,
+                        indexer_languages: None,
+                        indexer_subtitles: None,
+                        indexer_grabs: None,
+                        password_hint: None,
+                        parsed_release_metadata: Some(crate::parse_release_metadata(
+                            &release_title,
+                        )),
+                        quality_profile_decision: None,
+                        extra: Default::default(),
+                        response_attributes: Default::default(),
+                        guid: Some(format!("guid-{release_slug}")),
+                        info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                        provenance: None,
+                        auto_eligible: None,
+                        auto_decision_code: None,
+                        auto_decision_summary: None,
+                        candidate_token: None,
+                        queue_scope: None,
+                        coverage_scope: None,
+                    }
+                })
+                .collect(),
             api_current: None,
             api_max: None,
             grab_current: None,

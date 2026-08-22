@@ -337,6 +337,423 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
 }
 
 #[tokio::test]
+async fn a_gone_standby_link_expires_and_grabs_the_next_row_in_the_same_walk() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_errors([StubSubmitError::SourceGone("HTTP 404: gone".to_string())])
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Gone Standby Link".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: title.slug.clone(),
+        title_facet: Some("movie".to_string()),
+        library_id: Some(title.library_id.clone()),
+        library_name: None,
+        library_slug: None,
+        episode_id: None,
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: None,
+        episode_number: None,
+        media_type: "movie".to_string(),
+        last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+        status: AcquisitionScopeStatus::Wanted,
+        grabbed_release: None,
+        landed_bar: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed wanted scope");
+    let standby = |title_suffix: &str, score| PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: wanted.id.clone(),
+        title_id: title.id.clone(),
+        release_title: format!("Gone.Standby.Link.2024.1080p.WEB-DL-{title_suffix}"),
+        release_url: Some(format!("https://example.invalid/{title_suffix}.nzb")),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        release_size_bytes: None,
+        release_score: score,
+        scoring_log_json: None,
+        indexer_source: Some("fixture-indexer".to_string()),
+        indexer_id: Some("fixture-indexer".to_string()),
+        release_guid: Some(format!("guid-{title_suffix}")),
+        added_at: Utc::now().to_rfc3339(),
+        delay_until: Utc::now().to_rfc3339(),
+        status: PendingReleaseStatus::Standby,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
+    };
+    let gone = standby("GONE", 200);
+    let usable = standby("USABLE", 100);
+    pending_releases
+        .insert_pending_release(&gone)
+        .await
+        .expect("seed gone row");
+    pending_releases
+        .insert_pending_release(&usable)
+        .await
+        .expect("seed usable row");
+
+    app.run_convergence_cycle_once().await;
+
+    let rows = pending_releases.store.lock().await.clone();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.id == gone.id)
+            .expect("gone row exists")
+            .status,
+        PendingReleaseStatus::Expired
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.id == usable.id)
+            .expect("usable row exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .clone(),
+        vec![gone.release_title.clone(), usable.release_title.clone()],
+        "the row after a gone artifact must be attempted in the same walk"
+    );
+    assert!(
+        app.services
+            .workflow
+            .blocklist_repo
+            .list_for_title(&title.id, 10)
+            .await
+            .expect("list blocklist")
+            .is_empty(),
+        "a source-gone row is expired, never blocklisted"
+    );
+    assert!(
+        app.services
+            .workflow
+            .release_attempts
+            .list_failed_release_signatures_for_title(&title.id, 10)
+            .await
+            .expect("list failed attempts")
+            .is_empty(),
+        "a source-gone row records no failed attempt"
+    );
+}
+
+#[tokio::test]
+async fn standby_delay_parks_the_best_row_stops_the_walk_and_promotion_grabs_when_due() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Standby Delay", 2024).await;
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            DELAY_PROFILE_CATALOG_KEY,
+            None,
+            serde_json::json!([{
+                "id": "standby-delay",
+                "name": "Standby delay",
+                "usenet_delay_minutes": 10,
+            }])
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed delay profile");
+    let now = Utc::now();
+    let mut best = pending_movie_release(
+        &wanted_id,
+        &title,
+        "Standby.Delay.Best.2024.1080p.WEB-DL-GRP",
+        PendingReleaseStatus::Standby,
+    );
+    best.added_at = now.to_rfc3339();
+    best.published_at = Some(now.to_rfc3339());
+    let mut worse = pending_movie_release(
+        &wanted_id,
+        &title,
+        "Standby.Delay.Worse.2024.720p.WEB-DL-GRP",
+        PendingReleaseStatus::Standby,
+    );
+    worse.release_score = best.release_score - 1;
+    worse.added_at = now.to_rfc3339();
+    worse.published_at = Some(now.to_rfc3339());
+    pending_releases
+        .insert_pending_release(&best)
+        .await
+        .expect("seed best standby row");
+    pending_releases
+        .insert_pending_release(&worse)
+        .await
+        .expect("seed worse standby row");
+    let wanted = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted_id)
+        .await
+        .expect("load wanted scope")
+        .expect("wanted scope exists");
+    let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
+
+    assert_eq!(
+        crate::acquisition_workflow::try_saved_candidates(&app, &wanted, None, &snapshot, &now,)
+            .await,
+        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked
+    );
+    let parked = pending_releases
+        .get_pending_release(&best.id)
+        .await
+        .expect("load best row")
+        .expect("best row exists");
+    assert_eq!(parked.status, PendingReleaseStatus::Waiting);
+    let delay_until = crate::quality_profile::parse_published_at(&parked.delay_until)
+        .expect("parked delay timestamp");
+    assert_eq!(delay_until, now + chrono::Duration::minutes(10));
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&worse.id)
+            .await
+            .expect("load worse row")
+            .expect("worse row exists")
+            .status,
+        PendingReleaseStatus::Standby,
+        "a held better row must stop the standby walk"
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty(),
+        "a delayed head must not submit itself or anything worse"
+    );
+
+    assert_eq!(
+        crate::acquisition_workflow::try_saved_candidates(
+            &app,
+            &wanted,
+            None,
+            &snapshot,
+            &(now + chrono::Duration::minutes(1)),
+        )
+        .await,
+        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked,
+        "the waiting head owns subsequent standby cycles"
+    );
+    assert_eq!(
+        app.try_grab_pending_release(
+            &wanted,
+            &parked,
+            &(now + chrono::Duration::minutes(11)),
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("promotion should resolve"),
+        crate::acquisition::pending::PendingGrabOutcome::Grabbed,
+        "the unchanged profile must allow promotion after delay_until"
+    );
+}
+
+#[tokio::test]
+async fn waiting_promotion_reparks_when_the_delay_profile_grows() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Growing Delay", 2024).await;
+    let now = Utc::now();
+    let mut waiting = pending_movie_release(
+        &wanted_id,
+        &title,
+        "Growing.Delay.2024.1080p.WEB-DL-GRP",
+        PendingReleaseStatus::Waiting,
+    );
+    waiting.added_at = now.to_rfc3339();
+    waiting.published_at = Some(now.to_rfc3339());
+    waiting.delay_until = (now + chrono::Duration::minutes(10)).to_rfc3339();
+    pending_releases
+        .insert_pending_release(&waiting)
+        .await
+        .expect("seed waiting release");
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            DELAY_PROFILE_CATALOG_KEY,
+            None,
+            serde_json::json!([{
+                "id": "grown-delay",
+                "name": "Grown delay",
+                "usenet_delay_minutes": 30,
+            }])
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("lengthen delay profile");
+    let wanted = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted_id)
+        .await
+        .expect("load wanted")
+        .expect("wanted exists");
+    let promotion_time = now + chrono::Duration::minutes(11);
+
+    assert_eq!(
+        app.try_grab_pending_release(
+            &wanted,
+            &waiting,
+            &promotion_time,
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("promotion should resolve"),
+        crate::acquisition::pending::PendingGrabOutcome::Parked
+    );
+    let reparking = pending_releases
+        .get_pending_release(&waiting.id)
+        .await
+        .expect("load waiting row")
+        .expect("waiting row exists");
+    assert_eq!(reparking.status, PendingReleaseStatus::Waiting);
+    assert_eq!(
+        crate::quality_profile::parse_published_at(&reparking.delay_until)
+            .expect("reparked delay timestamp"),
+        now + chrono::Duration::minutes(30),
+        "the longer profile extends only by the remaining delay"
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn operator_pending_grab_ignores_the_delay_profile() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        pending_releases.clone(),
+        wanted_items.clone(),
+    );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Operator Delay", 2024).await;
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            DELAY_PROFILE_CATALOG_KEY,
+            None,
+            serde_json::json!([{
+                "id": "operator-delay",
+                "name": "Operator delay",
+                "usenet_delay_minutes": 120,
+            }])
+            .to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("seed delay profile");
+    let pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        "Operator.Delay.2024.1080p.WEB-DL-GRP",
+        PendingReleaseStatus::Waiting,
+    );
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+    let wanted = wanted_items
+        .get_acquisition_scope_state_by_id(&wanted_id)
+        .await
+        .expect("load wanted")
+        .expect("wanted exists");
+
+    assert_eq!(
+        app.try_grab_pending_release(
+            &wanted,
+            &pending,
+            &Utc::now(),
+            crate::acquisition::pending::PendingGrabTrigger::Operator,
+        )
+        .await
+        .expect("operator grab should resolve"),
+        crate::acquisition::pending::PendingGrabOutcome::Grabbed
+    );
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&pending.id)
+            .await
+            .expect("load pending row")
+            .expect("pending row exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+}
+
+#[tokio::test]
 async fn acquisition_failure_fallback_skips_failed_submission_for_another_episode() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -1100,7 +1517,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
 }
 
 #[tokio::test]
-async fn process_download_failure_skip_reacquire_records_failure_without_due_search() {
+async fn operator_client_failure_is_recorded_without_reopening_scope() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -1177,7 +1594,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
     download_submissions
         .record_submission(DownloadSubmission {
             title_id: title.id.clone(),
-            purpose: crate::DownloadSubmissionPurpose::Standard,
+            purpose: crate::DownloadSubmissionPurpose::OperatorQueued,
             facet: "movie".to_string(),
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
@@ -1206,14 +1623,14 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
             release_title: "Manual.Failed.Only.1080p.WEB-DL".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
-            skip_reacquire: true,
+            skip_reacquire: false,
         },
     )
     .await;
 
     assert_eq!(
         outcome,
-        crate::acquisition_workflow::FailureHandlingOutcome::RecordedNoReacquire
+        crate::acquisition_workflow::FailureHandlingOutcome::RecordedOnly
     );
 
     let updated_wanted = wanted_items
@@ -1221,8 +1638,8 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
         .await
         .expect("get wanted")
         .expect("wanted item");
-    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Wanted);
-    assert!(updated_wanted.grabbed_release.is_none());
+    assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Grabbed);
+    assert!(updated_wanted.grabbed_release.is_some());
 
     let blocklist = app
         .services
@@ -1236,7 +1653,7 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
     assert_eq!(
         coverage.indexers_for_scope(&scope_key).await,
         vec!["indexer-a".to_string(), "indexer-b".to_string()],
-        "a no-reacquire failure preserves coverage because it must not schedule a retry"
+        "an operator failure preserves coverage and never schedules automatic recovery"
     );
 }
 
@@ -3077,13 +3494,27 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
 /// pack first) and a tracking indexer that answers every query.
 async fn seed_recent_failed_season_pack_fixture() -> (AppUseCase, Title, Arc<TrackingIndexerClient>)
 {
+    let (app, title, indexer_client, _) = seed_recent_failed_season_pack_fixture_with_indexer(
+        Arc::new(TrackingIndexerClient::default()),
+    )
+    .await;
+    (app, title, indexer_client)
+}
+
+async fn seed_recent_failed_season_pack_fixture_with_indexer(
+    indexer_client: Arc<TrackingIndexerClient>,
+) -> (
+    AppUseCase,
+    Title,
+    Arc<TrackingIndexerClient>,
+    Arc<StubDownloadClient>,
+) {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
-    let indexer_client = Arc::new(TrackingIndexerClient::default());
     let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
-        download_client,
+        download_client.clone(),
         download_submissions,
         pending_releases,
         wanted_items.clone(),
@@ -3185,7 +3616,244 @@ async fn seed_recent_failed_season_pack_fixture() -> (AppUseCase, Title, Arc<Tra
             .expect("seed due episode wanted item");
     }
 
-    (app, title, indexer_client)
+    (app, title, indexer_client, download_client)
+}
+
+#[tokio::test]
+async fn season_pack_grab_saves_the_remaining_ranked_packs_as_standby() {
+    let first_pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-FIRST".to_string();
+    let second_pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-SECOND".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([first_pack.clone(), second_pack.clone()]),
+    );
+    let (app, title, indexer_client, _) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_convergence_cycle_once().await;
+
+    let standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("list standby rows");
+    assert_eq!(standby.len(), 1, "only the runner-up pack remains");
+    assert_eq!(standby[0].title_id, title.id);
+    assert_eq!(standby[0].release_title, second_pack);
+    assert_eq!(standby[0].status, PendingReleaseStatus::Standby);
+    assert!(
+        !standby[0].wanted_item_id.is_empty(),
+        "the remaining pack is keyed to the anchor episode scope"
+    );
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(7) && search.episode.is_none()),
+        "fixture must drive the actual season-pack branch"
+    );
+    assert!(
+        !searches.iter().any(|search| search.episode.is_some()),
+        "a chosen season pack covers both due episodes without episode searches: {searches:?}"
+    );
+}
+
+#[tokio::test]
+async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query() {
+    let first_pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-FIRST".to_string();
+    let second_pack = "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-SECOND".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_season_pack_titles([first_pack.clone(), second_pack.clone()]),
+    );
+    let (app, title, indexer_client, download_client) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+    app.run_convergence_cycle_once().await;
+    let runner_up = app
+        .services
+        .workflow
+        .pending_releases
+        .list_all_standby_pending_releases()
+        .await
+        .expect("load saved pack")
+        .into_iter()
+        .next()
+        .expect("runner-up season pack was persisted");
+    let failed_submission = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("load first pack submission")
+        .into_iter()
+        .find(|submission| submission.source_title.as_deref() == Some(first_pack.as_str()))
+        .expect("first pack submission exists");
+
+    assert_eq!(
+        crate::acquisition_workflow::process_download_failure(
+            &app,
+            crate::acquisition_workflow::DownloadFailureContext {
+                wanted_item: None,
+                title_id: Some(title.id.clone()),
+                client_id: failed_submission
+                    .download_client_id
+                    .clone()
+                    .unwrap_or_default(),
+                client_type: failed_submission.download_client_type.clone(),
+                client_name: Some("Primary".to_string()),
+                client_item_id: failed_submission.download_client_item_id.clone(),
+                release_title: first_pack.clone(),
+                reason: "download failed".to_string(),
+                remove_from_client_if_configured: false,
+                skip_reacquire: false,
+            },
+        )
+        .await,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    download_client.queue_items.lock().await.clear();
+    indexer_client.searches.lock().await.clear();
+
+    app.run_convergence_cycle_once().await;
+
+    assert!(
+        indexer_client.searches.lock().await.is_empty(),
+        "the reopened covered episode scopes must walk saved packs before any indexer query"
+    );
+    assert_eq!(
+        app.services
+            .workflow
+            .pending_releases
+            .get_pending_release(&runner_up.id)
+            .await
+            .expect("load runner-up")
+            .expect("runner-up exists")
+            .status,
+        PendingReleaseStatus::Grabbed
+    );
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("list covered episode scopes");
+    assert!(
+        states
+            .iter()
+            .filter(|state| state.media_type == "episode")
+            .all(|state| state.status == AcquisitionScopeStatus::Grabbed),
+        "the replacement pack covers every episode it matches: {states:?}"
+    );
+    assert_eq!(
+        app.services
+            .workflow
+            .download_submissions
+            .list_for_title(&title.id)
+            .await
+            .expect("list pack submissions")
+            .iter()
+            .filter(|submission| submission.source_title.as_deref() == Some(second_pack.as_str()))
+            .count(),
+        1,
+        "two covered episode targets may not claim the same saved pack twice"
+    );
+
+    let failed_runner_up = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("load runner-up submission")
+        .into_iter()
+        .find(|submission| submission.source_title.as_deref() == Some(second_pack.as_str()))
+        .expect("runner-up submission exists");
+    assert_eq!(
+        crate::acquisition_workflow::process_download_failure(
+            &app,
+            crate::acquisition_workflow::DownloadFailureContext {
+                wanted_item: None,
+                title_id: Some(title.id.clone()),
+                client_id: failed_runner_up
+                    .download_client_id
+                    .clone()
+                    .unwrap_or_default(),
+                client_type: failed_runner_up.download_client_type.clone(),
+                client_name: Some("Primary".to_string()),
+                client_item_id: failed_runner_up.download_client_item_id.clone(),
+                release_title: second_pack.clone(),
+                reason: "download failed".to_string(),
+                remove_from_client_if_configured: false,
+                skip_reacquire: false,
+            },
+        )
+        .await,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    download_client.queue_items.lock().await.clear();
+    indexer_client.searches.lock().await.clear();
+    app.run_convergence_cycle_once().await;
+    let searches_after_exhaustion = indexer_client.searches.lock().await.clone();
+    assert!(
+        searches_after_exhaustion
+            .iter()
+            .all(|search| search.episode.is_some()),
+        "the converged pack scope stays converged; only previously-uncovered episodes are searched: {searches_after_exhaustion:?}"
+    );
+    assert!(
+        !searches_after_exhaustion.is_empty(),
+        "the exhausted list leaves an uncovered episode eligible for its first search"
+    );
+}
+
+#[tokio::test]
+async fn a_waiting_season_pack_parks_a_covered_sibling_episode_walk() {
+    let (app, title, _) = seed_recent_failed_season_pack_fixture().await;
+    let episode_scopes = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("list episode scopes");
+    let mut episode_scopes = episode_scopes
+        .into_iter()
+        .filter(|scope| scope.media_type == "episode")
+        .collect::<Vec<_>>();
+    episode_scopes.sort_by(|left, right| left.id.cmp(&right.id));
+    let anchor = episode_scopes.first().expect("anchor episode");
+    let sibling = episode_scopes.get(1).expect("sibling episode");
+    let mut pack = pending_movie_release(
+        &anchor.id,
+        &title,
+        "Recent.Failed.Season.Pack.S07.1080p.WEB-DL-WAITING",
+        PendingReleaseStatus::Waiting,
+    );
+    pack.added_at = Utc::now().to_rfc3339();
+    app.services
+        .workflow
+        .pending_releases
+        .insert_pending_release(&pack)
+        .await
+        .expect("seed waiting season pack");
+    let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
+
+    assert_eq!(
+        crate::acquisition_workflow::try_saved_candidates(
+            &app,
+            sibling,
+            None,
+            &snapshot,
+            &Utc::now(),
+        )
+        .await,
+        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked,
+        "a waiting pack covering this episode owns the sibling's standby walk"
+    );
 }
 
 #[tokio::test]
@@ -8672,6 +9340,20 @@ fn download_submit_retryability_is_decided_by_type_not_text() {
     ));
 }
 
+#[test]
+fn download_source_gone_is_not_retryable_or_downgraded() {
+    use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
+
+    let error = AppError::DownloadSourceGone("HTTP 410".to_string());
+    assert!(error.is_download_source_gone());
+    assert!(!error.is_retryable_download_submit_failure());
+    assert!(!is_download_submit_unavailable_error(&error));
+    assert!(matches!(
+        error.into_download_submit_unavailable(),
+        AppError::DownloadSourceGone(_)
+    ));
+}
+
 /// Runs the auto-search (task-runner regular submission) path with the given
 /// submit error and asserts the retry/blocklist decision.
 async fn assert_auto_search_submit_decision(submit_error: StubSubmitError, expect_deferred: bool) {
@@ -8956,6 +9638,12 @@ fn legacy_failover_repository_text() -> StubSubmitError {
 #[tokio::test]
 async fn auto_search_defers_typed_failover_exhaustion() {
     assert_auto_search_submit_decision(typed_failover_exhausted(), true).await;
+}
+
+#[tokio::test]
+async fn auto_search_defers_a_gone_source_without_blocklisting() {
+    assert_auto_search_submit_decision(StubSubmitError::SourceGone("HTTP 410".to_string()), true)
+        .await;
 }
 
 #[tokio::test]

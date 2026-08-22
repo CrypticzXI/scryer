@@ -94,6 +94,46 @@ pub(crate) async fn record_release_decision(
         .insert_release_decision(&decision_record)
         .await;
 }
+
+/// Persist the same decision ledger entry for a release that was previously
+/// parked. Its current score is freshly derived by the pending-grab path, while
+/// its source details are the immutable release facts saved with the row.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pending decision persistence carries the saved release and freshly-derived verdict"
+)]
+pub(crate) async fn record_pending_release_decision(
+    app: &AppUseCase,
+    item: &AcquisitionScopeState,
+    title: &Title,
+    pending: &PendingRelease,
+    candidate_score: i32,
+    decision_code: ReleaseAutoDecisionCode,
+    incumbent_bar: Option<i32>,
+    now: &DateTime<Utc>,
+) {
+    let decision_record = ReleaseDecision {
+        id: Id::new().0,
+        wanted_item_id: item.id.clone(),
+        title_id: title.id.clone(),
+        release_title: pending.release_title.clone(),
+        release_url: pending.release_url.clone(),
+        release_size_bytes: pending.release_size_bytes,
+        decision_code: decision_code.as_str().to_string(),
+        candidate_score,
+        current_score: incumbent_bar,
+        score_delta: incumbent_bar.map(|bar| candidate_score - bar),
+        explanation_json: pending.scoring_log_json.clone(),
+        created_at: now.to_rfc3339(),
+    };
+
+    let _ = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .insert_release_decision(&decision_record)
+        .await;
+}
 impl AppUseCase {
     /// One page of release decisions plus the total row count for the scope.
     pub async fn list_release_decisions_page(

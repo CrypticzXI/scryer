@@ -1824,6 +1824,26 @@ impl PendingReleaseRepository for PendingReleaseStore {
         Ok(())
     }
 
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()> {
+        execute_datastore_write(
+            &self.datastore,
+            "update_pending_release_delay_until",
+            "UPDATE pending_releases
+                SET delay_until = {}
+              WHERE id = {}",
+            vec![
+                opt_timestamp_arg_for_datastore(&self.datastore, Some(delay_until))?,
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,

@@ -726,8 +726,15 @@ impl AppUseCase {
                 grab
             }
             Err(error) => {
-                let submit_unavailable = is_download_submit_unavailable_error(&error);
+                let source_gone = error.is_download_source_gone();
+                let submit_unavailable = is_download_submit_unavailable_error(&error) || source_gone;
                 let error_message = error.to_string();
+                if source_gone {
+                    tracing::info!(
+                        release = ?source_title_for_attempt,
+                        "operator download source gone; leaving it unblocked"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow

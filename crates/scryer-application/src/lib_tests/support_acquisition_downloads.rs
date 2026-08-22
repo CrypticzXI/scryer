@@ -1169,6 +1169,23 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         Ok(())
     }
 
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()> {
+        if let Some(release) = self
+            .store
+            .lock()
+            .await
+            .iter_mut()
+            .find(|release| release.id == id)
+        {
+            release.delay_until = delay_until.to_string();
+        }
+        Ok(())
+    }
+
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
@@ -1402,6 +1419,7 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
 #[derive(Clone)]
 pub(super) enum StubSubmitError {
     SubmitUnavailable(String),
+    SourceGone(String),
     /// The router exhausted every prioritized client (typed).
     FailoverExhausted(String),
     /// A plain repository error — including the exact text the router used to
@@ -1421,6 +1439,7 @@ impl StubSubmitError {
     pub(super) fn into_app_error(self) -> AppError {
         match self {
             Self::SubmitUnavailable(message) => AppError::download_submit_unavailable(message),
+            Self::SourceGone(message) => AppError::DownloadSourceGone(message),
             Self::FailoverExhausted(message) => {
                 AppError::download_submit_failover_exhausted(message)
             }
@@ -1442,6 +1461,7 @@ pub(super) struct StubDownloadClient {
     pub(super) deleted_requests: DeletedDownloadRequests,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
+    pub(super) submit_errors: Arc<Mutex<std::collections::VecDeque<StubSubmitError>>>,
     /// NZB payload the real pre-submission category gate is run against, so a
     /// caller-level test can exercise the production veto instead of a
     /// hand-written error string.
@@ -1475,6 +1495,13 @@ impl StubDownloadClient {
 
     pub(super) async fn set_submit_error(&self, error: Option<StubSubmitError>) {
         *self.submit_error.lock().await = error;
+    }
+
+    pub(super) async fn set_submit_errors(
+        &self,
+        errors: impl IntoIterator<Item = StubSubmitError>,
+    ) {
+        *self.submit_errors.lock().await = errors.into_iter().collect();
     }
 
     pub(super) async fn set_grab_info_hash(&self, info_hash: Option<&str>) {
@@ -1548,6 +1575,9 @@ impl DownloadClient for StubDownloadClient {
                 season_pack_seed_ratio: request.season_pack_seed_ratio,
                 season_pack_seed_time_minutes: request.season_pack_seed_time_minutes,
             });
+        if let Some(error) = self.submit_errors.lock().await.pop_front() {
+            return Err(error.into_app_error());
+        }
         if let Some(error) = self.submit_error.lock().await.clone() {
             return Err(error.into_app_error());
         }

@@ -1659,7 +1659,7 @@ impl AppUseCase {
             .await;
 
             if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
-                let delay_minutes = crate::delay_profile::resolve_delay_decision(
+                let delay_minutes = crate::delay_profile::grab_time_delay_decision(
                     delay_profiles,
                     &title.tags,
                     &title.facet,
@@ -1669,6 +1669,7 @@ impl AppUseCase {
                         .as_deref()
                         .and_then(crate::quality_profile::parse_published_at),
                     candidate_score,
+                    None,
                     now,
                 )
                 .map(|delay| delay.effective_delay_minutes)
@@ -2038,7 +2039,14 @@ impl AppUseCase {
                 // attempt, never blocklisted. Only a definitive failure burns
                 // the release for this title.
                 let defer = is_download_submit_unavailable_error(&err)
-                    || err.is_download_submit_ambiguous();
+                    || err.is_download_submit_ambiguous()
+                    || err.is_download_source_gone();
+                if err.is_download_source_gone() {
+                    info!(
+                        release = best.title.as_str(),
+                        "RSS download source gone; leaving it unblocked"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow
