@@ -104,6 +104,9 @@ async fn stop_title_hydration_worker(
 #[derive(Default)]
 struct MovieTitleResolutionGateway {
     unsupported: bool,
+    /// Answer as an SMG that predates the title-id surface does: with the raw
+    /// GraphQL validation error, before the client maps it to a capability error.
+    raw_unknown_field_error: bool,
     redirected_from: Option<i64>,
     calls: Mutex<Vec<(Vec<MovieTitleRef>, bool)>>,
     movie_title_calls: Mutex<Vec<Vec<MovieTitleRef>>>,
@@ -243,6 +246,11 @@ impl MetadataGateway for MovieTitleResolutionGateway {
             .lock()
             .await
             .push((refs.to_vec(), create_missing));
+        if self.raw_unknown_field_error {
+            return Err(AppError::Repository(
+                "Cannot query field \"resolveTitles\" on type \"Query\".".into(),
+            ));
+        }
         if self.unsupported {
             return Err(AppError::Repository(
                 "metadata gateway does not support title-id queries".into(),
@@ -345,6 +353,39 @@ async fn movie_smg_identity_backfill_skips_the_default_not_supported_gateway_err
         tick,
         crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::NotSupported
     ));
+    assert!(titles.store.lock().await.iter().all(|title| {
+        title
+            .external_ids
+            .iter()
+            .all(|external_id| !external_id.source.eq_ignore_ascii_case("smg"))
+    }));
+}
+
+/// An old SMG rejects `resolveTitles` with a raw validation error naming that
+/// field. Read as anything but a capability signal, the backfill worker reports
+/// `Failed` on every tick forever instead of switching itself off once.
+#[tokio::test]
+async fn movie_smg_identity_backfill_stops_on_a_raw_unknown_field_error() {
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        raw_unknown_field_error: true,
+        ..Default::default()
+    });
+    let (app, user, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    app.add_title_with_outcome(&user, hydration_test_title("Raw Unsupported", 951_004))
+        .await
+        .expect("title should be created");
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let tick =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(
+        matches!(
+            tick,
+            crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::NotSupported
+        ),
+        "a raw unknown-field error must disable the backfill, not fail the tick"
+    );
     assert!(titles.store.lock().await.iter().all(|title| {
         title
             .external_ids

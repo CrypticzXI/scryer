@@ -104,17 +104,6 @@ impl AppUseCase {
     }
 }
 
-fn movie_smg_identity_backfill_not_supported(error: &crate::AppError) -> bool {
-    let crate::AppError::Repository(message) = error else {
-        return false;
-    };
-    let message = message.to_ascii_lowercase();
-    message.contains("title-id")
-        && (message.contains("does not support")
-            || message.contains("not supported")
-            || message.contains("unsupported"))
-}
-
 pub(crate) async fn run_movie_smg_identity_backfill_tick(
     app: &AppUseCase,
     token: &tokio_util::sync::CancellationToken,
@@ -175,7 +164,7 @@ pub(crate) async fn run_movie_smg_identity_backfill_tick(
             _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
             result = app.services.library.metadata_gateway.resolve_movie_titles(&references, false) => match result {
                 Ok(resolutions) => resolutions,
-                Err(error) if movie_smg_identity_backfill_not_supported(&error) => {
+                Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {
                     return MovieSmgIdentityBackfillTick::NotSupported;
                 }
                 Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),

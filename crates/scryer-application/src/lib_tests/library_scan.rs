@@ -575,6 +575,8 @@ struct RecordingExactIdMetadataGateway {
     batch_queries: Arc<Mutex<Vec<Vec<MetadataSearchQuery>>>>,
     title_batch_queries: Arc<Mutex<Vec<(Vec<MetadataSearchQuery>, String, bool)>>>,
     title_id_movies_enabled: bool,
+    rich_external_ids: bool,
+    raw_title_id_error: bool,
     detail_calls: Arc<AtomicUsize>,
 }
 
@@ -584,6 +586,41 @@ impl RecordingExactIdMetadataGateway {
             title_id_movies_enabled: true,
             ..Default::default()
         }
+    }
+
+    /// SMG answers every facet with the full identity set. Only movies may keep
+    /// it: a series or anime title still carries exactly its TVDB id.
+    fn with_rich_external_ids(mut self) -> Self {
+        self.rich_external_ids = true;
+        self
+    }
+
+    /// An SMG that predates the title-id surface answers `searchTitlesBatch`
+    /// with a raw GraphQL validation error, not with the mapped capability
+    /// message the client produces once its probe recognises one.
+    fn with_raw_unknown_field_error(mut self) -> Self {
+        self.raw_title_id_error = true;
+        self
+    }
+
+    fn rich_external_ids(&self) -> Vec<ExternalId> {
+        if !self.rich_external_ids {
+            return vec![];
+        }
+        vec![
+            ExternalId {
+                source: "smg".to_string(),
+                value: "5555".to_string(),
+            },
+            ExternalId {
+                source: "tmdb".to_string(),
+                value: "6666".to_string(),
+            },
+            ExternalId {
+                source: "imdb".to_string(),
+                value: "tt0055555".to_string(),
+            },
+        ]
     }
 
     async fn batch_queries(&self) -> Vec<Vec<MetadataSearchQuery>> {
@@ -631,9 +668,9 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
                     vec![MetadataSearchItem {
                         name: format!("Deliberately Different Identity Title {tvdb_id}"),
                         tvdb_id,
-                        smg_id: None,
+                        smg_id: self.rich_external_ids.then_some(5_555),
                         primary_source: None,
-                        external_ids: vec![],
+                        external_ids: self.rich_external_ids(),
                         year: Some(1901),
                         auto_match_safe: true,
                         auto_match_signals: vec!["identity".to_string()],
@@ -656,9 +693,11 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
             create_missing,
         ));
         if !self.title_id_movies_enabled {
-            return Err(AppError::Repository(
-                "metadata gateway does not support title-id queries".into(),
-            ));
+            return Err(AppError::Repository(if self.raw_title_id_error {
+                "Cannot query field \"searchTitlesBatch\" on type \"Query\".".to_string()
+            } else {
+                "metadata gateway does not support title-id queries".to_string()
+            }));
         }
 
         assert_eq!(kind, "movie");
@@ -671,7 +710,11 @@ impl MetadataGateway for RecordingExactIdMetadataGateway {
                     query,
                     vec![MetadataSearchItem {
                         name: "TMDB Primary Match".to_string(),
-                        tvdb_id: String::new(),
+                        tvdb_id: if self.rich_external_ids {
+                            "444444".to_string()
+                        } else {
+                            String::new()
+                        },
                         smg_id: Some(7_777),
                         primary_source: Some("tmdb".to_string()),
                         external_ids: vec![
@@ -2990,6 +3033,271 @@ async fn movie_full_scan_creates_a_tmdb_primary_title_from_a_radarr_hint() {
             .iter()
             .any(|id| id.source.eq_ignore_ascii_case("tvdb")),
         "TMDB-primary matches must not synthesize a TVDB id"
+    );
+}
+
+/// The batched search returns SMG's full identity set for every facet, but only
+/// movies are addressed by SMG title id. A scan-created series must still carry
+/// exactly the one TVDB id it carried before the title-id surface existed --
+/// indexer search subjects, RSS candidate indexes and notification payloads all
+/// read these ids without checking the facet.
+#[tokio::test]
+async fn series_full_scan_keeps_only_the_tvdb_id_from_a_rich_gateway_match() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let series_root = tempdir.path().join("series");
+    let folder = series_root.join("Rich Identity Show (1999)");
+    std::fs::create_dir_all(&folder).expect("create hinted show folder");
+    let folder_path = folder.to_string_lossy().to_string();
+
+    let mut scan_hints = LibraryScanHintSet::new();
+    scan_hints.push(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportSonarr,
+        facet: LibraryScanHintFacet::Series,
+        path_key: crate::library_scan_folder_leaf_key(&folder_path).expect("folder leaf path key"),
+        full_path_key: crate::library_scan_folder_full_path_key(&folder_path),
+        ids: vec![
+            ExternalIdHint::normalized(ExternalIdProvider::Tvdb, "900001")
+                .expect("normalized tvdb id"),
+        ],
+    });
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway =
+        Arc::new(RecordingExactIdMetadataGateway::default().with_rich_external_ids());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Series,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&series_root, true)]),
+    )
+    .await
+    .expect("store series root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted series scan");
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(1)
+    );
+
+    let titles = app
+        .list_titles_unpaged(&user, Some(MediaFacet::Series), None, None)
+        .await
+        .expect("list series titles");
+    assert_eq!(titles.len(), 1);
+    let external_ids = titles[0]
+        .external_ids
+        .iter()
+        .map(|id| (id.source.to_ascii_lowercase(), id.value.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        external_ids,
+        vec![("tvdb".to_string(), "900001".to_string())],
+        "a scan-created series carries only its TVDB id"
+    );
+}
+
+/// The movie side of the same match keeps every identity SMG returned, because
+/// movies are the facet addressed by title id.
+#[tokio::test]
+async fn movie_full_scan_keeps_every_identity_from_a_rich_gateway_match() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let movie_folder = movie_root.join("TMDB Primary Match (2020)");
+    std::fs::create_dir_all(&movie_folder).expect("create movie folder");
+    let movie_file = movie_folder.join("TMDB.Primary.Match.2020.mkv");
+    std::fs::write(&movie_file, b"movie").expect("write movie file");
+    let movie_path = movie_file.to_string_lossy().to_string();
+
+    let mut scan_hints = LibraryScanHintSet::new();
+    scan_hints.push(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportRadarr,
+        facet: LibraryScanHintFacet::Movie,
+        path_key: crate::library_scan_file_leaf_key(&movie_path).expect("file leaf path key"),
+        full_path_key: crate::library_scan_file_full_path_key(&movie_path),
+        ids: vec![
+            ExternalIdHint::normalized(ExternalIdProvider::Tmdb, "7777")
+                .expect("normalized tmdb id"),
+        ],
+    });
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway =
+        Arc::new(RecordingExactIdMetadataGateway::with_title_id_movies().with_rich_external_ids());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(&movie_path)])
+        .await;
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&movie_root, true)]),
+    )
+    .await
+    .expect("store movie root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted movie scan");
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(1)
+    );
+
+    let titles = app
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 1);
+    let mut external_ids = titles[0]
+        .external_ids
+        .iter()
+        .map(|id| (id.source.to_ascii_lowercase(), id.value.clone()))
+        .collect::<Vec<_>>();
+    external_ids.sort();
+    assert_eq!(
+        external_ids,
+        vec![
+            ("imdb".to_string(), "tt0077777".to_string()),
+            ("smg".to_string(), "7777".to_string()),
+            ("tmdb".to_string(), "7777".to_string()),
+            ("tvdb".to_string(), "444444".to_string()),
+        ],
+        "a scan-created movie keeps every identity the gateway returned"
+    );
+}
+
+/// An SMG old enough to lack `searchTitlesBatch` rejects it with a raw GraphQL
+/// validation error naming that field. The scan must read that as a capability
+/// signal and fall back to the legacy batched search -- not fail the whole
+/// batch and leave the library unmatched.
+#[tokio::test]
+async fn movie_full_scan_falls_back_on_a_raw_unknown_field_error() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let movie_root = tempdir.path().join("movies");
+    let movie_folder = movie_root.join("Legacy Fallback Movie (1999)");
+    std::fs::create_dir_all(&movie_folder).expect("create movie folder");
+    let movie_file = movie_folder.join("Legacy.Fallback.Movie.1999.mkv");
+    std::fs::write(&movie_file, b"movie").expect("write movie file");
+    let movie_path = movie_file.to_string_lossy().to_string();
+
+    let mut scan_hints = LibraryScanHintSet::new();
+    scan_hints.push(LibraryScanHint {
+        source: LibraryScanHintSource::ExternalImportRadarr,
+        facet: LibraryScanHintFacet::Movie,
+        path_key: crate::library_scan_file_leaf_key(&movie_path).expect("file leaf path key"),
+        full_path_key: crate::library_scan_file_full_path_key(&movie_path),
+        ids: vec![
+            ExternalIdHint::normalized(ExternalIdProvider::Tmdb, "800000")
+                .expect("normalized tmdb id"),
+        ],
+    });
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let metadata_gateway =
+        Arc::new(RecordingExactIdMetadataGateway::default().with_raw_unknown_field_error());
+    let library_scanner = Arc::new(MutableLibraryScanner::default());
+    library_scanner
+        .set_library_files(vec![build_test_library_file(&movie_path)])
+        .await;
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        library_scanner,
+        Arc::new(TrackingLibraryScanUnmatchedItemRepo::default()),
+        metadata_gateway.clone(),
+    );
+
+    app.update_media_settings(
+        &user,
+        MediaFacet::Movie,
+        empty_update_media_settings_with_roots(vec![build_root_folder_entry(&movie_root, true)]),
+    )
+    .await
+    .expect("store movie root");
+
+    let session = app
+        .trigger_library_scan_by_id_with_hints(
+            &user,
+            &scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+            Some(scan_hints),
+        )
+        .await
+        .expect("trigger hinted movie scan");
+    let projected =
+        wait_for_projected_library_scan_session_matching(&app, &session.session_id, |session| {
+            matches!(
+                session.status,
+                LibraryScanStatus::Completed | LibraryScanStatus::Warning
+            )
+        })
+        .await;
+    assert_eq!(
+        projected.summary.as_ref().map(|summary| summary.matched),
+        Some(1)
+    );
+
+    assert!(
+        !metadata_gateway.title_batch_queries().await.is_empty(),
+        "the scan tries the title-id surface first"
+    );
+    let legacy_queries = metadata_gateway.batch_queries().await;
+    assert_eq!(legacy_queries.iter().flatten().count(), 1);
+    assert_eq!(
+        legacy_queries[0][0].tmdb_id.as_deref(),
+        Some("800000"),
+        "the raw validation error falls back to the legacy batched search"
+    );
+
+    let titles = app
+        .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
+        .await
+        .expect("list movie titles");
+    assert_eq!(titles.len(), 1);
+    assert!(
+        titles[0]
+            .external_ids
+            .iter()
+            .any(|id| id.source.eq_ignore_ascii_case("tvdb") && id.value == "800000")
     );
 }
 

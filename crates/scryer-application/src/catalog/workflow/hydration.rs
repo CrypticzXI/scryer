@@ -150,20 +150,88 @@ pub(crate) struct HydrationBatchOutcome {
     pub(crate) deferred_titles: HashSet<String>,
 }
 
+/// The selections the SMG title-id surface introduced, lowercased and quoted the
+/// way a GraphQL validation error names an unknown field. A gateway that
+/// predates the surface answers any of them with `Cannot query field "<name>"`,
+/// which is the same capability signal as the mapped gateway error -- and is
+/// what a caller sees when the raw validation error reaches this layer.
+const TITLE_ID_UNKNOWN_FIELD_MARKERS: [&str; 5] = [
+    "\"titles\"",
+    "\"resolvetitles\"",
+    "\"searchtitles\"",
+    "\"searchtitlesbatch\"",
+    "\"title_id\"",
+];
+
 pub(crate) fn movie_title_queries_not_supported(error: &AppError) -> bool {
     let AppError::Repository(message) = error else {
         return false;
     };
     let message = message.to_ascii_lowercase();
-    message.contains("title-id")
+    if message.contains("title-id")
         && (message.contains("does not support")
             || message.contains("not supported")
             || message.contains("unsupported"))
+    {
+        return true;
+    }
+
+    message.contains("cannot query field")
+        && TITLE_ID_UNKNOWN_FIELD_MARKERS
+            .iter()
+            .any(|marker| message.contains(marker))
 }
 impl AppUseCase {
     async fn emit_hydration_started(&self, title: &Title) {
         self.emit_metadata_hydration_updated_event(title, MetadataHydrationState::Started, None)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod title_id_capability_tests {
+    use super::*;
+
+    #[test]
+    fn the_mapped_gateway_error_is_a_capability_error() {
+        assert!(movie_title_queries_not_supported(&AppError::Repository(
+            "metadata gateway does not support title-id queries".into()
+        )));
+    }
+
+    /// Every title-id operation names its own root field when an old gateway
+    /// rejects it, so the raw validation error must be read as the same
+    /// capability signal no matter which operation hit the gateway first.
+    #[test]
+    fn a_raw_unknown_field_error_is_a_capability_error_for_every_operation() {
+        for field in [
+            "titles",
+            "resolveTitles",
+            "searchTitles",
+            "searchTitlesBatch",
+            "title_id",
+        ] {
+            let error = AppError::Repository(format!(
+                "Cannot query field \"{field}\" on type \"Query\"."
+            ));
+            assert!(
+                movie_title_queries_not_supported(&error),
+                "unknown field {field} should be read as a capability error"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_gateway_failures_are_not_capability_errors() {
+        assert!(!movie_title_queries_not_supported(&AppError::Repository(
+            "metadata gateway request failed (503): upstream unavailable".into()
+        )));
+        assert!(!movie_title_queries_not_supported(&AppError::Repository(
+            "Cannot query field \"seedMinimums\" on type \"Query\".".into()
+        )));
+        assert!(!movie_title_queries_not_supported(&AppError::Validation(
+            "metadata gateway does not support title-id queries".into()
+        )));
     }
 }
 

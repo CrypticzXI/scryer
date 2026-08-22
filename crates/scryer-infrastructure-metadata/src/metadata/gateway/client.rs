@@ -260,6 +260,10 @@ const METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH: usize = 100;
 /// fifty entries per request (the same cap as `metadataBulk`), so chunk to it
 /// rather than to the larger alias-batch size.
 const METADATA_GATEWAY_MAX_TITLE_BULK_BATCH: usize = METADATA_GATEWAY_MAX_METADATA_BULK_BATCH;
+/// `searchTitles(limit:)` is rejected by the gateway above twenty-five results
+/// per request. Scryer's own search contract accepts 1..=100, so requests above
+/// this cap are served at the cap instead of failing.
+const METADATA_GATEWAY_MAX_TITLE_SEARCH_LIMIT: i32 = 25;
 const METADATA_GATEWAY_COMPATIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const METADATA_GATEWAY_COMPATIBILITY_STARTUP_GUARD: Duration = Duration::from_secs(30 * 60);
 const METADATA_GATEWAY_VERSION_COMPATIBILITY_PATH: &str = "/api/version-compatibility";
@@ -267,6 +271,18 @@ const SCRYER_RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static LEGACY_TITLE_ID_ONLY: AtomicBool = AtomicBool::new(false);
 static LEGACY_TITLE_ID_ONLY_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The selections the title-id surface introduced, quoted the way a GraphQL
+/// validation error names an unknown field. A gateway that predates the surface
+/// answers any of them with `Cannot query field "<name>" on type "..."`, which
+/// is the capability signal the probe watches for.
+const TITLE_ID_UNKNOWN_FIELD_MARKERS: [&str; 5] = [
+    "\"titles\"",
+    "\"resolveTitles\"",
+    "\"searchTitles\"",
+    "\"searchTitlesBatch\"",
+    "\"title_id\"",
+];
 
 #[derive(Deserialize)]
 struct VersionCompatibilitySuccessResponse {
@@ -1429,10 +1445,29 @@ impl MetadataGatewayClient {
         LEGACY_TITLE_ID_ONLY.load(Ordering::Acquire)
     }
 
+    /// Watches a legacy-compatible document's failure for the title-id fields it
+    /// asks for on top of the legacy shape.
     fn observe_title_id_capability_error(error: &AppError) -> bool {
+        Self::observe_capability_error(error, false)
+    }
+
+    /// Watches a title-id operation's failure. Those documents only ever select a
+    /// title-id root field, so ANY unknown root-field validation error they draw
+    /// means the gateway predates the surface -- including the three operations
+    /// whose root field is not literally named `titles`.
+    fn observe_title_id_operation_error(error: &AppError) -> bool {
+        Self::observe_capability_error(error, true)
+    }
+
+    fn observe_capability_error(error: &AppError, any_unknown_query_field: bool) -> bool {
         let message = error.to_string();
-        let unknown_title_field = message.contains("Cannot query field")
-            && (message.contains("\"titles\"") || message.contains("\"title_id\""));
+        if !message.contains("Cannot query field") {
+            return false;
+        }
+        let unknown_title_field = TITLE_ID_UNKNOWN_FIELD_MARKERS
+            .iter()
+            .any(|marker| message.contains(marker))
+            || (any_unknown_query_field && message.contains("on type \"Query\""));
         if !unknown_title_field {
             return false;
         }
@@ -1553,7 +1588,7 @@ impl MetadataGatewayClient {
             .execute_graphql_apq(operation_name, query, hash, variables)
             .await
         {
-            Err(error) if Self::observe_title_id_capability_error(&error) => {
+            Err(error) if Self::observe_title_id_operation_error(&error) => {
                 Err(Self::title_id_queries_unsupported())
             }
             result => result,
@@ -1578,7 +1613,7 @@ impl MetadataGatewayClient {
             }))
             .await
         {
-            Err(error) if Self::observe_title_id_capability_error(&error) => {
+            Err(error) if Self::observe_title_id_operation_error(&error) => {
                 Err(Self::title_id_queries_unsupported())
             }
             result => result,
@@ -4078,6 +4113,226 @@ mod tests {
         super::LEGACY_TITLE_ID_ONLY_LOGGED.store(false, Ordering::Release);
     }
 
+    fn reset_title_id_capability_probe() {
+        super::LEGACY_TITLE_ID_ONLY.store(false, Ordering::Release);
+        super::LEGACY_TITLE_ID_ONLY_LOGGED.store(false, Ordering::Release);
+    }
+
+    fn unknown_root_field_error(field: &str) -> serde_json::Value {
+        json!({
+            "errors": [{
+                "message": format!("Cannot query field \"{field}\" on type \"Query\".")
+            }]
+        })
+    }
+
+    fn movie_title_ref(smg_id: i64) -> MovieTitleRef {
+        MovieTitleRef {
+            smg_id: Some(smg_id),
+            tvdb_id: None,
+            tmdb_id: None,
+            imdb_id: None,
+        }
+    }
+
+    /// An old gateway first met by `resolveTitles` names THAT field, not
+    /// `titles`. The probe has to recognise it or every caller keeps paying for
+    /// a request the gateway can never answer.
+    #[tokio::test]
+    async fn resolve_titles_unknown_root_field_flips_the_legacy_probe() {
+        let _guard = title_id_capability_test_lock().lock().await;
+        reset_title_id_capability_probe();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", super::OP_RESOLVE_TITLES))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(unknown_root_field_error("resolveTitles")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let error = client
+            .resolve_movie_titles(&[movie_title_ref(202)], false)
+            .await
+            .expect_err("an unknown resolveTitles field is a capability error");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+        assert!(super::LEGACY_TITLE_ID_ONLY.load(Ordering::Acquire));
+
+        // The flipped probe short-circuits the next caller without a request.
+        let error = client
+            .resolve_movie_titles(&[movie_title_ref(203)], false)
+            .await
+            .expect_err("a legacy-only gateway rejects title-id queries outright");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+
+        reset_title_id_capability_probe();
+    }
+
+    #[tokio::test]
+    async fn search_titles_unknown_root_field_flips_the_legacy_probe() {
+        let _guard = title_id_capability_test_lock().lock().await;
+        reset_title_id_capability_probe();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", super::OP_SEARCH_TITLES))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(unknown_root_field_error("searchTitles")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        let error = client
+            .search_titles("fixture", "movie", 10, "eng", None)
+            .await
+            .expect_err("an unknown searchTitles field is a capability error");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+        assert!(super::LEGACY_TITLE_ID_ONLY.load(Ordering::Acquire));
+
+        let error = client
+            .search_titles("fixture", "movie", 10, "eng", None)
+            .await
+            .expect_err("a legacy-only gateway rejects title search outright");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+
+        reset_title_id_capability_probe();
+    }
+
+    #[tokio::test]
+    async fn search_titles_batch_unknown_root_field_flips_the_legacy_probe() {
+        let _guard = title_id_capability_test_lock().lock().await;
+        reset_title_id_capability_probe();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(format!(
+                "\"operationName\":\"{}\"",
+                super::OP_SEARCH_TITLES_BATCH
+            )))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(unknown_root_field_error("searchTitlesBatch")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+        let queries = vec![MetadataSearchQuery {
+            query: "Fixture Movie".to_string(),
+            type_hint: "movie".to_string(),
+            year: Some(2020),
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+        }];
+
+        let error = client
+            .search_titles_batch(&queries, "movie", "eng", false)
+            .await
+            .expect_err("an unknown searchTitlesBatch field is a capability error");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+        assert!(super::LEGACY_TITLE_ID_ONLY.load(Ordering::Acquire));
+
+        let error = client
+            .search_titles_batch(&queries, "movie", "eng", false)
+            .await
+            .expect_err("a legacy-only gateway rejects the title batch outright");
+        assert!(
+            matches!(&error, AppError::Repository(message)
+                if message == "metadata gateway does not support title-id queries"),
+            "unexpected error: {error}"
+        );
+
+        reset_title_id_capability_probe();
+    }
+
+    /// Scryer's public search contract accepts 1..=100 and passes the limit
+    /// through. A limit above the gateway's cap must be served at the cap, not
+    /// turned into a validation error that fails the whole search.
+    #[tokio::test]
+    async fn search_titles_clamps_a_limit_above_the_gateway_cap() {
+        let _guard = title_id_capability_test_lock().lock().await;
+        reset_title_id_capability_probe();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/graphql"))
+            .and(query_param("operationName", super::OP_SEARCH_TITLES))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "searchTitles": { "results": [] } }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+
+        assert!(
+            client
+                .search_titles("fixture", "movie", 100, "eng", None)
+                .await
+                .expect("a limit above the cap is clamped, not rejected")
+                .is_empty()
+        );
+        assert!(
+            client
+                .search_titles("fixture", "movie", 0, "eng", None)
+                .await
+                .expect("a limit below the floor is clamped, not rejected")
+                .is_empty()
+        );
+
+        let limits = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|request| {
+                request.url.query_pairs().find_map(|(name, value)| {
+                    (name == "variables").then(|| {
+                        serde_json::from_str::<serde_json::Value>(&value)
+                            .expect("variables JSON")["limit"]
+                            .as_i64()
+                            .expect("limit variable")
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            limits,
+            vec![super::METADATA_GATEWAY_MAX_TITLE_SEARCH_LIMIT as i64, 1]
+        );
+
+        reset_title_id_capability_probe();
+    }
+
     #[test]
     fn movie_response_deserializes_tmdb_id() {
         let data: super::MovieResponse = serde_json::from_value(json!({
@@ -5589,11 +5844,13 @@ impl MetadataGateway for MetadataGatewayClient {
         language: &str,
         year: Option<i32>,
     ) -> AppResult<Vec<RichMetadataSearchItem>> {
-        if !(1..=25).contains(&limit) {
-            return Err(AppError::Validation(
-                "metadata gateway title search limit must be between 1 and 25".into(),
-            ));
-        }
+        // Scryer's public metadata search documents and clamps `limit` to
+        // 1..=100 and passes it straight through, so a caller asking for more
+        // than the gateway accepts must be served at the gateway's cap. A
+        // validation error here is not a capability error, so it would fail the
+        // whole search -- and in multi-search discard the series and anime
+        // results as well.
+        let limit = limit.clamp(1, METADATA_GATEWAY_MAX_TITLE_SEARCH_LIMIT);
         if kind.trim().is_empty() {
             return Err(AppError::Validation(
                 "metadata gateway title search kind is required".into(),

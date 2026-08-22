@@ -709,7 +709,15 @@ impl AppUseCase {
         {
             Ok(movies) => legacy.movies = movies,
             Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {}
-            Err(error) => return Err(error),
+            // The legacy multi-search already succeeded for every facet. A
+            // failure of the added movie call must not throw away the series and
+            // anime results with it; keep the legacy movie bucket instead.
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "metadata gateway title search failed during multi-search; keeping the legacy movie results"
+                );
+            }
         }
         Ok(legacy)
     }

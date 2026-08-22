@@ -1236,7 +1236,6 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
                 "facet": "MOVIE",
                 "monitored": true,
                 "tags": [],
-                "externalIds": [{ "source": "tvdb", "value": "700001" }],
                 "options": {
                     "rootFolderId": library_a_root_id
                 }
@@ -1262,7 +1261,6 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
                 "libraryId": library_a_id,
                 "monitored": true,
                 "tags": [],
-                "externalIds": [{ "source": "tvdb", "value": "700002" }],
                 "options": {
                     "rootFolderId": library_b_root_id
                 }
@@ -1359,6 +1357,43 @@ async fn graphql_add_movie_accepts_smg_and_tmdb_identity_without_tvdb() {
             { "source": "tmdb", "value": "2020" },
         ])
     );
+}
+
+/// `addTitle` accepted an identity-less movie before the title-id surface
+/// existed: the title simply parks unhydrated until an identity arrives.
+/// Teaching the mutation to reject one would be a non-additive change to an
+/// operation integrations already call.
+#[tokio::test]
+async fn graphql_add_movie_without_an_identity_parks_unhydrated() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                metadataHydrationState
+                title { id name externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Identity-less Movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": []
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["metadataHydrationState"],
+        "NOT_REQUIRED"
+    );
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["name"],
+        "Identity-less Movie"
+    );
+    assert_eq!(body["data"]["addTitle"]["title"]["externalIds"], json!([]));
 }
 
 #[tokio::test]

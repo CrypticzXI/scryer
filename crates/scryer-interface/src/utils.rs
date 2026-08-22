@@ -189,17 +189,6 @@ pub(crate) fn map_add_input(
             });
         }
     }
-    if parsed_facet == scryer_domain::MediaFacet::Movie
-        && !external_ids.iter().any(|external_id| {
-            matches!(
-                external_id.source.to_ascii_lowercase().as_str(),
-                "smg" | "tvdb" | "tmdb" | "imdb"
-            ) && !external_id.value.trim().is_empty()
-        })
-    {
-        return Err(async_graphql::Error::new("a title identity is required"));
-    }
-
     Ok(NewTitle {
         name,
         facet: parsed_facet,
