@@ -86,7 +86,16 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
                     .iter()
                     .any(|value| { value["source"] == "tvdb" && value["value"] == "999" })
             );
-            assert!(!external_ids.iter().any(|value| value["source"] == "tmdb"));
+            assert!(
+                !external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "tmdb" && value["value"] == "4444" })
+            );
+            assert!(
+                external_ids
+                    .iter()
+                    .any(|value| { value["source"] == "tmdb" && value["value"] == "111" })
+            );
 
             let events = gql(
                 &ctx,

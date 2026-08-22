@@ -771,4 +771,35 @@ impl MetadataGateway for MockMetadataGateway {
             series: HashMap::new(),
         })
     }
+
+    async fn get_movie_titles(
+        &self,
+        refs: &[MovieTitleRef],
+        _language: &str,
+    ) -> AppResult<MovieTitleBulkResult> {
+        let mut result = MovieTitleBulkResult::default();
+        for (ref_index, movie_ref) in refs.iter().enumerate() {
+            let movie = self.movies.values().find(|movie| {
+                movie_ref
+                    .smg_id
+                    .is_some_and(|smg_id| movie.smg_id == Some(smg_id))
+                    || movie_ref
+                        .tvdb_id
+                        .is_some_and(|tvdb_id| movie.tvdb_id == Some(tvdb_id))
+                    || movie_ref
+                        .tmdb_id
+                        .is_some_and(|tmdb_id| movie.tmdb_id == Some(tmdb_id))
+                    || movie_ref
+                        .imdb_id
+                        .as_deref()
+                        .is_some_and(|imdb_id| movie.imdb_id == imdb_id)
+            });
+            if let Some(movie) = movie {
+                result.by_ref_index.insert(ref_index, movie.clone());
+            } else {
+                result.missing_ref_indexes.push(ref_index);
+            }
+        }
+        Ok(result)
+    }
 }

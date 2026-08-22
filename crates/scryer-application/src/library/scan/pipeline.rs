@@ -1695,6 +1695,7 @@ async fn hydrate_library_scan_title_works(
         .map(|reservation| crate::catalog_workflow::HydrationTarget {
             title: reservation.work.title.clone(),
             requested_tvdb_id: None,
+            requested_movie_ref: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::LibraryScanFull,
         })

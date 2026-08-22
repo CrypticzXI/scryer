@@ -131,6 +131,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
             value: smg_id.to_string(),
         });
     }
+    push_positive_external_id(&mut extra_external_ids, "tvdb", movie.tvdb_id);
     if let Some(imdb_id) = crate::normalize::normalize_imdb_id(movie.imdb_id.as_str()) {
         extra_external_ids.push(scryer_domain::ExternalId {
             source: "imdb".into(),

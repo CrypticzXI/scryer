@@ -790,6 +790,14 @@ impl AppUseCase {
             .hydrate_titles_bulk(vec![HydrationTarget {
                 title: reset_title.clone(),
                 requested_tvdb_id: Some(target_tvdb_numeric),
+                requested_movie_ref: (reset_title.facet == MediaFacet::Movie).then_some(
+                    MovieTitleRef {
+                        smg_id: None,
+                        tvdb_id: Some(target_tvdb_numeric),
+                        tmdb_id: None,
+                        imdb_id: None,
+                    },
+                ),
                 sync_wanted_after_completion: false,
                 source: HydrationSource::Interactive,
             }])

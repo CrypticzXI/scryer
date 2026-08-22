@@ -1763,9 +1763,23 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
 
 async fn mount_smg_mocks(ctx: &TestContext, fixture_path: &str) {
     let fixture = load_fixture(fixture_path);
+    let get_fixture = fixture.clone();
+    let titles_fixture = load_fixture("smg/titles_movie.json");
+    let resolve_titles_fixture = load_fixture("smg/resolve_titles.json");
     Mock::given(method("GET"))
         .and(path("/graphql"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
+        .respond_with(move |request: &wiremock::Request| {
+            let operation_name = request
+                .url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "operationName").then(|| value.into_owned()));
+            let response = match operation_name.as_deref() {
+                Some("ResolveTitles") => &resolve_titles_fixture,
+                Some("Titles") => &titles_fixture,
+                _ => &get_fixture,
+            };
+            ResponseTemplate::new(200).set_body_string(response.clone())
+        })
         .mount(&ctx.smg_server)
         .await;
     Mock::given(method("POST"))

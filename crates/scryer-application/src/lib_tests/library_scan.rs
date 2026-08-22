@@ -6793,6 +6793,7 @@ async fn hydrate_titles_bulk_updates_title_name_for_selected_metadata_language()
         .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
             title: created_title.clone(),
             requested_tvdb_id: None,
+            requested_movie_ref: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::Interactive,
         }])
@@ -6836,6 +6837,7 @@ async fn hydrate_titles_bulk_persists_movie_tmdb_external_id() {
         .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
             title: title.clone(),
             requested_tvdb_id: None,
+            requested_movie_ref: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::Interactive,
         }])
@@ -6888,6 +6890,7 @@ async fn background_hydration_completes_without_inline_recommendation_refresh() 
         app.hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
             title: title.clone(),
             requested_tvdb_id: None,
+            requested_movie_ref: None,
             sync_wanted_after_completion: false,
             source: crate::catalog_workflow::HydrationSource::BackgroundDue,
         }]),
@@ -6925,6 +6928,7 @@ async fn interactive_hydration_refreshes_recommendations_inline() {
     app.hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
         title,
         requested_tvdb_id: None,
+        requested_movie_ref: None,
         sync_wanted_after_completion: false,
         source: crate::catalog_workflow::HydrationSource::Interactive,
     }])

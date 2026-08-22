@@ -407,13 +407,20 @@ pub async fn start_background_title_hydration_loop(
                 due_title.title.id.clone(),
                 (due_title.attempt_count, due_title.title.facet.clone()),
             );
-            if extract_tvdb_id(&due_title.title).is_none() {
+            let requested_movie_ref = movie_title_ref(&due_title.title);
+            let hydratable = match due_title.title.facet {
+                MediaFacet::Movie => requested_movie_ref.is_some(),
+                MediaFacet::Series | MediaFacet::Anime => {
+                    extract_tvdb_id(&due_title.title).is_some()
+                }
+            };
+            if !hydratable {
                 warn!(
                     hydration_source = HydrationSource::BackgroundDue.as_str(),
                     facet = due_title.title.facet.as_str(),
                     title_id = %due_title.title.id,
                     title_name = %due_title.title.name,
-                    "title hydration loop: clearing retry state because title has no tvdb external id"
+                    "title hydration loop: clearing retry state because title has no supported external id"
                 );
                 if let Err(error) = app
                     .services
@@ -426,7 +433,7 @@ pub async fn start_background_title_hydration_loop(
                         hydration_source = HydrationSource::BackgroundDue.as_str(),
                         title_id = %due_title.title.id,
                         error = %error,
-                        "title hydration loop: failed to clear retry state for title without tvdb id"
+                        "title hydration loop: failed to clear retry state for title without a supported external id"
                     );
                 }
                 original_attempts.remove(&due_title.title.id);
@@ -435,6 +442,7 @@ pub async fn start_background_title_hydration_loop(
             targets.push(HydrationTarget {
                 title: due_title.title,
                 requested_tvdb_id: None,
+                requested_movie_ref,
                 sync_wanted_after_completion: true,
                 source: HydrationSource::BackgroundDue,
             });
@@ -474,6 +482,24 @@ pub async fn start_background_title_hydration_loop(
                 for title_id in outcome.hydrated_titles.keys() {
                     metrics::counter!("scryer_title_metadata_hydration_success_total").increment(1);
                     original_attempts.remove(title_id);
+                }
+
+                for title_id in outcome.deferred_titles {
+                    if let Err(error) = app
+                        .services
+                        .catalog
+                        .titles
+                        .clear_title_metadata_hydration_retry_state(&title_id)
+                        .await
+                    {
+                        warn!(
+                            hydration_source = HydrationSource::BackgroundDue.as_str(),
+                            title_id = %title_id,
+                            error = %error,
+                            "title hydration loop: failed to park title unsupported by the legacy metadata gateway"
+                        );
+                    }
+                    original_attempts.remove(&title_id);
                 }
 
                 for (title_id, _) in outcome.failed_titles {

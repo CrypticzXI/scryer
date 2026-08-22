@@ -44,6 +44,21 @@ fn hydration_test_title(name: &str, tvdb_id: i64) -> NewTitle {
     }
 }
 
+fn hydration_test_tmdb_title(name: &str, tmdb_id: i64) -> NewTitle {
+    NewTitle {
+        name: name.to_string(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec![],
+        external_ids: vec![ExternalId {
+            source: "tmdb".to_string(),
+            value: tmdb_id.to_string(),
+        }],
+        min_availability: None,
+        ..Default::default()
+    }
+}
+
 async fn wait_for_title_metadata(app: &AppUseCase, user: &User, title_id: &str) -> Title {
     timeout(Duration::from_secs(2), async {
         loop {
@@ -91,6 +106,9 @@ struct MovieTitleResolutionGateway {
     unsupported: bool,
     redirected_from: Option<i64>,
     calls: Mutex<Vec<(Vec<MovieTitleRef>, bool)>>,
+    movie_title_calls: Mutex<Vec<Vec<MovieTitleRef>>>,
+    hydration_movies: HashMap<i64, MovieMetadata>,
+    hydration_redirects: Vec<(i64, i64)>,
 }
 
 #[async_trait]
@@ -140,10 +158,12 @@ impl MetadataGateway for MovieTitleResolutionGateway {
         ))
     }
 
-    async fn get_movie(&self, _tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
-        Err(AppError::Repository(
-            "not used by identity backfill tests".into(),
-        ))
+    async fn get_movie(&self, tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        self.hydration_movies
+            .values()
+            .find(|movie| movie.tvdb_id == Some(tvdb_id))
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("movie {tvdb_id}")))
     }
 
     async fn get_series(&self, _tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
@@ -154,13 +174,64 @@ impl MetadataGateway for MovieTitleResolutionGateway {
 
     async fn get_metadata_bulk(
         &self,
-        _movie_tvdb_ids: &[i64],
+        movie_tvdb_ids: &[i64],
         _series_tvdb_ids: &[i64],
         _language: &str,
     ) -> AppResult<BulkMetadataResult> {
-        Err(AppError::Repository(
-            "not used by identity backfill tests".into(),
-        ))
+        Ok(BulkMetadataResult {
+            movies: movie_tvdb_ids
+                .iter()
+                .filter_map(|tvdb_id| {
+                    self.hydration_movies
+                        .values()
+                        .find(|movie| movie.tvdb_id == Some(*tvdb_id))
+                        .cloned()
+                        .map(|movie| (*tvdb_id, movie))
+                })
+                .collect(),
+            series: HashMap::new(),
+        })
+    }
+
+    async fn get_movie_titles(
+        &self,
+        refs: &[MovieTitleRef],
+        _language: &str,
+    ) -> AppResult<MovieTitleBulkResult> {
+        self.movie_title_calls.lock().await.push(refs.to_vec());
+        if self.unsupported {
+            return Err(AppError::Repository(
+                "metadata gateway does not support title-id queries".into(),
+            ));
+        }
+
+        let mut result = MovieTitleBulkResult {
+            redirects: self.hydration_redirects.clone(),
+            ..Default::default()
+        };
+        for (ref_index, movie_ref) in refs.iter().enumerate() {
+            let movie = self.hydration_movies.values().find(|movie| {
+                movie_ref
+                    .smg_id
+                    .is_some_and(|smg_id| movie.smg_id == Some(smg_id))
+                    || movie_ref
+                        .tvdb_id
+                        .is_some_and(|tvdb_id| movie.tvdb_id == Some(tvdb_id))
+                    || movie_ref
+                        .tmdb_id
+                        .is_some_and(|tmdb_id| movie.tmdb_id == Some(tmdb_id))
+                    || movie_ref
+                        .imdb_id
+                        .as_deref()
+                        .is_some_and(|imdb_id| movie.imdb_id == imdb_id)
+            });
+            if let Some(movie) = movie {
+                result.by_ref_index.insert(ref_index, movie.clone());
+            } else {
+                result.missing_ref_indexes.push(ref_index);
+            }
+        }
+        Ok(result)
     }
 
     async fn resolve_movie_titles(
@@ -286,9 +357,11 @@ async fn movie_smg_identity_backfill_skips_the_default_not_supported_gateway_err
 async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     let (app, user) = bootstrap();
     let tvdb_id = 901_001;
+    let mut movie = hydration_test_movie(tvdb_id, "Wake Movie");
+    movie.smg_id = Some(1_901_001);
     let app = app.with_test_overrides(|services| {
         services.with_metadata_gateway(Arc::new(MockMetadataGateway {
-            movies: HashMap::from([(tvdb_id, hydration_test_movie(tvdb_id, "Wake Movie"))]),
+            movies: HashMap::from([(tvdb_id, movie)]),
         }))
     });
     let token = tokio_util::sync::CancellationToken::new();
@@ -311,8 +384,176 @@ async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     assert_eq!(hydrated.year, Some(2026));
     assert_eq!(hydrated.language.as_deref(), Some("eng"));
     assert_eq!(hydrated.metadata_language.as_deref(), Some("eng"));
+    assert!(
+        hydrated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "smg" && external_id.value == "1901001" })
+    );
 
     stop_title_hydration_worker(token, handle).await;
+}
+
+#[tokio::test]
+async fn prompt_title_hydration_worker_hydrates_tmdb_only_movie_by_title_ref() {
+    let tmdb_id = 810_003;
+    let mut movie = hydration_test_movie(0, "TMDB Wake Movie");
+    movie.smg_id = Some(1_810_003);
+    movie.tvdb_id = None;
+    movie.tmdb_id = Some(tmdb_id);
+    movie.imdb_id = "tt8100003".to_string();
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        hydration_movies: HashMap::from([(tmdb_id, movie)]),
+        ..Default::default()
+    });
+    let (app, user) = bootstrap();
+    let app = app.with_test_overrides(|services| services.with_metadata_gateway(gateway.clone()));
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_title_hydration_loop(
+        app.clone(),
+        token.clone(),
+    ));
+
+    let outcome = app
+        .add_title_with_outcome(&user, hydration_test_tmdb_title("TMDB Wake Movie", tmdb_id))
+        .await
+        .expect("TMDB-only movie should queue hydration");
+    assert_eq!(
+        outcome.metadata_hydration_state,
+        AddTitleHydrationState::Pending
+    );
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if !gateway.movie_title_calls.lock().await.is_empty() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("worker should request TMDB-only movie metadata");
+    let hydrated = wait_for_title_metadata(&app, &user, &outcome.title.id).await;
+    assert_eq!(
+        hydrated.poster_url.as_deref(),
+        Some("https://example.invalid/0.jpg")
+    );
+    assert!(
+        hydrated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "smg" && external_id.value == "1810003" })
+    );
+    assert!(
+        hydrated
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "tmdb" && external_id.value == "810003" })
+    );
+    assert!(
+        hydrated.external_ids.iter().any(|external_id| {
+            external_id.source == "imdb" && external_id.value == "tt8100003"
+        })
+    );
+    assert_eq!(gateway.movie_title_calls.lock().await.len(), 1);
+
+    stop_title_hydration_worker(token, handle).await;
+}
+
+#[tokio::test]
+async fn bulk_movie_hydration_replaces_redirected_smg_id() {
+    let tvdb_id = 901_010;
+    let old_smg_id = 1_901_010;
+    let new_smg_id = 1_901_011;
+    let mut movie = hydration_test_movie(tvdb_id, "Redirected Movie");
+    movie.smg_id = Some(new_smg_id);
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        hydration_movies: HashMap::from([(tvdb_id, movie)]),
+        hydration_redirects: vec![(old_smg_id, new_smg_id)],
+        ..Default::default()
+    });
+    let (app, user, _) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let mut request = hydration_test_title("Redirected Movie", tvdb_id);
+    request.external_ids.push(ExternalId {
+        source: "smg".to_string(),
+        value: old_smg_id.to_string(),
+    });
+    let created = app
+        .add_title_with_outcome(&user, request)
+        .await
+        .expect("title should be created");
+
+    let outcome = app
+        .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
+            title: created.title.clone(),
+            requested_tvdb_id: None,
+            requested_movie_ref: None,
+            sync_wanted_after_completion: false,
+            source: crate::catalog_workflow::HydrationSource::Interactive,
+        }])
+        .await
+        .expect("movie should hydrate");
+    let hydrated = outcome
+        .hydrated_titles
+        .get(&created.title.id)
+        .expect("title should be hydrated");
+    let smg_ids = hydrated
+        .external_ids
+        .iter()
+        .filter(|external_id| external_id.source == "smg")
+        .collect::<Vec<_>>();
+    assert_eq!(smg_ids.len(), 1);
+    assert_eq!(smg_ids[0].value, new_smg_id.to_string());
+}
+
+#[tokio::test]
+async fn legacy_movie_hydration_falls_back_for_tvdb_and_defers_tmdb_only() {
+    let tvdb_id = 901_020;
+    let tmdb_id = 810_020;
+    let mut movie = hydration_test_movie(tvdb_id, "Legacy TVDB Movie");
+    movie.smg_id = Some(1_901_020);
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        unsupported: true,
+        hydration_movies: HashMap::from([(tvdb_id, movie)]),
+        ..Default::default()
+    });
+    let (app, user, _) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let tvdb_title = app
+        .add_title_with_outcome(&user, hydration_test_title("Legacy TVDB Movie", tvdb_id))
+        .await
+        .expect("TVDB title should be created")
+        .title;
+    let tmdb_title = app
+        .add_title_with_outcome(
+            &user,
+            hydration_test_tmdb_title("Legacy TMDB Movie", tmdb_id),
+        )
+        .await
+        .expect("TMDB title should be created")
+        .title;
+
+    let outcome = app
+        .hydrate_titles_bulk(vec![
+            crate::catalog_workflow::HydrationTarget {
+                title: tvdb_title.clone(),
+                requested_tvdb_id: None,
+                requested_movie_ref: None,
+                sync_wanted_after_completion: false,
+                source: crate::catalog_workflow::HydrationSource::Interactive,
+            },
+            crate::catalog_workflow::HydrationTarget {
+                title: tmdb_title.clone(),
+                requested_tvdb_id: None,
+                requested_movie_ref: None,
+                sync_wanted_after_completion: false,
+                source: crate::catalog_workflow::HydrationSource::Interactive,
+            },
+        ])
+        .await
+        .expect("legacy fallback should not fail the batch");
+    assert!(outcome.hydrated_titles.contains_key(&tvdb_title.id));
+    assert!(outcome.deferred_titles.contains(&tmdb_title.id));
+    assert!(!outcome.failed_titles.contains_key(&tmdb_title.id));
 }
 
 #[tokio::test]

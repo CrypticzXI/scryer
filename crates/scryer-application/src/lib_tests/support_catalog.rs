@@ -531,10 +531,15 @@ impl TitleRepository for MockTitleRepo {
             .filter(|title| {
                 title.metadata_fetched_at.is_none()
                     && !excluded_facets.iter().any(|facet| facet == &title.facet)
-                    && title.external_ids.iter().any(|external_id| {
-                        external_id.source.eq_ignore_ascii_case("tvdb")
-                            && !external_id.value.trim().is_empty()
-                    })
+                    && match title.facet {
+                        MediaFacet::Movie => crate::MovieTitleRef::from_title(title).is_some(),
+                        MediaFacet::Series | MediaFacet::Anime => {
+                            title.external_ids.iter().any(|external_id| {
+                                external_id.source.eq_ignore_ascii_case("tvdb")
+                                    && !external_id.value.trim().is_empty()
+                            })
+                        }
+                    }
             })
             .cloned()
             .map(|title| PendingTitleHydration {

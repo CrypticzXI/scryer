@@ -781,7 +781,10 @@ impl AppUseCase {
 
         let metadata_hydration_state = if created.title.metadata_fetched_at.is_some() {
             AddTitleHydrationState::Complete
-        } else if extract_tvdb_id(&created.title).is_some() {
+        } else if matches!(created.title.facet, MediaFacet::Movie)
+            .then(|| movie_title_ref(&created.title).is_some())
+            .unwrap_or_else(|| extract_tvdb_id(&created.title).is_some())
+        {
             if created.reused_existing {
                 self.services
                     .catalog
