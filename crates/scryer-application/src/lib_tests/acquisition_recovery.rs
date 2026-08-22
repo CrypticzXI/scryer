@@ -5147,7 +5147,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
             })
             .to_string(),
         ),
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -5219,6 +5219,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
             download_client_id: Some("primary".to_string()),
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-swarm-job".to_string(),
+            release_size_bytes: None,
             source_hint: None,
             source_provider_id: None,
             source_provider_name: None,
@@ -8928,9 +8929,14 @@ async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
         PendingReleaseStatus::Waiting,
     );
     assert_eq!(
-        app.try_grab_pending_release(&wanted, &allowed, &now)
-            .await
-            .expect("pending grab should resolve"),
+        app.try_grab_pending_release(
+            &wanted,
+            &allowed,
+            &now,
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("pending grab should resolve"),
         crate::acquisition::pending::PendingGrabOutcome::Grabbed
     );
 
@@ -8949,9 +8955,14 @@ async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
         "fixture precondition: only the release name differs"
     );
     assert_eq!(
-        app.try_grab_pending_release(&wanted, &blocked, &now)
-            .await
-            .expect("pending grab should resolve"),
+        app.try_grab_pending_release(
+            &wanted,
+            &blocked,
+            &now,
+            crate::acquisition::pending::PendingGrabTrigger::Automatic,
+        )
+        .await
+        .expect("pending grab should resolve"),
         crate::acquisition::pending::PendingGrabOutcome::Rejected,
         "a release the current profile vetoes must expire, not be grabbed"
     );
