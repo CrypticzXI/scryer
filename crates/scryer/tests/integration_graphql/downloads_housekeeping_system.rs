@@ -50,7 +50,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl() {
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Broken.NZB.Movie.2024".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -153,7 +153,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },

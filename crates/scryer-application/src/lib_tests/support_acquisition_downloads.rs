@@ -1412,6 +1412,7 @@ pub(super) struct StubDownloadClient {
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
+    pub(super) submitted_info_hash_hints: Arc<Mutex<Vec<Option<String>>>>,
     /// Tracker-declared minimums as they reached the client, so a caller-level
     /// test can prove the clamp inputs survived the path under test.
     pub(super) submitted_seed_minimums: Arc<Mutex<Vec<crate::ReleaseSeedMinimums>>>,
@@ -1497,6 +1498,10 @@ impl DownloadClient for StubDownloadClient {
             .lock()
             .await
             .push(request.source_password.clone());
+        self.submitted_info_hash_hints
+            .lock()
+            .await
+            .push(request.info_hash_hint.clone());
         self.submitted_seed_minimums
             .lock()
             .await

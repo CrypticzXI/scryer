@@ -624,13 +624,20 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
 #[derive(Clone)]
 pub(super) struct MultiReleaseIndexerClient {
     pub(super) release_titles: Vec<String>,
+    info_hash_hint: Option<String>,
 }
 
 impl MultiReleaseIndexerClient {
     pub(super) fn new(release_titles: Vec<&str>) -> Self {
         Self {
             release_titles: release_titles.into_iter().map(str::to_string).collect(),
+            info_hash_hint: None,
         }
+    }
+
+    pub(super) fn with_info_hash_hint(mut self, info_hash_hint: impl Into<String>) -> Self {
+        self.info_hash_hint = Some(info_hash_hint.into());
+        self
     }
 }
 
@@ -676,7 +683,16 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     password_hint: None,
                     parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
                     quality_profile_decision: None,
-                    extra: Default::default(),
+                    extra: self
+                        .info_hash_hint
+                        .as_ref()
+                        .map(|hash| {
+                            std::collections::HashMap::from([(
+                                "info_hash".to_string(),
+                                serde_json::Value::String(hash.clone()),
+                            )])
+                        })
+                        .unwrap_or_default(),
                     response_attributes: Default::default(),
                     guid: Some(format!("guid-multi-release-{index}")),
                     info_url: Some(format!("https://example.invalid/info/{index}")),

@@ -163,7 +163,7 @@ async fn add_title_and_queue_download_with_outcome_reuses_matching_queue_submiss
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Queued.Once.2026.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -232,7 +232,7 @@ async fn add_title_and_queue_download_records_accepted_torrent_hash_fingerprint(
         source_kind: Some(DownloadSourceKind::TorrentFile),
         source_title: Some("Queued.Torrent.2026.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -283,7 +283,7 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -379,7 +379,7 @@ async fn queue_existing_title_download_submits_source_password_hint() {
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Protected.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: Some(" archive-password ".to_string()),
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -447,7 +447,7 @@ async fn queue_existing_title_download_drops_source_password_flags() {
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(format!("Flag.Queue.{index}.2026.1080p-WEB")),
                     source_password: Some(marker.to_string()),
-
+                    info_hash_hint: None,
                     size_bytes: None,
                     seeders: None,
                 },
@@ -541,7 +541,7 @@ async fn queue_existing_title_download_episode_scope_records_grabbed_history_con
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(source_title.to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -623,7 +623,7 @@ async fn queue_existing_title_download_records_configured_provider_in_grabbed_hi
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Provider.History.2026.1080p.WEB-DL".to_string()),
             source_password: None,
-
+            info_hash_hint: None,
             size_bytes: None,
             seeders: None,
         },
@@ -720,7 +720,7 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Manual.Deferred.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -815,7 +815,7 @@ async fn queue_existing_title_download_definitive_submit_error_records_failed_an
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Manual.Rejected.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -908,7 +908,7 @@ async fn queue_existing_title_download_whose_submission_tracking_fails_burns_the
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Manual.Untracked.Queue.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -987,7 +987,7 @@ async fn queue_existing_title_download_ignores_stale_matching_submission() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Stale.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -1096,7 +1096,7 @@ async fn queue_existing_title_download_conflicts_for_state(state: DownloadQueueS
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Blocked.Queue.Replacement.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -1212,7 +1212,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Queue.Directors.Cut.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -1327,7 +1327,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
                     "Additional.Series.Movie.Commentary.2026.1080p.WEB-DL".to_string(),
                 ),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -1383,7 +1383,7 @@ async fn queue_existing_title_download_additional_file_dedupes_by_scope() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Additional.Episode.Dedupe.S01E01.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -1479,7 +1479,7 @@ async fn queue_existing_title_download_additional_file_rejects_collection_scope(
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Additional.Collection.Reject.S01.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -1548,7 +1548,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_movie_title_s
                     source_kind: Some(DownloadSourceKind::NzbUrl),
                     source_title: Some(format!("{}.2026.1080p.WEB-DL", name.replace(' ', "."))),
                     source_password: None,
-
+                    info_hash_hint: None,
                     size_bytes: None,
                     seeders: None,
                 },
@@ -1627,7 +1627,7 @@ async fn queue_existing_title_download_additional_file_rejects_non_single_episod
                         "Additional.Episode.Scope.Reject.S01.1080p.WEB-DL".to_string(),
                     ),
                     source_password: None,
-
+                    info_hash_hint: None,
                     size_bytes: None,
                     seeders: None,
                 },
@@ -1712,7 +1712,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.Queue.New.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -1797,7 +1797,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Replace.All.Queue.New.2026.1080p.WEB-DL".to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },
@@ -2250,7 +2250,7 @@ async fn queue_replacement_release_from_candidate_token_marks_manual_replacement
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Token.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
         size_bytes: None,
         seeders: None,
     };
@@ -2287,6 +2287,14 @@ async fn queue_replacement_release_from_candidate_token_marks_manual_replacement
             .await
             .as_slice(),
         &["Token Queue".to_string()]
+    );
+    assert_eq!(
+        download_client
+            .submitted_info_hash_hints
+            .lock()
+            .await
+            .as_slice(),
+        &[Some("abcdef0123456789abcdef0123456789abcdef01".to_string())]
     );
     let submissions = download_submissions.store.lock().await.clone();
     assert_eq!(submissions.len(), 1);
@@ -2352,7 +2360,7 @@ async fn queue_existing_title_download_additional_file_uses_signed_candidate_sco
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Queue.S01E01.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -2444,7 +2452,7 @@ async fn queue_existing_title_download_additional_file_rejects_signed_episode_se
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Signed.Episode.Set.Reject.S01.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
         size_bytes: None,
         seeders: None,
     };
@@ -2495,10 +2503,13 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
-    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
-        "Wrong.Show.2026.1080p.WEB-DL",
-        "Target.Show.2026.1080p.WEB-DL",
-    ]));
+    let indexer_client = Arc::new(
+        MultiReleaseIndexerClient::new(vec![
+            "Wrong.Show.2026.1080p.WEB-DL",
+            "Target.Show.2026.1080p.WEB-DL",
+        ])
+        .with_info_hash_hint("abcdef0123456789abcdef0123456789abcdef01"),
+    );
     let (app, user) = bootstrap_with_cleanup_tracking_and_indexer(
         download_client.clone(),
         download_submissions.clone(),
@@ -2556,6 +2567,14 @@ async fn queue_best_release_prefers_first_auto_eligible_candidate() {
             .await
             .clone(),
         vec!["Target Show".to_string()]
+    );
+    assert_eq!(
+        download_client
+            .submitted_info_hash_hints
+            .lock()
+            .await
+            .as_slice(),
+        &[Some("abcdef0123456789abcdef0123456789abcdef01".to_string())]
     );
 
     let submissions = download_submissions.store.lock().await.clone();
@@ -3706,7 +3725,7 @@ async fn assert_queue_existing_title_submit_decision(
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some(source_title.to_string()),
                 source_password: None,
-
+                info_hash_hint: None,
                 size_bytes: None,
                 seeders: None,
             },

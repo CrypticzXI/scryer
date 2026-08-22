@@ -578,6 +578,8 @@ pub struct QueuedReleaseSelection {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
+    /// BitTorrent v1 info hash supplied by the indexer, when available.
+    pub info_hash_hint: Option<String>,
     /// Indexer-announced release size, preserved for queued pseudo-incumbent scoring.
     pub size_bytes: Option<i64>,
     /// Indexer-reported seeder count at the moment the candidate was offered.
