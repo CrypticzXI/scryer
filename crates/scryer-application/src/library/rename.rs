@@ -1409,12 +1409,28 @@ fn validate_folder_component_template(
 
     let chars: Vec<char> = trimmed.chars().collect();
     let mut cursor = 0usize;
+    let mut escaped_literal_open_count = 0usize;
     let mut saw_token = false;
     let mut saw_required_token = required_token.is_none();
 
     while cursor < chars.len() {
         let ch = chars[cursor];
+        if ch == '{' && chars.get(cursor + 1).is_some_and(|next| *next == '{') {
+            escaped_literal_open_count += 1;
+            cursor += 2;
+            continue;
+        }
         if ch == '}' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
+                cursor += 2;
+                continue;
+            }
+            if escaped_literal_open_count > 0 {
+                escaped_literal_open_count -= 1;
+                cursor += 1;
+                continue;
+            }
             return Err(AppError::Validation(format!(
                 "{template_label} template contains an unmatched '}}'"
             )));

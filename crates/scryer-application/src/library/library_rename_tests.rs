@@ -357,6 +357,8 @@ fn season_folder_template_requires_season_and_rejects_episode_tokens() {
         .expect("zero-width padding should be accepted");
     validate_season_folder_template("{title} S{season:2}")
         .expect("season templates should accept title tokens and numeric padding");
+    validate_season_folder_template("{{S{season}}}")
+        .expect("season templates should accept escaped literal braces");
 
     assert!(validate_season_folder_template("Season").is_err());
     assert!(validate_season_folder_template("Season {episode}").is_err());
@@ -409,6 +411,10 @@ fn render_episode_folder_name_selects_regular_and_specials_templates() {
     assert_eq!(
         render_episode_folder_name(&title, 12, "{title|space:.}.S{season:3}", "Specials"),
         "Neon.Cipher.S012"
+    );
+    assert_eq!(
+        render_episode_folder_name(&title, 3, "{{S{season}}}", "Specials"),
+        "{S3}"
     );
     assert_eq!(
         render_episode_folder_name(&title, 0, "Season {season}", "{title} Specials"),

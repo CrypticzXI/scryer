@@ -34,13 +34,22 @@ test("validateRenameTemplateSyntax rejects invalid truncate filters", () => {
   });
 });
 
-test("validateFolderTemplateSyntax accepts deterministic season padding", () => {
-  for (const template of ["Season {season}", "Season {season:0}", "Season {season:2}"]) {
+test("validateFolderTemplateSyntax accepts season padding and escaped braces", () => {
+  for (const template of [
+    "Season {season}",
+    "Season {season:0}",
+    "Season {season:2}",
+    "{{S{season}}}",
+  ]) {
     assert.equal(validateFolderTemplateSyntax(template, VALID_FOLDER_TOKENS, "season"), null);
   }
   assert.equal(
     applyRenameTemplatePreview("Season {season:2}", VALID_FOLDER_TOKENS, { season: "3" }),
     "Season 03",
+  );
+  assert.equal(
+    applyRenameTemplatePreview("{{S{season}}}", VALID_FOLDER_TOKENS, { season: "3" }),
+    "{S3}",
   );
 });
 
