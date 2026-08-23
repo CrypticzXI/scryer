@@ -876,6 +876,30 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
   }
 }`;
 
+const OAUTH_CLIENT_REGISTRATION_FIELDS = `
+    clientId
+    displayName
+    redirectUris
+    enabled
+    source`;
+
+export const createOAuthClientRegistrationMutation = `mutation CreateOAuthClientRegistration($input: CreateOAuthClientRegistrationInput!) {
+  createOauthClientRegistration(input: $input) {${OAUTH_CLIENT_REGISTRATION_FIELDS}
+  }
+}`;
+
+export const updateOAuthClientRegistrationMutation = `mutation UpdateOAuthClientRegistration($clientId: String!, $input: UpdateOAuthClientRegistrationInput!) {
+  updateOauthClientRegistration(clientId: $clientId, input: $input) {${OAUTH_CLIENT_REGISTRATION_FIELDS}
+  }
+}`;
+
+export const deleteOAuthClientRegistrationMutation = `mutation DeleteOAuthClientRegistration($clientId: String!) {
+  deleteOauthClientRegistration(clientId: $clientId) {
+    clientId
+    deleted
+  }
+}`;
+
 const LINKED_ACCOUNT_FIELDS = `
     id
     userId

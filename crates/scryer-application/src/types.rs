@@ -2395,6 +2395,16 @@ impl OAuthAuthorizationSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OAuthClientRegistrationRecord {
+    pub client_id: String,
+    pub display_name: String,
+    pub redirect_uris: Vec<String>,
+    pub enabled: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthAuthorizationCodeRecord {
     pub id: String,
     pub code_hash: String,

@@ -3,20 +3,23 @@ use std::time::Instant;
 use async_graphql::{Context, Error, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, AppError, LoginFailureTimingClass,
-    LoginVerificationMethod, LoginVerificationRequirement, MediaServerConnectionDraft,
-    MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
+    AcquisitionSettings as AppAcquisitionSettings, AppError, CreateOAuthClientRegistration,
+    LoginFailureTimingClass, LoginVerificationMethod, LoginVerificationRequirement,
+    MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateBackupSettings as AppUpdateBackupSettings,
-    UpdateGeneralSettings as AppUpdateGeneralSettings,
+    UpdateGeneralSettings as AppUpdateGeneralSettings, UpdateOAuthClientRegistration,
     UpdatePluginAutoUpdateSettings as AppUpdatePluginAutoUpdateSettings,
     UpdateRecycleBinSettings as AppUpdateRecycleBinSettings,
     UpdateSecuritySettings as AppUpdateSecuritySettings,
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
-use super::{from_plugin_auto_update_settings, from_ui_settings, ui_settings_update_from_input};
+use super::{
+    from_oauth_client_registration, from_plugin_auto_update_settings, from_ui_settings,
+    ui_settings_update_from_input,
+};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
     login_verification_required_gql_error, mfa_enrollment_actor_from_ctx,
@@ -1075,6 +1078,73 @@ impl SettingsMutations {
         }
 
         Ok(from_security_settings(settings, &snapshot))
+    }
+
+    /// Registers a public OAuth application with exact HTTPS callbacks and mandatory S256 PKCE.
+    async fn create_oauth_client_registration(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Display name and exact HTTPS callback allowlist for the application.")]
+        input: CreateOAuthClientRegistrationInput,
+    ) -> GqlResult<OAuthClientRegistrationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.create_oauth_client_registration(
+            &actor,
+            CreateOAuthClientRegistration {
+                display_name: input.display_name,
+                redirect_uris: input.redirect_uris,
+            },
+        )
+        .await
+        .map(from_oauth_client_registration)
+        .map_err(to_gql_error)
+    }
+
+    /// Replaces custom OAuth application metadata and callback allowlist. Disabling revokes all of its grants.
+    async fn update_oauth_client_registration(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Immutable client identifier returned during registration.")]
+        client_id: String,
+        #[graphql(desc = "Replacement public-client configuration.")]
+        input: UpdateOAuthClientRegistrationInput,
+    ) -> GqlResult<OAuthClientRegistrationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.update_oauth_client_registration(
+            &actor,
+            &client_id,
+            UpdateOAuthClientRegistration {
+                display_name: input.display_name,
+                redirect_uris: input.redirect_uris,
+                enabled: input.enabled,
+            },
+        )
+        .await
+        .map(from_oauth_client_registration)
+        .map_err(to_gql_error)
+    }
+
+    /// Deletes a custom OAuth application and revokes every active grant issued to it.
+    async fn delete_oauth_client_registration(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Immutable client identifier returned during registration.")]
+        client_id: String,
+    ) -> GqlResult<DeleteOAuthClientRegistrationPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.delete_oauth_client_registration(&actor, &client_id)
+            .await
+            .map(|deleted| DeleteOAuthClientRegistrationPayload { client_id, deleted })
+            .map_err(to_gql_error)
     }
 
     /// Creates a media-server connection with defaults for omitted enablement flags and redacted secret fields in the result.

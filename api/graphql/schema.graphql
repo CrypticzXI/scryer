@@ -1644,6 +1644,20 @@ input CreateNotificationSubscriptionInput {
 }
 
 """
+Custom public OAuth application details. Authorization-code plus S256 PKCE is required.
+"""
+input CreateOAuthClientRegistrationInput {
+	"""
+	Name displayed to users during authorization.
+	"""
+	displayName: String!
+	"""
+	Exact HTTPS callback URLs permitted for this application.
+	"""
+	redirectUris: [String!]!
+}
+
+"""
 Values required to create a post-processing script.
 """
 input CreatePostProcessingScriptInput {
@@ -2276,6 +2290,20 @@ type DeleteNotificationSubscriptionPayload {
 	Deleted notification subscription ID.
 	"""
 	id: ID!
+}
+
+"""
+Result of deleting a custom OAuth application.
+"""
+type DeleteOAuthClientRegistrationPayload {
+	"""
+	Deleted OAuth client identifier.
+	"""
+	clientId: String!
+	"""
+	Whether a persisted custom registration was removed.
+	"""
+	deleted: Boolean!
 }
 
 """
@@ -10032,6 +10060,37 @@ type MutationRoot {
 		input: UpdateSecuritySettingsInput!
 	): SecuritySettingsPayload!
 	"""
+	Registers a public OAuth application with exact HTTPS callbacks and mandatory S256 PKCE.
+	"""
+	createOauthClientRegistration(
+		"""
+		Display name and exact HTTPS callback allowlist for the application.
+		"""
+		input: CreateOAuthClientRegistrationInput!
+	): OauthClientRegistrationPayload!
+	"""
+	Replaces custom OAuth application metadata and callback allowlist. Disabling revokes all of its grants.
+	"""
+	updateOauthClientRegistration(
+		"""
+		Immutable client identifier returned during registration.
+		"""
+		clientId: String!,
+		"""
+		Replacement public-client configuration.
+		"""
+		input: UpdateOAuthClientRegistrationInput!
+	): OauthClientRegistrationPayload!
+	"""
+	Deletes a custom OAuth application and revokes every active grant issued to it.
+	"""
+	deleteOauthClientRegistration(
+		"""
+		Immutable client identifier returned during registration.
+		"""
+		clientId: String!
+	): DeleteOAuthClientRegistrationPayload!
+	"""
 	Creates a media-server connection with defaults for omitted enablement flags and redacted secret fields in the result.
 	"""
 	createMediaServerConnection(
@@ -11327,6 +11386,60 @@ type NotificationTargetPayload {
 	Whether this target can receive notifications.
 	"""
 	isEnabled: Boolean!
+}
+
+"""
+Public authorization-screen identity for a validated OAuth request.
+"""
+type OauthAuthorizationClientPayload {
+	"""
+	Requested OAuth client identifier.
+	"""
+	clientId: String!
+	"""
+	Client name safe to display after callback validation.
+	"""
+	displayName: String!
+}
+
+"""
+An OAuth application allowed to receive Scryer authorization codes.
+"""
+type OauthClientRegistrationPayload {
+	"""
+	Immutable OAuth client identifier.
+	"""
+	clientId: String!
+	"""
+	Name shown to users on the authorization screen.
+	"""
+	displayName: String!
+	"""
+	Exact callback URL allowlist. Managed native clients may use an empty list.
+	"""
+	redirectUris: [String!]!
+	"""
+	Whether the application can authorize or refresh tokens.
+	"""
+	enabled: Boolean!
+	"""
+	Whether the application is managed by Scryer or an administrator.
+	"""
+	source: OauthClientSourceValue!
+}
+
+"""
+Origin of an OAuth client registration.
+"""
+enum OauthClientSourceValue {
+	"""
+	Registration managed by Scryer and not editable through settings.
+	"""
+	MANAGED
+	"""
+	Registration created and maintained by an administrator.
+	"""
+	CUSTOM
 }
 
 """
@@ -13548,6 +13661,23 @@ type QueryRoot {
 	Returns saved security settings together with effective and environment-overridden login state.
 	"""
 	securitySettings: SecuritySettingsPayload!
+	"""
+	Lists managed and administrator-created OAuth applications.
+	"""
+	oauthClientRegistrations: [OauthClientRegistrationPayload!]!
+	"""
+	Resolves the display name for an OAuth authorization request after validating its callback URL.
+	"""
+	oauthAuthorizationClient(
+		"""
+		OAuth client identifier from the authorization request.
+		"""
+		clientId: String!,
+		"""
+		Redirect URI from the authorization request.
+		"""
+		redirectUri: String!
+	): OauthAuthorizationClientPayload!
 	"""
 	Returns effective external-auth providers and connections, hiding login capability when form login is disabled.
 	"""
@@ -18860,6 +18990,24 @@ input UpdateNotificationSubscriptionInput {
 	Replacement enabled state, or null to leave it unchanged.
 	"""
 	isEnabled: Boolean
+}
+
+"""
+Replacement details for a custom OAuth application.
+"""
+input UpdateOAuthClientRegistrationInput {
+	"""
+	Name displayed to users during authorization.
+	"""
+	displayName: String!
+	"""
+	Exact HTTPS callback URLs permitted for this application.
+	"""
+	redirectUris: [String!]!
+	"""
+	Whether the application is active. Disabling revokes its existing grants.
+	"""
+	enabled: Boolean!
 }
 
 """

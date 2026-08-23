@@ -1,6 +1,7 @@
 use super::*;
 use crate::types::{
-    EpisodeMediaAvailability, LoginVerificationChallengeRecord, TitleCatalogFilterCounts,
+    EpisodeMediaAvailability, LoginVerificationChallengeRecord, OAuthClientRegistrationRecord,
+    TitleCatalogFilterCounts,
 };
 use async_trait::async_trait;
 use scryer_domain::{
@@ -2088,6 +2089,29 @@ pub trait UserUiSettingsRepository: Send + Sync {
 
 #[async_trait]
 pub trait OAuthRepository: Send + Sync {
+    async fn create_client_registration(
+        &self,
+        record: OAuthClientRegistrationRecord,
+    ) -> AppResult<OAuthClientRegistrationRecord>;
+    async fn get_client_registration(
+        &self,
+        client_id: &str,
+    ) -> AppResult<Option<OAuthClientRegistrationRecord>>;
+    async fn list_client_registrations(&self) -> AppResult<Vec<OAuthClientRegistrationRecord>>;
+    async fn update_client_registration(
+        &self,
+        record: OAuthClientRegistrationRecord,
+        revoke_grants: bool,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        revoke_reason: &str,
+    ) -> AppResult<Option<OAuthClientRegistrationRecord>>;
+    async fn delete_client_registration(
+        &self,
+        client_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+        revoke_reason: &str,
+    ) -> AppResult<bool>;
+    async fn is_refresh_grant_active(&self, grant_id: &str, client_id: &str) -> AppResult<bool>;
     async fn create_authorization_code(
         &self,
         record: OAuthAuthorizationCodeRecord,
@@ -2105,6 +2129,7 @@ pub trait OAuthRepository: Send + Sync {
         &self,
         grant: OAuthRefreshGrantRecord,
         token: OAuthRefreshTokenRecord,
+        require_active_client_registration: bool,
     ) -> AppResult<OAuthRefreshGrantRecord>;
     async fn get_refresh_token(
         &self,

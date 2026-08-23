@@ -12,7 +12,10 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use futures_util::{Stream, stream::BoxStream};
+use futures_util::{
+    Stream, StreamExt,
+    stream::{self, BoxStream},
+};
 use scryer_application::{
     AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
     OAuthAuthorizationSource,
@@ -1016,7 +1019,14 @@ pub(crate) async fn graphql_ws_handler(
         return (StatusCode::FORBIDDEN, error).into_response();
     }
 
-    let initial_actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
+    let initial_actor = match resolve_actor(&state, &headers, Some(remote_addr)).await {
+        Ok(actor) => actor,
+        Err(AppError::Unauthorized(_)) => return oauth_access_revoked_http_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "failed to resolve GraphQL WebSocket actor");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     let authless_proof_required = initial_actor
         .as_ref()
         .is_some_and(ResolvedActor::requires_authless_web_client_proof);
@@ -1043,10 +1053,18 @@ pub(crate) async fn graphql_ws_handler(
             initial_actor.clone()
         },
     );
+    let oauth_session = Arc::new(StdRwLock::new(if authless_proof_required {
+        None
+    } else {
+        initial_actor
+            .as_ref()
+            .and_then(ResolvedActor::oauth_session)
+    }));
     let authless_web_client_proof = state.authless_web_client_proof.clone();
     let ws_headers = headers.clone();
     let connection_span_for_init = connection_span.clone();
     let connection_context_for_init = connection_context.clone();
+    let oauth_session_for_init = oauth_session.clone();
 
     ws.protocols(ALL_WEBSOCKET_PROTOCOLS)
         .on_upgrade(move |stream| async move {
@@ -1056,12 +1074,19 @@ pub(crate) async fn graphql_ws_handler(
             let headers_for_init = ws_headers.clone();
             let connection_span_for_init = connection_span_for_init.clone();
             let connection_context_for_init = connection_context_for_init.clone();
-            let executor = ContextualGraphqlExecutor::new(schema, connection_context.clone());
+            let oauth_session_for_init = oauth_session_for_init.clone();
+            let executor = ContextualGraphqlExecutor::new(
+                schema,
+                app.clone(),
+                connection_context.clone(),
+                oauth_session,
+            );
             GraphQLWebSocket::new(stream, executor, protocol)
                 .with_data(initial_data)
                 .on_connection_init(move |value: serde_json::Value| {
                     let connection_span = connection_span_for_init.clone();
                     let connection_context = connection_context_for_init.clone();
+                    let oauth_session = oauth_session_for_init.clone();
                     let app_for_init = app_for_init.clone();
                     let initial_actor = initial_actor.clone();
                     let proof_state = proof_state.clone();
@@ -1086,6 +1111,10 @@ pub(crate) async fn graphql_ws_handler(
                             },
                         )
                         .await?;
+                        *oauth_session
+                            .write()
+                            .expect("OAuth session lock must not be poisoned") =
+                            actor.as_ref().and_then(ResolvedActor::oauth_session);
                         if let Some(actor) = actor.as_ref() {
                             let mut updated_context = connection_context
                                 .read()
@@ -1110,17 +1139,23 @@ pub(crate) async fn graphql_ws_handler(
 #[derive(Clone)]
 struct ContextualGraphqlExecutor {
     schema: scryer_interface::ApiSchema,
+    app: AppUseCase,
     connection_context: Arc<StdRwLock<LogContext>>,
+    oauth_session: Arc<StdRwLock<Option<OAuthActorSession>>>,
 }
 
 impl ContextualGraphqlExecutor {
     fn new(
         schema: scryer_interface::ApiSchema,
+        app: AppUseCase,
         connection_context: Arc<StdRwLock<LogContext>>,
+        oauth_session: Arc<StdRwLock<Option<OAuthActorSession>>>,
     ) -> Self {
         Self {
             schema,
+            app,
             connection_context,
+            oauth_session,
         }
     }
 
@@ -1142,7 +1177,19 @@ impl ContextualGraphqlExecutor {
 impl Executor for ContextualGraphqlExecutor {
     fn execute(&self, request: GraphQLRequest) -> impl Future<Output = GraphQLResponse> + Send {
         let span = context_span(self.operation_context(&request));
-        self.schema.execute(request).instrument(span)
+        let schema = self.schema.clone();
+        let app = self.app.clone();
+        let oauth_session = self.oauth_session.clone();
+        async move {
+            if validate_ws_oauth_session(&app, &oauth_session)
+                .await
+                .is_err()
+            {
+                return oauth_access_revoked_response();
+            }
+            schema.execute(request).await
+        }
+        .instrument(span)
     }
 
     fn execute_stream(
@@ -1151,11 +1198,88 @@ impl Executor for ContextualGraphqlExecutor {
         session_data: Option<Arc<Data>>,
     ) -> BoxStream<'static, GraphQLResponse> {
         let span = context_span(self.operation_context(&request));
+        let app = self.app.clone();
+        let oauth_session = self.oauth_session.clone();
         Box::pin(ContextualGraphqlResponseStream {
-            inner: Executor::execute_stream(&self.schema, request, session_data),
+            inner: Box::pin(stream::unfold(
+                (
+                    true,
+                    Executor::execute_stream(&self.schema, request, session_data),
+                    app,
+                    oauth_session,
+                ),
+                |(active, mut inner, app, oauth_session)| async move {
+                    if !active
+                        || validate_ws_oauth_session(&app, &oauth_session)
+                            .await
+                            .is_err()
+                    {
+                        return active.then_some((
+                            oauth_access_revoked_response(),
+                            (false, inner, app, oauth_session),
+                        ));
+                    }
+
+                    let response = inner.next().await?;
+                    let response = if validate_ws_oauth_session(&app, &oauth_session)
+                        .await
+                        .is_ok()
+                    {
+                        response
+                    } else {
+                        oauth_access_revoked_response()
+                    };
+                    let keep_active =
+                        !response_has_error_code(&response, AUTHENTICATION_REQUIRED_CODE);
+                    Some((response, (keep_active, inner, app, oauth_session)))
+                },
+            )),
             span,
         })
     }
+}
+
+async fn validate_ws_oauth_session(
+    app: &AppUseCase,
+    oauth_session: &Arc<StdRwLock<Option<OAuthActorSession>>>,
+) -> AppResult<()> {
+    let oauth_session = oauth_session
+        .read()
+        .expect("OAuth session lock must not be poisoned")
+        .clone();
+    if let Some(oauth_session) = oauth_session {
+        app.validate_oauth_access_token(&oauth_session.client_id, &oauth_session.grant_id)
+            .await?;
+    }
+    Ok(())
+}
+
+fn oauth_access_revoked_response() -> GraphQLResponse {
+    let mut extensions = ErrorExtensionValues::default();
+    extensions.set("code", AUTHENTICATION_REQUIRED_CODE);
+    let mut error = ServerError::new("OAuth access is no longer authorized", None);
+    error.extensions = Some(extensions);
+    GraphQLResponse::from_errors(vec![error])
+}
+
+fn oauth_access_revoked_graphql_response() -> Response {
+    let batch = async_graphql::BatchResponse::Single(oauth_access_revoked_response());
+    let body = serde_json::to_vec(&batch).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+fn oauth_access_revoked_http_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse::new(
+            "OAuth access is no longer authorized".to_string(),
+        )),
+    )
+        .into_response()
 }
 
 struct ContextualGraphqlResponseStream {
@@ -1194,7 +1318,14 @@ pub(crate) async fn graphql_handler(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
-    let actor = resolve_actor(&state, &headers, Some(remote_addr)).await;
+    let actor = match resolve_actor(&state, &headers, Some(remote_addr)).await {
+        Ok(actor) => actor,
+        Err(AppError::Unauthorized(_)) => return oauth_access_revoked_graphql_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "failed to resolve GraphQL actor");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
     if actor
         .as_ref()
         .is_some_and(ResolvedActor::requires_authless_web_client_proof)
@@ -1345,7 +1476,7 @@ pub(crate) async fn emby_avatar_handler(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     AxumPath((connection_id, user_id, image_tag)): AxumPath<(String, String, String)>,
 ) -> Response {
-    let Some(actor) = resolve_actor(&state, &headers, Some(remote_addr)).await else {
+    let Ok(Some(actor)) = resolve_actor(&state, &headers, Some(remote_addr)).await else {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(Body::empty())
@@ -1826,7 +1957,7 @@ async fn resolve_actor(
     state: &AuthState,
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
-) -> Option<ResolvedActor> {
+) -> AppResult<Option<ResolvedActor>> {
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = match authorization_token_from_headers(headers) {
@@ -1883,9 +2014,9 @@ async fn resolve_actor(
         Some((user, token_claims, source)) => {
             attach_resolved_actor(&state.app, user, token_claims, source)
                 .await
-                .ok()
+                .map(Some)
         }
-        None => None,
+        None => Ok(None),
     }
 }
 
@@ -1895,6 +2026,19 @@ async fn attach_resolved_actor(
     token_claims: AuthenticatedTokenClaims,
     source: ResolvedActorSource,
 ) -> AppResult<ResolvedActor> {
+    if token_claims.is_oauth_access_token() {
+        app.validate_oauth_access_token(
+            token_claims
+                .oauth_client_id
+                .as_deref()
+                .expect("OAuth token includes a client ID"),
+            token_claims
+                .oauth_grant_id
+                .as_deref()
+                .expect("OAuth token includes a grant ID"),
+        )
+        .await?;
+    }
     let mut user = app.attach_user_authorization(user).await?;
     user.authorization.actor_capabilities = match source {
         ResolvedActorSource::AuthenticatedToken => token_claims.actor_capabilities,
@@ -2360,7 +2504,9 @@ pub(crate) async fn rate_limit_http_api(
 
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
-    let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr)).await;
+    let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr))
+        .await
+        .unwrap_or(None);
     let key = RateLimitKey::new(
         client_ip,
         actor.as_ref().map(|actor| actor.user.id.as_str()),

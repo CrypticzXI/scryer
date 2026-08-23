@@ -2624,6 +2624,16 @@ export const securitySettingsQuery = `query SecuritySettings {
   }
 }`;
 
+export const oauthClientRegistrationsQuery = `query OAuthClientRegistrations {
+  oauthClientRegistrations {
+    clientId
+    displayName
+    redirectUris
+    enabled
+    source
+  }
+}`;
+
 export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettings {
   externalAuthRuntimeSettings {
     loginProviders
@@ -2811,6 +2821,13 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     mfaRequirePasswordLogin
     mfaRequireConfigStepUp
     mfaRequireJellyfinLogin
+  }
+}`;
+
+export const oauthAuthorizationClientQuery = `query OAuthAuthorizationClient($clientId: String!, $redirectUri: String!) {
+  oauthAuthorizationClient(clientId: $clientId, redirectUri: $redirectUri) {
+    clientId
+    displayName
   }
 }`;
 

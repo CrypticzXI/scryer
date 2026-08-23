@@ -86,6 +86,21 @@ fn from_oauth_connected_app(
     }
 }
 
+fn from_oauth_client_registration(
+    client: scryer_application::OAuthClientInfo,
+) -> OAuthClientRegistrationPayload {
+    OAuthClientRegistrationPayload {
+        client_id: client.client_id,
+        display_name: client.name,
+        redirect_uris: client.redirect_uris,
+        enabled: client.enabled,
+        source: match client.source {
+            scryer_application::OAuthClientSource::Managed => OAuthClientSourceValue::Managed,
+            scryer_application::OAuthClientSource::Custom => OAuthClientSourceValue::Custom,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +651,42 @@ impl SettingsQueries {
             .map_err(to_gql_error)?;
 
         Ok(from_security_settings(settings, &auth_runtime.snapshot()))
+    }
+
+    /// Lists managed and administrator-created OAuth applications.
+    async fn oauth_client_registrations(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<OAuthClientRegistrationPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_oauth_client_registrations(&actor)
+            .await
+            .map(|clients| {
+                clients
+                    .into_iter()
+                    .map(from_oauth_client_registration)
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+
+    /// Resolves the display name for an OAuth authorization request after validating its callback URL.
+    async fn oauth_authorization_client(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "OAuth client identifier from the authorization request.")]
+        client_id: String,
+        #[graphql(desc = "Redirect URI from the authorization request.")] redirect_uri: String,
+    ) -> GqlResult<OAuthAuthorizationClientPayload> {
+        let app = app_from_ctx(ctx)?;
+        app.validate_oauth_redirect_uri(&client_id, &redirect_uri)
+            .await
+            .map(|client| OAuthAuthorizationClientPayload {
+                client_id: client.client_id,
+                display_name: client.name,
+            })
+            .map_err(to_gql_error)
     }
 
     /// Returns effective external-auth providers and connections, hiding login capability when form login is disabled.

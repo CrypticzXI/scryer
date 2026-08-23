@@ -877,9 +877,11 @@ async fn oauth_redirect_validation_and_code_exchange_reject_fragments() {
     let verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~abcdef";
 
     app.validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, redirect_uri)
+        .await
         .expect("fragment-free redirect should remain valid");
     match app
         .validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, fragment_redirect_uri)
+        .await
         .expect_err("fragment-bearing redirect should be rejected")
     {
         AppError::Validation(message) => {

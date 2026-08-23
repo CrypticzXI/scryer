@@ -1151,6 +1151,23 @@ file = "postgres/migrations/0174_indexer_error_history.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 175
+description = "persist OAuth client registrations"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0175_oauth_client_registrations.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0175_oauth_client_registrations.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

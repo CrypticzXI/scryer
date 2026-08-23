@@ -176,6 +176,49 @@ pub struct SecuritySettingsPayload {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+/// Origin of an OAuth client registration.
+pub enum OAuthClientSourceValue {
+    /// Registration managed by Scryer and not editable through settings.
+    Managed,
+    /// Registration created and maintained by an administrator.
+    Custom,
+}
+
+#[derive(SimpleObject, Clone)]
+/// An OAuth application allowed to receive Scryer authorization codes.
+pub struct OAuthClientRegistrationPayload {
+    /// Immutable OAuth client identifier.
+    pub client_id: String,
+    /// Name shown to users on the authorization screen.
+    pub display_name: String,
+    /// Exact callback URL allowlist. Managed native clients may use an empty list.
+    pub redirect_uris: Vec<String>,
+    /// Whether the application can authorize or refresh tokens.
+    pub enabled: bool,
+    /// Whether the application is managed by Scryer or an administrator.
+    pub source: OAuthClientSourceValue,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Public authorization-screen identity for a validated OAuth request.
+pub struct OAuthAuthorizationClientPayload {
+    /// Requested OAuth client identifier.
+    pub client_id: String,
+    /// Client name safe to display after callback validation.
+    pub display_name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Result of deleting a custom OAuth application.
+pub struct DeleteOAuthClientRegistrationPayload {
+    /// Deleted OAuth client identifier.
+    pub client_id: String,
+    /// Whether a persisted custom registration was removed.
+    pub deleted: bool,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 /// Theme preference for the caller's settings.
 pub enum UiThemeValue {
     /// Light theme.
@@ -805,6 +848,26 @@ pub struct UpdateSecuritySettingsInput {
     /// Deprecated alias for `mfaRequireEmbyLogin`. Omission preserves the saved setting.
     #[graphql(deprecation = "Use mfaRequireEmbyLogin.")]
     pub totp_require_emby_login: Option<bool>,
+}
+
+#[derive(InputObject, Clone)]
+/// Custom public OAuth application details. Authorization-code plus S256 PKCE is required.
+pub struct CreateOAuthClientRegistrationInput {
+    /// Name displayed to users during authorization.
+    pub display_name: String,
+    /// Exact HTTPS callback URLs permitted for this application.
+    pub redirect_uris: Vec<String>,
+}
+
+#[derive(InputObject, Clone)]
+/// Replacement details for a custom OAuth application.
+pub struct UpdateOAuthClientRegistrationInput {
+    /// Name displayed to users during authorization.
+    pub display_name: String,
+    /// Exact HTTPS callback URLs permitted for this application.
+    pub redirect_uris: Vec<String>,
+    /// Whether the application is active. Disabling revokes its existing grants.
+    pub enabled: bool,
 }
 
 #[derive(InputObject, Clone)]

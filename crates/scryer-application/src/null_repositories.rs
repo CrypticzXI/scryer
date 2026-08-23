@@ -15,7 +15,7 @@ use crate::ports::{
     DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
     DiscoveryHomeSectionCandidatesRecord,
 };
-use crate::types::{PendingImportStatus, PendingReleaseStatus};
+use crate::types::{OAuthClientRegistrationRecord, PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionScopeStatesQuery, AcquisitionStateRepository, IndexerErrorDetail, IndexerErrorPage,
     IndexerErrorRepository, InsertMediaFileInput, JellyfinServerUser, MediaRequestResolutionResult,
@@ -2632,6 +2632,47 @@ pub struct NullOAuthRepository;
 
 #[async_trait]
 impl OAuthRepository for NullOAuthRepository {
+    async fn create_client_registration(
+        &self,
+        _: OAuthClientRegistrationRecord,
+    ) -> AppResult<OAuthClientRegistrationRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_client_registration(
+        &self,
+        _: &str,
+    ) -> AppResult<Option<OAuthClientRegistrationRecord>> {
+        Ok(None)
+    }
+
+    async fn list_client_registrations(&self) -> AppResult<Vec<OAuthClientRegistrationRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn update_client_registration(
+        &self,
+        _: OAuthClientRegistrationRecord,
+        _: bool,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<Option<OAuthClientRegistrationRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_client_registration(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+        _: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn is_refresh_grant_active(&self, _: &str, _: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn create_authorization_code(
         &self,
         _: OAuthAuthorizationCodeRecord,
@@ -2658,6 +2699,7 @@ impl OAuthRepository for NullOAuthRepository {
         &self,
         _: OAuthRefreshGrantRecord,
         _: OAuthRefreshTokenRecord,
+        _: bool,
     ) -> AppResult<OAuthRefreshGrantRecord> {
         Err(AppError::Repository("not configured".into()))
     }

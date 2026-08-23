@@ -45,6 +45,7 @@ type SettingsSecuritySectionProps = {
   onTotpJellyfinLoginChange: (enabled: boolean) => void;
   onTotpEmbyLoginChange: (enabled: boolean) => void;
   externalAccountInvitesPanel: React.ReactNode;
+  oauthApplicationsPanel: React.ReactNode;
 };
 
 export function SettingsSecuritySection({
@@ -74,6 +75,7 @@ export function SettingsSecuritySection({
   onTotpJellyfinLoginChange,
   onTotpEmbyLoginChange,
   externalAccountInvitesPanel,
+  oauthApplicationsPanel,
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
   const busy = loading || confirmBusy;
@@ -266,6 +268,7 @@ export function SettingsSecuritySection({
         ) : null}
 
         {externalAccountInvitesPanel}
+        {oauthApplicationsPanel}
       </div>
 
       <ConfirmDialog
