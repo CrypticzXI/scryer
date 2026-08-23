@@ -27,16 +27,19 @@ async fn run_import(
         CompletedImportTargetResolution::Finished(result) => return Ok(*result),
     };
 
-    let result = dispatch_completed_import_target(
-        app,
-        actor,
-        import_id,
-        completed,
-        release_evidence,
-        started_at,
-        &target,
-    )
-    .await;
+    let result = {
+        let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+        dispatch_completed_import_target(
+            app,
+            actor,
+            import_id,
+            completed,
+            release_evidence,
+            started_at,
+            &target,
+        )
+        .await
+    };
 
     // Clean up extracted archive directory if we created one
     if let Some(ref dir) = target.extracted_dir {
@@ -194,7 +197,7 @@ enum CompletedImportTargetResolution {
     Finished(Box<ImportResult>),
 }
 
-async fn archive_extraction_destination_for_title(
+pub(super) async fn archive_extraction_destination_for_title(
     app: &AppUseCase,
     import_id: &str,
     title: &scryer_domain::Title,
@@ -337,6 +340,16 @@ fn archive_extraction_would_be_needed_best_effort(dir: &Path) -> bool {
     }
 }
 
+async fn mark_import_extracting(app: &AppUseCase, import_id: &str) -> AppResult<()> {
+    app.update_import_transfer_progress_and_notify(
+        import_id,
+        scryer_domain::ImportTransferPhase::Extracting,
+        0,
+        0,
+    )
+    .await
+}
+
 async fn try_match_titleless_archive_from_inner_video(
     app: &AppUseCase,
     import_id: &str,
@@ -360,13 +373,22 @@ async fn try_match_titleless_archive_from_inner_video(
         .available()
         .cloned();
 
-    let Some(extracted_dir) = crate::archive_extractor::extract_archives_if_needed(
-        dest_dir,
-        Some(destination),
-        archive_password,
-        archive_provider.clone(),
-    )
-    .await?
+    mark_import_extracting(app, import_id).await?;
+    let Some(extracted_dir) = ({
+        let _archive_extraction_permit = app
+            .runtime
+            .imports
+            .execution_coordinator
+            .acquire_archive_extraction()
+            .await;
+        crate::archive_extractor::extract_archives_if_needed(
+            dest_dir,
+            Some(destination),
+            archive_password,
+            archive_provider.clone(),
+        )
+        .await?
+    })
     else {
         return Ok(None);
     };
@@ -408,13 +430,24 @@ async fn try_match_titleless_archive_from_inner_video(
             let extracted_dir = match relocation {
                 TitlelessArchiveRelocation::Ready(extracted_dir) => extracted_dir,
                 TitlelessArchiveRelocation::ReextractUnderMatchedTitle => {
-                    crate::archive_extractor::extract_archives_if_needed(
-                        dest_dir,
-                        Some(archive_extraction_destination_for_title(app, import_id, &title).await?),
-                        archive_password,
-                        archive_provider.clone(),
-                    )
-                    .await?
+                    mark_import_extracting(app, import_id).await?;
+                    let destination =
+                        archive_extraction_destination_for_title(app, import_id, &title).await?;
+                    ({
+                        let _archive_extraction_permit = app
+                            .runtime
+                            .imports
+                            .execution_coordinator
+                            .acquire_archive_extraction()
+                            .await;
+                        crate::archive_extractor::extract_archives_if_needed(
+                            dest_dir,
+                            Some(destination),
+                            archive_password,
+                            archive_provider.clone(),
+                        )
+                        .await?
+                    })
                     .ok_or_else(|| {
                         AppError::Validation(format!(
                             "archive matched title '{}' but could not be re-extracted under the matched title destination",
@@ -566,17 +599,28 @@ async fn resolve_completed_import_target(
         } else {
             None
         };
-        extracted_dir = crate::archive_extractor::extract_archives_if_needed(
-            dest_dir,
-            extraction_destination,
-            archive_password,
-            app.services
-                .integrations
-                .archive_extractor_plugin_provider
-                .available()
-                .cloned(),
-        )
-        .await?;
+        if extraction_destination.is_some() {
+            mark_import_extracting(app, import_id).await?;
+        }
+        extracted_dir = {
+            let _archive_extraction_permit = app
+                .runtime
+                .imports
+                .execution_coordinator
+                .acquire_archive_extraction()
+                .await;
+            crate::archive_extractor::extract_archives_if_needed(
+                dest_dir,
+                extraction_destination,
+                archive_password,
+                app.services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
+            )
+            .await?
+        };
     }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
     let video_files = match if is_series {

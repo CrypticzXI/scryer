@@ -1134,6 +1134,23 @@ file = "postgres/migrations/0173_media_file_announced_size.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 174
+description = "persist manual archive extraction workspaces"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0174_manual_import_archive_workspaces.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0174_manual_import_archive_workspaces.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

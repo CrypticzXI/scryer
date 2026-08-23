@@ -112,6 +112,8 @@ pub async fn retry_failed_import(
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
                 Some(ImportSkipReason::PasswordRequired)
+            } else if crate::archive_extractor::is_timeout_error(&error) {
+                Some(ImportSkipReason::ArchiveExtractionTimedOut)
             } else {
                 None
             };
@@ -599,9 +601,12 @@ async fn finalize_import_source_cleanup(
 /// markers that surface on non-`Failed` decisions.
 pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
     match result.decision {
-        ImportDecision::Failed => {
-            result.skip_reason != Some(ImportSkipReason::PasswordRequired)
-        }
+        ImportDecision::Failed => !matches!(
+            result.skip_reason,
+            Some(
+                ImportSkipReason::PasswordRequired | ImportSkipReason::ArchiveExtractionTimedOut
+            )
+        ),
         _ => {
             matches!(
                 result.skip_reason,

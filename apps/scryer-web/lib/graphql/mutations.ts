@@ -1297,6 +1297,7 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
 export const beginManualImportSelectionMutation = `mutation BeginManualImportSelection($input: BeginManualImportSelectionInput!) {
   beginManualImportSelection(input: $input) {
     selectionId
+    archiveExtractionNeeded
     files {
       candidateId
       fileName

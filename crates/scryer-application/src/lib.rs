@@ -662,6 +662,9 @@ pub enum AppError {
     },
 
     #[error("{message}")]
+    ArchiveExtractionTimedOut { message: String },
+
+    #[error("{message}")]
     TemporaryUnavailable {
         message: String,
         retry_after: Option<std::time::Duration>,
@@ -710,6 +713,12 @@ impl AppError {
         Self::ArchiveExtractionPluginRequired {
             message: "This import is blocked because the download contains archive files. Install, update, or enable the Archive Extraction plugin, then re-import.".to_string(),
             source_path,
+        }
+    }
+
+    pub fn archive_extraction_timed_out(message: impl Into<String>) -> Self {
+        Self::ArchiveExtractionTimedOut {
+            message: message.into(),
         }
     }
 

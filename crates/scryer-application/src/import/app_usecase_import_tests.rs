@@ -2912,7 +2912,7 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
     let mut series_title = titled(MediaFacet::Series, "Manual Movie", Some(2024));
     series_title.id = "title-1".to_string();
 
-    let movie_preview = preview_manual_import(&app, &completed, &movie_title, &evidence, &[])
+    let movie_preview = preview_manual_import(&app, dir.path(), &movie_title, &evidence, &[])
         .await
         .expect("movie preview");
     // The preview shows the quality the import will score — the release
@@ -2941,7 +2941,7 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
         "movie previews drop sample-named files but never size-filter (a small movie stays importable)"
     );
 
-    let series_preview = preview_manual_import(&app, &completed, &series_title, &evidence, &[])
+    let series_preview = preview_manual_import(&app, dir.path(), &series_title, &evidence, &[])
         .await
         .expect("series preview");
     let mut series_files = series_preview

@@ -342,6 +342,9 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("sourcePath", source_path);
             }
         }),
+        AppError::ArchiveExtractionTimedOut { message } => {
+            coded_gql_error(message, "ARCHIVE_EXTRACTION_TIMED_OUT")
+        }
         AppError::TemporaryUnavailable {
             message,
             retry_after,
@@ -429,6 +432,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::DownloadSourceGone(_) => "DownloadSourceGone",
         AppError::DownloadSubmitFailoverExhausted(_) => "DownloadSubmitFailoverExhausted",
         AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
+        AppError::ArchiveExtractionTimedOut { .. } => "ArchiveExtractionTimedOut",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",

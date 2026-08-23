@@ -839,6 +839,7 @@ const de: LocaleDictionary = {
   "queue.manualImport": "Manueller Import",
   "queue.manualImporting": "Wird zur Warteschlange hinzugefügt…",
   "queue.transfer.copying": "Copying",
+  "queue.transfer.extracting": "Extracting",
   "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "Manueller Import eingereiht.",
   "queue.manualImportFailed": "Manueller Import fehlgeschlagen.",

@@ -4900,6 +4900,8 @@ mod tests {
             files: Vec::new(),
             selection_id: None,
             release_evidence: None,
+            trusted_source_root: None,
+            archive_workspace_root: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let imports = Arc::new(TestImportRepo {
@@ -4984,6 +4986,8 @@ mod tests {
             files: Vec::new(),
             selection_id: None,
             release_evidence: None,
+            trusted_source_root: None,
+            archive_workspace_root: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {
@@ -5080,6 +5084,8 @@ mod tests {
             files: Vec::new(),
             selection_id: None,
             release_evidence: None,
+            trusted_source_root: None,
+            archive_workspace_root: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {

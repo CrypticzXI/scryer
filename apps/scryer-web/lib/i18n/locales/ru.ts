@@ -1451,6 +1451,7 @@ const ru: LocaleDictionary = {
     "queue.manualImport": "Ручной импорт",
     "queue.manualImporting": "Постановка в очередь…",
     "queue.transfer.copying": "Копирование",
+    "queue.transfer.extracting": "Извлечение",
     "queue.transfer.finalizing": "Завершение",
     "queue.manualImportQueued": "Ручной импорт добавлен в очередь.",
     "queue.manualImportFailed": "Ошибка ручного импорта.",

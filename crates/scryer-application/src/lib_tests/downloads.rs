@@ -1290,6 +1290,8 @@ async fn queued_manual_import_rejects_observed_targets_before_consuming_or_queue
             item_id: "observed-target-selection".to_string(),
         },
         release_evidence_json: None,
+        trusted_source_root: "/private/tmp".to_string(),
+        archive_workspace_root: None,
         candidates: vec![crate::ManualImportSelectionCandidate {
             id: "candidate-1".to_string(),
             canonical_path: "/private/tmp/observed-target-selection.mkv".to_string(),
@@ -1454,6 +1456,8 @@ async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanu
         files: Vec::new(),
         selection_id: None,
         release_evidence: None,
+        trusted_source_root: None,
+        archive_workspace_root: None,
         requested_at: now,
     };
 

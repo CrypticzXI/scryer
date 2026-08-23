@@ -163,8 +163,10 @@ export function ManualImportDialog({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const [loading, setLoading] = React.useState(false);
+  const [extractingArchives, setExtractingArchives] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [archivePluginRequired, setArchivePluginRequired] = React.useState(false);
+  const [archiveExtractionNeeded, setArchiveExtractionNeeded] = React.useState(false);
   const [files, setFiles] = React.useState<FilePreview[]>([]);
   const [episodes, setEpisodes] = React.useState<AvailableEpisode[]>([]);
   const [seriesMovies, setSeriesMovies] = React.useState<AvailableSeriesMovie[]>([]);
@@ -188,28 +190,18 @@ export function ManualImportDialog({
     navigate(buildViewPath("settings", "downloadClients"));
   }, [navigate, onOpenChange]);
 
-  // Load preview when dialog opens
-  React.useEffect(() => {
-    if (!open) {
-      setFiles([]);
-      setEpisodes([]);
-      setSeriesMovies([]);
-      setMappings({});
-      setSelectionId(null);
-      setError(null);
-      setArchivePluginRequired(false);
-      return;
-    }
-
+  const loadPreview = React.useCallback((extractArchives = false) => {
     setLoading(true);
+    setExtractingArchives(extractArchives);
     setError(null);
     setArchivePluginRequired(false);
-    client.mutation(beginManualImportSelectionMutation, {
+    return client.mutation(beginManualImportSelectionMutation, {
       input: {
         clientId,
         clientType,
         downloadClientItemId,
         titleId,
+        extractArchives,
       },
     }).toPromise()
       .then(({ data, error: queryError }) => {
@@ -219,6 +211,7 @@ export function ManualImportDialog({
         setFiles(preview.files);
         setEpisodes(preview.availableEpisodes);
         setSeriesMovies(preview.availableSeriesMovies ?? []);
+        setArchiveExtractionNeeded(Boolean(preview.archiveExtractionNeeded));
         // Initialize mappings from suggested matches
         const initial: Record<string, string> = {};
         for (const file of preview.files) {
@@ -231,10 +224,32 @@ export function ManualImportDialog({
         setMappings(initial);
       })
       .catch((err: unknown) => {
+        setArchiveExtractionNeeded(false);
         setImportError(err, "Failed to load preview");
       })
-      .finally(() => setLoading(false));
-  }, [open, clientId, clientType, downloadClientItemId, titleId, client, setImportError]);
+      .finally(() => {
+        setLoading(false);
+        setExtractingArchives(false);
+      });
+  }, [client, clientId, clientType, downloadClientItemId, setImportError, titleId]);
+
+  // Load preview when dialog opens.
+  React.useEffect(() => {
+    if (!open) {
+      setFiles([]);
+      setEpisodes([]);
+      setSeriesMovies([]);
+      setMappings({});
+      setSelectionId(null);
+      setError(null);
+      setArchivePluginRequired(false);
+      setArchiveExtractionNeeded(false);
+      setExtractingArchives(false);
+      return;
+    }
+
+    void loadPreview();
+  }, [loadPreview, open]);
 
   const groupedEpisodes = React.useMemo(() => groupEpisodesBySeason(episodes), [episodes]);
 
@@ -312,7 +327,11 @@ export function ManualImportDialog({
             className="flex items-center justify-center gap-3 py-12"
           >
             <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-accent-text)]" />
-            <span className="text-sm text-muted-foreground">Scanning files...</span>
+            <span className="text-sm text-muted-foreground">
+              {extractingArchives
+                ? "Extracting archives. This can take a while..."
+                : "Scanning files..."}
+            </span>
           </div>
         ) : error && files.length === 0 ? (
           <div
@@ -334,12 +353,29 @@ export function ManualImportDialog({
         ) : (
           <>
             {files.length === 0 ? (
-              <p
-                id="activity-manual-import-empty"
-                className="py-8 text-center text-sm text-muted-foreground"
-              >
-                No video files found in the download.
-              </p>
+              archiveExtractionNeeded ? (
+                <div
+                  id="activity-manual-import-archive-extraction-needed"
+                  className="flex flex-col items-center gap-3 py-8 text-center"
+                >
+                  <p className="text-sm text-muted-foreground">
+                    This download contains archives. Extract them before mapping media files.
+                  </p>
+                  <Button
+                    id="activity-manual-import-extract-archives"
+                    onClick={() => void loadPreview(true)}
+                  >
+                    Extract archives &amp; preview
+                  </Button>
+                </div>
+              ) : (
+                <p
+                  id="activity-manual-import-empty"
+                  className="py-8 text-center text-sm text-muted-foreground"
+                >
+                  No video files found in the download.
+                </p>
+              )
             ) : (
               <Table id="activity-manual-import-table">
                 <TableHeader>

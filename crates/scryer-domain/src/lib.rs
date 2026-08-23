@@ -1885,6 +1885,7 @@ impl ImportStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportTransferPhase {
+    Extracting,
     Copying,
     Finalizing,
 }
@@ -1892,6 +1893,7 @@ pub enum ImportTransferPhase {
 impl ImportTransferPhase {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Extracting => "extracting",
             Self::Copying => "copying",
             Self::Finalizing => "finalizing",
         }
@@ -1899,6 +1901,7 @@ impl ImportTransferPhase {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "extracting" => Some(Self::Extracting),
             "copying" => Some(Self::Copying),
             "finalizing" => Some(Self::Finalizing),
             _ => None,
@@ -2049,6 +2052,7 @@ pub enum ImportSkipReason {
     DiskFull,
     PermissionDenied,
     PasswordRequired,
+    ArchiveExtractionTimedOut,
 }
 
 impl ImportSkipReason {
@@ -2064,6 +2068,7 @@ impl ImportSkipReason {
             Self::DiskFull => "disk_full",
             Self::PermissionDenied => "permission_denied",
             Self::PasswordRequired => "password_required",
+            Self::ArchiveExtractionTimedOut => "archive_extraction_timed_out",
         }
     }
 }

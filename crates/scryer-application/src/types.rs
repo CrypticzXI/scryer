@@ -3051,6 +3051,10 @@ pub struct ManualImportSelection {
     pub title_id: String,
     pub source_identity: crate::DownloadSourceIdentity,
     pub release_evidence_json: Option<String>,
+    /// Server-selected root that every candidate must remain beneath.
+    pub trusted_source_root: String,
+    /// Temporary archive workspace retained until the queued import completes.
+    pub archive_workspace_root: Option<String>,
     pub candidates: Vec<ManualImportSelectionCandidate>,
 }
 
