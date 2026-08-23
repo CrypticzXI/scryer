@@ -43,8 +43,7 @@ to claude.ai/design. Read this before re-syncing.
 - **Playwright's browser *extraction* hangs in this environment** (the 170MB chromium zip downloads
   fine in seconds, but `npx playwright install chromium` then hangs forever unpacking it; sandbox
   on/off makes no difference). Workaround used: let the download finish, then extract the temp zip
-  manually with `ditto -x -k <temp.zip> ~/.cache/ms-playwright/chromium-1208` and `touch
-  ~/.cache/ms-playwright/chromium-1208/INSTALLATION_COMPLETE`. Extraction via ditto is <1s.
+  into Playwright's Chromium cache and mark the extraction complete. Extraction via ditto is <1s.
 - Playwright 1.58 `chromium.launch({headless})` defaults to the **headless-shell** browser (not
   installed). We use the full **Chrome for Testing** binary instead via the env var the scripts honor:
   `export DS_CHROMIUM_PATH="$HOME/.cache/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"`
