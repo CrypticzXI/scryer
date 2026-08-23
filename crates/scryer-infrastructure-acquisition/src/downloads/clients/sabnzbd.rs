@@ -117,6 +117,9 @@ enum SabApiAuth {
 }
 
 const SAB_ADDFILE_UPLOAD_FIELD: &str = "nzbfile";
+// Safe reads may make three attempts. Ninety seconds per attempt plus the
+// bounded retry backoff remains below the default 300-second feedback gate.
+const SABNZBD_HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const SAB_SECRET_QUERY_KEYS: &[&str] = &["apikey", "api_key", "ma_password", "password"];
 
 #[derive(Clone)]
@@ -295,7 +298,11 @@ impl SabnzbdDownloadClient {
                     form_or_query.push(("apikey".to_string(), api_key.clone()));
                     self.outbound_http
                         .send(policy.clone(), || {
-                            self.outbound_http.client().get(url).query(&form_or_query)
+                            self.outbound_http
+                                .client()
+                                .get(url)
+                                .query(&form_or_query)
+                                .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT)
                         })
                         .await
                 }
@@ -317,6 +324,7 @@ impl SabnzbdDownloadClient {
                                 .post(url)
                                 .header("Content-Type", "application/x-www-form-urlencoded")
                                 .body(encoded_form.clone())
+                                .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT)
                         })
                         .await
                 }
@@ -563,7 +571,11 @@ impl SabnzbdDownloadClient {
                     let request_builder =
                         self.outbound_http.client().post(&url).query(&query_params);
 
-                    Ok::<_, AppError>(request_builder.multipart(form))
+                    Ok::<_, AppError>(
+                        request_builder
+                            .multipart(form)
+                            .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT),
+                    )
                 }
             })
             .await

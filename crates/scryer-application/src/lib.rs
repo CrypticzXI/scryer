@@ -359,9 +359,6 @@ pub use subtitles::orchestration::{
     start_background_subtitle_poller,
 };
 
-pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =
-    "download feedback timed out after 10s; queue status is temporarily unavailable";
-
 pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY: usize = 4;
 pub(crate) const LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 24;
 pub(crate) const LIBRARY_SCAN_EPISODIC_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 4;
