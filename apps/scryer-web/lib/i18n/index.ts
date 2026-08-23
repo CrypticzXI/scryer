@@ -1,5 +1,6 @@
 import type { LocaleDictionary } from "./types.ts";
 import { DEFAULT_LANGUAGE, interpolate } from "./types.ts";
+
 import en from "./locales/en.ts";
 import es from "./locales/es.ts";
 import fr from "./locales/fr.ts";
@@ -9,9 +10,20 @@ import pt_BR from "./locales/pt_BR.ts";
 import ko from "./locales/ko.ts";
 import zh_CN from "./locales/zh_CN.ts";
 import ja from "./locales/ja.ts";
+import ru from "./locales/ru.ts";
 export { DEFAULT_LANGUAGE } from "./types.ts";
 
-export type LocaleCode = "eng" | "spa" | "fra" | "deu" | "ita" | "por" | "kor" | "zho" | "jpn";
+export type LocaleCode =
+  | "eng"
+  | "spa"
+  | "fra"
+  | "deu"
+  | "ita"
+  | "por"
+  | "kor"
+  | "zho"
+  | "jpn"
+  | "rus";
 
 export type LanguageOption = {
   code: LocaleCode;
@@ -32,6 +44,9 @@ const LOCALE_ALIASES: Record<string, LocaleCode> = {
   zh: "zho",
   "zh-cn": "zho",
   ja: "jpn",
+
+  ru: "rus",
+  "ru-ru": "rus",
 };
 
 const locales: LocaleMap = {
@@ -44,6 +59,7 @@ const locales: LocaleMap = {
   kor: ko,
   zho: zh_CN,
   jpn: ja,
+  rus: ru,
 };
 
 export const AVAILABLE_LANGUAGES: LanguageOption[] = [
@@ -56,6 +72,7 @@ export const AVAILABLE_LANGUAGES: LanguageOption[] = [
   { code: "kor", label: "한국어" },
   { code: "zho", label: "简体中文" },
   { code: "jpn", label: "日本語" },
+  { code: "rus", label: "Русский" },
 ];
 
 export function getLanguageLabel(code: string): string {
