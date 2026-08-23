@@ -4,6 +4,7 @@ import test from "node:test";
 import type { DownloadDisplayState } from "@/lib/types/download-queue";
 import {
   collectActiveDownloadTitleIds,
+  isPendingDownloadQueueItem,
   isPendingCatalogDownloadQueueItem,
   type CatalogDownloadActivityInput,
 } from "./catalog-download-activity.ts";
@@ -42,6 +43,14 @@ test("every pending lifecycle state counts as catalog download activity", () => 
       `${displayState} should count as pending`,
     );
   }
+});
+
+test("pending lifecycle state detection does not require a title", () => {
+  assert.equal(
+    isPendingDownloadQueueItem({ displayState: "DOWNLOADING" }),
+    true,
+  );
+  assert.equal(isPendingDownloadQueueItem({ displayState: "PAUSED" }), false);
 });
 
 test("paused, blocked, failed, removed, and historical states never count", () => {
