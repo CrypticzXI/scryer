@@ -687,6 +687,18 @@ fn require_app_release_branch(branch: &str, version: &Version) -> Result<()> {
     Ok(())
 }
 
+fn require_main_merged(ctx: &TaskContext) -> Result<()> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(["merge-base", "--is-ancestor", "main", "HEAD"]);
+    let status = command.status()?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!(
+        "release branch does not contain main; merge main into the release branch before running a release dry run"
+    );
+}
+
 fn current_head_commit(ctx: &TaskContext) -> Result<String> {
     git_capture(ctx, &["rev-parse", "HEAD"]).map(|value| value.trim().to_string())
 }
@@ -2920,6 +2932,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     let git_commit = current_head_commit(ctx)?;
     println!("   Branch : {branch}");
     require_app_release_branch(&branch, &next_version)?;
+    require_main_merged(ctx)?;
     let worktree_clean_at_start = git_status_porcelain(ctx)?.trim().is_empty();
     if !worktree_clean_at_start {
         prompt_continue_if_dirty(ctx)?;

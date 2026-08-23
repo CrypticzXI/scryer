@@ -1182,7 +1182,7 @@ jobs:
               --output "${{ matrix.artifact_name }}-heartbeat.log" `
               --build-log "${{ matrix.artifact_name }}-build.log" `
               --status-file "${{ matrix.artifact_name }}-build-status.json" `
-              --timeout-seconds 3300 `
+              --timeout-seconds 5400 `
               -- cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
             $cargoExitCode = $LASTEXITCODE
           }

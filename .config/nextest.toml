@@ -12,6 +12,6 @@ setup = "build-test-plugin-fixture"
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'package(scryer-plugins) & binary(wasm_integration)'
+filter = '(package(scryer-plugins) & binary(wasm_integration)) | (package(scryer) & (binary(integration_interactive_release_search) | binary(integration_multi_indexer_urls)))'
 test-group = 'wasm-integration'
 retries = 1
