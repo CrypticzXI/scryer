@@ -4,6 +4,8 @@ use super::lookup::{
 use super::result_state::apply_import_result_with_completed;
 use super::*;
 use crate::import_workflow::import_completed_download_with_target_title;
+use scryer_logging::{ActorContext, LogContext, ResourceContext, WorkflowContext, context_span};
+use tracing::Instrument;
 
 pub(crate) fn mark_importing(td: &mut TrackedDownload) {
     td.state = TrackedDownloadState::Importing;
@@ -13,7 +15,10 @@ pub(crate) fn mark_importing(td: &mut TrackedDownload) {
 }
 
 pub async fn import(app: &AppUseCase, actor: &User, td: &mut TrackedDownload) -> bool {
-    import_inner(app, actor, td, None).await
+    let log_span = tracked_download_import_log_span(actor, td);
+    import_inner(app, actor, td, None)
+        .instrument(log_span)
+        .await
 }
 
 pub(crate) async fn import_with_lookup(
@@ -22,7 +27,36 @@ pub(crate) async fn import_with_lookup(
     td: &mut TrackedDownload,
     completed_lookup: &CompletedDownloadLookup,
 ) -> bool {
-    import_inner(app, actor, td, Some(completed_lookup)).await
+    let log_span = tracked_download_import_log_span(actor, td);
+    import_inner(app, actor, td, Some(completed_lookup))
+        .instrument(log_span)
+        .await
+}
+
+fn tracked_download_import_log_span(actor: &User, td: &TrackedDownload) -> tracing::Span {
+    context_span(
+        LogContext::workflow(WorkflowContext {
+            kind: "import".to_owned(),
+            id: td.id.clone(),
+        })
+        .with_actor(ActorContext {
+            kind: if actor.is_system_execution_actor() {
+                "system".to_owned()
+            } else {
+                "user".to_owned()
+            },
+            id: Some(actor.id.clone()),
+            display_name: Some(actor.username.clone()),
+            source: None,
+        })
+        .with_resource(ResourceContext {
+            title_id: td.title_id.clone(),
+            import_id: Some(td.id.clone()),
+            download_id: td.client_item.download_id.clone(),
+            client_id: Some(td.client_id.clone()),
+            ..ResourceContext::default()
+        }),
+    )
 }
 
 async fn import_inner(

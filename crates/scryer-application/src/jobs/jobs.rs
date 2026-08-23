@@ -15,11 +15,12 @@ use scryer_domain::{
     JobNextRunUpdatedEventData, JobRunCompletedEventData, JobRunFailedEventData,
     JobRunStartedEventData,
 };
+use scryer_logging::{ActorContext, LogContext, ResourceContext, WorkflowContext, context_span};
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 
 const BACKGROUND_LIBRARY_REFRESH_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const BACKGROUND_LIBRARY_REFRESH_STAGGER_SECONDS: i64 = 15 * 60;
@@ -43,6 +44,29 @@ pub(crate) const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 enum JobExecutionPrincipal {
     User(User),
     System,
+}
+
+fn job_log_span(run: &JobRunRecord, actor: &User) -> tracing::Span {
+    context_span(
+        LogContext::workflow(WorkflowContext {
+            kind: run.job_key.as_str().to_owned(),
+            id: run.id.clone(),
+        })
+        .with_actor(ActorContext {
+            kind: if actor.is_system_execution_actor() {
+                "system".to_owned()
+            } else {
+                "user".to_owned()
+            },
+            id: Some(actor.id.clone()),
+            display_name: Some(actor.username.clone()),
+            source: None,
+        })
+        .with_resource(ResourceContext {
+            job_id: Some(run.id.clone()),
+            ..ResourceContext::default()
+        }),
+    )
 }
 
 impl JobExecutionPrincipal {
@@ -1006,16 +1030,20 @@ impl AppUseCase {
             ))
             .await;
 
+        let log_span = job_log_span(&run, actor);
         let app = self.clone();
         let actor = actor.clone();
-        tokio::spawn(async move {
-            if let Err(error) = app
-                .run_job_run(run, JobExecutionPrincipal::User(actor), event_actor)
-                .await
-            {
-                warn!(job_key = job_key.as_str(), error = %error, "manual job trigger failed");
+        tokio::spawn(
+            async move {
+                if let Err(error) = app
+                    .run_job_run(run, JobExecutionPrincipal::User(actor), event_actor)
+                    .await
+                {
+                    warn!(job_key = job_key.as_str(), error = %error, "manual job trigger failed");
+                }
             }
-        });
+            .instrument(log_span),
+        );
 
         Ok(run_payload)
     }
@@ -1053,11 +1081,13 @@ impl AppUseCase {
                 }),
             ))
             .await;
+        let system_actor = User::system_execution_actor();
         self.run_job_run(
-            run,
+            run.clone(),
             JobExecutionPrincipal::System,
             DomainEventActor::system(),
         )
+        .instrument(job_log_span(&run, &system_actor))
         .await
     }
 
@@ -1088,7 +1118,9 @@ impl AppUseCase {
                 }),
             ))
             .await;
-        self.run_job_run_with_auto_backup_outcome(run, None, DomainEventActor::system())
+        let system_actor = User::system_execution_actor();
+        self.run_job_run_with_auto_backup_outcome(run.clone(), None, DomainEventActor::system())
+            .instrument(job_log_span(&run, &system_actor))
             .await?
             .ok_or_else(|| {
                 AppError::Repository("auto backup job did not return an outcome".to_string())

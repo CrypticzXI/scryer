@@ -83,6 +83,7 @@ use scryer_interface::context::{
     RestoreSqliteDatastoreRequest,
 };
 use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
+use scryer_logging::{JsonContextFormatter, LogContextLayer, enable_context_spans};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -122,6 +123,7 @@ const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
 const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
 const LOG_FILE_ENV: &str = "SCRYER_LOG_FILE";
+const LOG_FORMAT_ENV: &str = "SCRYER_LOG_FORMAT";
 
 fn compiled_binary_lane() -> scryer_runtime_info::BinaryLane {
     scryer_runtime_info::BinaryLane::parse(env!("SCRYER_COMPILED_BUILD_LANE"))
@@ -517,6 +519,14 @@ async fn main() {
 
     load_env_file(Some(&data_dir), false);
 
+    let log_format = match resolve_log_format(normalize_env_option(LOG_FORMAT_ENV).as_deref()) {
+        Ok(format) => format,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+
     scryer_outbound_http::install_default_rustls_provider();
 
     let log_ring_buffer = log_buffer::LogRingBuffer::with_default_capacity();
@@ -554,25 +564,54 @@ async fn main() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        let env_filter = enable_context_spans(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        );
 
-        let stdout_layer = tracing_subscriber::fmt::layer();
-        let buffer_layer = tracing_subscriber::fmt::layer()
-            .with_writer(log_buffer::LogBufferWriter::new(log_ring_buffer.clone()))
-            .with_ansi(false);
-        let file_layer = log_file_writer.map(|writer| {
-            tracing_subscriber::fmt::layer()
-                .with_writer(writer)
-                .with_ansi(false)
-        });
+        match log_format {
+            LogFormat::Json => {
+                let stdout_layer = tracing_subscriber::fmt::layer()
+                    .event_format(JsonContextFormatter)
+                    .with_ansi(false);
+                let buffer_layer = tracing_subscriber::fmt::layer()
+                    .event_format(JsonContextFormatter)
+                    .with_writer(log_buffer::LogBufferWriter::new(log_ring_buffer.clone()))
+                    .with_ansi(false);
+                let file_layer = log_file_writer.map(|writer| {
+                    tracing_subscriber::fmt::layer()
+                        .event_format(JsonContextFormatter)
+                        .with_writer(writer)
+                        .with_ansi(false)
+                });
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stdout_layer)
-            .with(buffer_layer)
-            .with(file_layer)
-            .init();
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(LogContextLayer)
+                    .with(stdout_layer)
+                    .with(buffer_layer)
+                    .with(file_layer)
+                    .init();
+            }
+            LogFormat::Text => {
+                let stdout_layer = tracing_subscriber::fmt::layer();
+                let buffer_layer = tracing_subscriber::fmt::layer()
+                    .with_writer(log_buffer::LogBufferWriter::new(log_ring_buffer.clone()))
+                    .with_ansi(false);
+                let file_layer = log_file_writer.map(|writer| {
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(writer)
+                        .with_ansi(false)
+                });
+
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(stdout_layer)
+                    .with(buffer_layer)
+                    .with(file_layer)
+                    .init();
+            }
+        }
     }
     install_panic_logging_hook();
     if let Some(path) = file_logging_path.as_ref() {
@@ -2071,6 +2110,22 @@ struct ResolvedLogFileConfig {
     explicit: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogFormat {
+    Json,
+    Text,
+}
+
+fn resolve_log_format(value: Option<&str>) -> Result<LogFormat, String> {
+    match value.unwrap_or("json").trim().to_ascii_lowercase().as_str() {
+        "json" => Ok(LogFormat::Json),
+        "text" => Ok(LogFormat::Text),
+        value => Err(format!(
+            "{LOG_FORMAT_ENV} must be either `json` or `text`, got `{value}`"
+        )),
+    }
+}
+
 fn resolve_log_file_config(
     cli_override: Option<&Path>,
     env_override: Option<&str>,
@@ -2985,12 +3040,12 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, ImageProxyBlob,
+        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, ImageProxyBlob, LogFormat,
         RECOVERY_ADMIN_PASSWORD_ENV, ResolvedLogFileConfig, SelfRestartController,
         UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, bootstrap_plugin_installations,
         collect_runtime_plugin_load_candidates, comma_separated_env_has_entries, extract_data_dir,
         extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
-        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
+        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config, resolve_log_format,
         resolve_wasmtime_cache_dir, restart_spec_from_parts, title_image_handler,
         validate_unauthenticated_public_access_allowlist_config,
     };
@@ -3280,6 +3335,19 @@ mod tests {
                 explicit: true,
             })
         );
+    }
+
+    #[test]
+    fn log_format_defaults_to_json_and_allows_explicit_text() {
+        assert_eq!(resolve_log_format(None), Ok(LogFormat::Json));
+        assert_eq!(resolve_log_format(Some("JSON")), Ok(LogFormat::Json));
+        assert_eq!(resolve_log_format(Some("text")), Ok(LogFormat::Text));
+    }
+
+    #[test]
+    fn log_format_rejects_unknown_values() {
+        let error = resolve_log_format(Some("logfmt")).expect_err("invalid format must fail");
+        assert!(error.contains("SCRYER_LOG_FORMAT"));
     }
 
     #[derive(Default)]

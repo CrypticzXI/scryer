@@ -14,9 +14,10 @@ use super::discovery::{
     QualityProfileLookup, compare_release_search_results, dedupe_cross_indexer_release_results,
 };
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
+use scryer_logging::{ActorContext, LogContext, ResourceContext, WorkflowContext, context_span};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{Instrument, info};
 
 /// Overall deadline for a job; stragglers past this are marked failed.
 const INTERACTIVE_RELEASE_SEARCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(55);
@@ -335,16 +336,6 @@ impl AppUseCase {
             );
         }
 
-        info!(
-            actor = actor.id.as_str(),
-            title_id = request.title_id.as_str(),
-            job_id = job_id.as_str(),
-            query = subject.queries.first().map(String::as_str).unwrap_or(""),
-            category = subject.category.as_str(),
-            indexers = dispatch.len(),
-            "starting interactive release search"
-        );
-
         let context = InteractiveReleaseSearchJobContext {
             job_id,
             actor: actor.clone(),
@@ -356,10 +347,50 @@ impl AppUseCase {
             preferred_source_kind,
             cancel,
         };
-        let app = self.clone();
-        tokio::spawn(async move {
-            app.run_interactive_release_search_job(context).await;
+        let log_span = context_span(
+            LogContext::workflow(WorkflowContext {
+                kind: "interactive_release_search".to_owned(),
+                id: context.job_id.clone(),
+            })
+            .with_actor(ActorContext {
+                kind: if context.actor.is_system_execution_actor() {
+                    "system".to_owned()
+                } else {
+                    "user".to_owned()
+                },
+                id: Some(context.actor.id.clone()),
+                display_name: Some(context.actor.username.clone()),
+                source: None,
+            })
+            .with_resource(ResourceContext {
+                title_id: Some(context.title_for_search.id.clone()),
+                job_id: Some(context.job_id.clone()),
+                ..ResourceContext::default()
+            }),
+        );
+        log_span.in_scope(|| {
+            info!(
+                actor = context.actor.id.as_str(),
+                title_id = context.title_for_search.id.as_str(),
+                job_id = context.job_id.as_str(),
+                query = context
+                    .subject
+                    .queries
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or(""),
+                category = context.subject.category.as_str(),
+                indexers = context.dispatch.len(),
+                "starting interactive release search"
+            );
         });
+        let app = self.clone();
+        tokio::spawn(
+            async move {
+                app.run_interactive_release_search_job(context).await;
+            }
+            .instrument(log_span),
+        );
 
         Ok(snapshot)
     }

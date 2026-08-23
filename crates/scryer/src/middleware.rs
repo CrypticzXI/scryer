@@ -1,5 +1,8 @@
 use async_graphql::http::ALL_WEBSOCKET_PROTOCOLS;
-use async_graphql::{Data, ErrorExtensionValues, Response as GraphQLResponse, ServerError};
+use async_graphql::{
+    Data, ErrorExtensionValues, Executor, Request as GraphQLRequest, Response as GraphQLResponse,
+    ServerError,
+};
 use async_graphql_axum::{GraphQLProtocol, GraphQLWebSocket};
 use aws_lc_rs::hmac;
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
@@ -9,6 +12,7 @@ use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
+use futures_util::{Stream, stream::BoxStream};
 use scryer_application::{
     AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
     OAuthAuthorizationSource,
@@ -19,12 +23,17 @@ use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
     RequestSessionPersistence,
 };
+use scryer_logging::{ActorContext, LogContext, RequestContext, context_span, update_context};
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, RwLock as StdRwLock};
+use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{Instrument, warn};
+use uuid::Uuid;
 
 use crate::base_path::BasePath;
 use crate::http_error::ErrorResponse;
@@ -1011,6 +1020,21 @@ pub(crate) async fn graphql_ws_handler(
     let authless_proof_required = initial_actor
         .as_ref()
         .is_some_and(ResolvedActor::requires_authless_web_client_proof);
+    let connection_context = graphql_websocket_log_context(
+        if authless_proof_required {
+            None
+        } else {
+            initial_actor.as_ref()
+        },
+        request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip()),
+    );
+    let connection_context = Arc::new(StdRwLock::new(connection_context));
+    let connection_span = context_span(
+        connection_context
+            .read()
+            .expect("connection log context lock must not be poisoned")
+            .clone(),
+    );
     let initial_data = graphql_ws_connection_data(
         connection_epoch,
         if authless_proof_required {
@@ -1021,6 +1045,8 @@ pub(crate) async fn graphql_ws_handler(
     );
     let authless_web_client_proof = state.authless_web_client_proof.clone();
     let ws_headers = headers.clone();
+    let connection_span_for_init = connection_span.clone();
+    let connection_context_for_init = connection_context.clone();
 
     ws.protocols(ALL_WEBSOCKET_PROTOCOLS)
         .on_upgrade(move |stream| async move {
@@ -1028,33 +1054,122 @@ pub(crate) async fn graphql_ws_handler(
             let initial_actor = initial_actor.clone();
             let proof_state = authless_web_client_proof.clone();
             let headers_for_init = ws_headers.clone();
-            GraphQLWebSocket::new(stream, schema, protocol)
+            let connection_span_for_init = connection_span_for_init.clone();
+            let connection_context_for_init = connection_context_for_init.clone();
+            let executor = ContextualGraphqlExecutor::new(schema, connection_context.clone());
+            GraphQLWebSocket::new(stream, executor, protocol)
                 .with_data(initial_data)
-                .on_connection_init(move |value: serde_json::Value| async move {
-                    let auth_value = value.get("Authorization").and_then(|v| v.as_str());
-                    let proof_value = value
-                        .get("authlessWebClientProof")
-                        .or_else(|| value.get("X-Scryer-Web-Client"))
-                        .and_then(|v| v.as_str());
-                    let actor = resolve_ws_connection_init_actor(
-                        &app_for_init,
-                        WsConnectionInitActorRequest {
-                            auth_enabled,
-                            local_bypass_active,
-                            initial_actor: initial_actor.clone(),
-                            auth_value,
-                            authless_proof_required,
-                            proof_state: &proof_state,
-                            headers: &headers_for_init,
-                            proof_value,
-                        },
-                    )
-                    .await?;
-                    Ok(graphql_ws_connection_data(connection_epoch, actor))
+                .on_connection_init(move |value: serde_json::Value| {
+                    let connection_span = connection_span_for_init.clone();
+                    let connection_context = connection_context_for_init.clone();
+                    let app_for_init = app_for_init.clone();
+                    let initial_actor = initial_actor.clone();
+                    let proof_state = proof_state.clone();
+                    let headers_for_init = headers_for_init.clone();
+                    async move {
+                        let auth_value = value.get("Authorization").and_then(|v| v.as_str());
+                        let proof_value = value
+                            .get("authlessWebClientProof")
+                            .or_else(|| value.get("X-Scryer-Web-Client"))
+                            .and_then(|v| v.as_str());
+                        let actor = resolve_ws_connection_init_actor(
+                            &app_for_init,
+                            WsConnectionInitActorRequest {
+                                auth_enabled,
+                                local_bypass_active,
+                                initial_actor,
+                                auth_value,
+                                authless_proof_required,
+                                proof_state: &proof_state,
+                                headers: &headers_for_init,
+                                proof_value,
+                            },
+                        )
+                        .await?;
+                        if let Some(actor) = actor.as_ref() {
+                            let mut updated_context = connection_context
+                                .read()
+                                .expect("connection log context lock must not be poisoned")
+                                .clone();
+                            updated_context.actor = Some(actor_log_context(actor));
+                            *connection_context
+                                .write()
+                                .expect("connection log context lock must not be poisoned") =
+                                updated_context.clone();
+                            update_context(&connection_span, updated_context);
+                        }
+                        Ok(graphql_ws_connection_data(connection_epoch, actor))
+                    }
                 })
                 .serve()
+                .instrument(connection_span)
                 .await;
         })
+}
+
+#[derive(Clone)]
+struct ContextualGraphqlExecutor {
+    schema: scryer_interface::ApiSchema,
+    connection_context: Arc<StdRwLock<LogContext>>,
+}
+
+impl ContextualGraphqlExecutor {
+    fn new(
+        schema: scryer_interface::ApiSchema,
+        connection_context: Arc<StdRwLock<LogContext>>,
+    ) -> Self {
+        Self {
+            schema,
+            connection_context,
+        }
+    }
+
+    fn operation_context(&self, request: &GraphQLRequest) -> LogContext {
+        let mut context = self
+            .connection_context
+            .read()
+            .expect("connection log context lock must not be poisoned")
+            .clone();
+        let (operation_name, operation_type) = graphql_request_operation_metadata(request);
+        if let Some(request_context) = context.request.as_mut() {
+            request_context.operation_name = operation_name;
+            request_context.operation_type = operation_type;
+        }
+        context
+    }
+}
+
+impl Executor for ContextualGraphqlExecutor {
+    fn execute(&self, request: GraphQLRequest) -> impl Future<Output = GraphQLResponse> + Send {
+        let span = context_span(self.operation_context(&request));
+        self.schema.execute(request).instrument(span)
+    }
+
+    fn execute_stream(
+        &self,
+        request: GraphQLRequest,
+        session_data: Option<Arc<Data>>,
+    ) -> BoxStream<'static, GraphQLResponse> {
+        let span = context_span(self.operation_context(&request));
+        Box::pin(ContextualGraphqlResponseStream {
+            inner: Executor::execute_stream(&self.schema, request, session_data),
+            span,
+        })
+    }
+}
+
+struct ContextualGraphqlResponseStream {
+    inner: BoxStream<'static, GraphQLResponse>,
+    span: tracing::Span,
+}
+
+impl Stream for ContextualGraphqlResponseStream {
+    type Item = GraphQLResponse;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.span.in_scope(|| this.inner.as_mut().poll_next(cx))
+    }
 }
 
 #[derive(Clone)]
@@ -1092,10 +1207,15 @@ pub(crate) async fn graphql_handler(
         );
     }
     let batch = body.into_inner();
+    let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
+    let request_span = context_span(graphql_request_log_context(
+        &batch,
+        actor.as_ref(),
+        client_ip,
+    ));
     let session_persistence = RequestSessionPersistence {
         default_persist_session: default_persist_session_for_request(&headers, Some(remote_addr)),
     };
-    let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(
         client_ip,
         actor.as_ref().map(|actor| actor.user.id.as_str()),
@@ -1166,19 +1286,24 @@ pub(crate) async fn graphql_handler(
 
     let schema = state.schema.clone();
     let rate_limiter = state.rate_limiter.clone();
-    let mut batch_response =
-        match tokio::time::timeout(GRAPHQL_POST_EXECUTION_TIMEOUT, schema.execute_batch(batch))
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => {
+    let mut batch_response = match tokio::time::timeout(
+        GRAPHQL_POST_EXECUTION_TIMEOUT,
+        schema.execute_batch(batch).instrument(request_span.clone()),
+    )
+    .instrument(request_span.clone())
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            request_span.in_scope(|| {
                 tracing::warn!(
                     timeout_seconds = GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs(),
                     "graphql POST execution timed out"
                 );
-                graphql_execution_timeout_response()
-            }
-        };
+            });
+            graphql_execution_timeout_response()
+        }
+    };
     if rate_limit_class == crate::rate_limit::GraphqlRateLimitClass::Login
         && !precheck_login
         && !batch_response.is_ok()
@@ -1190,6 +1315,7 @@ pub(crate) async fn graphql_handler(
         .app
         .image_proxy_repository()
         .flush_image_proxy_sources()
+        .instrument(request_span)
         .await
     {
         tracing::error!(error = %error, "failed to durably register GraphQL image proxy sources");
@@ -1387,6 +1513,110 @@ struct ResolvedActor {
 enum ResolvedActorSource {
     AuthenticatedToken,
     AuthlessDefault,
+}
+
+impl ResolvedActorSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthenticatedToken => "authenticated_token",
+            Self::AuthlessDefault => "authless_default",
+        }
+    }
+}
+
+fn graphql_request_log_context(
+    batch: &async_graphql::BatchRequest,
+    actor: Option<&ResolvedActor>,
+    client_ip: IpAddr,
+) -> LogContext {
+    let (operation_name, operation_type) = graphql_operation_metadata(batch);
+    let request = RequestContext {
+        id: Uuid::new_v4().to_string(),
+        transport: "graphql_http".to_owned(),
+        operation_name,
+        operation_type,
+        client_ip: Some(client_ip.to_string()),
+    };
+    let mut context = LogContext::request(request);
+    if let Some(actor) = actor {
+        context = context.with_actor(actor_log_context(actor));
+    }
+    context
+}
+
+fn graphql_websocket_log_context(actor: Option<&ResolvedActor>, client_ip: IpAddr) -> LogContext {
+    let request = RequestContext {
+        id: Uuid::new_v4().to_string(),
+        transport: "graphql_ws".to_owned(),
+        operation_name: None,
+        operation_type: None,
+        client_ip: Some(client_ip.to_string()),
+    };
+    let mut context = LogContext::request(request);
+    if let Some(actor) = actor {
+        context = context.with_actor(actor_log_context(actor));
+    }
+    context
+}
+
+fn actor_log_context(actor: &ResolvedActor) -> ActorContext {
+    ActorContext {
+        kind: if actor.user.is_system_execution_actor() {
+            "system".to_owned()
+        } else {
+            "user".to_owned()
+        },
+        id: Some(actor.user.id.clone()),
+        display_name: Some(actor.user.username.clone()),
+        source: Some(actor.source.as_str().to_owned()),
+    }
+}
+
+fn graphql_operation_metadata(
+    batch: &async_graphql::BatchRequest,
+) -> (Option<String>, Option<String>) {
+    let mut requests = batch.iter();
+    let Some(request) = requests.next() else {
+        return (None, None);
+    };
+    if requests.next().is_some() {
+        return (None, Some("batch".to_owned()));
+    }
+
+    graphql_request_operation_metadata(request)
+}
+
+fn graphql_request_operation_metadata(
+    request: &GraphQLRequest,
+) -> (Option<String>, Option<String>) {
+    let requested_name = request.operation_name.clone();
+    let Ok(document) = async_graphql::parser::parse_query(&request.query) else {
+        return (requested_name, None);
+    };
+
+    let selected_operation = match request.operation_name.as_deref() {
+        Some(name) => document
+            .operations
+            .iter()
+            .find(|(operation_name, _)| operation_name.is_some_and(|value| value.as_str() == name)),
+        None => {
+            let mut operations = document.operations.iter();
+            let first = operations.next();
+            if operations.next().is_none() {
+                first
+            } else {
+                None
+            }
+        }
+    };
+    let Some((document_name, operation)) = selected_operation else {
+        return (requested_name, None);
+    };
+
+    (
+        requested_name.or_else(|| document_name.map(ToString::to_string)),
+        Some(operation.node.ty.to_string()),
+    )
 }
 
 impl ResolvedActor {
@@ -4396,5 +4626,45 @@ mod tests {
             &headers,
             Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
         ));
+    }
+
+    #[test]
+    fn graphql_log_context_records_safe_operation_metadata_without_query_text() {
+        let batch = async_graphql::BatchRequest::Single(
+            async_graphql::Request::new("mutation Submit($password: String!) { submit }")
+                .operation_name("Submit"),
+        );
+
+        let context = graphql_request_log_context(&batch, None, Ipv4Addr::new(127, 0, 0, 1).into());
+        let encoded = serde_json::to_string(&context).expect("serialize context");
+
+        assert_eq!(
+            context
+                .request
+                .as_ref()
+                .and_then(|request| request.operation_name.as_deref()),
+            Some("Submit")
+        );
+        assert_eq!(
+            context
+                .request
+                .as_ref()
+                .and_then(|request| request.operation_type.as_deref()),
+            Some("mutation")
+        );
+        assert!(encoded.contains("127.0.0.1"));
+        assert!(!encoded.contains("password"));
+        assert!(!encoded.contains("mutation Submit"));
+    }
+
+    #[test]
+    fn graphql_operation_metadata_derives_a_named_operation_without_request_operation_name() {
+        let request =
+            GraphQLRequest::new("# accepted leading comment\nquery RefreshLibrary { health }");
+
+        let (operation_name, operation_type) = graphql_request_operation_metadata(&request);
+
+        assert_eq!(operation_name.as_deref(), Some("RefreshLibrary"));
+        assert_eq!(operation_type.as_deref(), Some("query"));
     }
 }
