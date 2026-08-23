@@ -1329,7 +1329,7 @@ impl WasmDownloadClientPluginProvider {
                     loaded.descriptor.id.clone(),
                     command_config,
                     allowed_hosts,
-                    std::time::Duration::from_secs(30),
+                    crate::download_client_adapter::DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
                     None,
                 ),
             )));
@@ -1348,7 +1348,7 @@ impl WasmDownloadClientPluginProvider {
             computed_base_url.as_deref(),
             Some(&config.config_json),
         );
-        spec.timeout = std::time::Duration::from_secs(30);
+        spec.timeout = crate::download_client_adapter::DOWNLOAD_CLIENT_PLUGIN_TIMEOUT;
 
         if let Some(ref base_url) = computed_base_url {
             spec.config

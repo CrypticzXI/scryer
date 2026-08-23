@@ -42,7 +42,10 @@ use crate::types::{
 use crate::wasmtime_host::command_host::CommandHost;
 use crate::wasmtime_host::{CommandInvocation, process_command};
 
-const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// Keep plugin work below the outer download-feedback gate while leaving enough
+// room for large client responses on slower hosts.
+pub(crate) const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(240);
 pub struct WasmDownloadClient {
     plugin: Option<Arc<Mutex<LegacyPlugin>>>,
     command: Option<Arc<CommandDownloadClient>>,
