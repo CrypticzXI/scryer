@@ -486,7 +486,24 @@ export const ActivityContainer = memo(function ActivityContainer({
         throw selection.error;
       }
 
-      const preview = selection.data?.beginManualImportSelection;
+      let preview = selection.data?.beginManualImportSelection;
+      if (preview?.archiveExtractionNeeded) {
+        const extracted = await executeBeginManualImportSelection({
+          input: {
+            clientId: item.clientId,
+            clientType: item.clientType,
+            downloadClientItemId: item.downloadClientItemId,
+            titleId: item.titleId,
+            extractArchives: true,
+          },
+        });
+        if (extracted.error) {
+          const message = extracted.error.message ?? t("queue.manualImportFailed");
+          setGlobalStatus(message);
+          throw extracted.error;
+        }
+        preview = extracted.data?.beginManualImportSelection;
+      }
       const candidates: DirectMovieManualImportCandidate[] = preview?.files ?? [];
       const files = directMovieManualImportMappings(candidates);
       if (!preview?.selectionId || files.length === 0) {

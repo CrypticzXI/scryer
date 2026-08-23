@@ -814,6 +814,7 @@ const ko: LocaleDictionary = {
   "queue.manualImport": "수동 가져오기",
   "queue.manualImporting": "대기열에 추가 중…",
   "queue.transfer.copying": "Copying",
+  "queue.transfer.extracting": "Extracting",
   "queue.transfer.finalizing": "Finalizing",
   "queue.manualImportQueued": "수동 가져오기가 대기열에 추가되었습니다.",
   "queue.manualImportFailed": "수동 가져오기에 실패했습니다.",

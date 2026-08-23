@@ -748,6 +748,8 @@ pub struct BeginManualImportSelectionInput {
     pub download_client_item_id: String,
     /// Title identity used to suggest import targets.
     pub title_id: ID,
+    /// Explicitly extract an archive-only download before building the preview.
+    pub extract_archives: Option<bool>,
 }
 
 #[derive(InputObject, Clone)]

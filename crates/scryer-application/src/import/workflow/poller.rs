@@ -3,7 +3,6 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
     import_completed_download_with_identity_policy(
         app,
         actor,
@@ -21,7 +20,6 @@ pub(crate) async fn import_completed_download_with_release_evidence(
     completed: &CompletedDownload,
     release_evidence: &ReleaseEvidence,
 ) -> AppResult<ImportResult> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
     import_completed_download_with_identity_policy(
         app,
         actor,
@@ -45,7 +43,6 @@ pub(crate) async fn import_completed_download_with_target_title(
     completed: &CompletedDownload,
     target_title_id: &str,
 ) -> AppResult<ImportResult> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
     import_completed_download_with_identity_policy(
         app,
         actor,
@@ -58,15 +55,6 @@ pub(crate) async fn import_completed_download_with_target_title(
 }
 
 pub async fn import_completed_download_for_manual_review(
-    app: &AppUseCase,
-    actor: &User,
-    completed: &CompletedDownload,
-) -> AppResult<ImportResult> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-    import_completed_download_for_manual_review_with_permit(app, actor, completed).await
-}
-
-pub(crate) async fn import_completed_download_for_manual_review_with_permit(
     app: &AppUseCase,
     actor: &User,
     completed: &CompletedDownload,
@@ -87,23 +75,17 @@ pub(crate) async fn import_completed_download_for_manual_review_with_title_overr
     actor: &User,
     completed: &CompletedDownload,
     title_id: &str,
-    import_permit_held: bool,
     release_evidence: Option<&ReleaseEvidence>,
 ) -> AppResult<ImportResult> {
-    let import = import_completed_download_with_identity_policy(
+    import_completed_download_with_identity_policy(
         app,
         actor,
         completed,
         CompletedImportIdentityPolicy::AllowUnresolved,
         Some(title_id),
         release_evidence,
-    );
-    if import_permit_held {
-        import.await
-    } else {
-        let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-        import.await
-    }
+    )
+    .await
 }
 
 /// Who chose the requested target title, which decides how a disagreement with a
@@ -604,6 +586,8 @@ async fn finalize_completed_import_error(
 ) -> AppResult<ImportResult> {
     let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
         Some(ImportSkipReason::PasswordRequired)
+    } else if crate::archive_extractor::is_timeout_error(&error) {
+        Some(ImportSkipReason::ArchiveExtractionTimedOut)
     } else {
         None
     };

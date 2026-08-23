@@ -81,7 +81,7 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
         )
         .await
         .map_err(|_| {
-            AppError::Repository(format!(
+            AppError::archive_extraction_timed_out(format!(
                 "archive plugin timed out after {ARCHIVE_PROCESS_TIMEOUT_SECONDS} seconds"
             ))
         })?

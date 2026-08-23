@@ -213,9 +213,14 @@ impl AppUseCase {
                     .to_string(),
             ));
         }
-        let trusted_root = std::fs::canonicalize(&completed.dest_dir).map_err(|_| {
-            AppError::Validation("download is no longer available for manual import".to_string())
-        })?;
+        let trusted_root = if selection.trusted_source_root.trim().is_empty() {
+            std::fs::canonicalize(&completed.dest_dir)
+        } else {
+            std::fs::canonicalize(crate::stored_paths::stored_path_to_path_buf(
+                &selection.trusted_source_root,
+            ))
+        }
+        .map_err(|_| AppError::Validation("manual import files are no longer available".to_string()))?;
         for candidate in selection.candidates.iter().filter(|candidate| {
             mappings
                 .iter()
@@ -289,6 +294,8 @@ impl AppUseCase {
             requested_at: Utc::now().to_rfc3339(),
             selection_id: Some(selection.id),
             release_evidence: Some(release_evidence),
+            trusted_source_root: Some(crate::stored_paths::path_to_stored_string(&trusted_root)),
+            archive_workspace_root: selection.archive_workspace_root.clone(),
         })
         .map_err(|error| AppError::Repository(error.to_string()))?;
         let import_id = self
@@ -325,7 +332,7 @@ impl AppUseCase {
         completed: &CompletedDownload,
         override_title_id: Option<&str>,
     ) -> AppResult<scryer_domain::ImportResult> {
-        self.trigger_manual_import_inner(actor, completed, override_title_id, false)
+        self.trigger_manual_import_inner(actor, completed, override_title_id)
             .await
     }
 
@@ -334,7 +341,6 @@ impl AppUseCase {
         actor: &User,
         completed: &CompletedDownload,
         override_title_id: Option<&str>,
-        import_permit_held: bool,
     ) -> AppResult<scryer_domain::ImportResult> {
         // If a title_id override is provided, inject it into the parameters
         let mut completed = completed.clone();
@@ -361,13 +367,7 @@ impl AppUseCase {
                 actor,
                 &completed,
                 title_id,
-                import_permit_held,
                 None,
-            )
-            .await
-        } else if import_permit_held {
-            crate::import_workflow::import_completed_download_for_manual_review_with_permit(
-                self, actor, &completed,
             )
             .await
         } else {

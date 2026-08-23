@@ -310,11 +310,13 @@ impl DownloadMutations {
             &input.client_type,
             &input.download_client_item_id,
             input.title_id.as_str(),
+            input.extract_archives.unwrap_or(false),
         )
         .await
         .map_err(to_gql_error)?;
         Ok(ManualImportSelectionPayload {
             selection_id: selection.selection_id.into(),
+            archive_extraction_needed: selection.archive_extraction_needed,
             files: selection
                 .files
                 .into_iter()

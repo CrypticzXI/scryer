@@ -1218,6 +1218,13 @@ mod tests {
             ImportStatus::Failed
         );
 
+        result.skip_reason = Some(ImportSkipReason::ArchiveExtractionTimedOut);
+        result.error_message = Some("archive plugin timed out after 3600 seconds".to_string());
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
+        );
+
         // Environmental skips clear on their own and are retried.
         result.decision = ImportDecision::Skipped;
         result.error_message = Some("not enough room".to_string());

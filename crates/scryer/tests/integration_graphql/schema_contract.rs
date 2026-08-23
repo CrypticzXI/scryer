@@ -1556,6 +1556,10 @@ async fn graphql_introspection_begin_manual_import_selection_uses_input_object()
     let title_id = input_field("titleId");
     assert_eq!(title_id["type"]["kind"], "NON_NULL");
     assert_eq!(title_id["type"]["ofType"]["name"], "ID");
+
+    let extract_archives = input_field("extractArchives");
+    assert_eq!(extract_archives["type"]["kind"], "SCALAR");
+    assert_eq!(extract_archives["type"]["name"], "Boolean");
 }
 
 #[tokio::test]

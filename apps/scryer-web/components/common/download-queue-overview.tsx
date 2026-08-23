@@ -182,6 +182,9 @@ function queueStatusLabel(
   if (queueItem.importTransferPhase === "COPYING") {
     return t("queue.transfer.copying");
   }
+  if (queueItem.importTransferPhase === "EXTRACTING") {
+    return t("queue.transfer.extracting");
+  }
   if (queueItem.importTransferPhase === "FINALIZING") {
     return t("queue.transfer.finalizing");
   }

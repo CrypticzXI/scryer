@@ -733,14 +733,36 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Default)]
+const MAX_CONCURRENT_ARCHIVE_EXTRACTIONS: usize = 1;
+
+#[derive(Clone)]
 pub(crate) struct ImportExecutionCoordinator {
     permit: Arc<tokio::sync::Mutex<()>>,
+    archive_extraction_permit: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for ImportExecutionCoordinator {
+    fn default() -> Self {
+        Self {
+            permit: Arc::new(tokio::sync::Mutex::new(())),
+            archive_extraction_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_ARCHIVE_EXTRACTIONS,
+            )),
+        }
+    }
 }
 
 impl ImportExecutionCoordinator {
     pub(crate) async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.permit.clone().lock_owned().await
+    }
+
+    pub(crate) async fn acquire_archive_extraction(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.archive_extraction_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("archive extraction semaphore is never closed")
     }
 }
 
@@ -768,6 +790,27 @@ mod import_execution_coordinator_tests {
             .await
             .expect("second import should acquire after the first completes")
             .expect("waiting import task should complete");
+    }
+
+    #[tokio::test]
+    async fn permits_only_one_archive_extraction_at_a_time() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let first = coordinator.acquire_archive_extraction().await;
+        let waiting = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                let _second = coordinator.acquire_archive_extraction().await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("second extraction should acquire after the first completes")
+            .expect("waiting extraction task should complete");
     }
 }
 

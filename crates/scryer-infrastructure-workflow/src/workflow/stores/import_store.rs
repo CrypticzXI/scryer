@@ -368,8 +368,9 @@ impl ImportRepository for ImportStore {
                         SqlExec::Tx(tx),
                         "INSERT INTO manual_import_selections
                          (id, actor_user_id, title_id, source_client_id, source_system, source_ref,
-                          release_evidence_json, consumed_at, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, NULL, {}, {})",
+                          release_evidence_json, trusted_source_root, archive_workspace_root,
+                          consumed_at, created_at, updated_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, NULL, {}, {})",
                         &[
                             SqlArg::Text(selection.id.clone()),
                             SqlArg::Text(selection.actor_user_id.clone()),
@@ -378,6 +379,8 @@ impl ImportRepository for ImportStore {
                             identity_args[1].clone(),
                             identity_args[2].clone(),
                             SqlArg::OptText(selection.release_evidence_json.clone()),
+                            SqlArg::Text(selection.trusted_source_root.clone()),
+                            SqlArg::OptText(selection.archive_workspace_root.clone()),
                             SqlArg::Timestamp(now),
                             SqlArg::Timestamp(now),
                         ],
@@ -417,7 +420,8 @@ impl ImportRepository for ImportStore {
     ) -> AppResult<Option<ManualImportSelection>> {
         let selection = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
+            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref,
+                    release_evidence_json, trusted_source_root, archive_workspace_root
              FROM manual_import_selections
              WHERE actor_user_id = {} AND title_id = {}
                AND source_client_id = {} AND source_system = {} AND source_ref = {}
@@ -455,7 +459,8 @@ impl ImportRepository for ImportStore {
     ) -> AppResult<Option<ManualImportSelection>> {
         let selection = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
+            "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref,
+                    release_evidence_json, trusted_source_root, archive_workspace_root
              FROM manual_import_selections
              WHERE id = {} AND actor_user_id = {} AND consumed_at IS NULL",
             &[
@@ -500,7 +505,8 @@ impl ImportRepository for ImportStore {
                 Box::pin(async move {
                     let selection = SqlRuntime::fetch_optional(
                         SqlExec::Tx(tx),
-                        "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref, release_evidence_json
+                        "SELECT id, actor_user_id, title_id, source_client_id, source_system, source_ref,
+                                release_evidence_json, trusted_source_root, archive_workspace_root
                          FROM manual_import_selections
                          WHERE id = {} AND actor_user_id = {} AND consumed_at IS NULL",
                         &[
@@ -622,6 +628,8 @@ fn manual_import_selection_from_rows(
         actor_user_id: row.text("actor_user_id")?,
         title_id: row.text("title_id")?,
         release_evidence_json: row.opt_text("release_evidence_json")?,
+        trusted_source_root: row.text("trusted_source_root")?,
+        archive_workspace_root: row.opt_text("archive_workspace_root")?,
         source_identity: DownloadSourceIdentity::new(
             row.opt_text("source_client_id")?.as_deref(),
             row.text("source_system")?,

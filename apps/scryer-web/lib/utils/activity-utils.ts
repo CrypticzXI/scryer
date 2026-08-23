@@ -202,7 +202,9 @@ export function deriveQueueRowPresentation(
   const statusLabel =
     displayStateKey === "IGNORED"
       ? t("queue.state.ignored")
-      : queueItem.importTransferPhase === "COPYING"
+      : queueItem.importTransferPhase === "EXTRACTING"
+        ? t("queue.transfer.extracting")
+        : queueItem.importTransferPhase === "COPYING"
         ? t("queue.transfer.copying")
         : queueItem.importTransferPhase === "FINALIZING"
           ? t("queue.transfer.finalizing")

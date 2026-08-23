@@ -80,6 +80,8 @@ pub async fn start_background_manual_import_poller(
                                 files: Vec::new(),
                                 selection_id: None,
                                 release_evidence: None,
+                                trusted_source_root: None,
+                                archive_workspace_root: None,
                                 requested_at: record.created_at.clone(),
                             },
                             ImportStatus::Failed,
@@ -282,6 +284,7 @@ pub struct ManualImportSelectionFilePreview {
 
 pub struct ManualImportSelectionPreview {
     pub selection_id: String,
+    pub archive_extraction_needed: bool,
     pub files: Vec<ManualImportSelectionFilePreview>,
     pub available_episodes: Vec<scryer_domain::Episode>,
     pub available_series_movies: Vec<ManualImportSeriesMovieTarget>,
@@ -617,7 +620,7 @@ pub(crate) fn validate_manual_import_source_under_trusted_root(
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
 async fn preview_manual_import(
     app: &AppUseCase,
-    completed: &CompletedDownload,
+    source_dir: &Path,
     title: &scryer_domain::Title,
     release_evidence: &ReleaseEvidence,
     available_episodes: &[scryer_domain::Episode],
@@ -631,8 +634,7 @@ async fn preview_manual_import(
     // as skipped). Name only, never size: the automatic movie path does not
     // size-filter either, and a legitimately small movie must stay importable
     // by hand.
-    let dest_dir = Path::new(&completed.dest_dir);
-    let mut video_files = find_video_files(dest_dir, false)?;
+    let mut video_files = find_video_files(source_dir, false)?;
     if *facet == MediaFacet::Movie {
         video_files.retain(|path| !is_sample_named_file(path));
     }
@@ -853,6 +855,18 @@ fn manual_import_episode_label(episode: &scryer_domain::Episode) -> String {
     })
 }
 
+fn reusable_manual_archive_workspace(
+    selection: &crate::ManualImportSelection,
+) -> Option<(PathBuf, String)> {
+    let workspace = selection.archive_workspace_root.as_deref()?;
+    if selection.trusted_source_root.trim().is_empty() {
+        return None;
+    }
+    let existing_root = std::fs::canonicalize(stored_path_to_path_buf(workspace)).ok()?;
+    (existing_root == stored_path_to_path_buf(&selection.trusted_source_root))
+        .then(|| (existing_root, workspace.to_string()))
+}
+
 /// Creates a durable, server-owned selection for files from a tracked completed download.
 /// The caller receives opaque candidate IDs; canonical source paths remain in workflow storage.
 pub async fn begin_manual_import_selection(
@@ -862,6 +876,7 @@ pub async fn begin_manual_import_selection(
     client_type: &str,
     download_client_item_id: &str,
     title_id: &str,
+    extract_archives: bool,
 ) -> AppResult<ManualImportSelectionPreview> {
     let client_id = client_id.trim();
     let client_type = client_type.trim().to_ascii_lowercase();
@@ -888,7 +903,7 @@ pub async fn begin_manual_import_selection(
     }
     let release_evidence_json = serde_json::to_string(&release_evidence)
         .map_err(|error| AppError::Repository(error.to_string()))?;
-    let trusted_root = std::fs::canonicalize(&completed.dest_dir)
+    let download_root = std::fs::canonicalize(&completed.dest_dir)
         .map_err(|_| manual_import_source_unavailable())?;
     let source_identity = DownloadSourceIdentity::new(
         Some(&completed.client_id),
@@ -896,28 +911,109 @@ pub async fn begin_manual_import_selection(
         &completed.download_client_item_id,
     );
     let selection_id = scryer_domain::Id::new().0;
-    let prior_candidate_ids = app
+    let prior_selection = app
         .services
         .workflow
         .imports
         .find_manual_import_selection(&actor.id, title_id, &source_identity)
-        .await?
+        .await?;
+    let prior_candidate_ids = prior_selection
+        .as_ref()
         .map(|selection| {
             selection
                 .candidates
-                .into_iter()
-                .map(|candidate| (candidate.canonical_path, candidate.id))
+                .iter()
+                .map(|candidate| (candidate.canonical_path.clone(), candidate.id.clone()))
                 .collect::<std::collections::HashMap<_, _>>()
         })
         .unwrap_or_default();
     let (all_episodes, available_series_movies) =
         manual_import_preview_targets(app, title_id).await?;
 
+    let mut preview_root = download_root.clone();
+    let mut trusted_root = download_root;
+    let mut archive_workspace_root = None;
+    let mut archive_extraction_needed =
+        crate::archive_extractor::archive_extraction_would_be_needed(&preview_root)?;
+
+    if archive_extraction_needed && extract_archives {
+        let destination = archive_extraction_destination_for_title(
+            app,
+            &selection_id,
+            &authorized.title,
+        )
+        .await?;
+        let extracted_root = {
+            let _archive_extraction_permit = app
+                .runtime
+                .imports
+                .execution_coordinator
+                .acquire_archive_extraction()
+                .await;
+            crate::archive_extractor::extract_archives_if_needed(
+                &preview_root,
+                Some(destination),
+                None,
+                app.services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
+            )
+            .await?
+        }
+        .ok_or_else(|| {
+            AppError::Validation("archive extraction did not produce importable files".to_string())
+        })?;
+        trusted_root = std::fs::canonicalize(&extracted_root).map_err(|error| {
+            AppError::Validation(format!(
+                "extracted archive workspace is not accessible: {} ({error})",
+                extracted_root.display()
+            ))
+        })?;
+        preview_root = trusted_root.clone();
+        archive_workspace_root = Some(path_to_stored_string(&trusted_root));
+        archive_extraction_needed = false;
+    } else if archive_extraction_needed
+        && let Some((existing_root, workspace)) = prior_selection
+            .as_ref()
+            .and_then(reusable_manual_archive_workspace)
+    {
+        preview_root = existing_root.clone();
+        trusted_root = existing_root;
+        archive_workspace_root = Some(workspace.to_string());
+        archive_extraction_needed = false;
+    }
+
+    if archive_extraction_needed {
+        app.services
+            .workflow
+            .imports
+            .replace_manual_import_selection(crate::ManualImportSelection {
+                id: selection_id.clone(),
+                actor_user_id: actor.id.clone(),
+                title_id: title_id.to_string(),
+                source_identity,
+                release_evidence_json: Some(release_evidence_json),
+                trusted_source_root: path_to_stored_string(&trusted_root),
+                archive_workspace_root: None,
+                candidates: Vec::new(),
+            })
+            .await?;
+        return Ok(ManualImportSelectionPreview {
+            selection_id,
+            archive_extraction_needed: true,
+            files: Vec::new(),
+            available_episodes: all_episodes,
+            available_series_movies,
+        });
+    }
+
     let mut candidates = Vec::new();
     let mut files = Vec::new();
     let preview = preview_manual_import(
         app,
-        &completed,
+        &preview_root,
         &authorized.title,
         &release_evidence,
         &all_episodes,
@@ -963,12 +1059,26 @@ pub async fn begin_manual_import_selection(
             title_id: title_id.to_string(),
             source_identity,
             release_evidence_json: Some(release_evidence_json),
+            trusted_source_root: path_to_stored_string(&trusted_root),
+            archive_workspace_root: archive_workspace_root.clone(),
             candidates,
         })
         .await?;
 
+    if let Some(previous_workspace) = prior_selection
+        .as_ref()
+        .and_then(|selection| selection.archive_workspace_root.as_deref())
+        .filter(|workspace| Some(*workspace) != archive_workspace_root.as_deref())
+    {
+        crate::archive_extractor::cleanup_extracted_dir(
+            &stored_path_to_path_buf(previous_workspace),
+        )
+        .await;
+    }
+
     Ok(ManualImportSelectionPreview {
         selection_id,
+        archive_extraction_needed: false,
         files,
         available_episodes: all_episodes,
         available_series_movies,
@@ -1236,6 +1346,12 @@ pub struct ManualImportRequestPayload {
     /// degrade to downloader display-name or filename evidence.
     #[serde(default)]
     pub(crate) release_evidence: Option<ReleaseEvidence>,
+    /// Server-owned root that the queued candidate paths were validated against.
+    #[serde(default)]
+    pub(crate) trusted_source_root: Option<String>,
+    /// Temporary archive staging root to remove after execution.
+    #[serde(default)]
+    pub(crate) archive_workspace_root: Option<String>,
     pub requested_at: String,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1422,6 +1538,8 @@ pub(crate) async fn fail_active_manual_import_for_source(
             files: Vec::new(),
             selection_id: None,
             release_evidence: None,
+            trusted_source_root: None,
+            archive_workspace_root: None,
             requested_at: record.created_at.clone(),
         });
     let message = format!("source download failed before import: {failure_reason}");
@@ -2530,6 +2648,19 @@ async fn execute_queued_manual_import_with_outcome(
     import_id: &str,
     payload: &ManualImportRequestPayload,
 ) -> AppResult<QueuedManualImportOutcome> {
+    let outcome = execute_queued_manual_import_with_outcome_inner(app, import_id, payload).await;
+    if let Some(workspace_root) = payload.archive_workspace_root.as_deref() {
+        crate::archive_extractor::cleanup_extracted_dir(&stored_path_to_path_buf(workspace_root))
+            .await;
+    }
+    outcome
+}
+
+async fn execute_queued_manual_import_with_outcome_inner(
+    app: &AppUseCase,
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+) -> AppResult<QueuedManualImportOutcome> {
     let user_id = payload
         .requested_by_user_id
         .as_deref()
@@ -2612,7 +2743,11 @@ async fn execute_queued_manual_import_with_outcome(
                 .to_string(),
         ));
     }
-    let trusted_source_root = match std::fs::canonicalize(&completed.dest_dir) {
+    let trusted_source_root_result = match payload.trusted_source_root.as_deref() {
+        Some(root) => std::fs::canonicalize(stored_path_to_path_buf(root)),
+        None => std::fs::canonicalize(&completed.dest_dir),
+    };
+    let trusted_source_root = match trusted_source_root_result {
         Ok(root) => root,
         Err(_) => {
             return Ok(QueuedManualImportOutcome::source_unavailable(
@@ -2697,8 +2832,52 @@ pub async fn execute_queued_manual_import(
     payload: &ManualImportRequestPayload,
 ) -> AppResult<(ImportStatus, Option<String>)> {
     let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-    let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await?;
+    let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await;
+    let outcome = outcome?;
     Ok((outcome.status, outcome.result_json))
+}
+
+#[cfg(test)]
+mod manual_archive_workspace_tests {
+    use super::*;
+
+    fn selection(workspace_root: &Path, trusted_root: &Path) -> crate::ManualImportSelection {
+        crate::ManualImportSelection {
+            id: "selection-1".to_string(),
+            actor_user_id: "user-1".to_string(),
+            title_id: "title-1".to_string(),
+            source_identity: DownloadSourceIdentity::new(Some("client-1"), "weaver", "item-1"),
+            release_evidence_json: None,
+            trusted_source_root: path_to_stored_string(trusted_root),
+            archive_workspace_root: Some(path_to_stored_string(workspace_root)),
+            candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reuses_archive_workspace_only_when_it_matches_the_trusted_root() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let canonical_workspace =
+            std::fs::canonicalize(workspace.path()).expect("canonical workspace root");
+        let selection = selection(&canonical_workspace, &canonical_workspace);
+
+        assert_eq!(
+            reusable_manual_archive_workspace(&selection),
+            Some((
+                canonical_workspace.clone(),
+                path_to_stored_string(&canonical_workspace),
+            ))
+        );
+    }
+
+    #[test]
+    fn refuses_archive_workspace_when_it_differs_from_the_trusted_root() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let trusted = tempfile::tempdir().expect("trusted tempdir");
+        let selection = selection(workspace.path(), trusted.path());
+
+        assert!(reusable_manual_archive_workspace(&selection).is_none());
+    }
 }
 
 #[cfg(test)]

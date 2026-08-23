@@ -770,6 +770,8 @@ pub struct ManualImportPreviewPayload {
 pub struct ManualImportSelectionPayload {
     /// Identifier of the persisted selection.
     pub selection_id: ID,
+    /// The download contains archives and must be explicitly extracted before files can be mapped.
+    pub archive_extraction_needed: bool,
     /// Files included in the selection.
     pub files: Vec<ManualImportFilePreviewPayload>,
     /// Episodes eligible as import targets for the selection.

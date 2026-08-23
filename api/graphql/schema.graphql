@@ -747,6 +747,10 @@ input BeginManualImportSelectionInput {
 	Title identity used to suggest import targets.
 	"""
 	titleId: ID!
+	"""
+	Explicitly extract an archive-only download before building the preview.
+	"""
+	extractArchives: Boolean
 }
 
 """
@@ -6220,6 +6224,10 @@ enum ImportSkipReasonValue {
 	A password is required before retrying.
 	"""
 	PASSWORD_REQUIRED
+	"""
+	Archive extraction exceeded its configured time limit.
+	"""
+	ARCHIVE_EXTRACTION_TIMED_OUT
 }
 
 """
@@ -6256,6 +6264,10 @@ enum ImportStatusValue {
 Phase of transferring an imported file.
 """
 enum ImportTransferPhaseValue {
+	"""
+	Archive contents are being extracted before file transfer.
+	"""
+	EXTRACTING
 	"""
 	File bytes are being copied.
 	"""
@@ -8212,6 +8224,10 @@ type ManualImportSelectionPayload {
 	Identifier of the persisted selection.
 	"""
 	selectionId: ID!
+	"""
+	The download contains archives and must be explicitly extracted before files can be mapped.
+	"""
+	archiveExtractionNeeded: Boolean!
 	"""
 	Files included in the selection.
 	"""

@@ -1098,6 +1098,8 @@ pub enum ImportSkipReasonValue {
     PermissionDenied,
     /// A password is required before retrying.
     PasswordRequired,
+    /// Archive extraction exceeded its configured time limit.
+    ArchiveExtractionTimedOut,
 }
 
 impl ImportSkipReasonValue {
@@ -1113,6 +1115,7 @@ impl ImportSkipReasonValue {
             ImportSkipReason::DiskFull => Self::DiskFull,
             ImportSkipReason::PermissionDenied => Self::PermissionDenied,
             ImportSkipReason::PasswordRequired => Self::PasswordRequired,
+            ImportSkipReason::ArchiveExtractionTimedOut => Self::ArchiveExtractionTimedOut,
         }
     }
 }
@@ -1176,6 +1179,8 @@ impl RecapPolicyValue {
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ImportTransferPhaseValue {
+    /// Archive contents are being extracted before file transfer.
+    Extracting,
     /// File bytes are being copied.
     Copying,
     /// Transfer is finalizing metadata and filesystem state.
@@ -1185,6 +1190,7 @@ pub enum ImportTransferPhaseValue {
 impl From<ImportTransferPhase> for ImportTransferPhaseValue {
     fn from(value: ImportTransferPhase) -> Self {
         match value {
+            ImportTransferPhase::Extracting => Self::Extracting,
             ImportTransferPhase::Copying => Self::Copying,
             ImportTransferPhase::Finalizing => Self::Finalizing,
         }
