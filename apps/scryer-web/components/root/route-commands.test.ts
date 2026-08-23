@@ -65,6 +65,46 @@ test("recycle-bin command targets the canonical system section", () => {
   assert.equal(calls[0]?.[3], "recycleBin");
 });
 
+test("dashboard command is limited to system-settings managers", () => {
+  const systemUser = user({
+    appPermissions: [APP_PERMISSIONS.manageSystemSettings],
+  });
+  const titleManager = user({
+    libraryPermissions: [{
+      libraryId: "library-id",
+      permissions: [LIBRARY_PERMISSIONS.manageTitles],
+    }],
+  });
+
+  assert.ok(buildRouteCommands({
+    t,
+    user: systemUser,
+    onNavigate: () => {},
+  }).some((command) => command.id === "dashboard"));
+
+  for (const unauthorizedUser of [titleManager, user()]) {
+    assert.equal(buildRouteCommands({
+      t,
+      user: unauthorizedUser,
+      onNavigate: () => {},
+    }).some((command) => command.id === "dashboard"), false);
+  }
+});
+
+test("dashboard command navigates to the dashboard view", () => {
+  const calls: unknown[][] = [];
+  const command = buildRouteCommands({
+    t,
+    user: user({ appPermissions: [APP_PERMISSIONS.manageSystemSettings] }),
+    onNavigate: (...args) => calls.push(args),
+  }).find((candidate) => candidate.id === "dashboard");
+
+  assert.ok(command);
+  assert.equal(command.groupLabel, "nav.group.overview");
+  command.onSelect();
+  assert.equal(calls[0]?.[0], "dashboard");
+});
+
 test("post-processing is grouped with Automation", () => {
   const command = buildRouteCommands({
     t,

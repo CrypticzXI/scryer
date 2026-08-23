@@ -56,6 +56,9 @@ import {
   TitleMoreLikeThisStrip,
   type TitleMoreLikeThisStripActions,
 } from "../title-more-like-this-strip";
+import { TitleCastStrip } from "../title-cast-strip";
+import { TitleDubCastStrip } from "../title-dub-cast-strip";
+import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
@@ -145,6 +148,8 @@ type Props = {
   seriesMovieLinks: SeriesMovieLink[];
   events: TitleHistoryEvent[];
   episodesByCollection: Record<string, CollectionEpisode[]>;
+  collectionEpisodesLoading?: Record<string, boolean>;
+  onLoadCollectionEpisodes?: (collectionId: string) => Promise<void> | void;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
   onLoadEpisodeDetail?: (episodeId: string) => Promise<void> | void;
@@ -200,6 +205,8 @@ export function SeriesOverviewView({
   seriesMovieLinks,
   events: _events,
   episodesByCollection,
+  collectionEpisodesLoading,
+  onLoadCollectionEpisodes,
   mediaFilesByEpisode,
   mediaFilesBySeriesMovieLink,
   onLoadEpisodeDetail,
@@ -427,6 +434,34 @@ export function SeriesOverviewView({
     setExpandedKeys(nextExpanded);
   }, [initialEpisodeId, latestKey]);
 
+  // Seasons hydrate lazily: fetch a collection's episodes once its section is
+  // expanded (default latest-season expansion included) and nothing is cached
+  // for it yet.
+  React.useEffect(() => {
+    if (!onLoadCollectionEpisodes) {
+      return;
+    }
+    for (const item of timelineItems) {
+      if (item.kind !== "collection" || !expandedKeys.has(item.key)) {
+        continue;
+      }
+      const collectionId = item.collection.id;
+      if (collectionId in episodesByCollection) {
+        continue;
+      }
+      if (collectionEpisodesLoading?.[collectionId]) {
+        continue;
+      }
+      void onLoadCollectionEpisodes(collectionId);
+    }
+  }, [
+    collectionEpisodesLoading,
+    episodesByCollection,
+    expandedKeys,
+    onLoadCollectionEpisodes,
+    timelineItems,
+  ]);
+
   const toggleKey = React.useCallback((key: string) => {
     setExpandedKeys((prev) => {
       const next = new Set(prev);
@@ -514,6 +549,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: { episode: episode.id },
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(mediaFilesByEpisode[episode.id]);
       const mutation = replacesPrimary
@@ -569,6 +605,7 @@ export function SeriesOverviewView({
             titleId: title.id,
             scope: { episode: episode.id },
             candidateToken: release.candidateToken,
+            sizeBytes: release.sizeBytes ?? null,
             purpose: "ADDITIONAL_FILE",
           },
         }).toPromise();
@@ -698,6 +735,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(
         mediaFilesBySeriesMovieLink[link.id],
@@ -760,6 +798,7 @@ export function SeriesOverviewView({
               titleId: title.id,
               scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
               candidateToken: release.candidateToken,
+              sizeBytes: release.sizeBytes ?? null,
               purpose: "ADDITIONAL_FILE",
             },
           })
@@ -1090,7 +1129,11 @@ export function SeriesOverviewView({
                 const { collection } = item;
                 const sortedEpisodes = sortedEpisodesByCollection[collection.id] ?? emptyEpisodes;
 
-                if (isSpecialsCollection(collection) && sortedEpisodes.length === 0) {
+                if (
+                  isSpecialsCollection(collection) &&
+                  (collection.episodeRecordsTotal ?? 0) === 0 &&
+                  sortedEpisodes.length === 0
+                ) {
                   return null;
                 }
 
@@ -1099,6 +1142,7 @@ export function SeriesOverviewView({
                     key={item.key}
                     collection={collection}
                     episodes={sortedEpisodes}
+                    episodesReady={collection.id in episodesByCollection}
                     facet={title.facet}
                     expanded={expandedKeys.has(item.key)}
                     onToggle={() => toggleKey(item.key)}
@@ -1173,6 +1217,10 @@ export function SeriesOverviewView({
         fallbackYearLabel={title.facet === "ANIME" ? t("nav.anime") : t("nav.series")}
         {...moreLikeThisActions}
       />
+
+      <TitleCastStrip credits={titleCastOriginalCredits(title.credits)} />
+
+      <TitleDubCastStrip credits={title.credits} />
 
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">

@@ -7,6 +7,7 @@ pub struct DownloadClientRoutingSettingsEntry {
     pub older_queue_priority: Option<String>,
     pub remove_completed: bool,
     pub remove_failed: bool,
+    pub seeding_profile_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexerRoutingSettingsEntry {
@@ -18,6 +19,8 @@ pub struct IndexerRoutingSettingsEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LibrarySettingsOverrideDraft {
     pub required_audio_languages: Option<Vec<String>>,
+    pub metadata_language: Option<String>,
+    pub use_season_folders: Option<bool>,
     pub quality_profile_id: Option<String>,
     pub request_quality_profile_ids: Option<Vec<String>>,
     pub scoring_persona: Option<ScoringPersona>,
@@ -64,6 +67,10 @@ pub struct ExternalImportSettingsAutoApplySkip {
 pub struct LibrarySettings {
     pub required_audio_languages_override: Option<Vec<String>>,
     pub required_audio_languages: Vec<String>,
+    pub metadata_language_override: Option<String>,
+    pub metadata_language: String,
+    pub use_season_folders_override: Option<bool>,
+    pub use_season_folders: bool,
     pub quality_profile_id_override: Option<String>,
     pub quality_profile_id: String,
     pub request_quality_profile_ids_override: Option<Vec<String>>,
@@ -126,6 +133,7 @@ fn download_client_routing_payload(
                 "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
                 "removeCompleted": entry.remove_completed,
                 "removeFailed": entry.remove_failed,
+                "seedingProfileId": normalize_optional_string(entry.seeding_profile_id),
             }),
         );
     }
@@ -143,6 +151,7 @@ fn download_client_routing_settings_entry_from_domain(
         older_queue_priority: entry.older_queue_priority,
         remove_completed: entry.remove_completed,
         remove_failed: entry.remove_failed,
+        seeding_profile_id: entry.seeding_profile_id,
     }
 }
 fn disabled_download_client_routing_settings_entry(
@@ -170,6 +179,7 @@ fn normalize_download_client_routing_settings_entry(
         older_queue_priority: normalize_optional_string(entry.older_queue_priority),
         remove_completed: entry.remove_completed,
         remove_failed: entry.remove_failed,
+        seeding_profile_id: normalize_optional_string(entry.seeding_profile_id),
     })
 }
 fn indexer_routing_payload(
@@ -228,7 +238,7 @@ fn default_download_client_routing_entry_json(priority: i64) -> serde_json::Valu
         "recentQueuePriority": "",
         "olderQueuePriority": "",
         "removeCompleted": true,
-        "removeFailed": false,
+        "removeFailed": true,
         "priority": priority,
     })
 }
@@ -278,7 +288,7 @@ fn normalize_download_client_routing_entry_in_place(
         changed = true;
     }
     if !entry.contains_key("removeFailed") {
-        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(false));
+        entry.insert("removeFailed".to_string(), serde_json::Value::Bool(true));
         changed = true;
     }
     if !entry.contains_key("priority") {
@@ -319,7 +329,10 @@ fn normalize_indexer_routing_entry_in_place(
     changed
 }
 impl AppUseCase {
-    async fn load_download_client_routing_json(&self, scope_id: &str) -> AppResult<Option<String>> {
+    pub(crate) async fn load_download_client_routing_json(
+        &self,
+        scope_id: &str,
+    ) -> AppResult<Option<String>> {
         if let Some(raw_json) = self
             .read_setting_string_value(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, Some(scope_id))
             .await?
@@ -472,6 +485,7 @@ impl AppUseCase {
                     older_queue_priority: entry.older_queue_priority,
                     remove_completed: entry.remove_completed,
                     remove_failed: entry.remove_failed,
+                    seeding_profile_id: entry.seeding_profile_id,
                 }
             })
             .collect::<Vec<_>>();
@@ -507,6 +521,7 @@ impl AppUseCase {
                     "olderQueuePriority": normalize_optional_string(entry.older_queue_priority),
                     "removeCompleted": entry.remove_completed,
                     "removeFailed": entry.remove_failed,
+                    "seedingProfileId": normalize_optional_string(entry.seeding_profile_id),
                 }),
             );
         }
@@ -890,5 +905,121 @@ impl AppUseCase {
         }
 
         Ok(())
+    }
+}
+
+/// Change only explicit `removeFailed: false` values, preserving every other
+/// routing field and leaving missing values to their existing default path.
+fn flip_explicit_remove_failed_defaults_in_place(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+) -> usize {
+    let mut flipped = 0;
+    for value in payload.values_mut() {
+        let Some(entry) = value.as_object_mut() else {
+            continue;
+        };
+        if entry.get("removeFailed") == Some(&serde_json::Value::Bool(false)) {
+            entry.insert("removeFailed".to_string(), serde_json::Value::Bool(true));
+            flipped += 1;
+        }
+    }
+    flipped
+}
+
+impl AppUseCase {
+    /// One-shot migration helper for the historic, normalization-written
+    /// `removeFailed: false` default. Both facet routes and library overrides
+    /// are explicit routing scopes and must be visited.
+    pub async fn flip_explicit_remove_failed_defaults(&self) -> AppResult<usize> {
+        const MIGRATION_SOURCE: &str = "startup_remove_failed_default_flip";
+
+        let mut scope_ids = ["movie", "series", "anime"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        scope_ids.extend(
+            self.services
+                .catalog
+                .libraries
+                .list(None)
+                .await?
+                .into_iter()
+                .map(|library| library.id),
+        );
+
+        let routing_values = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                &scope_ids,
+            )
+            .await?;
+        let mut flipped = 0;
+        for (scope_id, raw_json) in routing_values {
+            let Some(mut payload) = parse_json_object(&raw_json) else {
+                continue;
+            };
+            let changed = flip_explicit_remove_failed_defaults_in_place(&mut payload);
+            if changed == 0 {
+                continue;
+            }
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+                    Some(scope_id),
+                    serde_json::Value::Object(payload).to_string(),
+                    MIGRATION_SOURCE,
+                    None,
+                )
+                .await?;
+            flipped += changed;
+        }
+        Ok(flipped)
+    }
+}
+
+#[cfg(test)]
+mod remove_failed_default_tests {
+    use super::*;
+
+    #[test]
+    fn flips_only_explicit_false_remove_failed_values() {
+        let mut payload = serde_json::json!({
+            "flip": {
+                "enabled": false,
+                "category": "movies",
+                "removeCompleted": false,
+                "removeFailed": false,
+                "priority": 7
+            },
+            "keep_true": { "removeFailed": true, "priority": 3 },
+            "keep_missing": { "enabled": true, "priority": 4 },
+            "not_an_entry": "ignored"
+        })
+        .as_object()
+        .expect("routing payload object")
+        .clone();
+
+        assert_eq!(flip_explicit_remove_failed_defaults_in_place(&mut payload), 1);
+        assert_eq!(
+            payload["flip"]["removeFailed"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(payload["flip"]["enabled"], serde_json::Value::Bool(false));
+        assert_eq!(payload["flip"]["category"], serde_json::Value::String("movies".to_string()));
+        assert_eq!(payload["flip"]["removeCompleted"], serde_json::Value::Bool(false));
+        assert_eq!(payload["flip"]["priority"], serde_json::Value::from(7));
+        assert_eq!(
+            payload["keep_true"]["removeFailed"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(payload["keep_missing"].get("removeFailed").is_none());
+        assert_eq!(payload["not_an_entry"], serde_json::Value::String("ignored".to_string()));
     }
 }

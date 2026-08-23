@@ -237,6 +237,40 @@ const TITLE_RATING_SUMMARY_FIELDS = `
         url
       }`;
 
+/**
+ * Credit kinds the metadata provider uses for on-screen performers. Crew kinds
+ * (`director`, `writer`, `creator`, `composer`) are cached server-side but have
+ * no UI yet, so the overview asks for exactly these.
+ */
+export const TITLE_CAST_CREDIT_KINDS = ["actor", "voice_actor"] as const;
+
+/**
+ * Credits fetched per title — the server's clamp. The overview splits these
+ * into an original-cast rail and a dub rail (anime carries a Japanese and an
+ * English voice actor per character), so fetching only one rail's worth would
+ * starve whichever cast sorted second.
+ */
+export const TITLE_CAST_CREDIT_LIMIT = 50;
+
+/**
+ * Cast for the overview rails. The server does the kind filtering and
+ * billing-order sort; the language split and per-rail cap happen client-side in
+ * lib/utils/title-cast.
+ */
+const TITLE_CAST_CREDIT_FIELDS = `
+      kind
+      personName
+      personOriginalName
+      personImageUrl
+      character
+      language
+      billingOrder
+      episodeCount`;
+
+const TITLE_CAST_CREDIT_SELECTION = `
+    credits(kinds: [${TITLE_CAST_CREDIT_KINDS.map((kind) => `"${kind}"`).join(", ")}], limit: ${TITLE_CAST_CREDIT_LIMIT}) {${TITLE_CAST_CREDIT_FIELDS}
+    }`;
+
 export const PROVIDER_CONFIG_VALUE_FIELDS = `
     key
     label
@@ -250,10 +284,10 @@ export const PROVIDER_CONFIG_VALUE_FIELDS = `
     helpText
     value {
       __typename
-      ... on StringConfigValuePayload { value }
-      ... on BoolConfigValuePayload { value }
-      ... on IntConfigValuePayload { value }
-      ... on FloatConfigValuePayload { value }
+      ... on StringConfigValuePayload { stringValue: value }
+      ... on BoolConfigValuePayload { boolValue: value }
+      ... on IntConfigValuePayload { intValue: value }
+      ... on FloatConfigValuePayload { floatValue: value }
       ... on SecretConfigValuePayload { stored }
     }`;
 
@@ -328,9 +362,8 @@ const SERIES_SIDE_PANEL_COLLECTION_FIELDS = `
       episodesOwned
       episodesMonitored
       episodesTotal
-      createdAt
-      episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
-      }`;
+      episodeRecordsTotal
+      createdAt`;
 
 const TITLE_MEDIA_FILE_FIELDS = `
       id
@@ -449,6 +482,12 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     trackedStatus
     trackedStatusMessages
     trackedMatchType
+    seedingState
+    seedRatio
+    seedRatioGoal
+    seedTimeSeconds
+    seedTimeGoalSeconds
+    isPrivate
     queueScope {
       __typename
       ... on EpisodeScopePayload {
@@ -504,6 +543,9 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
     country
     aliases
     metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     requiredAudioLanguagesOverride
@@ -513,6 +555,9 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
     rootFolderPath
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -525,7 +570,7 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
       }
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }
+    }${TITLE_CAST_CREDIT_SELECTION}
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
@@ -549,22 +594,32 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     canonicalTags {${TITLE_CANONICAL_TAG_FIELDS}
     }
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     network
     metadataFetchedAt
     qualityProfileId
+    qualityTier
     effectiveRequiredAudioLanguages
     inheritsRequiredAudioLanguages
     rootFolderId
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     fillerPolicy
     recapPolicy
+    effectiveFillerPolicy
+    effectiveRecapPolicy
     createdAt
     collections {${SERIES_SIDE_PANEL_COLLECTION_FIELDS}
     }
     seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }`;
+    }${TITLE_CAST_CREDIT_SELECTION}`;
 
 export const TITLE_MUTATION_RESULT_FIELDS = `
     id
@@ -599,6 +654,9 @@ export const TITLE_MUTATION_RESULT_FIELDS = `
     country
     aliases
     metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     requiredAudioLanguagesOverride
@@ -608,6 +666,9 @@ export const TITLE_MUTATION_RESULT_FIELDS = `
     rootFolderPath
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -916,6 +977,21 @@ export const seriesSidePanelOverviewQuery = `query SeriesSidePanelOverview($id: 
   }
 }`;
 
+export const seriesCollectionEpisodesQuery = `query SeriesCollectionEpisodes($id: ID!) {
+  collectionById(id: $id) {
+    id
+    episodes {${SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS}
+    }
+  }
+}`;
+
+export const episodeCollectionRefQuery = `query EpisodeCollectionRef($titleId: ID!, $episodeId: ID!) {
+  episode(titleId: $titleId, episodeId: $episodeId) {
+    id
+    collectionId
+  }
+}`;
+
 export const titleOverviewDownloadFeedbackQuery = `query TitleOverviewDownloadFeedback($id: ID!) {
   downloadQueueItems: downloadQueue(titleId: $id, includeAllActivity: true, includeImportActivity: true, activityFilter: ALL) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
   }
@@ -1140,6 +1216,10 @@ export const TITLE_LIST_FIELDS = `
     episodesMonitored
     episodesTotal
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     createdAt`;
 
@@ -1173,11 +1253,18 @@ const TITLE_CATALOG_BASE_FIELDS = `
     backgroundUrl
     backgroundSourceUrl
     contentStatus
+    metadataLanguage
+    metadataLanguageOverride
+    effectiveMetadataLanguage
+    inheritsMetadataLanguage
     metadataFetchedAt
     qualityProfileId
     rootFolderId
     monitorType
     useSeasonFolders
+    useSeasonFoldersOverride
+    effectiveUseSeasonFolders
+    inheritsUseSeasonFolders
     monitorSpecials
     interSeasonMovies
     fillerPolicy
@@ -1351,6 +1438,10 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
   librarySettings(libraryId: $libraryId) {
     requiredAudioLanguagesOverride
     requiredAudioLanguages
+    metadataLanguageOverride
+    metadataLanguage
+    useSeasonFoldersOverride
+    useSeasonFolders
     qualityProfileIdOverride
     qualityProfileId
     requestQualityProfileIdsOverride
@@ -1396,6 +1487,7 @@ export const librarySettingsQuery = `query LibrarySettings($libraryId: ID!) {
       olderQueuePriority
       removeCompleted
       removeFailed
+      seedingProfileId
     }
   }
 }`;
@@ -1707,6 +1799,24 @@ export function buildReactiveRefreshQuery(
   };
 }
 
+export const mediaRenamePreviewBulkQuery = `query MediaRenamePreviewBulk($input: MediaRenamePreviewBulkInput!) {
+  mediaRenamePreviewBulk(input: $input) {
+    titleId
+    fingerprint
+    total
+    renamable
+    noop
+    conflicts
+    errors
+    items {
+      collectionId
+      currentPath
+      proposedPath
+      writeAction
+    }
+  }
+}`;
+
 export const mediaRenamePreviewQuery = `query MediaRenamePreview($input: MediaRenamePreviewInput!) {
   mediaRenamePreview(input: $input) {
     facet
@@ -1766,7 +1876,7 @@ export const activitySubscriptionQuery = `subscription ActivityStream {
   }
 }`;
 
-export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Int, $afterSequence: Int, $limit: Int) {
+export const auditLogQuery = `query AuditLog($eventTypes: [DomainEventTypeValue!], $titleId: ID, $facet: MediaFacetValue, $beforeSequence: Long, $afterSequence: Long, $limit: Int) {
   auditLog(
     eventTypes: $eventTypes
     titleId: $titleId
@@ -1921,6 +2031,7 @@ export const usersQuery = `query Users {
     loginEnabled
     isDefaultAdmin
     hasPassword
+    passwordChangeRequired
     hasMfa
     hasPasskey
     accountKind
@@ -1940,6 +2051,9 @@ export const indexersQuery = `query Indexers($providerType: String) {
     baseUrl
     indexerProxyConfigId
     downloadClientId
+    seedingProfileId
+    hasProwlarrSeedCriteria
+    prowlarrMinimumSeeders
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2127,6 +2241,9 @@ const indexerFieldSelection = `
     baseUrl
     indexerProxyConfigId
     downloadClientId
+    seedingProfileId
+    hasProwlarrSeedCriteria
+    prowlarrMinimumSeeders
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2201,7 +2318,8 @@ const downloadClientRoutingFieldSelection = `
     recentQueuePriority
     olderQueuePriority
     removeCompleted
-    removeFailed`;
+    removeFailed
+    seedingProfileId`;
 
 const indexerRoutingFieldSelection = `
     indexerId
@@ -2498,8 +2616,8 @@ export const securitySettingsQuery = `query SecuritySettings {
     skipLoginForLocalIps
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
-    totpRequireJellyfinLogin
-    totpRequireEmbyLogin
+    mfaRequireJellyfinLogin
+    mfaRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -2591,6 +2709,32 @@ export const delayProfilesQuery = `query DelayProfiles {
   }
 }`;
 
+export const SEEDING_PROFILE_FIELDS = `
+    id
+    name
+    ratio
+    seedTimeMinutes
+    seasonPackMode
+    seasonPackRatio
+    seasonPackSeedTimeMinutes
+    honorTrackerMinimums
+    goalMetAction
+    neverRemove
+    minimumSeeders
+    postImportTracking`;
+
+export const seedingProfilesQuery = `query SeedingProfiles {
+  seedingProfiles {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const defaultSeedingProfileQuery = `query DefaultSeedingProfile {
+  defaultSeedingProfile {
+    seedingProfileId
+    minimumSeedersFloor
+  }
+}`;
+
 export const libraryPathsQuery = `query LibraryPaths {
   libraryPaths {${libraryPathsFieldSelection}
   }
@@ -2666,7 +2810,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     envOverrideActive
     mfaRequirePasswordLogin
     mfaRequireConfigStepUp
-    totpRequireJellyfinLogin
+    mfaRequireJellyfinLogin
   }
 }`;
 
@@ -2949,6 +3093,7 @@ export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!
       status
       grabbedRelease
       currentScore
+      standbyCount
       latestReleaseDecision {
         decisionCode
         createdAt
@@ -3034,6 +3179,12 @@ export const backupsQuery = `query Backups {
 
 export const recycleBinSettingsQuery = `query RecycleBinSettings {
   recycleBinSettings {
+    enabled
+  }
+}`;
+
+export const pluginAutoUpdateSettingsQuery = `query PluginAutoUpdateSettings {
+  pluginAutoUpdateSettings {
     enabled
   }
 }`;
@@ -3337,6 +3488,8 @@ export const pendingReleasesQuery = `query PendingReleases($filter: PendingRelea
       releaseScore
       scoringLogJson
       indexerSource
+      publishedAt
+      seeders
       addedAt
       delayUntil
       status
@@ -3546,6 +3699,126 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
     createdByUserId
     createdAt
     updatedAt
+  }
+}`;
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+// Split by refresh cadence rather than by panel: the overview is the slow
+// half-page of counters and provider health, while requests, imports and the
+// import history each refetch on their own when the operator acts on them.
+
+export const dashboardOverviewQuery = `query DashboardOverview($activityWindowHours: Int!) {
+  me {
+    id
+    username
+  }
+  navigationBadgeCounts {
+    activityImportCount
+    pendingMediaRequestCounts {
+      movie
+      series
+      anime
+    }
+  }
+  systemHealth {
+    titlesMovie
+    titlesSeries
+    titlesAnime
+    indexerStats {
+      indexerId
+      indexerName
+      queriesLast24H
+      failedLast24H
+      grabsLast24H
+      apiCurrent
+      apiMax
+    }
+  }
+  dashboardActivityStats(windowHours: $activityWindowHours) {
+    current {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+    previous {
+      grabbed
+      upgraded
+      imported
+      importFailed
+    }
+  }
+  indexers {
+    id
+    name
+    providerType
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+  }
+  downloadClientConfigs {
+    id
+    name
+    clientType
+    isEnabled
+    status
+    lastError
+    lastSeenAt
+  }
+  storageRoots {
+    path
+    libraryId
+    libraryName
+    facet
+    usedBytes
+    totalBytes
+  }
+}`;
+
+export const dashboardPendingRequestsQuery = `query DashboardPendingRequests {
+  mediaRequests(status: PENDING) {
+    id
+    libraryId
+    facet
+    title
+    year
+    posterUrl
+    requestedQualityProfileId
+    requestedMonitorType
+    createdAt
+    requesters {
+      userId
+      username
+      avatarUrl
+    }
+  }
+  libraries(permission: MANAGE_TITLES) {
+    id
+    name
+    facet
+    qualityProfileId
+    requestQualityProfileDefaultId
+  }
+}`;
+
+export const dashboardRecentImportsQuery = `query DashboardRecentImports($limit: Int!) {
+  titleHistory(
+    filter: { eventTypes: [IMPORTED, FILE_UPGRADED], limit: $limit }
+  ) {
+    totalCount
+    items {
+      id
+      titleId
+      titleName
+      posterUrl
+      facet
+      libraryId
+      eventType
+      quality
+      sizeBytes
+      occurredAt
+    }
   }
 }`;
 

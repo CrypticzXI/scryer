@@ -7,12 +7,14 @@ use scryer_application::{
     IndexerPluginProvider, NotificationPluginProvider, PluginInstallationRepository,
 };
 use scryer_domain::User;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 fn admin() -> User {
     User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
@@ -544,4 +546,139 @@ async fn available_provider_types_includes_builtins() {
         types.contains(&"newznab".to_string()),
         "newznab should be a built-in provider type"
     );
+}
+
+fn plugin_auto_update_viewer() -> User {
+    User {
+        id: scryer_domain::Id::new().0,
+        username: "viewer".to_string(),
+        password_hash: None,
+        password_change_required: false,
+        account_kind: Default::default(),
+        authorization: scryer_domain::UserAuthorization {
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            loaded: true,
+            ..Default::default()
+        },
+    }
+}
+
+async fn seed_plugin_auto_update_setting_definition(ctx: &TestContext) {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
+            category: "general".into(),
+            scope: scryer_application::SETTINGS_SCOPE_SYSTEM.into(),
+            key_name: scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY.into(),
+            data_type: "boolean".into(),
+            default_value_json: "false".into(),
+            is_sensitive: false,
+            validation_json: None,
+        }])
+        .await
+        .expect("seed plugin auto-update setting definition");
+}
+
+async fn plugin_auto_update_gql(
+    ctx: &TestContext,
+    query: &str,
+    variables: serde_json::Value,
+) -> serde_json::Value {
+    let response = ctx
+        .http_client()
+        .post(ctx.graphql_url())
+        .json(&serde_json::json!({ "query": query, "variables": variables }))
+        .send()
+        .await
+        .expect("graphql request should succeed");
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.expect("valid JSON body");
+    assert!(
+        body.get("errors").is_none(),
+        "unexpected GraphQL errors: {body}"
+    );
+    body
+}
+
+#[tokio::test]
+async fn plugin_auto_update_setting_defaults_off_and_requires_system_settings() {
+    let ctx = TestContext::new().await;
+    seed_plugin_auto_update_setting_definition(&ctx).await;
+
+    assert!(
+        !ctx.app
+            .get_plugin_auto_update_settings(&admin())
+            .await
+            .expect("config users can read the setting")
+            .enabled,
+        "automatic plugin updates are opt-in"
+    );
+    assert!(
+        ctx.app
+            .get_plugin_auto_update_settings(&plugin_auto_update_viewer())
+            .await
+            .is_err(),
+        "users without system-settings access cannot read the setting"
+    );
+    assert!(
+        ctx.app
+            .update_plugin_auto_update_settings(
+                &plugin_auto_update_viewer(),
+                scryer_application::UpdatePluginAutoUpdateSettings { enabled: true },
+            )
+            .await
+            .is_err(),
+        "users without system-settings access cannot change the setting"
+    );
+
+    let updated = ctx
+        .app
+        .update_plugin_auto_update_settings(
+            &admin(),
+            scryer_application::UpdatePluginAutoUpdateSettings { enabled: true },
+        )
+        .await
+        .expect("config user updates the setting");
+    assert!(updated.enabled);
+    assert!(
+        ctx.app
+            .get_plugin_auto_update_settings(&admin())
+            .await
+            .expect("read back")
+            .enabled
+    );
+}
+
+#[tokio::test]
+async fn graphql_plugin_auto_update_settings_round_trip() {
+    let ctx = TestContext::new().await;
+    seed_plugin_auto_update_setting_definition(&ctx).await;
+
+    let body = plugin_auto_update_gql(
+        &ctx,
+        "query { pluginAutoUpdateSettings { enabled } }",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(body["data"]["pluginAutoUpdateSettings"]["enabled"], false);
+
+    let body = plugin_auto_update_gql(
+        &ctx,
+        r#"mutation($input: UpdatePluginAutoUpdateSettingsInput!) {
+            updatePluginAutoUpdateSettings(input: $input) { enabled }
+        }"#,
+        serde_json::json!({ "input": { "enabled": true } }),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["updatePluginAutoUpdateSettings"]["enabled"],
+        true
+    );
+
+    let body = plugin_auto_update_gql(
+        &ctx,
+        "query { pluginAutoUpdateSettings { enabled } }",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(body["data"]["pluginAutoUpdateSettings"]["enabled"], true);
 }

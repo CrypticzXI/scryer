@@ -95,8 +95,300 @@ impl AppUseCase {
             .await
             .ok()
             .flatten()
-            .filter(|v| !v.trim().is_empty())
+            .and_then(|language| crate::normalize_metadata_language_code(&language))
             .unwrap_or_else(|| "eng".to_string())
+    }
+
+    pub async fn global_metadata_language(&self) -> String {
+        self.metadata_language().await
+    }
+
+    pub(crate) async fn resolve_metadata_language_for_title(&self, title: &Title) -> String {
+        if let Ok(Some(language)) = self
+            .read_setting_string_value_explicit(
+                TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+                Some(&title.id),
+            )
+            .await
+            && let Some(language) = crate::normalize_metadata_language_code(&language)
+        {
+            return language;
+        }
+
+        if let Ok(Some(language)) = self
+            .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&title.library_id))
+            .await
+            && let Some(language) = crate::normalize_metadata_language_code(&language)
+        {
+            return language;
+        }
+
+        self.metadata_language().await
+    }
+
+    /// Resolve a collection of titles with one read per override tier.
+    ///
+    /// Individual resolver failures intentionally inherit from the next tier;
+    /// retain that behavior for bulk hydration rather than failing an entire
+    /// refresh because one settings read is unavailable.
+    pub(crate) async fn resolve_metadata_languages_for_titles(
+        &self,
+        titles: &[Title],
+    ) -> HashMap<String, String> {
+        if titles.is_empty() {
+            return HashMap::new();
+        }
+
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let library_ids = titles
+            .iter()
+            .map(|title| title.library_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (title_overrides, library_overrides, global_language) = tokio::join!(
+            self.load_title_metadata_language_overrides(&title_ids),
+            self.load_library_metadata_language_overrides(&library_ids),
+            self.metadata_language(),
+        );
+        let title_overrides = title_overrides.unwrap_or_default();
+        let library_overrides = library_overrides.unwrap_or_default();
+
+        titles
+            .iter()
+            .map(|title| {
+                let language = title_overrides
+                    .get(&title.id)
+                    .or_else(|| library_overrides.get(&title.library_id))
+                    .cloned()
+                    .unwrap_or_else(|| global_language.clone());
+                (title.id.clone(), language)
+            })
+            .collect()
+    }
+
+    pub async fn title_metadata_language_override(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        self.read_setting_string_value_explicit(
+            TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+            Some(title_id),
+        )
+        .await
+        .map(|value| value.and_then(|language| crate::normalize_metadata_language_code(&language)))
+    }
+
+    pub async fn effective_metadata_language_for_title(&self, title_id: &str) -> AppResult<String> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        Ok(self.resolve_metadata_language_for_title(&title).await)
+    }
+
+    pub async fn effective_use_season_folders_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<bool> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.resolve_use_season_folders(&title).await
+    }
+
+    pub async fn effective_filler_policy_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if title.facet != MediaFacet::Anime {
+            return Ok(None);
+        }
+
+        let policy = extract_tag_string(&title.tags, "scryer:filler-policy:")
+            .filter(|value| matches!(*value, "download_all" | "skip_filler"))
+            .map(str::to_owned);
+        Ok(Some(match policy {
+            Some(policy) => policy,
+            None => self
+                .resolve_library_string_setting(
+                    "anime.filler_policy",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    "download_all",
+                )
+                .await?,
+        }))
+    }
+
+    pub async fn effective_recap_policy_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Option<String>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        if title.facet != MediaFacet::Anime {
+            return Ok(None);
+        }
+
+        let policy = extract_tag_string(&title.tags, "scryer:recap-policy:")
+            .filter(|value| matches!(*value, "download_all" | "skip_recap"))
+            .map(str::to_owned);
+        Ok(Some(match policy {
+            Some(policy) => policy,
+            None => self
+                .resolve_library_string_setting(
+                    "anime.recap_policy",
+                    Some(&title.library_id),
+                    Some(title.facet.as_str()),
+                    "download_all",
+                )
+                .await?,
+        }))
+    }
+
+    pub async fn set_title_metadata_language_override(
+        &self,
+        actor: &User,
+        title_id: &str,
+        language: Option<String>,
+    ) -> AppResult<()> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+
+        let language = language
+            .filter(|language| !language.trim().is_empty())
+            .map(|language| {
+                crate::normalize_metadata_language_code(&language).ok_or_else(|| {
+                    AppError::Validation("metadata language must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn".to_string())
+                })
+            })
+            .transpose()?;
+        if let Some(language) = language {
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+                    Some(title.id.clone()),
+                    serde_json::to_string(&language)
+                        .map_err(|error| AppError::Repository(error.to_string()))?,
+                    SETTINGS_SOURCE_TYPED_GRAPHQL,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+        } else {
+            self.delete_scoped_system_setting(TITLE_METADATA_LANGUAGE_OVERRIDE_KEY, &title.id)
+                .await?;
+        }
+
+        self.services
+            .catalog
+            .titles
+            .mark_title_metadata_hydration_due_now(&title.id)
+            .await?;
+        self.runtime.catalog.title_hydration_wake.notify_one();
+        Ok(())
+    }
+
+    pub(crate) async fn queue_library_metadata_rehydration(
+        &self,
+        library_id: &str,
+    ) -> AppResult<()> {
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(None, &[library_id.to_string()], None)
+            .await?;
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let title_overrides = self
+            .load_title_metadata_language_overrides(&title_ids)
+            .await?;
+        let rehydration_ids = titles
+            .into_iter()
+            .filter(|title| !title_overrides.contains_key(&title.id))
+            .map(|title| title.id)
+            .collect::<Vec<_>>();
+        if !rehydration_ids.is_empty() {
+            self.services
+                .catalog
+                .titles
+                .mark_titles_metadata_hydration_due_now(&rehydration_ids)
+                .await?;
+        }
+        self.runtime.catalog.title_hydration_wake.notify_one();
+        Ok(())
+    }
+
+    pub(crate) async fn library_use_season_folders_override(
+        &self,
+        library_id: &str,
+    ) -> AppResult<Option<bool>> {
+        self.read_setting_bool_value_explicit(USE_SEASON_FOLDERS_KEY, Some(library_id))
+            .await
+    }
+
+    pub(crate) async fn resolve_use_season_folders(&self, title: &Title) -> AppResult<bool> {
+        if !matches!(title.facet, MediaFacet::Series | MediaFacet::Anime) {
+            return Ok(true);
+        }
+
+        if let Some(value) = crate::import_workflow::season_folder_tag_override(title) {
+            return Ok(value);
+        }
+
+        if let Some(value) = self
+            .library_use_season_folders_override(&title.library_id)
+            .await?
+        {
+            return Ok(value);
+        }
+
+        self.resolve_library_bool_setting(
+            USE_SEASON_FOLDERS_KEY,
+            None,
+            Some(title.facet.as_str()),
+            true,
+        )
+        .await
     }
 
     /// Discovery region seam. Mirrors `metadata_language` so a
@@ -124,6 +416,34 @@ impl AppUseCase {
             .titles
             .get_title_ratings(title_id)
             .await
+    }
+
+    /// Cached SMG credits for one title, optionally narrowed to a set of credit
+    /// kinds (`actor`, `voice_actor`, `director`, ...) and capped at `limit`.
+    ///
+    /// Pure local read: the cache is refilled by metadata hydration, so this
+    /// never calls SMG and never queues a refresh.
+    pub async fn title_credits(
+        &self,
+        actor: &User,
+        title_id: &str,
+        kinds: Option<&[String]>,
+        limit: i64,
+    ) -> AppResult<Vec<TitleCredit>> {
+        self.get_title(actor, title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        let limit = limit.clamp(0, TITLE_CREDITS_MAX_LIMIT) as usize;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let credits = self
+            .services
+            .catalog
+            .titles
+            .get_title_credits(title_id)
+            .await?;
+        Ok(select_title_credits(credits, kinds, limit))
     }
 
     pub async fn list_title_ratings(
@@ -557,6 +877,33 @@ fn extract_tag_string<'a>(tags: &'a [String], prefix: &str) -> Option<&'a str> {
     }
     None
 }
+/// Upper bound on one `title_credits` response. Keeps a hostile `limit` from
+/// turning a rail query into a full-cast dump.
+pub(crate) const TITLE_CREDITS_MAX_LIMIT: i64 = 50;
+
+/// Narrow a title's cached credits to `kinds` (all kinds when `None`/empty),
+/// order them by SMG billing order and then by the response position the cache
+/// preserved, and cap the result at `limit`.
+///
+/// `credits` arrives in cache order (position ascending), so the stable sort by
+/// billing order alone yields "billing_order asc, position asc".
+pub(crate) fn select_title_credits(
+    credits: Vec<TitleCredit>,
+    kinds: Option<&[String]>,
+    limit: usize,
+) -> Vec<TitleCredit> {
+    let allowed = kinds.filter(|kinds| !kinds.is_empty());
+    let mut selected = credits
+        .into_iter()
+        .filter(|credit| {
+            allowed.is_none_or(|kinds| kinds.iter().any(|kind| kind == &credit.kind))
+        })
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|credit| credit.billing_order);
+    selected.truncate(limit);
+    selected
+}
+
 pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
     title
         .external_ids

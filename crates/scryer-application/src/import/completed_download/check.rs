@@ -58,7 +58,10 @@ pub(crate) async fn check_with_lookup(
     let queue_source_identity = queue_item_source_identity(&td.client_item);
     if let Some(state) =
         download_id_tracked_state(app, &queue_identity, Some(&queue_source_identity)).await
-        && state.is_terminal()
+        // `is_import_settled` rather than `is_terminal`: a torrent parked in
+        // `ImportedSeeding` is already in the library and must not be offered
+        // for import again while it works off its seeding goal.
+        && state.is_import_settled()
     {
         apply_download_id_state(td, state);
         return;
@@ -140,7 +143,7 @@ pub(crate) async fn check_with_lookup(
     let completed_source_identity = completed_download_source_identity(&completed);
     if let Some(state) =
         download_id_tracked_state(app, &completed_identity, Some(&completed_source_identity)).await
-        && state.is_terminal()
+        && state.is_import_settled()
     {
         apply_download_id_state(td, state);
         return;

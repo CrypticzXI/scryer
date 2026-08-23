@@ -594,6 +594,56 @@ pub(crate) fn title_history_record_from_domain_event(
             None,
             None,
         ),
+        // The two seeding-retention events reuse the download-lifecycle shape
+        // (`DownloadIgnored`): client identity in `download_id`/`client_*`, the
+        // release title as the source title. The gate's reason and the action
+        // it took ride in `data_json` with the rest of the payload.
+        DomainEventPayload::SeedingStarted(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
+            TitleHistoryEventType::SeedingStarted,
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
+            None,
+            None,
+            data.source_provider.clone(),
+            None,
+            Some(data.download_client_item_id.clone()),
+            data.client_id.clone(),
+            data.client_type.clone(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
+        DomainEventPayload::SeedingCompleted(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
+            TitleHistoryEventType::SeedingCompleted,
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
+            None,
+            None,
+            data.source_provider.clone(),
+            None,
+            Some(data.download_client_item_id.clone()),
+            data.client_id.clone(),
+            data.client_type.clone(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
         DomainEventPayload::MediaFileAnalyzed(data) => (
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),
@@ -739,6 +789,11 @@ pub(crate) fn title_history_record_from_domain_event(
         id: event.event_id.clone(),
         title_id,
         title_name,
+        // Resolved from the titles lookup during projection hydration; the
+        // event payload itself does not carry the owning library, and the
+        // poster comes from the live title row rather than the event snapshot.
+        poster_url: None,
+        library_id: None,
         facet,
         episode_id: None,
         episode_ids,
@@ -763,10 +818,24 @@ pub(crate) fn title_history_record_from_domain_event(
         blocklist_reason,
         source_path,
         dest_path,
+        size_bytes: title_history_size_bytes(&event.payload),
         data_json,
         occurred_at: event.occurred_at.to_rfc3339(),
         created_at: event.occurred_at.to_rfc3339(),
     })
+}
+
+/// Bytes to report for a history row.
+///
+/// Only import and upgrade events carry a size: an import reports the total
+/// bytes it brought in, an upgrade reports the new file's size. Events written
+/// before the payloads carried a size read back as `None`.
+fn title_history_size_bytes(payload: &DomainEventPayload) -> Option<i64> {
+    match payload {
+        DomainEventPayload::ImportCompleted(data) => data.size_bytes,
+        DomainEventPayload::MediaFileUpgraded(data) => data.size_bytes,
+        _ => None,
+    }
 }
 
 pub(crate) fn history_event_from_domain_event(event: &DomainEvent) -> Option<HistoryEvent> {
@@ -1155,9 +1224,8 @@ fn apply_download_queue_event(
     event: &DomainEvent,
 ) -> Option<Vec<DownloadQueueItem>> {
     match &event.payload {
-        DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
-            item,
-        }) => {
+        DomainEventPayload::DownloadQueueItemUpserted(upserted) => {
+            let DownloadQueueItemUpsertedEventData { item } = upserted.as_ref();
             items.insert(download_queue_item_key(item), item.clone());
             Some(sorted_download_queue_items(items))
         }
@@ -1247,7 +1315,9 @@ fn queue_state_sort_rank(state: &DownloadQueueState) -> u8 {
         DownloadQueueState::Queued => 1,
         DownloadQueueState::Paused => 2,
         DownloadQueueState::ImportPending | DownloadQueueState::Completed => 3,
-        DownloadQueueState::Failed => 4,
+        // Both states want the operator's attention, so they sort together at
+        // the end; only their handling differs.
+        DownloadQueueState::Warning | DownloadQueueState::Failed => 4,
     }
 }
 
@@ -1394,6 +1464,7 @@ mod tests {
                     current_file_id: Some("new-file".to_string()),
                     old_score: Some(10),
                     new_score: Some(20),
+                    size_bytes: Some(2_048),
                 }),
             ),
             event(
@@ -1490,6 +1561,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 
@@ -1515,6 +1587,7 @@ mod tests {
                     dest_path: Some("/data/old.mkv".to_string()),
                     quality: Some("1080p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
+                    size_bytes: Some(1_024),
                 }),
             ),
             event(
@@ -1535,6 +1608,7 @@ mod tests {
                     dest_path: Some("/data/new.mkv".to_string()),
                     quality: Some("2160p".to_string()),
                     episode_ids: vec!["ep-1".to_string()],
+                    size_bytes: Some(4_096),
                 }),
             ),
         ];

@@ -14,6 +14,7 @@ import { memo } from "react";
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
   ActivityQueueDetailsPanel,
+  ActivityQueueSeedingProgress,
   ActivityQueueStatusBadge,
   ActivityQueueTitleContent,
 } from "@/components/views/activity/queue-row-presentation";
@@ -124,7 +125,7 @@ export const QueueRowItem = memo(function QueueRowItem({
         </div>
         <div className="shrink-0">
           <ActivityQueueStatusBadge
-            stateKey={row.displayStateKey}
+            stateKey={row.statusBadgeKey}
             statusLabel={row.statusLabel}
             isExpandable={row.hasExpandableDetails}
             isExpanded={isExpanded}
@@ -160,8 +161,9 @@ export const QueueRowItem = memo(function QueueRowItem({
           colorClass={getProgressBarColor(row.displayStateKey)}
         />
       </div>
-      <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>{formatBytes(queueItem.sizeBytes)}</span>
+        <ActivityQueueSeedingProgress queueItem={queueItem} t={t} />
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {row.canPause && (

@@ -23,6 +23,7 @@ fn hydration_test_movie(tvdb_id: i64, name: &str) -> MovieMetadata {
         studio: "Scryer Studios".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
         ratings: Default::default(),
+        credits: Vec::new(),
     }
 }
 
@@ -83,6 +84,15 @@ async fn stop_title_hydration_worker(
         .expect("title hydration worker should not panic");
 }
 
+async fn consume_title_hydration_wake(app: &AppUseCase) {
+    timeout(
+        Duration::from_secs(1),
+        app.runtime.catalog.title_hydration_wake.notified(),
+    )
+    .await
+    .expect("adding a due title should notify the hydration worker");
+}
+
 #[tokio::test]
 async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     let (app, user) = bootstrap();
@@ -112,6 +122,89 @@ async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     assert_eq!(hydrated.year, Some(2026));
     assert_eq!(hydrated.language.as_deref(), Some("eng"));
     assert_eq!(hydrated.metadata_language.as_deref(), Some("eng"));
+
+    stop_title_hydration_worker(token, handle).await;
+}
+
+#[tokio::test]
+async fn title_hydration_worker_processes_pending_title_immediately_after_startup() {
+    let (app, user) = bootstrap();
+    let tvdb_id = 901_003;
+    let app = app.with_test_overrides(|services| {
+        services.with_metadata_gateway(Arc::new(MockMetadataGateway {
+            movies: HashMap::from([(
+                tvdb_id,
+                hydration_test_movie(tvdb_id, "Startup Pending Movie"),
+            )]),
+        }))
+    });
+
+    let outcome = app
+        .add_title_with_outcome(
+            &user,
+            hydration_test_title("Startup Pending Movie", tvdb_id),
+        )
+        .await
+        .expect("add title should succeed");
+    assert_eq!(
+        outcome.metadata_hydration_state,
+        AddTitleHydrationState::Pending
+    );
+    consume_title_hydration_wake(&app).await;
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_title_hydration_loop(
+        app.clone(),
+        token.clone(),
+    ));
+
+    let hydrated = wait_for_title_metadata(&app, &user, &outcome.title.id).await;
+    assert_eq!(hydrated.name, "Startup Pending Movie");
+
+    stop_title_hydration_worker(token, handle).await;
+}
+
+#[tokio::test]
+async fn title_hydration_worker_drains_multiple_pending_batches_without_pacing() {
+    let (app, user) = bootstrap();
+    let movies = (0..21)
+        .map(|index| {
+            let tvdb_id = 901_100 + index;
+            (
+                tvdb_id,
+                hydration_test_movie(tvdb_id, &format!("Batch Pending Movie {index}")),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let app = app.with_test_overrides(|services| {
+        services.with_metadata_gateway(Arc::new(MockMetadataGateway { movies }))
+    });
+
+    let mut title_ids = Vec::new();
+    for index in 0..21 {
+        let tvdb_id = 901_100 + index;
+        let name = format!("Batch Pending Movie {index}");
+        let outcome = app
+            .add_title_with_outcome(&user, hydration_test_title(&name, tvdb_id))
+            .await
+            .expect("add title should succeed");
+        assert_eq!(
+            outcome.metadata_hydration_state,
+            AddTitleHydrationState::Pending
+        );
+        title_ids.push(outcome.title.id);
+    }
+    consume_title_hydration_wake(&app).await;
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_title_hydration_loop(
+        app.clone(),
+        token.clone(),
+    ));
+
+    for title_id in title_ids {
+        wait_for_title_metadata(&app, &user, &title_id).await;
+    }
 
     stop_title_hydration_worker(token, handle).await;
 }

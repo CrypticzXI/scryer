@@ -4,7 +4,9 @@ use scryer_application::{
     BUILTIN_DEFAULT_QUALITY_PROFILE_ID, QUALITY_PROFILE_ID_KEY, QualityProfileRepository,
     SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{QualityProfileStore, SettingsStore};
+use scryer_infrastructure_configuration::settings::{
+    quality_profile_store::QualityProfileStore, settings_store::SettingsStore,
+};
 
 use crate::settings_bootstrap::parse_quality_profile_id;
 
@@ -178,9 +180,9 @@ mod tests {
     ) {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("scryer.db");
-        let services = scryer_infrastructure::SqliteServices::new_with_mode(
+        let services = scryer_infrastructure_datastore::SqliteServices::new_with_mode(
             db_path.to_string_lossy().to_string(),
-            scryer_infrastructure::MigrationMode::Apply,
+            scryer_infrastructure_datastore::MigrationMode::Apply,
         )
         .await
         .expect("sqlite services");

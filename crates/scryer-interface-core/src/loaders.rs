@@ -180,6 +180,63 @@ loader!(
 );
 
 loader!(
+    TitleMetadataLanguageOverrideLoader,
+    String,
+    String,
+    |ctx, keys| {
+        ctx.app
+            .load_title_metadata_language_overrides(keys)
+            .await
+            .map_err(to_gql_error)
+    }
+);
+
+loader!(
+    LibraryMetadataLanguageOverrideLoader,
+    String,
+    String,
+    |ctx, keys| {
+        ctx.app
+            .load_library_metadata_language_overrides(keys)
+            .await
+            .map_err(to_gql_error)
+    }
+);
+
+loader!(
+    LibraryUseSeasonFoldersOverrideLoader,
+    String,
+    bool,
+    |ctx, keys| {
+        ctx.app
+            .load_use_season_folders_overrides(keys)
+            .await
+            .map_err(to_gql_error)
+    }
+);
+
+loader!(
+    FacetUseSeasonFoldersOverrideLoader,
+    String,
+    bool,
+    |ctx, keys| {
+        ctx.app
+            .load_use_season_folders_overrides(keys)
+            .await
+            .map_err(to_gql_error)
+    }
+);
+
+loader!(GlobalMetadataLanguageLoader, String, String, |ctx, keys| {
+    let language = ctx.app.global_metadata_language().await;
+    Ok(keys
+        .iter()
+        .cloned()
+        .map(|key| (key, language.clone()))
+        .collect())
+});
+
+loader!(
     PrimaryCollectionSummaryLoader,
     String,
     PrimaryCollectionSummary,
@@ -430,6 +487,11 @@ pub struct RequestLoaders {
     pub collections_for_title: DataLoader<CollectionsForTitleLoader>,
     pub episodes_for_collection: DataLoader<EpisodesForCollectionLoader>,
     pub required_audio_override: DataLoader<RequiredAudioOverrideLoader>,
+    pub title_metadata_language_override: DataLoader<TitleMetadataLanguageOverrideLoader>,
+    pub library_metadata_language_override: DataLoader<LibraryMetadataLanguageOverrideLoader>,
+    pub library_use_season_folders_override: DataLoader<LibraryUseSeasonFoldersOverrideLoader>,
+    pub facet_use_season_folders_override: DataLoader<FacetUseSeasonFoldersOverrideLoader>,
+    pub global_metadata_language: DataLoader<GlobalMetadataLanguageLoader>,
     pub primary_collection_summary: DataLoader<PrimaryCollectionSummaryLoader>,
     pub media_size_summary: DataLoader<MediaSizeSummaryLoader>,
     pub quality_summary: DataLoader<QualitySummaryLoader>,
@@ -464,6 +526,11 @@ impl RequestLoaders {
             collections_for_title: dl!(CollectionsForTitleLoader),
             episodes_for_collection: dl!(EpisodesForCollectionLoader),
             required_audio_override: dl!(RequiredAudioOverrideLoader),
+            title_metadata_language_override: dl!(TitleMetadataLanguageOverrideLoader),
+            library_metadata_language_override: dl!(LibraryMetadataLanguageOverrideLoader),
+            library_use_season_folders_override: dl!(LibraryUseSeasonFoldersOverrideLoader),
+            facet_use_season_folders_override: dl!(FacetUseSeasonFoldersOverrideLoader),
+            global_metadata_language: dl!(GlobalMetadataLanguageLoader),
             primary_collection_summary: dl!(PrimaryCollectionSummaryLoader),
             media_size_summary: dl!(MediaSizeSummaryLoader),
             quality_summary: dl!(QualitySummaryLoader),

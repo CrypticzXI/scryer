@@ -533,6 +533,7 @@ export function SettingsSubtitleProvidersSection({
               ) : (
                 providerConfigs.map((provider) => (
                   <TableRow
+                    data-ui="settings-table-row"
                     key={provider.id}
                     id={selectorId("settings-subtitle-provider-row", provider.name)}
                     className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"

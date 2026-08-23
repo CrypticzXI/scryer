@@ -68,6 +68,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: Vec::new(),
             tracked_match_type: None,
+            seeding: None,
         }
     }
 
@@ -97,6 +98,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         }
     }
@@ -533,6 +535,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -547,6 +550,59 @@ mod tests {
         assert_eq!(items[0].client_name, "Weaver");
         assert_eq!(items[0].client_type, "weaver");
         assert_eq!(download_queue_client_filter_key(&items[0]), "Weaver");
+    }
+
+    #[test]
+    fn imported_seeding_tracked_rows_stay_visible_in_the_download_queue() {
+        // Regression rail: a tracked state that the queue projection filters
+        // out is a download that has silently vanished from the operator's
+        // view. `ImportedSeeding` rows are held back from removal precisely so
+        // they can be seen.
+        let config = client_config("qBittorrent", "qBittorrent", "qbittorrent", 1);
+        let client_item = item("torrent-1", DownloadQueueState::Completed);
+        let tracked = crate::tracked_downloads::TrackedDownload {
+            id: "qbittorrent:torrent-1".to_string(),
+            client_id: "qBittorrent".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item,
+            completed_source: None,
+            state: TrackedDownloadState::ImportedSeeding,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("movie".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: true,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
+            snapshot_missing_since: None,
+        };
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        let projected = synthetic_tracked_snapshot_queue_item(&metadata, Some(&config))
+            .expect("an imported-but-still-seeding row must be projected into the queue");
+
+        assert_eq!(
+            projected.tracked_state,
+            Some(TrackedDownloadState::ImportedSeeding)
+        );
+        assert_eq!(projected.state, DownloadQueueState::Completed);
+        assert_eq!(projected.import_status, Some(ImportStatus::Completed));
+        assert_eq!(projected.progress_percent, 100);
+        assert_eq!(
+            derive_download_queue_display_state(&projected),
+            DownloadDisplayState::Completed
+        );
     }
 
     #[test]
@@ -576,6 +632,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -629,6 +686,7 @@ mod tests {
                 import_execution_retry: None,
                 import_hold: None,
                 skip_reacquire_on_failure: false,
+                burned_by_import_gate: false,
                 snapshot_missing_since: None,
             }
         }
@@ -681,6 +739,191 @@ mod tests {
             DownloadDisplayState::Failed
         );
         assert_eq!(classified.bucket, DownloadQueueBucket::HistoryFailed);
+    }
+
+    #[test]
+    fn warning_state_stays_in_the_activity_bucket_with_its_message() {
+        let mut queue_item = item("job-warning", DownloadQueueState::Warning);
+        queue_item.attention_required = true;
+        queue_item.attention_reason = Some("files are missing from the save path".to_string());
+
+        let classified = classify_download_queue_item(&queue_item);
+
+        assert_eq!(
+            derive_download_queue_display_state(&queue_item),
+            DownloadDisplayState::Warning
+        );
+        assert_eq!(classified.bucket, DownloadQueueBucket::Activity);
+        assert_eq!(
+            queue_item.attention_reason.as_deref(),
+            Some("files are missing from the save path"),
+            "the client's message is what makes the warning actionable"
+        );
+
+        // The queue page asks for an explicit list of activity filters, so the
+        // row is only reachable if it answers to one of them.
+        assert!(crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::Warning
+        ));
+        assert!(crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::All
+        ));
+        assert!(!crate::matches_download_activity_filter(
+            &queue_item,
+            crate::DownloadActivityFilter::Downloading
+        ));
+    }
+
+    fn warned_client_row(id: &str) -> DownloadQueueItem {
+        let mut queue_item = item(id, DownloadQueueState::Warning);
+        queue_item.attention_required = true;
+        queue_item.attention_reason = Some("files are missing from the save path".to_string());
+        queue_item
+    }
+
+    fn tracked_in_state(
+        queue_item: &DownloadQueueItem,
+        state: TrackedDownloadState,
+    ) -> crate::tracked_downloads::TrackedDownload {
+        crate::tracked_downloads::TrackedDownload {
+            id: format!("qbittorrent:{}", queue_item.id),
+            client_id: "client-1".to_string(),
+            client_type: "qbittorrent".to_string(),
+            client_item: queue_item.clone(),
+            completed_source: None,
+            state,
+            status: TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some("title-1".to_string()),
+            facet: Some("movie".to_string()),
+            source_title: None,
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: true,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
+            snapshot_missing_since: None,
+        }
+    }
+
+    #[test]
+    fn warning_state_never_preempts_a_live_import_overlay() {
+        // Run the overlay itself, not a hand-built row: an import that is
+        // actually moving files is the more specific answer and has to keep the
+        // row, exactly as it did before `Warning` existed.
+        for (tracked_state, expected) in [
+            (
+                TrackedDownloadState::ImportPending,
+                DownloadDisplayState::ImportPending,
+            ),
+            (
+                TrackedDownloadState::Importing,
+                DownloadDisplayState::Importing,
+            ),
+            (
+                TrackedDownloadState::ImportBlocked,
+                DownloadDisplayState::ImportBlocked,
+            ),
+        ] {
+            let mut queue_item = warned_client_row("job-warning-importing");
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                expected,
+                "{tracked_state:?} overlays the client warning"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settled_import_still_surfaces_a_live_client_warning() {
+        // The scenario this workstream exists for: a torrent that hits
+        // `error` / `missingFiles` while it is seeding out its goal after the
+        // import finished. The overlay used to repaint it `Completed`, so it
+        // read as perfectly healthy while the client was stuck.
+        for tracked_state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::ImportedSeeding,
+        ] {
+            let mut queue_item = warned_client_row("job-warning-seeding");
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+
+            assert_eq!(
+                queue_item.state,
+                DownloadQueueState::Warning,
+                "{tracked_state:?} must not repaint a live client warning"
+            );
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::Warning,
+                "{tracked_state:?}"
+            );
+            assert_eq!(
+                queue_item.attention_reason.as_deref(),
+                Some("files are missing from the save path"),
+                "{tracked_state:?}"
+            );
+            // The import is still settled: nothing may re-import it, and the
+            // seeding gate keeps whatever hold it has.
+            assert_eq!(
+                queue_item.import_status,
+                Some(ImportStatus::Completed),
+                "{tracked_state:?}"
+            );
+            assert_eq!(queue_item.progress_percent, 100, "{tracked_state:?}");
+            assert!(queue_item.imported_at.is_some(), "{tracked_state:?}");
+        }
+    }
+
+    #[test]
+    fn a_settled_import_without_a_warning_still_reads_as_completed() {
+        for tracked_state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::ImportedSeeding,
+        ] {
+            let mut queue_item = item("job-imported", DownloadQueueState::Downloading);
+            let metadata =
+                tracked_download_queue_snapshot(&tracked_in_state(&queue_item, tracked_state));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+
+            assert_eq!(
+                queue_item.state,
+                DownloadQueueState::Completed,
+                "{tracked_state:?}"
+            );
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::Completed,
+                "{tracked_state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_failure_outranks_a_warning_when_observations_disagree() {
+        let warned = item("job-1", DownloadQueueState::Warning);
+        let mut failed = item("job-1", DownloadQueueState::Failed);
+        failed.progress_percent = 0;
+
+        let merged = dedupe_download_queue_items(vec![warned, failed]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].state, DownloadQueueState::Failed);
     }
 
     #[test]
@@ -750,6 +993,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
         let metadata = tracked_download_queue_snapshot(&tracked);
@@ -759,6 +1003,176 @@ mod tests {
         assert_eq!(
             queue_item.title_name,
             "Ironclad.1997.2160p.UHD.BluRay.x265-GRP"
+        );
+    }
+
+    // ── queue seeding progress ─────────────────────────────────────────────
+
+    fn seeding_item(snapshot: scryer_domain::DownloadSeedingSnapshot) -> DownloadQueueItem {
+        let mut item = item("torrent-1", DownloadQueueState::Completed);
+        item.client_type = "qbittorrent".to_string();
+        item.seeding = Some(snapshot);
+        item
+    }
+
+    #[test]
+    fn a_usenet_row_has_no_seeding_state() {
+        // `can_remove` is reported by usenet clients too, so it alone must not
+        // make a row look like a torrent.
+        let item = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            can_move_files: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(crate::derive_download_seeding_state(&item), None);
+
+        let mut bare = item.clone();
+        bare.seeding = None;
+        assert_eq!(crate::derive_download_seeding_state(&bare), None);
+    }
+
+    #[test]
+    fn a_torrent_still_downloading_is_not_reported_as_seeding() {
+        let mut item = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            // Every audited plugin reports `Some(false)` for an incomplete
+            // payload; that means "not finished", not "still seeding".
+            can_remove: Some(false),
+            can_move_files: Some(false),
+            seed_ratio: Some(0.0),
+            ..Default::default()
+        });
+        item.state = DownloadQueueState::Downloading;
+        item.progress_percent = 42;
+        assert_eq!(
+            crate::derive_download_seeding_state(&item),
+            Some(crate::DownloadSeedingState::None)
+        );
+    }
+
+    #[test]
+    fn seeding_progress_reads_the_goal_beside_the_observation() {
+        let unmet = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(0.8),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&unmet),
+            Some(crate::DownloadSeedingState::Seeding)
+        );
+
+        let met = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            can_move_files: Some(true),
+            seed_ratio: Some(2.1),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&met),
+            Some(crate::DownloadSeedingState::GoalMet)
+        );
+    }
+
+    #[test]
+    fn a_client_verdict_alone_still_drives_the_badge_when_no_profile_applied() {
+        let done = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(1.1),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&done),
+            Some(crate::DownloadSeedingState::GoalMet)
+        );
+
+        let unknown = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: None,
+            seed_ratio: Some(1.1),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&unknown),
+            Some(crate::DownloadSeedingState::Seeding)
+        );
+    }
+
+    #[test]
+    fn the_private_rail_and_seed_forever_are_visible_in_the_queue() {
+        let private = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            is_private: Some(true),
+            seed_ratio: Some(4.0),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&private),
+            Some(crate::DownloadSeedingState::HeldPrivate)
+        );
+
+        let forever = seeding_item(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(4.0),
+            seed_goal_ratio: Some(1.0),
+            never_remove: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::derive_download_seeding_state(&forever),
+            Some(crate::DownloadSeedingState::NeverRemove)
+        );
+    }
+
+    #[test]
+    fn a_live_row_without_an_observation_inherits_the_tracked_one() {
+        let mut queue_item = item("job-1", DownloadQueueState::Completed);
+        assert!(queue_item.seeding.is_none());
+        let mut tracked = tracked_for_dispatch("qbittorrent:job-1");
+        tracked.client_item.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            seed_ratio: Some(1.1),
+            seed_goal_ratio: Some(2.0),
+            ..Default::default()
+        });
+        let metadata = tracked_download_queue_snapshot(&tracked);
+
+        apply_tracked_download_queue_metadata(&mut queue_item, &metadata);
+
+        assert_eq!(
+            queue_item
+                .seeding
+                .as_ref()
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(1.1)
+        );
+
+        // A live observation is never replaced by the tracked copy.
+        let mut fresher = item("job-1", DownloadQueueState::Completed);
+        fresher.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            seed_ratio: Some(2.6),
+            ..Default::default()
+        });
+        apply_tracked_download_queue_metadata(&mut fresher, &metadata);
+        assert_eq!(
+            fresher
+                .seeding
+                .as_ref()
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(2.6)
+        );
+    }
+
+    #[test]
+    fn a_row_parked_by_the_gate_reports_seeding_even_with_a_silent_client() {
+        // `ImportedSeeding` only exists because the gate held this torrent, so
+        // the row is a torrent regardless of what the client will admit to.
+        let mut item = seeding_item(scryer_domain::DownloadSeedingSnapshot::default());
+        item.tracked_state = Some(TrackedDownloadState::ImportedSeeding);
+        assert_eq!(
+            crate::derive_download_seeding_state(&item),
+            Some(crate::DownloadSeedingState::Seeding)
         );
     }
 }

@@ -53,6 +53,7 @@ impl AppUseCase {
                     library_path: None,
                     root_folders: Some(root_folders),
                     required_audio_languages: None,
+                    use_season_folders: None,
                     folder_template: None,
                     season_folder_template: None,
                     specials_folder_template: None,

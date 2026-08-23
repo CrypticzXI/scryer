@@ -11,7 +11,7 @@ use scryer_application::{
     ShowRepository, TitleRepository,
 };
 use scryer_domain::{Collection, Episode, ExternalId, Id, MediaFacet, NewTitle, Title, User};
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 fn admin() -> User {
     let mut user = User::new_admin("admin");
@@ -549,6 +549,7 @@ async fn full_rescan_preserves_existing_match_for_loose_series_file() {
             title_id: title.id.clone(),
             file_path: loose_file.to_string_lossy().to_string(),
             size_bytes: 16,
+            announced_size_bytes: None,
             role: MediaFileRole::Primary,
             source_signature_scheme: None,
             source_signature_value: None,
@@ -773,6 +774,7 @@ async fn resolve_pending_import_creates_title_and_clears_movie_row_without_scann
         reason_code: "test_match_without_scan".to_string(),
         error_message: None,
         search_attempts: Vec::new(),
+        size_bytes: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -849,6 +851,7 @@ async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title()
             title_id: title.id.clone(),
             file_path: movie_file.to_string_lossy().to_string(),
             size_bytes: 24,
+            announced_size_bytes: None,
             role: MediaFileRole::Primary,
             source_signature_scheme: None,
             source_signature_value: None,
@@ -888,6 +891,7 @@ async fn resolve_pending_import_rejects_stale_movie_row_already_bound_to_title()
         reason_code: "stale_duplicate_pending_import".to_string(),
         error_message: None,
         search_attempts: Vec::new(),
+        size_bytes: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -974,6 +978,7 @@ async fn resolving_existing_title_pending_import_does_not_clear_existing_title_f
         reason_code: "test_missing_loose_file".to_string(),
         error_message: None,
         search_attempts: Vec::new(),
+        size_bytes: None,
         created_at: now.clone(),
         updated_at: now,
     };

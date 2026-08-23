@@ -1,6 +1,3 @@
-const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
-const STANDBY_RETENTION_HOURS: i64 = 24;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DownloadRouteKey {
     pub source_kind: Option<DownloadSourceKind>,
@@ -46,12 +43,24 @@ fn effective_auto_decision_code_for_route(
 
     annotated_auto_decision_code(candidate)
 }
-async fn record_release_decision(
+/// Record what the gate compared, and against what.
+///
+/// `incumbent_bar` is the bar the admission gate actually used — the canonical
+/// score of the primary file in the way — not the scope ledger's remembered
+/// number. The ledger's `current_score` was frequently the score of a release
+/// that never landed, so a decision row could claim a comparison that never
+/// happened, which is precisely what made the original defect so hard to see.
+///
+/// `None` is honest, not missing: decisions recorded before the gate runs (a
+/// quality-blocked candidate, a pack considered and skipped) genuinely had no
+/// bar to compare against.
+pub(crate) async fn record_release_decision(
     app: &AppUseCase,
     item: &AcquisitionScopeState,
     title: &Title,
     candidate: &IndexerSearchResult,
     decision_code: ReleaseAutoDecisionCode,
+    incumbent_bar: Option<i32>,
     now: &DateTime<Utc>,
 ) {
     let candidate_score = candidate
@@ -72,11 +81,49 @@ async fn record_release_decision(
         release_size_bytes: decision_candidate.size_bytes,
         decision_code: decision_code.as_str().to_string(),
         candidate_score,
-        current_score: item.current_score,
-        score_delta: item
-            .current_score
-            .map(|current_score| candidate_score - current_score),
+        current_score: incumbent_bar,
+        score_delta: incumbent_bar.map(|bar| candidate_score - bar),
         explanation_json: serialize_decision_explanation(&decision_candidate),
+        created_at: now.to_rfc3339(),
+    };
+
+    let _ = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .insert_release_decision(&decision_record)
+        .await;
+}
+
+/// Persist the same decision ledger entry for a release that was previously
+/// parked. Its current score is freshly derived by the pending-grab path, while
+/// its source details are the immutable release facts saved with the row.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pending decision persistence carries the saved release and freshly-derived verdict"
+)]
+pub(crate) async fn record_pending_release_decision(
+    app: &AppUseCase,
+    item: &AcquisitionScopeState,
+    title: &Title,
+    pending: &PendingRelease,
+    candidate_score: i32,
+    decision_code: ReleaseAutoDecisionCode,
+    incumbent_bar: Option<i32>,
+    now: &DateTime<Utc>,
+) {
+    let decision_record = ReleaseDecision {
+        id: Id::new().0,
+        wanted_item_id: item.id.clone(),
+        title_id: title.id.clone(),
+        release_title: pending.release_title.clone(),
+        release_url: pending.release_url.clone(),
+        release_size_bytes: pending.release_size_bytes,
+        decision_code: decision_code.as_str().to_string(),
+        candidate_score,
+        current_score: incumbent_bar,
+        score_delta: incumbent_bar.map(|bar| candidate_score - bar),
+        explanation_json: pending.scoring_log_json.clone(),
         created_at: now.to_rfc3339(),
     };
 

@@ -4,12 +4,13 @@ use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
-    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-    FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMAGE_CACHE_MAX_SIZE_MB_KEY,
-    IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
-    MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_ROOT_FOLDERS_KEY,
+    DEFAULT_SEEDING_PROFILE_SETTING_KEY, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
+    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY,
+    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
+    IMAGE_CACHE_MAX_SIZE_MB_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON, MINIMUM_SEEDERS_FLOOR_SETTING_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
     POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
     POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, QUALITY_PROFILE_CATALOG_KEY,
@@ -22,14 +23,17 @@ use scryer_application::{
     REQUEST_QUALITY_PROFILE_IDS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
     SEASON_FOLDER_TEMPLATE_KEY, SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY,
     SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    TITLE_METADATA_LANGUAGE_OVERRIDE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    TOTP_REQUIRE_EMBY_LOGIN_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, USE_SEASON_FOLDERS_KEY,
     builtin_4k_profile, builtin_1080p_profile, builtin_default_quality_profile,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{QualityProfileStore, SettingsStore};
+use scryer_infrastructure_configuration::settings::{
+    quality_profile_store::QualityProfileStore, settings_store::SettingsStore,
+};
 use serde_json::{Value, json};
 
 use crate::{
@@ -157,7 +161,23 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: USE_SEASON_FOLDERS_KEY,
+            data_type: "boolean",
+            default_value_json: "true",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "catalog.title_metadata_rehydration_017_state",
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0008_title_credits_rehydration_018::TITLE_CREDITS_REHYDRATION_018_STATE_KEY,
             data_type: "string",
             default_value_json: "\"none\"",
             is_sensitive: false,
@@ -218,6 +238,18 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             default_value_json: "180",
             is_sensitive: false,
         },
+        // Seeding this for existing installs as well as fresh ones is what
+        // gives every torrent indexer Sonarr's default of 1 without a
+        // per-indexer migration. Operators who want the old behaviour set it
+        // to 0.
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: MINIMUM_SEEDERS_FLOOR_SETTING_KEY,
+            data_type: "number",
+            default_value_json: MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON,
+            is_sensitive: false,
+        },
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_GENERAL,
             scope: SETTINGS_SCOPE_SYSTEM,
@@ -232,6 +264,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
             data_type: "string",
             default_value_json: "\"\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -503,6 +543,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
             data_type: "json",
             default_value_json: "null",
@@ -546,6 +594,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: NZBGET_OLDER_PRIORITY_SETTING_KEY,
             data_type: "string",
             default_value_json: "\"\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: DEFAULT_SEEDING_PROFILE_SETTING_KEY,
+            data_type: "json",
+            default_value_json: "null",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -1060,18 +1116,21 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
 pub(crate) async fn seed_service_setting_definitions(
     database: Arc<SettingsStore>,
 ) -> Result<(), String> {
-    let definitions: Vec<scryer_infrastructure::SettingDefinitionSeed> = service_setting_seeds()
-        .iter()
-        .map(|seed| scryer_infrastructure::SettingDefinitionSeed {
-            category: seed.category.to_string(),
-            scope: seed.scope.to_string(),
-            key_name: seed.key_name.to_string(),
-            data_type: seed.data_type.to_string(),
-            default_value_json: seed.default_value_json.to_string(),
-            is_sensitive: seed.is_sensitive,
-            validation_json: None,
-        })
-        .collect();
+    let definitions: Vec<scryer_infrastructure_sql::types::SettingDefinitionSeed> =
+        service_setting_seeds()
+            .iter()
+            .map(
+                |seed| scryer_infrastructure_sql::types::SettingDefinitionSeed {
+                    category: seed.category.to_string(),
+                    scope: seed.scope.to_string(),
+                    key_name: seed.key_name.to_string(),
+                    data_type: seed.data_type.to_string(),
+                    default_value_json: seed.default_value_json.to_string(),
+                    is_sensitive: seed.is_sensitive,
+                    validation_json: None,
+                },
+            )
+            .collect();
 
     database
         .batch_ensure_setting_definitions(definitions)
@@ -1695,24 +1754,26 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
     }
 }
 
-pub(crate) fn parse_migration_mode(raw: Option<String>) -> scryer_infrastructure::MigrationMode {
+pub(crate) fn parse_migration_mode(
+    raw: Option<String>,
+) -> scryer_infrastructure_datastore::MigrationMode {
     match raw.as_deref() {
         Some(value) if value.eq_ignore_ascii_case("validate") => {
-            scryer_infrastructure::MigrationMode::ValidateOnly
+            scryer_infrastructure_datastore::MigrationMode::ValidateOnly
         }
         Some(value) if value.eq_ignore_ascii_case("apply") => {
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
         Some(value) if value.eq_ignore_ascii_case("auto") => {
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
-        Some("0") => scryer_infrastructure::MigrationMode::ValidateOnly,
-        Some("1") => scryer_infrastructure::MigrationMode::Apply,
+        Some("0") => scryer_infrastructure_datastore::MigrationMode::ValidateOnly,
+        Some("1") => scryer_infrastructure_datastore::MigrationMode::Apply,
         Some(value) => {
             tracing::warn!(value = value, "unknown migration mode, defaulting to apply");
-            scryer_infrastructure::MigrationMode::Apply
+            scryer_infrastructure_datastore::MigrationMode::Apply
         }
-        None => scryer_infrastructure::MigrationMode::Apply,
+        None => scryer_infrastructure_datastore::MigrationMode::Apply,
     }
 }
 
@@ -1736,7 +1797,7 @@ pub(crate) fn extract_pending_migration_ids(message: &str) -> Option<Vec<String>
 mod tests {
     use super::*;
     use scryer_application::SettingsRepository;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
+    use scryer_infrastructure_datastore::{MigrationMode, SqliteServices};
 
     async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1966,6 +2027,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn service_setting_definitions_allow_title_credits_rehydration_state_to_persist() {
+        const KEY: &str =
+            crate::startup_migrations::_0008_title_credits_rehydration_018::TITLE_CREDITS_REHYDRATION_018_STATE_KEY;
+
+        let seed = service_setting_seeds()
+            .iter()
+            .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == KEY)
+            .expect("title credits rehydration state definition should exist");
+        assert_eq!(seed.category, SETTINGS_CATEGORY_MEDIA);
+        assert_eq!(seed.data_type, "string");
+        assert_eq!(seed.default_value_json, "\"none\"");
+        assert!(!seed.is_sensitive);
+
+        let (_temp, store) = bootstrap_settings_store().await;
+        SettingsRepository::upsert_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            KEY,
+            None,
+            "\"pending\"".to_string(),
+            "system",
+            None,
+        )
+        .await
+        .expect("title credits rehydration state should persist");
+    }
+
+    #[tokio::test]
     async fn service_setting_definitions_allow_scheduler_instance_id_to_persist() {
         let (_temp, store) = bootstrap_settings_store().await;
 
@@ -2012,6 +2101,12 @@ mod tests {
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"eng\""
         }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == TITLE_METADATA_LANGUAGE_OVERRIDE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "null"
+        }));
     }
 
     #[test]
@@ -2039,6 +2134,13 @@ mod tests {
                 && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
                 && seed.data_type == "string"
                 && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::PLUGIN_AUTO_UPDATE_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+                && !seed.is_sensitive
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_SYSTEM

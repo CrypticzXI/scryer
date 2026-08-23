@@ -133,6 +133,7 @@ fn make_search_result(
         provenance: None,
         candidate_token: None,
         queue_scope: None,
+        coverage_scope: None,
         auto_eligible: None,
         auto_decision_code: None,
         auto_decision_summary: None,
@@ -301,6 +302,7 @@ fn synthetic_indexer_config(
         enable_auto_search,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: managed_parent_config_id.map(str::to_string),
         managed_child_key: None,
         managed_metadata_json: None,
@@ -371,4 +373,131 @@ fn structured_query_collapse_skips_when_non_nab_indexers_are_eligible() {
         SearchMode::Interactive,
         chrono::Utc::now(),
     ));
+}
+
+// ── D11: the merge comparator orders tier-first ─────────────────────────────
+
+/// One scored result, as the search lane would have produced it.
+fn scored_search_result(
+    title: &str,
+    tier_index: Option<usize>,
+    preference_score: i32,
+    allowed: bool,
+) -> IndexerSearchResult {
+    let mut result = make_search_result(
+        "indexer",
+        title,
+        &format!("https://example.invalid/{title}.nzb"),
+        DownloadSourceKind::NzbUrl,
+    );
+    result.quality_profile_decision = Some(crate::QualityProfileDecision {
+        release_score: preference_score,
+        scoring_log: Vec::new(),
+        allowed,
+        block_codes: if allowed {
+            Vec::new()
+        } else {
+            vec!["source_in_profile_blocklist".to_string()]
+        },
+        preference_score,
+        tier_index,
+    });
+    result
+}
+
+/// **D11.** The interactive search's incremental merge re-sorts a partial
+/// snapshot with `compare_release_search_results`, and the payload then
+/// truncates to the requested limit — so the comparator decides which releases
+/// the operator sees at all.
+///
+/// It ordered allowed → score. With the quality tier no longer inside the score
+/// (it is a comparison step now), a 720p release scoring +300 listed above a
+/// 2160p one scoring +100, and on a truncated page the 2160p release simply
+/// vanished.
+#[test]
+fn the_merge_comparator_orders_tier_before_score() {
+    let mut merged = [
+        scored_search_result("Portmere.2024.720p.WEB-DL-GRP", Some(2), 300, true),
+        scored_search_result("Portmere.2024.1080p.WEB-DL-GRP", Some(1), -50, true),
+        scored_search_result("Portmere.2024.2160p.WEB-DL-GRP", Some(0), 100, true),
+        // Blocked sorts last whatever its tier and score.
+        scored_search_result(
+            "Portmere.2024.2160p.BluRay.REMUX-GRP",
+            Some(0),
+            5_000,
+            false,
+        ),
+        // A quality the profile does not list sorts below every listed tier.
+        scored_search_result("Portmere.2024.480p.DVDRip-GRP", None, 900, true),
+    ];
+
+    merged.sort_by(compare_release_search_results);
+
+    let order = merged
+        .iter()
+        .map(|result| result.title.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![
+            "Portmere.2024.2160p.WEB-DL-GRP",
+            "Portmere.2024.1080p.WEB-DL-GRP",
+            "Portmere.2024.720p.WEB-DL-GRP",
+            "Portmere.2024.480p.DVDRip-GRP",
+            "Portmere.2024.2160p.BluRay.REMUX-GRP",
+        ]
+    );
+}
+
+/// Within one tier, a PROPER outranks the plain release, and only then does the
+/// score decide — the same order `SearchRank` uses.
+#[test]
+fn the_merge_comparator_orders_revision_before_score() {
+    let mut merged = [
+        scored_search_result("Portmere.2024.1080p.WEB-DL-GRP", Some(1), 900, true),
+        scored_search_result("Portmere.2024.PROPER.1080p.WEB-DL-GRP", Some(1), 100, true),
+    ];
+    merged.sort_by(compare_release_search_results);
+
+    assert_eq!(
+        merged[0].title.as_str(),
+        "Portmere.2024.PROPER.1080p.WEB-DL-GRP"
+    );
+}
+
+/// **D21.** Seeders rank after indexer priority, and "no information" (usenet,
+/// or a torrent indexer that omits the field) ties with them rather than sorting
+/// below a torrent with one seeder.
+#[test]
+fn seeders_rank_more_is_better_and_unknown_is_not_zero() {
+    use crate::acquisition::scoring::listing_negated_seeders;
+
+    let mut healthy = make_search_result(
+        "indexer",
+        "Portmere.2024.1080p.WEB-DL-GRP",
+        "magnet:?xt=urn:btih:aaaa",
+        DownloadSourceKind::MagnetUri,
+    );
+    healthy
+        .extra
+        .insert("seeders".to_string(), serde_json::json!(42));
+
+    let mut dead = healthy.clone();
+    dead.extra
+        .insert("seeders".to_string(), serde_json::json!(0));
+
+    let usenet = make_search_result(
+        "indexer",
+        "Portmere.2024.1080p.WEB-DL-GRP",
+        "https://example.invalid/a.nzb",
+        DownloadSourceKind::NzbUrl,
+    );
+
+    assert_eq!(listing_negated_seeders(&healthy), -42);
+    assert!(listing_negated_seeders(&healthy) < listing_negated_seeders(&dead));
+    assert_eq!(
+        listing_negated_seeders(&usenet),
+        listing_negated_seeders(&dead),
+        "no seeder information must not sort below a torrent with none"
+    );
 }

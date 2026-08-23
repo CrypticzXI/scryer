@@ -25,7 +25,7 @@ fn wanted_item_candidates_for_submission_scope(
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: String::new(),
@@ -102,7 +102,7 @@ fn wanted_item_candidates_for_submission_scope(
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: String::new(),
@@ -127,6 +127,7 @@ fn wanted_item_candidate_for_episode_id(
     season_number: Option<String>,
 ) -> AcquisitionScopeState {
     AcquisitionScopeState {
+        landed_bar: None,
         id: String::new(),
         title_id: title_id.to_string(),
         title_name: None,
@@ -144,7 +145,6 @@ fn wanted_item_candidate_for_episode_id(
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: String::new(),
@@ -154,6 +154,8 @@ fn wanted_item_candidate_for_episode_id(
 fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
     DownloadSubmission {
         title_id: title_id.to_string(),
+        // Scope matching only; this submission is never persisted.
+        release_size_bytes: None,
         facet: String::new(),
         download_client_id: None,
         download_client_type: String::new(),
@@ -212,6 +214,10 @@ fn validate_manual_queue_purpose(
         )),
     }
 }
+/// `Warning` blocks like any other live state: the download is still in the
+/// client and — unlike a failure — is never cleaned up on its own, so treating
+/// it as absent would leave the operator with two grabs for one release.
+/// Sonarr's `QueueSpecification` skips only `FailedPending` for the same reason.
 fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
     matches!(
         state,
@@ -222,12 +228,18 @@ fn queue_state_blocks_submission(state: DownloadQueueState) -> bool {
             | DownloadQueueState::Repairing
             | DownloadQueueState::Extracting
             | DownloadQueueState::ImportPending
+            | DownloadQueueState::Warning
     )
 }
+/// Blocking a warned grab without letting it be replaced would be a dead end:
+/// nothing else removes it, so the operator needs the swap.
 fn queue_state_is_replaceable(state: DownloadQueueState) -> bool {
     matches!(
         state,
-        DownloadQueueState::Queued | DownloadQueueState::Downloading | DownloadQueueState::Paused
+        DownloadQueueState::Queued
+            | DownloadQueueState::Downloading
+            | DownloadQueueState::Paused
+            | DownloadQueueState::Warning
     )
 }
 fn queue_item_matches_submission(
@@ -405,6 +417,9 @@ impl AppUseCase {
             source_kind,
             source_title,
             source_password,
+            info_hash_hint,
+            size_bytes,
+            seeders,
         } = queued_release;
         let source_provider_name = if let Some(indexer_id) = indexer_id.as_deref() {
             self.services
@@ -454,6 +469,9 @@ impl AppUseCase {
                         source_kind,
                         source_title,
                         source_password,
+                        info_hash_hint,
+                        size_bytes,
+                        seeders,
                     },
                     reused_existing: true,
                 }));
@@ -538,11 +556,22 @@ impl AppUseCase {
                 release_title: None,
                 indexer_name: None,
                 indexer_id: indexer_id.clone(),
-                info_hash_hint: None,
+                info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
+                // Manual/interactive queueing carries a resolved source URL,
+                // not the indexer release object, so there is no `extra` map to
+                // read tracker minimums from on this path.
+                tracker_min_seed_ratio: None,
+                tracker_min_seed_time_minutes: None,
+                season_pack_seed_ratio: None,
+                season_pack_seed_time_minutes: None,
                 is_recent,
-                season_pack: None,
+                season_pack: matches!(
+                    scope,
+                    SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
+                )
+                .then_some(true),
             })
             .await;
 
@@ -555,6 +584,7 @@ impl AppUseCase {
                         .to_string();
                     metrics::counter!("scryer_grabs_total", "indexer" => "manual", "facet" => facet_label).increment(1);
                 }
+                self.record_indexer_grab(indexer_id.as_deref(), source_provider_name.as_deref());
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 let accepted_identity =
@@ -563,7 +593,7 @@ impl AppUseCase {
                             initial_download_id: submission_identity.download_id.as_deref(),
                             source_kind,
                             source_hint: source_hint_for_attempt.as_deref(),
-                            info_hash_hint: None,
+                            info_hash_hint: info_hash_hint.as_deref(),
                             client_type: Some(grab.client_type.as_str()),
                             client_item_id: Some(grab.job_id.as_str()),
                             accepted_info_hash: grab.info_hash.as_deref(),
@@ -586,6 +616,7 @@ impl AppUseCase {
                             source_provider_name: source_provider_name.clone(),
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
+                            release_size_bytes: size_bytes,
                             request_signature: request_signature.clone(),
                             purpose,
                             scope: scope.clone(),
@@ -695,8 +726,15 @@ impl AppUseCase {
                 grab
             }
             Err(error) => {
-                let submit_unavailable = is_download_submit_unavailable_error(&error);
+                let source_gone = error.is_download_source_gone();
+                let submit_unavailable = is_download_submit_unavailable_error(&error) || source_gone;
                 let error_message = error.to_string();
+                if source_gone {
+                    tracing::info!(
+                        release = ?source_title_for_attempt,
+                        "operator download source gone; leaving it unblocked"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow
@@ -770,6 +808,9 @@ impl AppUseCase {
                 source_kind,
                 source_title: source_title_for_attempt,
                 source_password,
+                info_hash_hint,
+                size_bytes,
+                seeders,
             },
             reused_existing: false,
         }))
@@ -834,7 +875,7 @@ impl AppUseCase {
                 queued_release,
                 SubmissionScope::Title,
                 SubmissionConflictPolicy::Abort,
-                DownloadSubmissionPurpose::Standard,
+                DownloadSubmissionPurpose::OperatorQueued,
             )
             .await?;
         let QueueDownloadOutcome::Queued(queued) = queued else {
@@ -966,10 +1007,18 @@ impl AppUseCase {
         title_id: &str,
         candidate_token: &str,
         conflict_policy: SubmissionConflictPolicy,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_replacement_release(
                 actor,
@@ -1077,10 +1126,15 @@ impl AppUseCase {
             scope,
             conflict_policy,
             DownloadSubmissionPurpose::Standard,
+            None,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the candidate token, caller scope, queue policy, purpose, and announced size are independently validated inputs"
+    )]
     pub async fn queue_existing_title_download_from_candidate_token_with_purpose(
         &self,
         actor: &User,
@@ -1089,10 +1143,18 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
         purpose: DownloadSubmissionPurpose,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_existing_title_download_with_purpose(
                 actor,
@@ -1114,6 +1176,11 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Ask the scorer to choose a release for this scope.
+    ///
+    /// Although an operator starts this action, the scorer—not the operator—
+    /// selects the release, so its submission purpose remains `Standard` and
+    /// import guard failures use the automatic convergence policy.
     pub async fn queue_best_release(
         &self,
         actor: &User,
@@ -1238,10 +1305,19 @@ impl AppUseCase {
             )
             .await;
         }
+        let Some(best_index) = results
+            .iter()
+            .position(|candidate| candidate.auto_eligible == Some(true))
+        else {
+            return Err(AppError::NoAutoEligibleRelease {
+                candidate_count: results.len(),
+                reasons: summarize_auto_eligibility_reasons(&results),
+            });
+        };
         let best = results
             .into_iter()
-            .find(|candidate| candidate.auto_eligible == Some(true))
-            .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
+            .nth(best_index)
+            .expect("eligible release index came from results");
         let queue_scope = if matches!(
             &scope,
             SubmissionScope::Collection { .. } | SubmissionScope::SeriesMovie { .. }
@@ -1289,6 +1365,13 @@ impl AppUseCase {
                 source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
+                info_hash_hint: best
+                    .extra
+                    .get("info_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                size_bytes: best.size_bytes,
+                seeders: crate::acquisition::seed_goals::seeders_from_extra(&best.extra),
             },
             queue_scope,
             conflict_policy,
@@ -1296,6 +1379,41 @@ impl AppUseCase {
         .await
     }
 }
+fn summarize_auto_eligibility_reasons(
+    results: &[IndexerSearchResult],
+) -> Vec<crate::AutoEligibilityReason> {
+    let mut reasons = std::collections::BTreeMap::new();
+    for candidate in results {
+        let code = candidate
+            .auto_decision_code
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
+        let summary = candidate
+            .auto_decision_summary
+            .as_deref()
+            .unwrap_or("automatic eligibility was not evaluated")
+            .to_string();
+        reasons
+            .entry(code.clone())
+            .and_modify(|reason: &mut crate::AutoEligibilityReason| reason.count += 1)
+            .or_insert(crate::AutoEligibilityReason {
+                code,
+                summary,
+                count: 1,
+            });
+    }
+
+    let mut reasons: Vec<_> = reasons.into_values().collect();
+    reasons.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    reasons
+}
+
 fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1443,6 +1561,9 @@ mod grab_time_release_title_tests {
                 source_kind: None,
                 source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
                 source_password: None,
+                info_hash_hint: None,
+                size_bytes: Some(1_234_567),
+                seeders: None,
             },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
@@ -1454,6 +1575,7 @@ mod grab_time_release_title_tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].title_id, title.id);
         assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(rows[0].release_size_bytes, Some(1_234_567));
         assert_eq!(
             rows[0].source_title.as_deref(),
             Some("Paper.Lantern.2012.1080p.WEB-DL-GRP"),
@@ -1481,6 +1603,9 @@ mod grab_time_release_title_tests {
                     source_kind: None,
                     source_title: None,
                     source_password: None,
+                    info_hash_hint: None,
+                    size_bytes: None,
+                    seeders: None,
                 },
             )
             .await

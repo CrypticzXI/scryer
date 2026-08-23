@@ -4,10 +4,11 @@ import {
   MEDIA_SERVER_CONNECTION_FIELDS,
   PROVIDER_CONFIG_VALUE_FIELDS,
   RELEASE_SEARCH_RESULT_FIELDS,
+  SEEDING_PROFILE_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_MUTATION_RESULT_FIELDS,
-} from "./queries";
+} from "./queries.ts";
 
 const AUTH_USER_FIELDS = `
       id
@@ -29,6 +30,7 @@ const LOGIN_PAYLOAD_FIELDS = `
     expiresAt
     mfaVerifiedUntil
     mfaEnrollmentRequired
+    passwordChangeRequired
     persistSession`;
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
@@ -37,10 +39,17 @@ ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;
 
+export const completeRequiredPasswordChangeMutation = `mutation CompleteRequiredPasswordChange($input: CompleteRequiredPasswordChangeInput!) {
+  completeRequiredPasswordChange(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
 export const webauthnRegisterStartMutation = `mutation WebauthnRegisterStart {
   webauthnRegisterStart {
     challengeId
     optionsJson
+    expiresAt
   }
 }`;
 
@@ -57,12 +66,55 @@ export const webauthnAuthenticateStartMutation = `mutation WebauthnAuthenticateS
   webauthnAuthenticateStart(username: $username) {
     challengeId
     optionsJson
+    expiresAt
   }
 }`;
 
 export const webauthnAuthenticateCompleteMutation = `mutation WebauthnAuthenticateComplete($input: WebauthnCompleteInput!) {
   webauthnAuthenticateComplete(input: $input) {
 ${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginVerificationPasskeyStartMutation = `mutation LoginVerificationPasskeyStart($challengeId: ID!) {
+  loginVerificationPasskeyStart(challengeId: $challengeId) {
+    challengeId
+    optionsJson
+    expiresAt
+  }
+}`;
+
+export const loginVerificationPasskeyCompleteMutation = `mutation LoginVerificationPasskeyComplete($input: LoginVerificationPasskeyCompleteInput!) {
+  loginVerificationPasskeyComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginVerificationTotpCompleteMutation = `mutation LoginVerificationTotpComplete($input: LoginVerificationTotpCompleteInput!) {
+  loginVerificationTotpComplete(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const webauthnLoginEnrollmentStartMutation = `mutation WebauthnLoginEnrollmentStart {
+  webauthnLoginEnrollmentStart {
+    challengeId
+    optionsJson
+    expiresAt
+  }
+}`;
+
+export const webauthnLoginEnrollmentCompleteMutation = `mutation WebauthnLoginEnrollmentComplete($input: WebauthnRegisterCompleteInput!) {
+  webauthnLoginEnrollmentComplete(input: $input) {
+    passkey {
+      id
+      friendlyName
+      createdAt
+      lastUsedAt
+    }
+    login {
+${LOGIN_PAYLOAD_FIELDS}
+    }
   }
 }`;
 
@@ -254,6 +306,27 @@ export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInpu
 
 export const deleteTitlesMutation = `mutation DeleteTitles($input: DeleteTitlesInput!) {
   deleteTitles(input: $input) {
+    acceptedTitleIds
+    jobRun {
+      id
+      jobKey
+      displayName
+      category
+      section
+      status
+      triggerSource
+      startedAt
+      completedAt
+      summaryJson
+      summaryText
+      errorText
+      progressJson
+    }
+  }
+}`;
+
+export const renameTitlesMutation = `mutation RenameTitles($input: RenameTitlesInput!) {
+  renameTitles(input: $input) {
     acceptedTitleIds
     jobRun {
       id
@@ -655,48 +728,6 @@ ${JOB_RUN_FIELDS}
   }
 }`;
 
-export const applyMediaRenameMutation = `mutation ApplyMediaRename($input: MediaRenameApplyInput!) {
-  applyMediaRename(input: $input) {
-    planFingerprint
-    total
-    applied
-    skipped
-    failed
-    items {
-      collectionId
-      seriesMovieLinkIds
-      currentPath
-      proposedPath
-      finalPath
-      writeAction
-      status
-      reasonCode
-      errorMessage
-    }
-  }
-}`;
-
-export const applyMediaRenameBulkMutation = `mutation ApplyMediaRenameBulk($input: MediaRenameBulkApplyInput!) {
-  applyMediaRenameBulk(input: $input) {
-    planFingerprint
-    total
-    applied
-    skipped
-    failed
-    items {
-      collectionId
-      seriesMovieLinkIds
-      currentPath
-      proposedPath
-      finalPath
-      writeAction
-      status
-      reasonCode
-      errorMessage
-    }
-  }
-}`;
-
 export const updateSubtitleSettingsMutation = `mutation UpdateSubtitleSettings($input: UpdateSubtitleSettingsInput!) {
   updateSubtitleSettings(input: $input) {${SUBTITLE_SETTINGS_FIELDS}
   }
@@ -837,8 +868,8 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     skipLoginForLocalIps
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
-    totpRequireJellyfinLogin
-    totpRequireEmbyLogin
+    mfaRequireJellyfinLogin
+    mfaRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -1033,7 +1064,8 @@ const downloadClientRoutingFieldSelection = `
     recentQueuePriority
     olderQueuePriority
     removeCompleted
-    removeFailed`;
+    removeFailed
+    seedingProfileId`;
 
 const indexerRoutingFieldSelection = `
     indexerId
@@ -1049,6 +1081,7 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    useSeasonFolders
     folderTemplate
     seasonFolderTemplate
     specialsFolderTemplate
@@ -1868,6 +1901,12 @@ export const updateRecycleBinSettingsMutation = `mutation UpdateRecycleBinSettin
   }
 }`;
 
+export const updatePluginAutoUpdateSettingsMutation = `mutation UpdatePluginAutoUpdateSettings($input: UpdatePluginAutoUpdateSettingsInput!) {
+  updatePluginAutoUpdateSettings(input: $input) {
+    enabled
+  }
+}`;
+
 // ── Notifications ────────────────────────────────────────────────────────
 
 export const createNotificationChannelMutation = `mutation CreateNotificationChannel($input: CreateNotificationChannelInput!) {
@@ -2424,5 +2463,42 @@ export type SubtitleSearchResult = {
 export const setIndexerDownloadClientMappingMutation = `mutation SetIndexerDownloadClientMapping($input: SetIndexerDownloadClientMappingInput!) {
   setIndexerDownloadClientMapping(input: $input) {
     downloadClientId
+  }
+}`;
+
+export const setIndexerSeedingProfileMutation = `mutation SetIndexerSeedingProfile($input: SetIndexerSeedingProfileInput!) {
+  setIndexerSeedingProfile(input: $input) {
+    id
+    seedingProfileId
+  }
+}`;
+
+export const createSeedingProfileMutation = `mutation CreateSeedingProfile($input: CreateSeedingProfileInput!) {
+  createSeedingProfile(input: $input) {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const updateSeedingProfileMutation = `mutation UpdateSeedingProfile($input: UpdateSeedingProfileInput!) {
+  updateSeedingProfile(input: $input) {${SEEDING_PROFILE_FIELDS}
+  }
+}`;
+
+export const deleteSeedingProfileMutation = `mutation DeleteSeedingProfile($id: ID!) {
+  deleteSeedingProfile(id: $id) {
+    id
+  }
+}`;
+
+export const setDefaultSeedingProfileMutation = `mutation SetDefaultSeedingProfile($input: SetDefaultSeedingProfileInput!) {
+  setDefaultSeedingProfile(input: $input) {
+    seedingProfileId
+    minimumSeedersFloor
+  }
+}`;
+
+export const setMinimumSeedersFloorMutation = `mutation SetMinimumSeedersFloor($input: SetMinimumSeedersFloorInput!) {
+  setMinimumSeedersFloor(input: $input) {
+    seedingProfileId
+    minimumSeedersFloor
   }
 }`;

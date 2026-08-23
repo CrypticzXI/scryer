@@ -119,6 +119,7 @@ pub async fn retry_failed_import(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
+                release_burned: false,
                 ..base_completed_import_result(
                     import_id,
                     &completed,
@@ -133,15 +134,22 @@ pub async fn retry_failed_import(
         }
     }
 }
-async fn reconcile_terminal_download_cleanup(
+/// Identifies why a failed download reached terminal cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalFailureOrigin {
+    ClientFailure,
+    ImportGate,
+}
+
+pub(crate) async fn should_remove_terminal_download(
     app: &AppUseCase,
     client_id: &str,
     client_type: &str,
-    download_client_item_id: &str,
     library_id: Option<&str>,
     facet: Option<&MediaFacet>,
     state: TrackedDownloadState,
-) -> TerminalDownloadCleanupOutcome {
+    cache: Option<&TerminalCleanupTickCache>,
+) -> bool {
     let client_id = client_id.trim();
     let routing_key = if client_id.is_empty() {
         client_type
@@ -149,10 +157,10 @@ async fn reconcile_terminal_download_cleanup(
         client_id
     };
 
-    let should_remove = match state {
-        TrackedDownloadState::Imported => match facet {
+    match state {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => match facet {
             Some(facet) => {
-                app.should_remove_completed_download(library_id, facet, routing_key)
+                should_remove_completed_download_cached(app, library_id, facet, routing_key, cache)
                     .await
             }
             None => false,
@@ -166,34 +174,262 @@ async fn reconcile_terminal_download_cleanup(
         },
         TrackedDownloadState::Ignored => true,
         _ => false,
+    }
+}
+
+/// Remove a terminal download's entry from its client, subject to the
+/// seeding-aware gate.
+///
+/// Removing a torrent's entry stops it seeding even with `remove_data: false`,
+/// so for torrent-protocol items an `Imported` state is no longer sufficient
+/// on its own — the gate has to agree that the seeding obligation is
+/// discharged. Failed and Ignored downloads are deliberately *not* gated:
+/// blocklist and retry must never wait on seeding (Sonarr's rule).
+///
+/// Once a removal is agreed, a torrent's payload goes with the entry
+/// (`remove_data`, Sonarr's `deleteData: true`); see the call site for which
+/// states qualify and which keep today's behavior.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "terminal cleanup carries client identity, routing scope, state, and the seeding gate's view of the client entry"
+)]
+async fn reconcile_terminal_download_cleanup(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    library_id: Option<&str>,
+    facet: Option<&MediaFacet>,
+    state: TrackedDownloadState,
+    failure_origin: TerminalFailureOrigin,
+    precomputed_should_remove: Option<bool>,
+    present_in_client: bool,
+    // The freshest seeding observation the caller holds, or `None` to have the
+    // gate look one up from the published tracked-download snapshot.
+    observation: Option<crate::seeding_gate::TorrentSeedingObservation>,
+    // The reconcile tick's shared reads, or `None` for callers outside a tick
+    // (manual import), which take the per-row path.
+    cache: Option<&TerminalCleanupTickCache>,
+) -> TerminalDownloadCleanup {
+    let client_id = client_id.trim();
+    let should_remove = match precomputed_should_remove {
+        Some(should_remove) => should_remove,
+        None => {
+            should_remove_terminal_download(
+                app,
+                client_id,
+                client_type,
+                library_id,
+                facet,
+                state,
+                cache,
+            )
+            .await
+        }
     };
 
     if !should_remove {
-        return TerminalDownloadCleanupOutcome::NotConfigured;
+        return TerminalDownloadCleanup::bare(TerminalDownloadCleanupOutcome::NotConfigured);
+    }
+
+    // Carried past the gate for the seeding history events: the gate consumes
+    // the observation, and the release event has to report the ratio and seed
+    // time the decision was actually taken on.
+    let observed_ratio = observation
+        .as_ref()
+        .and_then(|observation| observation.seed_ratio);
+    let observed_seed_time_seconds = observation
+        .as_ref()
+        .and_then(|observation| observation.seed_time_seconds);
+    // The client's own removal verdict, post-trust-floor — the same value the
+    // gate would read. A client-reported failure does not enter the gate and
+    // retains this behavior unchanged.
+    let observed_can_remove = observation
+        .as_ref()
+        .and_then(|observation| observation.can_remove);
+    let report = |reason: &'static str, action: Option<SeedingReleaseAction>| SeedingGateReport {
+        reason,
+        action,
+        seed_ratio: observed_ratio,
+        seed_time_seconds: observed_seed_time_seconds,
+    };
+
+    let is_torrent = crate::seeding_gate::client_type_is_torrent(app, client_type);
+    let mut seeding_report = None;
+    if state.counts_as_imported()
+        || (state == TrackedDownloadState::Failed
+            && failure_origin == TerminalFailureOrigin::ImportGate
+            && is_torrent)
+    {
+        let key = crate::seeding_gate::SeedGoalLookupKey {
+            client_id: client_id.to_string(),
+            client_type: client_type.trim().to_string(),
+            client_item_id: download_client_item_id.trim().to_string(),
+            info_hash: crate::normalize_torrent_info_hash(Some(download_client_item_id)),
+        };
+        let decision = crate::seeding_gate::evaluate_seeding_gate_with(
+            app,
+            &key,
+            present_in_client,
+            observation,
+            cache.map(TerminalCleanupTickCache::goal_batch),
+        )
+        .await;
+        match decision.outcome {
+            crate::seeding_gate::SeedingGateOutcome::NotApplicable => {}
+            crate::seeding_gate::SeedingGateOutcome::Vanished => {
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::AlreadyGone,
+                    report(decision.reason, Some(SeedingReleaseAction::Vanished)),
+                );
+            }
+            crate::seeding_gate::SeedingGateOutcome::HandedOff => {
+                tracing::info!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    reason = decision.reason,
+                    "post-import handoff: leaving the client entry untouched and no longer managing this torrent"
+                );
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::HandedOff,
+                    report(decision.reason, Some(SeedingReleaseAction::HandedOff)),
+                );
+            }
+            crate::seeding_gate::SeedingGateOutcome::Hold => {
+                tracing::debug!(
+                    client_id,
+                    client_type,
+                    download_client_item_id,
+                    state = state.as_str(),
+                    reason = decision.reason,
+                    "seeding gate is holding a torrent entry after import"
+                );
+                return TerminalDownloadCleanup::gated(
+                    TerminalDownloadCleanupOutcome::HeldForSeeding,
+                    report(decision.reason, None),
+                );
+            }
+            crate::seeding_gate::SeedingGateOutcome::Released { action } => match action {
+                scryer_domain::SeedGoalMetAction::RemoveEntry => {
+                    seeding_report =
+                        Some(report(decision.reason, Some(SeedingReleaseAction::Removed)));
+                }
+                scryer_domain::SeedGoalMetAction::StopSeeding => {
+                    let stopped = stop_seeding_for_terminal_download(
+                        app,
+                        client_id,
+                        client_type,
+                        download_client_item_id,
+                        decision.reason,
+                    )
+                    .await;
+                    return TerminalDownloadCleanup::gated(
+                        TerminalDownloadCleanupOutcome::SeedingEntryKept,
+                        report(decision.reason, Some(stopped)),
+                    );
+                }
+                scryer_domain::SeedGoalMetAction::Keep => {
+                    tracing::info!(
+                        client_id,
+                        client_type,
+                        download_client_item_id,
+                        reason = decision.reason,
+                        "seeding goal met; keeping the client entry per profile policy"
+                    );
+                    return TerminalDownloadCleanup::gated(
+                        TerminalDownloadCleanupOutcome::SeedingEntryKept,
+                        report(decision.reason, Some(SeedingReleaseAction::Kept)),
+                    );
+                }
+            },
+        }
     }
 
     let is_history = matches!(
         state,
         TrackedDownloadState::Imported
+            | TrackedDownloadState::ImportedSeeding
             | TrackedDownloadState::Failed
             | TrackedDownloadState::Ignored
     );
+
+    // Sonarr removes an imported download's data with its entry
+    // (`RemoveItem(item, deleteData: true)`, DownloadEventHub
+    // .RemoveFromDownloadClient), and does the same on failure — but only after
+    // `Handle(DownloadFailedEvent)` returns early unless
+    // `trackedDownload.DownloadItem.CanBeRemoved`. For torrents that verdict is
+    // the client's seed-limit answer, and only a *manual* failure forces it
+    // (`TrackedDownload.Fail()`); an automatic one leaves it alone. So:
+    //
+    // - `Imported`/`ImportedSeeding` reaching this line means the gate released
+    //   the entry with `RemoveEntry`: the obligation is discharged, the import
+    //   already produced the library file, and a copy import's client-side copy
+    //   would otherwise be orphaned.
+    // - A client-reported `Failed` never enters the gate — no private rail, no
+    //   `never_remove`, no HandOff — so the client's own `can_remove` is the
+    //   only rail there is. A torrent it will not release (or cannot answer
+    //   for) keeps today's entry-only removal.
+    // - A burned import-gate `Failed` is a release failure, so torrents use
+    //   the same gate and data behavior as imported torrents while Usenet
+    //   history deletion includes its client-side data.
+    // - `Ignored` keeps today's behavior on purpose: the operator told Scryer
+    //   to stop tracking the download, not to delete what it downloaded.
+    //
+    // `torrent-blackhole` is excluded outright. Its "remove" is a
+    // `remove_dir_all` on a watch folder some *other* client is seeding from;
+    // the gate refuses it for imported states, and `Failed` skips the gate, so
+    // the rule has to be restated here.
+    let torrent_data_removal_allowed = is_torrent
+        && !client_type
+            .trim()
+            .eq_ignore_ascii_case(crate::seeding_gate::TORRENT_BLACKHOLE_CLIENT_TYPE);
+    let remove_data = match state {
+        TrackedDownloadState::Imported | TrackedDownloadState::ImportedSeeding => {
+            torrent_data_removal_allowed
+        }
+        TrackedDownloadState::Failed
+            if failure_origin == TerminalFailureOrigin::ImportGate && is_torrent =>
+        {
+            torrent_data_removal_allowed
+        }
+        TrackedDownloadState::Failed
+            if failure_origin == TerminalFailureOrigin::ImportGate =>
+        {
+            true
+        }
+        TrackedDownloadState::Failed => {
+            observed_can_remove == Some(true) && torrent_data_removal_allowed
+        }
+        _ => false,
+    };
 
     let delete_result = if client_id.is_empty() {
         app.services
             .integrations
             .download_client
-            .delete_queue_item_for_client(client_type, download_client_item_id, is_history)
+            .delete_queue_item_for_client(
+                client_type,
+                download_client_item_id,
+                is_history,
+                remove_data,
+            )
             .await
     } else {
         app.services
             .integrations
             .download_client
-            .delete_queue_item_for_client_id(client_id, download_client_item_id, is_history)
+            .delete_queue_item_for_client_id(
+                client_id,
+                download_client_item_id,
+                is_history,
+                remove_data,
+            )
             .await
     };
 
-    match delete_result {
+    let outcome = match delete_result {
         Ok(()) => TerminalDownloadCleanupOutcome::Removed,
         Err(error) => {
             if !terminal_download_item_is_still_visible(
@@ -226,8 +462,74 @@ async fn reconcile_terminal_download_cleanup(
                 TerminalDownloadCleanupOutcome::RetryableFailure
             }
         }
+    };
+
+    // The removal may have failed after the gate released the entry; report
+    // what actually happened rather than the intent.
+    let seeding = seeding_report.map(|report| SeedingGateReport {
+        action: match outcome {
+            TerminalDownloadCleanupOutcome::Removed => Some(SeedingReleaseAction::Removed),
+            TerminalDownloadCleanupOutcome::AlreadyGone => Some(SeedingReleaseAction::Vanished),
+            _ => Some(SeedingReleaseAction::Kept),
+        },
+        ..report
+    });
+    TerminalDownloadCleanup { outcome, seeding }
+}
+/// `SeedGoalMetAction::StopSeeding`: leave the entry in the client but stop it
+/// uploading.
+///
+/// Pause is the only stop control the download-client port exposes
+/// (`DownloadControlAction::Pause` in the plugin SDK), and for a torrent that
+/// has finished downloading, paused *is* stopped seeding. A client that does
+/// not support pause degrades to `Keep`: the entry stays and nothing is
+/// removed, which is the safe direction.
+async fn stop_seeding_for_terminal_download(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    reason: &'static str,
+) -> SeedingReleaseAction {
+    let paused = if client_id.is_empty() {
+        app.services
+            .integrations
+            .download_client
+            .pause_queue_item(download_client_item_id)
+            .await
+    } else {
+        app.services
+            .integrations
+            .download_client
+            .pause_queue_item_for_client(client_id, download_client_item_id)
+            .await
+    };
+
+    match paused {
+        Ok(()) => {
+            tracing::info!(
+                client_id,
+                client_type,
+                download_client_item_id,
+                reason,
+                "seeding goal met; paused the torrent per profile policy"
+            );
+            SeedingReleaseAction::Paused
+        }
+        Err(error) => {
+            tracing::warn!(
+                client_id,
+                client_type,
+                download_client_item_id,
+                reason,
+                error = %error,
+                "seeding goal met but this client cannot stop the torrent; keeping the entry untouched"
+            );
+            SeedingReleaseAction::Kept
+        }
     }
 }
+
 fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
     match code {
         "duplicate_file" => ImportSkipReason::AlreadyImported,

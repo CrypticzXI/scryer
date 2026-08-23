@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
+use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, value};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
     OAuthAuthorizationSource,
@@ -138,12 +138,14 @@ impl AuthRuntimeStateHandle {
 #[derive(Clone, Copy)]
 pub struct ConnectionAuthEpoch(pub u64);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct MfaVerification {
     pub verified_until: Option<i64>,
     pub step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
     pub persist_session: bool,
+    pub auth_session_version: Option<String>,
+    pub password_change_required_after_enrollment: bool,
     pub oauth_authorization_source: OAuthAuthorizationSource,
 }
 
@@ -299,13 +301,36 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::Validation(message) => {
             coded_gql_error(format!("validation: {message}"), "VALIDATION_ERROR")
         }
+        AppError::NoAutoEligibleRelease {
+            candidate_count,
+            reasons,
+        } => {
+            Error::new("validation: no auto-eligible release found").extend_with(|_, extensions| {
+                extensions.set("code", "VALIDATION_ERROR");
+                extensions.set("autoCandidateCount", candidate_count as i64);
+                extensions.set(
+                    "autoDecisionReasons",
+                    reasons
+                        .into_iter()
+                        .map(|reason| {
+                            value!({
+                                "code": reason.code,
+                                "summary": reason.summary,
+                                "count": reason.count as i64,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            })
+        }
         AppError::DownloadFeedbackTimeout(message) => {
             coded_gql_error(message, "DOWNLOAD_FEEDBACK_TIMEOUT")
         }
         // Failover exhaustion is a distinct internal kind for diagnostics but
         // the same external contract: the submission is retryable later.
         AppError::DownloadSubmitUnavailable(message)
-        | AppError::DownloadSubmitFailoverExhausted(message) => {
+        | AppError::DownloadSubmitFailoverExhausted(message)
+        | AppError::DownloadSourceGone(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
         AppError::ArchiveExtractionPluginRequired {
@@ -346,6 +371,9 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::MfaEnrollmentRequired(message) => {
             coded_gql_error(message, "MFA_ENROLLMENT_REQUIRED")
         }
+        AppError::PasswordChangeRequired(message) => {
+            coded_gql_error(message, "PASSWORD_CHANGE_REQUIRED")
+        }
         AppError::TotpInvalidCode(message) => coded_gql_error(message, "TOTP_INVALID_CODE"),
         AppError::TotpRecoveryCodeUsed(message) => {
             coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
@@ -381,6 +409,7 @@ fn login_progression_error(err: &AppError) -> bool {
         AppError::MfaStepUpRequired(_)
             | AppError::TotpEnrollmentRequired(_)
             | AppError::MfaEnrollmentRequired(_)
+            | AppError::PasswordChangeRequired(_)
             | AppError::TotpInvalidCode(_)
             | AppError::TotpRecoveryCodeUsed(_)
     )
@@ -390,18 +419,21 @@ fn app_error_kind(err: &AppError) -> &'static str {
     match err {
         AppError::Unauthorized(_) => "Unauthorized",
         AppError::Validation(_) => "Validation",
+        AppError::NoAutoEligibleRelease { .. } => "NoAutoEligibleRelease",
         AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::DownloadSourceGone(_) => "DownloadSourceGone",
         AppError::DownloadSubmitFailoverExhausted(_) => "DownloadSubmitFailoverExhausted",
         AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
+        AppError::PasswordChangeRequired(_) => "PasswordChangeRequired",
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
         AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
         AppError::Canceled(_) => "Canceled",
@@ -426,6 +458,25 @@ pub fn to_login_gql_error(method: &'static str, err: AppError) -> Error {
     }
 }
 
+pub fn login_verification_required_gql_error(
+    challenge_id: &str,
+    expires_at: &str,
+    has_passkey: bool,
+    has_totp: bool,
+) -> Error {
+    Error::new("Additional verification is required.").extend_with(|_, extensions| {
+        extensions.set("code", "MFA_STEP_UP_REQUIRED");
+        extensions.set("loginChallengeId", challenge_id);
+        extensions.set("expiresAt", expires_at);
+        extensions.set("hasPasskey", has_passkey);
+        extensions.set("hasTotp", has_totp);
+        extensions.set(
+            "preferredFactor",
+            if has_passkey { "PASSKEY" } else { "TOTP" },
+        );
+    })
+}
+
 pub async fn to_login_gql_error_after_timing(
     method: &'static str,
     timing_class: LoginFailureTimingClass,
@@ -441,10 +492,18 @@ pub async fn to_login_gql_error_after_timing(
 }
 
 pub fn actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
-    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
-        return Err(to_gql_error(AppError::MfaEnrollmentRequired(
-            "MFA enrollment must be completed before accessing Scryer".into(),
-        )));
+    match mfa_verification_from_ctx(ctx).session_scope {
+        JwtSessionScope::MfaEnrollment => {
+            return Err(to_gql_error(AppError::MfaEnrollmentRequired(
+                "MFA enrollment must be completed before accessing Scryer".into(),
+            )));
+        }
+        JwtSessionScope::PasswordChangeRequired => {
+            return Err(to_gql_error(AppError::PasswordChangeRequired(
+                "password replacement must be completed before accessing Scryer".into(),
+            )));
+        }
+        JwtSessionScope::Full => {}
     }
     current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
 }
@@ -463,6 +522,15 @@ pub fn mfa_enrollment_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::MfaEnrollment {
         return Err(to_gql_error(AppError::MfaEnrollmentRequired(
             "MFA enrollment session required".into(),
+        )));
+    }
+    current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
+}
+
+pub fn password_change_required_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::PasswordChangeRequired {
+        return Err(to_gql_error(AppError::PasswordChangeRequired(
+            "password-replacement session required".into(),
         )));
     }
     current_user_any_scope_from_ctx(ctx).ok_or_else(authentication_required_error)
@@ -537,7 +605,7 @@ pub async fn actor_has_any_library_permission(
 }
 
 pub fn current_user_from_ctx(ctx: &Context<'_>) -> Option<User> {
-    if mfa_verification_from_ctx(ctx).session_scope == JwtSessionScope::MfaEnrollment {
+    if mfa_verification_from_ctx(ctx).session_scope != JwtSessionScope::Full {
         return None;
     }
     current_user_any_scope_from_ctx(ctx)
@@ -555,7 +623,7 @@ fn current_user_any_scope_from_ctx(ctx: &Context<'_>) -> Option<User> {
 
 pub fn mfa_verification_from_ctx(ctx: &Context<'_>) -> MfaVerification {
     ctx.data_opt::<MfaVerification>()
-        .copied()
+        .cloned()
         .unwrap_or_default()
 }
 
@@ -704,6 +772,36 @@ mod tests {
             .and_then(|extensions| extensions.get("retryAfterSeconds"))
             .expect("retryAfterSeconds extension should be present");
         assert_eq!(retry_after.to_string(), "120");
+    }
+
+    #[test]
+    fn no_auto_eligible_release_graphql_error_includes_reason_counts() {
+        let error = to_gql_error(AppError::NoAutoEligibleRelease {
+            candidate_count: 3,
+            reasons: vec![scryer_application::AutoEligibilityReason {
+                code: "title_mismatch".to_string(),
+                summary: "release title does not match the target title".to_string(),
+                count: 2,
+            }],
+        });
+
+        assert_eq!(error.message, "validation: no auto-eligible release found");
+        assert_eq!(graphql_error_code(&error), Some("VALIDATION_ERROR"));
+        let extensions = error.extensions.as_ref().expect("extensions are present");
+        assert_eq!(
+            extensions
+                .get("autoCandidateCount")
+                .expect("candidate count extension is present")
+                .to_string(),
+            "3"
+        );
+        assert_eq!(
+            extensions
+                .get("autoDecisionReasons")
+                .expect("reason counts extension is present")
+                .to_string(),
+            "[{code: \"title_mismatch\", summary: \"release title does not match the target title\", count: 2}]"
+        );
     }
 
     #[test]

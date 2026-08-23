@@ -296,6 +296,22 @@ pub(crate) async fn process_command(
     let denied = store.data().limits.memory_denied;
     let stdout_bytes = stdout.contents();
     let stderr_tail = tail_of(&stderr);
+
+    // Command guests have no host log service; stderr is their diagnostic
+    // channel. The error paths below already attach it, but a plugin that
+    // succeeds while logging (every migrated indexer does) would otherwise have
+    // its output silently dropped.
+    if !stderr_tail.is_empty() {
+        tracing::debug!(
+            target: "scryer_plugins::command",
+            plugin_id = invocation.plugin_id,
+            plugin_version = invocation.plugin_version,
+            operation = invocation.operation,
+            stderr = stderr_tail.as_str(),
+            "command plugin stderr",
+        );
+    }
+
     if let Err(failure) = error::interpret_start_result(call_result, denied) {
         return Err(finish_command_error(
             &invocation,

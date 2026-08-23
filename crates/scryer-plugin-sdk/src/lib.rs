@@ -1919,8 +1919,37 @@ pub struct PluginDownloadItem {
     pub eta_seconds: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_percent: Option<u8>,
+    /// Whether the payload is fully downloaded and stable on disk — nothing is
+    /// still being written, verified, unpacked or moved, so reading or
+    /// relocating the files cannot produce a torn result.
+    ///
+    /// This is a statement about the **data**, not permission to move it. A
+    /// seeding torrent's data is complete, and `can_move_files: Some(true)` is
+    /// the right answer for it; the core combines this with its own
+    /// `seeding_complete` determination before it will use an `ImportMode::Move`
+    /// import. Report data completeness honestly and let the core decide.
+    ///
+    /// `None` means the client does not expose enough to say. The core then
+    /// falls back to the completed-download evidence it has, and still refuses
+    /// to move anything it cannot prove is finished seeding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_move_files: Option<bool>,
+    /// The client's own verdict on whether this item's **seeding obligation**
+    /// is discharged, so removing the entry would not cut a torrent's seeding
+    /// short. Tri-state, and every state is load-bearing:
+    ///
+    /// - `Some(true)`  — the client's own limits are met, or it has stopped the
+    ///   torrent, so nothing is lost by removing the entry.
+    /// - `Some(false)` — the client can point at a specific limit that is
+    ///   provably **not** met yet. This is not a veto: a Scryer seeding profile
+    ///   may carry a different goal that *is* met, and that goal wins.
+    /// - `None`        — unknowable from this client's API. The core evaluates
+    ///   the goal itself. Never substitute `false` (which asserts a limit you
+    ///   cannot see) or `true` (which invites a hit and run on a private
+    ///   tracker) for an honest `None`.
+    ///
+    /// For a non-torrent (usenet) item, `Some(true)` once the download is
+    /// finished is correct: there is no seeding obligation to discharge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_remove: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1967,6 +1996,15 @@ pub struct PluginTorrentItem {
     pub metadata_only: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_encrypted: Option<bool>,
+    /// Whether the torrent's metainfo carries the `private` flag.
+    ///
+    /// `None` means the client does not report it and **must never be read as
+    /// "public"**. The core treats an observed `Some(true)` as a hard rail —
+    /// such a torrent is never auto-removed on the client's word alone,
+    /// because a private tracker counts an early removal as a hit and run —
+    /// and it will not synthesise that flag from anything else. Report
+    /// `Some(false)` only when the client actually told you the torrent is
+    /// public; otherwise leave it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_private: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

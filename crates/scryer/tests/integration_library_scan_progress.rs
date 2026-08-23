@@ -12,7 +12,7 @@ use scryer_application::{
     LibraryRepository, LibraryRootDraft, LibraryScanSession, LibraryScanStatus,
 };
 use scryer_domain::{Id, MediaFacet};
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 async fn gql(ctx: &TestContext, query: &str, variables: serde_json::Value) -> serde_json::Value {
     let client = ctx.http_client();

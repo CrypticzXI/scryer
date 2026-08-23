@@ -17,7 +17,7 @@ type RoutingSettingValues = Arc<Mutex<HashMap<RoutingSettingKey, String>>>;
 
 /// Scoped settings values keyed by (scope, key, scope_id).
 #[derive(Default)]
-struct RoutingSettingsRepo {
+pub(super) struct RoutingSettingsRepo {
     values: RoutingSettingValues,
 }
 
@@ -33,7 +33,7 @@ impl RoutingSettingsRepo {
         );
     }
 
-    async fn set_routing(&self, scope_id: &str, routing_json: &str) {
+    pub(super) async fn set_routing(&self, scope_id: &str, routing_json: &str) {
         self.set_scoped_json(DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, scope_id, routing_json)
             .await;
     }

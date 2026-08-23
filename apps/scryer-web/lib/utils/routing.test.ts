@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildIndexerSettingsPath,
   buildOverviewDetailPath,
+  indexerSettingsTabFromPath,
   resolveAppRoute,
   type ParsedAppRoute,
 } from "./routing.ts";
@@ -33,6 +35,7 @@ test("facet settings sections that consume media settings trigger loading", () =
 
 test("canonical route families resolve to typed application state", () => {
   for (const path of [
+    "/dashboard",
     "/movies",
     "/series",
     "/anime",
@@ -98,7 +101,6 @@ test("reserved title slugs use library-qualified paths", () => {
 
 test("0.16 route aliases redirect to canonical 0.17 paths", () => {
   for (const [from, to] of [
-    ["/", "/movies"],
     ["/movies/overview", "/movies"],
     ["/series/settings", "/series/settings/library"],
     ["/series/media", "/series/settings/library"],
@@ -163,4 +165,65 @@ test("unknown roots and invalid sections do not fall back to another page", () =
   assert.deepEqual(resolveAppRoute("/unknown"), { kind: "not-found" });
   assert.deepEqual(resolveAppRoute("/system/unknown"), { kind: "not-found" });
   assert.deepEqual(resolveAppRoute("/automation/unknown"), { kind: "not-found" });
+});
+
+test("the root path defers to the shell instead of resolving by path", () => {
+  // `/` depends on the signed-in user's permissions, which parsing cannot see;
+  // `lib/utils/routes.test.ts` covers where each user class actually lands.
+  assert.deepEqual(resolveAppRoute("/"), { kind: "landing" });
+  assert.deepEqual(resolveAppRoute(""), { kind: "landing" });
+  assert.deepEqual(resolveAppRoute(null), { kind: "landing" });
+  // The query string survives because the shell, not the parser, navigates.
+  assert.deepEqual(resolveAppRoute("/", "?lang=fra"), { kind: "landing" });
+});
+
+test("the dashboard route is canonical and takes no subpaths", () => {
+  assert.equal(canonical("/dashboard").view, "dashboard");
+  assert.equal(canonical("/dashboard").canonicalPath, "/dashboard");
+  assert.deepEqual(resolveAppRoute("/dashboard/x"), { kind: "not-found" });
+  assert.deepEqual(resolveAppRoute("/dashboard/storage/roots"), {
+    kind: "not-found",
+  });
+});
+
+test("the indexers page carries its panes as a third path segment", () => {
+  for (const path of [
+    "/integrations/indexers",
+    "/integrations/indexers/proxies",
+    "/integrations/indexers/seeding-profiles",
+  ]) {
+    const route = canonical(path);
+    assert.equal(route.canonicalPath, path, path);
+    assert.equal(route.settingsSection, "indexers", path);
+  }
+  assert.deepEqual(resolveAppRoute("/integrations/indexers/nope"), {
+    kind: "not-found",
+  });
+  // Panes belong to indexers alone; other integrations stay two-segment.
+  assert.deepEqual(resolveAppRoute("/integrations/notifications/proxies"), {
+    kind: "not-found",
+  });
+});
+
+test("seeding profiles are no longer a settings section of their own", () => {
+  assert.deepEqual(resolveAppRoute("/settings/seeding-profiles"), {
+    kind: "not-found",
+  });
+});
+
+test("indexer pane paths round-trip through the tab helpers", () => {
+  for (const tab of ["indexers", "proxies", "seedingProfiles"] as const) {
+    assert.equal(
+      indexerSettingsTabFromPath(buildIndexerSettingsPath(tab)),
+      tab,
+      tab,
+    );
+  }
+  // Anything that is not a known pane segment falls back to the default pane.
+  assert.equal(indexerSettingsTabFromPath("/integrations/indexers"), "indexers");
+  assert.equal(
+    indexerSettingsTabFromPath("/integrations/indexers/unknown"),
+    "indexers",
+  );
+  assert.equal(indexerSettingsTabFromPath("/settings/profile"), "indexers");
 });

@@ -248,6 +248,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             role: input.role,
             file_path: input.file_path.clone(),
             size_bytes: input.size_bytes,
+            announced_size_bytes: input.announced_size_bytes,
             source_signature_scheme: input.source_signature_scheme.clone(),
             source_signature_value: input.source_signature_value.clone(),
             quality_label: input.quality_label.clone(),
@@ -259,6 +260,8 @@ impl MediaFileRepository for MockMediaFileRepo {
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
@@ -439,30 +442,40 @@ impl MediaFileRepository for MockMediaFileRepo {
         title_id: &str,
         episode_ids: &[String],
     ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
-        let episode_ids = episode_ids
+        let requested = episode_ids
             .iter()
             .map(String::as_str)
             .collect::<HashSet<_>>();
-        Ok(self
-            .store
-            .lock()
-            .await
-            .iter()
-            .filter(|entry| {
-                entry.title_id == title_id
-                    && entry
-                        .episode_id
-                        .as_deref()
-                        .is_some_and(|episode_id| episode_ids.contains(episode_id))
+        // The real store joins the file-episode table and aggregates, so a file
+        // spanning two episodes comes back **once** with both ids. Modelling it
+        // as one row per link here would let a test pass against a span the
+        // product never sees.
+        let mut spans: Vec<(TitleMediaFile, Vec<String>)> = Vec::new();
+        for entry in self.store.lock().await.iter() {
+            if entry.title_id != title_id {
+                continue;
+            }
+            let Some(episode_id) = entry.episode_id.clone() else {
+                continue;
+            };
+            match spans.iter_mut().find(|(file, _)| file.id == entry.id) {
+                Some((_, episode_ids)) => {
+                    if !episode_ids.contains(&episode_id) {
+                        episode_ids.push(episode_id);
+                    }
+                }
+                None => spans.push((entry.clone(), vec![episode_id])),
+            }
+        }
+        Ok(spans
+            .into_iter()
+            .filter(|(_, episode_ids)| {
+                episode_ids
+                    .iter()
+                    .any(|episode_id| requested.contains(episode_id.as_str()))
             })
-            .cloned()
-            .map(|media_file| {
+            .map(|(media_file, episode_ids)| {
                 let title_role = media_file.role;
-                let episode_ids = media_file
-                    .episode_id
-                    .clone()
-                    .into_iter()
-                    .collect::<Vec<_>>();
                 let primary_episode_ids = if media_file.role.is_primary() {
                     episode_ids.clone()
                 } else {
@@ -1134,14 +1147,68 @@ impl UserRepository for MockUserRepo {
             .cloned())
     }
 
-    async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
+    async fn update_password_hash(
+        &self,
+        id: &str,
+        password_hash: String,
+        password_change_required: bool,
+    ) -> AppResult<User> {
         let mut users = self.store.lock().await;
         let user = users
             .iter_mut()
             .find(|entry| entry.id == id)
             .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
         user.password_hash = Some(password_hash);
+        user.password_change_required = password_change_required;
         Ok(user.clone())
+    }
+
+    async fn set_temporary_password_and_invalidate_sessions(
+        &self,
+        id: &str,
+        password_hash: String,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let user = self.update_password_hash(id, password_hash, true).await?;
+        self.auth_session_versions
+            .lock()
+            .await
+            .insert(id.to_string(), auth_session_version.to_string());
+        Ok(user)
+    }
+
+    async fn complete_required_password_change(
+        &self,
+        id: &str,
+        password_hash: String,
+        expected_auth_session_version: &Option<String>,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        if self.auth_session_versions.lock().await.get(id).cloned()
+            != *expected_auth_session_version
+        {
+            return Err(AppError::Unauthorized(
+                "authentication session was invalidated".into(),
+            ));
+        }
+        let mut users = self.store.lock().await;
+        let user = users
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+        if !user.password_change_required {
+            return Err(AppError::Unauthorized(
+                "password change is no longer required".into(),
+            ));
+        }
+        user.password_hash = Some(password_hash);
+        user.password_change_required = false;
+        let user = user.clone();
+        self.auth_session_versions
+            .lock()
+            .await
+            .insert(id.to_string(), auth_session_version.to_string());
+        Ok(user)
     }
 
     async fn update_login_status_and_rotate_session(

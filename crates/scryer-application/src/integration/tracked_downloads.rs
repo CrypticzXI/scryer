@@ -6,8 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    CompletedDownload, DownloadQueueItem, Title, TitleMatchType, TrackedDownloadState,
-    TrackedDownloadStatus,
+    CompletedDownload, DownloadQueueItem, DownloadQueueState, Title, TitleMatchType,
+    TrackedDownloadState, TrackedDownloadStatus,
 };
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
@@ -72,6 +72,10 @@ pub struct TrackedDownload {
     pub import_hold: Option<ImportHold>,
     /// Manual failure actions can record the failure without reacquiring.
     pub skip_reacquire_on_failure: bool,
+    /// Runtime-only marker that this failed row must use the import-style
+    /// seeding-aware cleanup path. Burned import rejections and warnings that
+    /// outlived a completed payload both set it.
+    pub burned_by_import_gate: bool,
     /// When this download first went missing from a pruning snapshot.
     ///
     /// A snapshot can be PARTIAL without saying so: the router degrades
@@ -130,7 +134,9 @@ pub struct NoVideoImportSourceSignature {
     pub latest_mtime: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `Eq` is not derivable: the client item carries an observed seed ratio
+/// (`f64`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackedDownloadQueueMetadata {
     pub client_item: DownloadQueueItem,
     pub client_id: String,
@@ -197,6 +203,7 @@ impl TrackedDownload {
         self.import_execution_retry = finished.import_execution_retry;
         self.import_hold = finished.import_hold;
         self.completed_source = finished.completed_source;
+        self.burned_by_import_gate = finished.burned_by_import_gate;
     }
 
     pub(crate) fn reset_for_import_retry(&mut self) {
@@ -210,6 +217,7 @@ impl TrackedDownload {
         self.import_execution_retry = None;
         self.import_hold = None;
         self.skip_reacquire_on_failure = false;
+        self.burned_by_import_gate = false;
     }
 
     /// Whether an automatic import re-attempt is still inside its backoff
@@ -285,14 +293,28 @@ impl TrackedDownload {
 
 // ── TrackedDownloadService ───────────────────────────────────────────────────
 
+pub(crate) const IMPORT_GATE_REJECTED_TRACKED_STATE_REASON: &str = "import_gate_rejected";
+pub(crate) const WARNING_TIMEOUT_TRACKED_STATE_REASON: &str = "warning_timeout";
+pub(crate) const WARNING_TIMEOUT_STATUS_MESSAGE_PREFIX: &str =
+    "download client warning persisted for 24h:";
+
 /// In-memory cache of tracked downloads with title resolution and state management.
+///
+/// Warning timers are intentionally runtime-only: a restart gives a still-warned
+/// download a fresh 24-hour window.
 #[derive(Default)]
 pub struct TrackedDownloadService {
     cache: HashMap<String, TrackedDownload>,
     last_seen_at: HashMap<String, DateTime<Utc>>,
+    warning_since: HashMap<String, DateTime<Utc>>,
 }
 
 impl TrackedDownloadService {
+    /// Sonarr has no equivalent timeout. A client warning that survives for a
+    /// day (for example stalled data, missing files, or a disk error) is a
+    /// failed download so the acquisition scope can move on.
+    pub(crate) const WARNING_FAILURE_TIMEOUT: chrono::Duration = chrono::Duration::hours(24);
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -304,6 +326,9 @@ impl TrackedDownloadService {
     pub async fn track(&mut self, app: &AppUseCase, client_item: DownloadQueueItem) {
         let id = tracked_download_id_for_item(&client_item);
         self.last_seen_at.insert(id.clone(), Utc::now());
+        if client_item.state != DownloadQueueState::Warning {
+            self.warning_since.remove(&id);
+        }
 
         if self.cache.contains_key(&id) {
             let existing = self.cache.get_mut(&id).unwrap();
@@ -319,6 +344,17 @@ impl TrackedDownloadService {
             if existing.state == TrackedDownloadState::Downloading {
                 existing.status = TrackedDownloadStatus::Ok;
                 existing.status_messages.clear();
+            }
+            let mut client_item = client_item;
+            // A refresh that carries no seeding observation must not erase the
+            // one we have. Several sources for the same download report
+            // different shapes (a history row framed as a completed download
+            // has no seeding fields at all), and a torrent whose observation
+            // blinked out would be read as "unknown" and held forever. A
+            // *present* observation always wins, so this retains, it does not
+            // staleness-lock.
+            if client_item.seeding.is_none() {
+                client_item.seeding = existing.client_item.seeding.clone();
             }
             existing.client_item = client_item;
             existing.is_trackable = true;
@@ -364,6 +400,7 @@ impl TrackedDownloadService {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -446,6 +483,77 @@ impl TrackedDownloadService {
             .collect()
     }
 
+    /// Convert an actionable client warning into the existing failed-download
+    /// path after it has remained continuously warned for a full day.
+    ///
+    /// `now` is passed in so the timeout stays deterministic in tests.
+    ///
+    /// `timeout_applies` is decided by the caller (`warning_timeout_applies`):
+    /// a torrent grabbed under a seeding profile is never timed out — its
+    /// indexer's rules own it and the warning stays visible for the operator.
+    /// When it is `false` the clock is dropped and nothing changes.
+    pub(crate) fn fail_persistent_warning(
+        &mut self,
+        id: &str,
+        now: DateTime<Utc>,
+        timeout_applies: bool,
+    ) -> bool {
+        let Some(tracked) = self.cache.get(id) else {
+            self.warning_since.remove(id);
+            return false;
+        };
+
+        let warning_is_actionable = tracked.client_item.is_scryer_origin
+            && matches!(
+                tracked.state,
+                TrackedDownloadState::Downloading
+                    | TrackedDownloadState::ImportPending
+                    | TrackedDownloadState::ImportBlocked
+            )
+            && tracked.client_item.state == DownloadQueueState::Warning;
+        if !warning_is_actionable || !timeout_applies {
+            self.warning_since.remove(id);
+            return false;
+        }
+
+        let since = *self.warning_since.entry(id.to_string()).or_insert(now);
+        if now - since < Self::WARNING_FAILURE_TIMEOUT {
+            return false;
+        }
+
+        let payload_completed = matches!(
+            tracked.state,
+            TrackedDownloadState::ImportPending | TrackedDownloadState::ImportBlocked
+        );
+        let attention_reason = tracked
+            .client_item
+            .attention_reason
+            .as_deref()
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("no reason supplied")
+            .to_owned();
+        self.warning_since.remove(id);
+
+        let Some(tracked) = self.cache.get_mut(id) else {
+            return false;
+        };
+        tracked.state = TrackedDownloadState::FailedPending;
+        tracked.status = TrackedDownloadStatus::Error;
+        if !tracked
+            .status_messages
+            .iter()
+            .any(|message| message.starts_with(WARNING_TIMEOUT_STATUS_MESSAGE_PREFIX))
+        {
+            tracked.status_messages.push(format!(
+                "{WARNING_TIMEOUT_STATUS_MESSAGE_PREFIX} {attention_reason}"
+            ));
+        }
+        // A completed torrent may still owe seeding. Reuse the burned-import
+        // cleanup rail so only this path reaches its terminal removal gate.
+        tracked.burned_by_import_gate = payload_completed;
+        true
+    }
+
     /// Mark downloads no longer visible in any client as untrackable.
     pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) -> Vec<DownloadSourceIdentity> {
         let mut unavailable_sources = Vec::new();
@@ -460,6 +568,7 @@ impl TrackedDownloadService {
                 ));
             }
         }
+        self.clear_untracked_warning_clocks();
         self.prune_cache();
         unavailable_sources
     }
@@ -502,6 +611,7 @@ impl TrackedDownloadService {
                 ));
             }
         }
+        self.clear_untracked_warning_clocks();
         self.prune_cache();
         unavailable_sources
     }
@@ -542,6 +652,7 @@ impl TrackedDownloadService {
                 ));
             }
         }
+        self.clear_untracked_warning_clocks();
         self.prune_cache();
         unavailable_sources
     }
@@ -550,6 +661,15 @@ impl TrackedDownloadService {
     pub fn stop_tracking(&mut self, id: &str) {
         self.cache.remove(id);
         self.last_seen_at.remove(id);
+        self.warning_since.remove(id);
+    }
+
+    fn clear_untracked_warning_clocks(&mut self) {
+        self.warning_since.retain(|id, _| {
+            self.cache
+                .get(id)
+                .is_some_and(|tracked| tracked.is_trackable)
+        });
     }
 
     fn prune_cache(&mut self) {
@@ -589,6 +709,8 @@ impl TrackedDownloadService {
 
         self.last_seen_at
             .retain(|id, _| self.cache.contains_key(id));
+        self.warning_since
+            .retain(|id, _| self.cache.contains_key(id));
     }
 
     /// Persist a terminal state to download_submissions.
@@ -604,7 +726,26 @@ impl TrackedDownloadService {
         let Some(td) = self.cache.get(id) else {
             return false;
         };
-        persist_tracked_download_state_marker(app, td, state, None, None).await
+        let (reason, detail) = if state == TrackedDownloadState::Failed && td.burned_by_import_gate
+        {
+            let warning_timeout = td
+                .status_messages
+                .iter()
+                .find(|message| message.starts_with(WARNING_TIMEOUT_STATUS_MESSAGE_PREFIX));
+            (
+                Some(if warning_timeout.is_some() {
+                    WARNING_TIMEOUT_TRACKED_STATE_REASON
+                } else {
+                    IMPORT_GATE_REJECTED_TRACKED_STATE_REASON
+                }),
+                warning_timeout
+                    .map(String::as_str)
+                    .or_else(|| td.status_messages.first().map(String::as_str)),
+            )
+        } else {
+            (None, None)
+        };
+        persist_tracked_download_state_marker(app, td, state, reason, detail).await
     }
 
     // ── Title Resolution ─────────────────────────────────────────────────
@@ -686,6 +827,8 @@ impl TrackedDownloadService {
                         .filter(|value| !value.is_empty()),
                     download_client_type: td.client_type.clone(),
                     download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    // Adopted from the client, so there is no announced size.
+                    release_size_bytes: None,
                     source_hint: None,
                     source_provider_id: None,
                     source_provider_name: None,
@@ -734,6 +877,11 @@ impl TrackedDownloadService {
     async fn reconstruct_state(app: &AppUseCase, td: &mut TrackedDownload) {
         let observed_identity = observed_queue_item_identity(&td.client_item);
         let observed_source_identity = queue_item_source_identity(&td.client_item);
+        let terminal_source_identity = DownloadSourceIdentity::new(
+            Some(td.client_id.as_str()),
+            &td.client_type,
+            &td.client_item.download_client_item_id,
+        );
         if !download_submission_identity_is_empty(&observed_identity)
             && let Ok(Some(tracked_state)) = app
                 .services
@@ -742,10 +890,48 @@ impl TrackedDownloadService {
                 .get_identity_tracked_state(&observed_identity, Some(&observed_source_identity))
                 .await
             && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
-            && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+            // `ImportedSeeding` is not terminal but must still survive a
+            // restart: re-deriving it would re-import the payload and then
+            // remove a torrent that is still working off its seeding goal.
+            && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
         {
             td.state = state;
-            if state == TrackedDownloadState::ImportBlocked {
+            let terminal_failure_reason = if state == TrackedDownloadState::Failed {
+                app.services
+                    .workflow
+                    .download_submissions
+                    .get_identity_tracked_state_reason(
+                        &observed_identity,
+                        Some(&terminal_source_identity),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            td.burned_by_import_gate = terminal_failure_reason.as_deref().is_some_and(|reason| {
+                matches!(
+                    reason,
+                    IMPORT_GATE_REJECTED_TRACKED_STATE_REASON
+                        | WARNING_TIMEOUT_TRACKED_STATE_REASON
+                )
+            });
+            if state == TrackedDownloadState::Failed && td.burned_by_import_gate {
+                let detail = app
+                    .services
+                    .workflow
+                    .download_submissions
+                    .get_identity_tracked_state_detail(
+                        &observed_identity,
+                        Some(&terminal_source_identity),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                td.status = TrackedDownloadStatus::Error;
+                td.status_messages = detail.into_iter().collect();
+            } else if state == TrackedDownloadState::ImportBlocked {
                 let detail = app
                     .services
                     .workflow
@@ -773,7 +959,7 @@ impl TrackedDownloadService {
                 .get_tracked_state(&submission_source_identity)
                 .await
                 && let Some(state) = TrackedDownloadState::from_str_opt(&tracked_state)
-                && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+                && (state.is_import_settled() || state == TrackedDownloadState::ImportBlocked)
             {
                 td.state = state;
                 if state == TrackedDownloadState::ImportBlocked {
@@ -1610,7 +1796,7 @@ fn tracked_download_cache_max_entries() -> usize {
         .unwrap_or(DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES)
 }
 
-fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
+pub(crate) fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
     crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
         download_id: item.download_id.as_deref(),
         parameters: &[],
@@ -1718,6 +1904,7 @@ mod tests {
         download_id_submissions:
             Arc<Mutex<Vec<(crate::DownloadSubmission, crate::DownloadSubmissionIdentity)>>>,
         identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
+        identity_tracked_state_reasons: Arc<Mutex<HashMap<String, String>>>,
         identity_tracked_state_details: Arc<Mutex<HashMap<String, String>>>,
     }
 
@@ -1891,7 +2078,7 @@ mod tests {
             identity: &crate::DownloadSubmissionIdentity,
             source_identity: Option<&DownloadSourceIdentity>,
             tracked_state: &str,
-            _: Option<&str>,
+            reason: Option<&str>,
             detail: Option<&str>,
         ) -> AppResult<()> {
             if let Some(key) = test_download_identity_state_key(identity, source_identity) {
@@ -1899,6 +2086,12 @@ mod tests {
                     .lock()
                     .await
                     .insert(key.clone(), tracked_state.to_string());
+                if let Some(reason) = reason {
+                    self.identity_tracked_state_reasons
+                        .lock()
+                        .await
+                        .insert(key.clone(), reason.to_string());
+                }
                 if let Some(detail) = detail {
                     self.identity_tracked_state_details
                         .lock()
@@ -1918,6 +2111,22 @@ mod tests {
                 return Ok(None);
             };
             Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
+        }
+
+        async fn get_identity_tracked_state_reason(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+        ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
+            Ok(self
+                .identity_tracked_state_reasons
+                .lock()
+                .await
+                .get(&key)
+                .cloned())
         }
 
         async fn get_identity_tracked_state_detail(
@@ -2218,6 +2427,16 @@ mod tests {
                 })
                 .cloned()
                 .collect())
+        }
+
+        async fn count_dashboard_activity_events(
+            &self,
+            _: &[String],
+            _: chrono::DateTime<chrono::Utc>,
+            _: chrono::DateTime<chrono::Utc>,
+            _: chrono::DateTime<chrono::Utc>,
+        ) -> AppResult<crate::DashboardActivityStats> {
+            Ok(crate::DashboardActivityStats::default())
         }
 
         async fn count_title_history_page_events(
@@ -2748,6 +2967,7 @@ mod tests {
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         }
     }
 
@@ -2784,6 +3004,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         }
     }
@@ -2930,6 +3151,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refresh_without_an_observation_keeps_the_last_one_but_never_overrides_a_new_one() {
+        // The same download arrives from more than one source: a queue row
+        // carries the plugin's seeding fields, a history row framed as a
+        // completed download carries none. Losing the observation on the
+        // history refresh would read as "unknown" and hold the torrent forever.
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let imports = Arc::new(TestImportRepo::default());
+        let app = build_app(download_submissions, imports);
+        let mut tracker = TrackedDownloadService::new();
+
+        let mut observed = build_client_item();
+        observed.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(false),
+            seed_ratio: Some(0.5),
+            ..Default::default()
+        });
+        let id = tracked_download_id_for_item(&observed);
+        tracker.track(&app, observed.clone()).await;
+
+        let mut silent = build_client_item();
+        silent.seeding = None;
+        tracker.track(&app, silent).await;
+        assert_eq!(
+            tracker
+                .find(&id)
+                .and_then(|td| td.client_item.seeding.as_ref())
+                .and_then(|seeding| seeding.seed_ratio),
+            Some(0.5),
+            "a refresh with nothing to say must not erase what the client already told us"
+        );
+
+        // A fresh observation always wins, so this retains rather than freezes.
+        let mut moved_on = build_client_item();
+        moved_on.seeding = Some(scryer_domain::DownloadSeedingSnapshot {
+            can_remove: Some(true),
+            seed_ratio: Some(2.6),
+            ..Default::default()
+        });
+        tracker.track(&app, moved_on).await;
+        let seeding = tracker
+            .find(&id)
+            .and_then(|td| td.client_item.seeding.clone())
+            .expect("observation");
+        assert_eq!(seeding.seed_ratio, Some(2.6));
+        assert_eq!(seeding.can_remove, Some(true));
+    }
+
+    #[tokio::test]
     async fn tracked_download_service_resolves_live_source_id_to_durable_cached_entry() {
         let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
         let imports = Arc::new(TestImportRepo::default());
@@ -2980,6 +3249,7 @@ mod tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Paperman.2012.720p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
@@ -3027,6 +3297,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb.rar".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Orphan,
         };
@@ -3042,6 +3313,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Title,
         };
@@ -3139,6 +3411,7 @@ mod tests {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: crate::SubmissionScope::Title,
         });
@@ -3241,6 +3514,7 @@ mod tests {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Restart Recovery Show".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
@@ -3254,6 +3528,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_reasons: Arc::new(Mutex::new(HashMap::new())),
             identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
@@ -3405,6 +3680,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persist_terminal_state_marks_burned_import_gate_failure() {
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        let app = build_app(
+            download_submissions.clone(),
+            Arc::new(TestImportRepo::default()),
+        );
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some("scryer-download:burned-import".to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+        tracker.track(&app, item).await;
+        let tracked = tracker.find_mut(&tracked_id).expect("tracked download");
+        tracked.burned_by_import_gate = true;
+        tracked.status_messages = vec!["release language does not match the title".to_string()];
+
+        assert!(
+            tracker
+                .persist_terminal_state(&app, &tracked_id, TrackedDownloadState::Failed)
+                .await
+        );
+        assert!(
+            download_submissions
+                .identity_tracked_state_reasons
+                .lock()
+                .await
+                .values()
+                .any(|reason| reason == "import_gate_rejected")
+        );
+        assert!(
+            download_submissions
+                .identity_tracked_state_details
+                .lock()
+                .await
+                .values()
+                .any(|detail| detail == "release language does not match the title")
+        );
+    }
+
+    #[tokio::test]
     async fn persist_terminal_state_returns_false_when_repository_write_fails() {
         #[derive(Default)]
         struct FailingDownloadSubmissionRepo;
@@ -3533,6 +3847,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_reasons: Arc::new(Mutex::new(HashMap::new())),
             identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
@@ -3984,6 +4299,7 @@ mod tests {
                     import_execution_retry: None,
                     import_hold: None,
                     skip_reacquire_on_failure: false,
+                    burned_by_import_gate: false,
                     snapshot_missing_since: None,
                 },
             );
@@ -4307,6 +4623,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4314,6 +4631,216 @@ mod tests {
 
         assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
         assert_eq!(tracked.status, TrackedDownloadStatus::Error);
+    }
+
+    #[test]
+    fn warning_client_state_never_enters_failed_download_handling() {
+        // A recoverable client condition (disk full, files moved, tracker
+        // error) must keep the download where it is: no FailedPending, so no
+        // blocklist, no removal and no re-search.
+        for state in [
+            TrackedDownloadState::Downloading,
+            TrackedDownloadState::ImportPending,
+            TrackedDownloadState::ImportBlocked,
+        ] {
+            let mut client_item = build_client_item();
+            client_item.state = DownloadQueueState::Warning;
+            client_item.attention_required = true;
+            client_item.attention_reason = Some("files are missing".to_string());
+            let mut tracked = TrackedDownload {
+                id: "client-1:warned".to_string(),
+                client_id: "client-1".to_string(),
+                client_type: "qbittorrent".to_string(),
+                client_item,
+                completed_source: None,
+                state,
+                status: TrackedDownloadStatus::Ok,
+                status_messages: Vec::new(),
+                title_id: Some("title-1".to_string()),
+                facet: Some("movie".to_string()),
+                source_title: None,
+                indexer: None,
+                added_at: None,
+                notified_manual_interaction: false,
+                match_type: TitleMatchType::Submission,
+                is_trackable: true,
+                import_attempted: false,
+                waiting_for_completed_history: false,
+                path_missing_since: None,
+                no_video_import_retry: None,
+                import_execution_retry: None,
+                import_hold: None,
+                skip_reacquire_on_failure: false,
+                burned_by_import_gate: false,
+                snapshot_missing_since: None,
+            };
+
+            crate::failed_download_handler::check(&mut tracked);
+
+            assert_eq!(tracked.state, state, "{state:?} must survive a warning");
+            assert_eq!(tracked.status, TrackedDownloadStatus::Ok);
+            assert_eq!(
+                tracked.client_item.attention_reason.as_deref(),
+                Some("files are missing")
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_warning_becomes_failed_pending_after_the_timeout() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warned-timeout");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        tracked.client_item.attention_reason = Some("files are missing".to_string());
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+        );
+
+        assert!(tracker.fail_persistent_warning(&id, now, true));
+        let tracked = tracker.find(&id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::FailedPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Error);
+        assert_eq!(
+            tracked.status_messages,
+            vec!["download client warning persisted for 24h: files are missing"]
+        );
+    }
+
+    #[test]
+    fn foreign_origin_warning_is_never_timed_out() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("foreign-warning");
+        tracked.client_item.is_scryer_origin = false;
+        tracked.client_item.state = DownloadQueueState::Warning;
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+        );
+
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
+        let tracked = tracker.find(&id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(tracked.status_messages.is_empty());
+        assert!(!tracker.warning_since.contains_key(&id));
+    }
+
+    #[test]
+    fn timed_out_warning_clears_its_clock_before_a_new_window_starts() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warning-clears-clock");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+        );
+
+        assert!(tracker.fail_persistent_warning(&id, now, true));
+        assert!(!tracker.warning_since.contains_key(&id));
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
+        assert_eq!(
+            tracker
+                .find(&id)
+                .expect("tracked download")
+                .status_messages
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn younger_warning_is_not_timed_out() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warned-young");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT + chrono::Duration::seconds(1),
+        );
+
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
+        assert_eq!(
+            tracker.find(&id).expect("tracked download").state,
+            TrackedDownloadState::Downloading
+        );
+    }
+
+    #[test]
+    fn leaving_warning_clears_its_timeout_clock() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warning-cleared");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(id.clone(), now);
+        tracker
+            .find_mut(&id)
+            .expect("tracked download")
+            .client_item
+            .state = DownloadQueueState::Downloading;
+
+        assert!(!tracker.fail_persistent_warning(&id, now, true));
+        assert!(!tracker.warning_since.contains_key(&id));
+    }
+
+    #[test]
+    fn imported_rows_are_never_timed_out_for_a_client_warning() {
+        for state in [
+            TrackedDownloadState::Imported,
+            TrackedDownloadState::ImportedSeeding,
+        ] {
+            let mut tracker = TrackedDownloadService::new();
+            let mut tracked = build_tracked_download("imported-warning");
+            tracked.state = state;
+            tracked.client_item.state = DownloadQueueState::Warning;
+            let id = tracked.id.clone();
+            tracker.insert_for_tests(tracked);
+            let now = Utc::now();
+            tracker.warning_since.insert(
+                id.clone(),
+                now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+            );
+
+            assert!(!tracker.fail_persistent_warning(&id, now, true));
+            assert_eq!(tracker.find(&id).expect("tracked download").state, state);
+            assert!(!tracker.warning_since.contains_key(&id));
+        }
+    }
+
+    #[test]
+    fn a_warned_download_under_a_seeding_profile_is_never_timed_out() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut tracked = build_tracked_download("warned-seeding-profile");
+        tracked.client_item.state = DownloadQueueState::Warning;
+        tracked.client_item.attention_reason = Some("stalled".to_string());
+        let id = tracked.id.clone();
+        tracker.insert_for_tests(tracked);
+        let now = Utc::now();
+        tracker.warning_since.insert(
+            id.clone(),
+            now - TrackedDownloadService::WARNING_FAILURE_TIMEOUT,
+        );
+
+        // The caller decided the timeout does not apply (a seeding profile owns
+        // this torrent): nothing fails, the clock is dropped, the warning stays.
+        assert!(!tracker.fail_persistent_warning(&id, now, false));
+        let tracked = tracker.find(&id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(tracked.status_messages.is_empty());
+        assert!(!tracker.warning_since.contains_key(&id));
     }
 
     #[test]
@@ -4346,6 +4873,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4428,6 +4956,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 
@@ -4638,6 +5167,7 @@ mod tests {
             import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
             snapshot_missing_since: None,
         };
 

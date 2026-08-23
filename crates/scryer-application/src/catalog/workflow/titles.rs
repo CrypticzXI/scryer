@@ -335,6 +335,78 @@ impl AppUseCase {
     /// The convergence cursor derives upgrade targets from every library
     /// (`library_filter: None`); the API path passes the actor's authorized
     /// subset.
+    /// Every monitored title in scope, paired with the quality profile that
+    /// governs it.
+    ///
+    /// Profile resolution is a four-level fallback (title tag, category
+    /// override, global setting, built-in default) plus a name-equality retry;
+    /// the two cutoff sweeps both need it and must not answer differently.
+    pub(crate) async fn monitored_titles_with_profiles(
+        &self,
+        facet: Option<MediaFacet>,
+        library_ids: &[String],
+    ) -> AppResult<Vec<(scryer_domain::Title, QualityProfile)>> {
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list_for_libraries(facet, library_ids, None)
+            .await?;
+        let monitored: Vec<scryer_domain::Title> = titles
+            .into_iter()
+            .filter(|title| title.monitored)
+            .collect();
+        if monitored.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let profile_settings = self.load_quality_profile_settings().await?;
+        let global_profile_id = Some(profile_settings.global_profile_id.as_str());
+        let profile_map: HashMap<&str, &QualityProfile> = profile_settings
+            .profiles
+            .iter()
+            .map(|profile| (profile.id.as_str(), profile))
+            .collect();
+        let default_profile = crate::builtin_default_quality_profile();
+
+        Ok(monitored
+            .into_iter()
+            .map(|title| {
+                let title_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:")
+                    .map(str::trim)
+                    .filter(|value| {
+                        !value.is_empty() && *value != crate::QUALITY_PROFILE_INHERIT_VALUE
+                    });
+                let category_profile_id = profile_settings
+                    .category_selections
+                    .iter()
+                    .find(|selection| selection.facet == title.facet)
+                    .and_then(|selection| selection.override_profile_id.as_deref());
+                let resolved_profile_id = crate::resolve_profile_id_for_title(
+                    title_profile_id,
+                    None,
+                    category_profile_id,
+                    global_profile_id,
+                );
+                let profile = resolved_profile_id
+                    .as_deref()
+                    .and_then(|profile_id| {
+                        profile_map.get(profile_id).copied().or_else(|| {
+                            profile_settings.profiles.iter().find(|profile| {
+                                crate::settings::runtime::quality_profile_ids_equal(
+                                    &profile.id,
+                                    profile_id,
+                                )
+                            })
+                        })
+                    })
+                    .unwrap_or(&default_profile)
+                    .clone();
+                (title, profile)
+            })
+            .collect())
+    }
+
     pub(crate) async fn compute_cutoff_unmet_items(
         &self,
         facet: Option<MediaFacet>,
@@ -357,23 +429,16 @@ impl AppUseCase {
             .iter()
             .map(|library| library.id.clone())
             .collect::<Vec<_>>();
-        let titles = self
-            .services
-            .catalog
-            .titles
-            .list_for_libraries(facet, &library_ids, None)
+        let monitored_titles = self
+            .monitored_titles_with_profiles(facet, &library_ids)
             .await?;
-        let monitored_titles = titles
-            .into_iter()
-            .filter(|title| title.monitored)
-            .collect::<Vec<_>>();
         if monitored_titles.is_empty() {
             return Ok(Vec::new());
         }
 
         let title_ids = monitored_titles
             .iter()
-            .map(|title| title.id.clone())
+            .map(|(title, _)| title.id.clone())
             .collect::<Vec<_>>();
         let quality_summaries = self
             .services
@@ -382,49 +447,9 @@ impl AppUseCase {
             .list_cutoff_unmet_quality_summaries(&title_ids)
             .await?;
 
-        let profile_settings = self.load_quality_profile_settings().await?;
-        let global_profile_id = Some(profile_settings.global_profile_id.as_str());
-        let profile_map: HashMap<&str, &QualityProfile> = profile_settings
-            .profiles
-            .iter()
-            .map(|profile| (profile.id.as_str(), profile))
-            .collect();
-        let default_profile = crate::builtin_default_quality_profile();
-
         let mut title_map = HashMap::new();
         let mut cutoff_profile_map = HashMap::new();
-        for title in monitored_titles {
-            let title_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:")
-                .map(str::trim)
-                .filter(|value| {
-                    !value.is_empty() && *value != crate::QUALITY_PROFILE_INHERIT_VALUE
-                });
-            let category_profile_id = profile_settings
-                .category_selections
-                .iter()
-                .find(|selection| selection.facet == title.facet)
-                .and_then(|selection| selection.override_profile_id.as_deref());
-
-            let resolved_profile_id = crate::resolve_profile_id_for_title(
-                title_profile_id,
-                None,
-                category_profile_id,
-                global_profile_id,
-            );
-            let profile = resolved_profile_id
-                .as_deref()
-                .and_then(|profile_id| {
-                    profile_map.get(profile_id).copied().or_else(|| {
-                        profile_settings.profiles.iter().find(|profile| {
-                            crate::settings::runtime::quality_profile_ids_equal(
-                                &profile.id,
-                                profile_id,
-                            )
-                        })
-                    })
-                })
-                .unwrap_or(&default_profile);
-
+        for (title, profile) in monitored_titles {
             if !profile.criteria.allow_upgrades {
                 continue;
             }
@@ -910,6 +935,7 @@ impl AppUseCase {
                     client_id,
                     &conflict.download_client_item_id,
                     false,
+                    false,
                 )
                 .await?;
         } else {
@@ -919,6 +945,7 @@ impl AppUseCase {
                 .delete_queue_item_for_client(
                     &conflict.download_client_type,
                     &conflict.download_client_item_id,
+                    false,
                     false,
                 )
                 .await?;

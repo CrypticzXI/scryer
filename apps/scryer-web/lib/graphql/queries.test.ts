@@ -7,11 +7,15 @@ import {
   calendarEpisodesQuery,
   downloadQueuePageQuery,
   downloadQueueSyncSubscription,
+  episodeCollectionRefQuery,
   episodeSidePanelDetailQuery,
   globalSearchInitQuery,
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
+  seriesCollectionEpisodesQuery,
   seriesSidePanelOverviewQuery,
+  TITLE_CAST_CREDIT_KINDS,
+  TITLE_CAST_CREDIT_LIMIT,
   titleMoreLikeThisQuery,
   wantedNavigationCountsQuery,
 } from "./queries.ts";
@@ -180,6 +184,46 @@ test("side panel queries omit recommendations", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("moreLikeThis("), false);
 });
 
+test("side panel overviews carry the top-billed cast rail", () => {
+  const castSelection = `credits(kinds: ["actor", "voice_actor"], limit: ${TITLE_CAST_CREDIT_LIMIT})`;
+  for (const query of [
+    movieSidePanelOverviewQuery,
+    seriesSidePanelOverviewQuery,
+  ]) {
+    // Filtering, ordering, and truncation all happen server-side, so the rail
+    // renders whatever this selection returns.
+    assert.equal(query.includes(castSelection), true);
+    assert.equal(query.includes("personImageUrl"), true);
+    assert.equal(query.includes("billingOrder"), true);
+    assert.equal(query.includes("episodeCount"), true);
+    // Person provenance is deliberately not part of the payload.
+    assert.equal(query.includes("personId"), false);
+    assert.equal(query.includes("personSource"), false);
+  }
+});
+
+test("cast kinds cover both live-action and animated performers", () => {
+  assert.deepEqual([...TITLE_CAST_CREDIT_KINDS], ["actor", "voice_actor"]);
+});
+
+test("reactive side panel refresh keeps the cast rail populated", () => {
+  // The batched refresh reuses the same field constants; if it ever dropped
+  // credits, the rail would blank on every reactive refresh.
+  for (const projection of ["MOVIE", "SERIES"] as const) {
+    const result = buildReactiveRefreshQuery([
+      {
+        key: `titleSidePanelOverview:title-1:300:${projection}`,
+        kind: "titleSidePanelOverview",
+        titleId: "title-1",
+        blocklistLimit: 300,
+        projection,
+      },
+    ]);
+
+    assert.equal(result.query.includes("credits(kinds:"), true);
+  }
+});
+
 test("title more-like-this query fetches full discovery item detail", () => {
   assert.equal(titleMoreLikeThisQuery.includes("moreLikeThis(limit: $limit)"), true);
   // Card actions feed metadataResultForDiscoveryItem directly instead of
@@ -206,22 +250,47 @@ test("reactive side panel refresh omits recommendations", () => {
   assert.equal(result.query.includes("moreLikeThis("), false);
 });
 
-test("series side panel overview uses compact media availability for collapsed rows", () => {
+test("series side panel overview scopes hydration to season aggregates", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("aliases"), false);
-  assert.equal(seriesSidePanelOverviewQuery.includes("mediaAvailability {"), true);
-  assert.equal(seriesSidePanelOverviewQuery.includes("primaryQualityLabel"), true);
+  // Episode rows hydrate lazily per opened season via
+  // seriesCollectionEpisodesQuery; the overview only carries the SQL-backed
+  // season counts.
+  assert.equal(seriesSidePanelOverviewQuery.includes("episodes {"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("mediaAvailability {"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("episodesOwned"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("episodesMonitored"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("episodesTotal"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("episodeRecordsTotal"), true);
   assert.equal(seriesSidePanelOverviewQuery.includes("mediaFiles {"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("wantedItems"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("titleHistory("), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("titleAcquisitionDiagnostics"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("overview"), true);
-  assert.equal(/episodes\s*\{[^}]*\boverview\b/s.test(seriesSidePanelOverviewQuery), false);
-  assert.equal(/episodes\s*\{[^}]*\bimageUrl\b/s.test(seriesSidePanelOverviewQuery), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("sizeBytes"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("qualityLabel"), false);
 });
 
-test("series reactive side panel refresh uses compact media availability", () => {
+test("series collection episodes query uses compact rows for one season", () => {
+  assert.equal(seriesCollectionEpisodesQuery.includes("collectionById("), true);
+  assert.equal(seriesCollectionEpisodesQuery.includes("episodes {"), true);
+  assert.equal(seriesCollectionEpisodesQuery.includes("mediaAvailability {"), true);
+  assert.equal(seriesCollectionEpisodesQuery.includes("primaryQualityLabel"), true);
+  // Row payloads stay compact: overview text, imagery, and media files load
+  // per episode on demand.
+  assert.equal(seriesCollectionEpisodesQuery.includes("overview"), false);
+  assert.equal(seriesCollectionEpisodesQuery.includes("imageUrl"), false);
+  assert.equal(seriesCollectionEpisodesQuery.includes("mediaFiles {"), false);
+  assert.equal(seriesCollectionEpisodesQuery.includes("sizeBytes"), false);
+});
+
+test("episode collection ref query resolves deep links without row payloads", () => {
+  assert.equal(episodeCollectionRefQuery.includes("episode("), true);
+  assert.equal(episodeCollectionRefQuery.includes("collectionId"), true);
+  assert.equal(episodeCollectionRefQuery.includes("mediaFiles"), false);
+  assert.equal(episodeCollectionRefQuery.includes("mediaAvailability"), false);
+});
+
+test("series reactive side panel refresh stays season-scoped", () => {
   const result = buildReactiveRefreshQuery([
     {
       key: "titleSidePanelOverview:title-1:300:series",
@@ -232,7 +301,8 @@ test("series reactive side panel refresh uses compact media availability", () =>
     },
   ]);
 
-  assert.equal(result.query.includes("mediaAvailability {"), true);
+  assert.equal(result.query.includes("episodes {"), false);
+  assert.equal(result.query.includes("episodeRecordsTotal"), true);
   assert.equal(result.query.includes("mediaFiles {"), false);
   assert.equal(result.query.includes("episodeMediaFiles("), false);
   assert.equal(result.query.includes("titleHistory("), false);

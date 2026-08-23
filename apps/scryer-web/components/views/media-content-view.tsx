@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useLocation } from "react-router";
+import { useClient } from "urql";
 import {
   ArrowDown,
   ArrowUp,
@@ -11,6 +12,7 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  FolderPen,
   LayoutGrid,
   LayoutList,
   Loader2,
@@ -38,6 +40,7 @@ import {
 } from "@/components/common/external-media-links";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { useActiveDownloadTitleIds } from "@/lib/hooks/use-active-download-title-ids";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -67,6 +70,7 @@ import {
   type MediaRenamePlan,
 } from "@/components/common/media-rename-plan-panel";
 import { TitleHistoryModal } from "@/components/common/title-history-modal";
+import { TitleOptionsSettingsGrid } from "@/components/common/title-options-settings-grid";
 import {
   SearchResultBuckets,
   type ReleaseSearchSortDirection,
@@ -75,6 +79,9 @@ import {
 import { HorizontalRail } from "@/components/common/horizontal-scroll-fade";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
+import { TitleCastStrip } from "@/components/views/title-cast-strip";
+import { TitleDubCastStrip } from "@/components/views/title-dub-cast-strip";
+import { titleCastOriginalCredits } from "@/lib/utils/title-cast";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type {
   ContentSettingsSection,
@@ -175,6 +182,10 @@ import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import type { ContentViewMode } from "./media-content/content-view-mode";
 import { localizedTitleStatus } from "./overview-localization";
 import { SeriesOverviewContainer } from "@/components/containers/series-overview-container";
+import { seriesOverviewSettingsInitQuery } from "@/lib/graphql/queries";
+import { DEFAULT_MOVIE_LIBRARY_PATH } from "@/lib/constants/settings";
+import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
+import type { TitleOptionUpdates } from "@/lib/types/title-options";
 
 type Facet = "MOVIE" | "SERIES" | "ANIME";
 
@@ -998,6 +1009,80 @@ function TitleContextReleaseSearchPanel({
   );
 }
 
+function MovieTitleSettingsPanel({
+  title,
+  libraries,
+  onUpdateTitleOptions,
+  onTitleChanged,
+}: {
+  title: TitleRecord;
+  libraries: LibraryRecord[];
+  onUpdateTitleOptions: (options: TitleOptionUpdates) => Promise<void>;
+  onTitleChanged: () => Promise<void> | void;
+}) {
+  const client = useClient();
+  const [qualityProfiles, setQualityProfiles] = React.useState<
+    { id: string; name: string }[]
+  >([]);
+  const [defaultRootFolder, setDefaultRootFolder] = React.useState(
+    DEFAULT_MOVIE_LIBRARY_PATH,
+  );
+  const rootFolders = React.useMemo(
+    () => libraries.find((library) => library.id === title.libraryId)?.roots ?? [],
+    [libraries, title.libraryId],
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const { data, error } = await client
+          .query(
+            seriesOverviewSettingsInitQuery,
+            { scope: "MOVIE" },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (error) {
+          throw error;
+        }
+        if (cancelled) {
+          return;
+        }
+        setQualityProfiles(
+          qualityProfileSettingsToEntries(data.qualityProfileSettings).map(
+            (profile) => ({ id: profile.id, name: profile.name }),
+          ),
+        );
+        const folder = (data.mediaSettings?.libraryPath ?? "").trim();
+        if (folder) {
+          setDefaultRootFolder(folder);
+        }
+      } catch {
+        // Settings are optional here; other title overrides remain usable.
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  return (
+    <div className="p-4">
+      <TitleOptionsSettingsGrid
+        title={title}
+        qualityProfiles={qualityProfiles}
+        defaultRootFolder={defaultRootFolder}
+        rootFolders={rootFolders}
+        onUpdateTitleOptions={onUpdateTitleOptions}
+        onTitleChanged={onTitleChanged}
+        idPrefix="title-overview-settings"
+      />
+    </div>
+  );
+}
+
 function TitleContextPanel({
   id,
   title,
@@ -1017,7 +1102,8 @@ function TitleContextPanel({
   externalSubtitles,
   isTogglingMonitored,
   isDeleting,
-  onEditTitle,
+  onUpdateTitleOptions,
+  onTitleOptionsChanged,
   onToggleMonitored,
   onAutoQueue,
   onRefreshTitles,
@@ -1072,7 +1158,11 @@ function TitleContextPanel({
   externalSubtitles: ExternalSubtitleRecord[];
   isTogglingMonitored: boolean;
   isDeleting: boolean;
-  onEditTitle: (title: TitleRecord) => void;
+  onUpdateTitleOptions: (
+    title: TitleRecord,
+    options: TitleOptionUpdates,
+  ) => Promise<void> | void;
+  onTitleOptionsChanged: (title: TitleRecord) => Promise<void> | void;
   onToggleMonitored?: (
     title: TitleRecord,
     monitored: boolean,
@@ -1145,10 +1235,11 @@ function TitleContextPanel({
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [blockedReleasesOpen, setBlockedReleasesOpen] =
     React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const releaseSearchOpen = title !== null && releaseSearchTitleId === title.id;
   const releaseSearchActionLoading = releaseSearchOpen && releaseSearchLoading;
   const panelClassName = cn(
-    "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
+    "min-h-0 w-full min-w-0 flex-col overflow-visible min-[981px]:overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
     className,
   );
   const moreLikeThisItems = React.useMemo(
@@ -1227,6 +1318,7 @@ function TitleContextPanel({
     setRenameApplying(false);
     setHistoryOpen(false);
     setBlockedReleasesOpen(false);
+    setSettingsOpen(false);
   }, [title?.facet, title?.id]);
 
   const handlePreviewRename = React.useCallback(async () => {
@@ -1366,7 +1458,7 @@ function TitleContextPanel({
     >
       <div
         data-slot="title-context-scroll"
-        className="relative min-h-0 flex-1 overflow-y-auto p-4 pb-[max(5rem,calc(1rem+env(safe-area-inset-bottom)))] sm:p-5 sm:pb-5"
+        className="relative min-h-0 flex-1 overflow-visible p-4 pb-[max(5rem,calc(1rem+env(safe-area-inset-bottom)))] min-[981px]:overflow-y-auto sm:p-5 sm:pb-5"
       >
         {titleListDisclosure ? (
           <div className="mb-3 flex items-center">{titleListDisclosure}</div>
@@ -1526,10 +1618,14 @@ function TitleContextPanel({
             onClick={() => setHistoryOpen(true)}
           />
           <TitleWorkspaceActionButton
+            id="title-overview-edit-settings"
             icon={Edit}
             label={t("label.edit")}
-            disabled={bulkActionBusy}
-            onClick={() => onEditTitle(title)}
+            active={settingsOpen}
+            disabled={bulkActionBusy || !canManageTitle}
+            expanded={settingsOpen}
+            controlsId="title-overview-settings-panel"
+            onClick={() => setSettingsOpen((current) => !current)}
           />
           <TitleWorkspaceActionButton
             icon={Trash2}
@@ -1540,6 +1636,26 @@ function TitleContextPanel({
             onClick={() => onDelete(title)}
           />
         </TitleWorkspaceActionGrid>
+
+        {settingsOpen ? (
+          <div
+            id="title-overview-settings-panel"
+            role="region"
+            aria-label={t("label.edit")}
+            className="mb-3 overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)]"
+          >
+            <MovieTitleSettingsPanel
+              title={title}
+              libraries={libraries}
+              onUpdateTitleOptions={(options) =>
+                Promise.resolve(onUpdateTitleOptions(title, options))
+              }
+              onTitleChanged={() =>
+                Promise.resolve(onTitleOptionsChanged(title))
+              }
+            />
+          </div>
+        ) : null}
 
         {releaseSearchOpen ? (
           <div
@@ -1639,6 +1755,13 @@ function TitleContextPanel({
             requestableFacets={requestableDiscoveryFacets}
             onAction={onDiscoveryAction}
           />
+
+          <TitleCastStrip
+            credits={titleCastOriginalCredits(title.credits)}
+            variant="workspace"
+          />
+
+          <TitleDubCastStrip credits={title.credits} variant="workspace" />
 
           {blocklistEntries.length === 0 ? (
             <section className="flex min-h-[3.25rem] items-center gap-2.5 rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-4">
@@ -1803,6 +1926,10 @@ export function MediaContentView({
     setCategorySeasonFolderTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    categoryUseSeasonFolders: Record<ViewCategoryId, boolean>;
+    setCategoryUseSeasonFolders: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, boolean>>
+    >;
     categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
     setCategorySpecialsFolderTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -1931,6 +2058,7 @@ export function MediaContentView({
     monitoredTitles: TitleRecord[];
     titleContextTitles: TitleRecord[];
     catalogDiscoveryGroups: CatalogDiscoveryGroup[];
+    canViewCatalog: boolean;
     canManageTitle: boolean;
     canRequestMedia: boolean;
     canManageCatalogDiscovery: boolean;
@@ -2073,7 +2201,11 @@ export function MediaContentView({
     setSelectedOverviewTitleId: (titleId: string | null) => void;
     clearSelectedOverviewTitle: () => void;
     onCloseOverview: () => void;
-    onEditTitle: (title: TitleRecord) => void;
+    updateMovieTitleOptions: (
+      title: TitleRecord,
+      options: TitleOptionUpdates,
+    ) => Promise<void> | void;
+    refreshMovieTitleOptions: (title: TitleRecord) => Promise<void> | void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
     isMobile: boolean;
@@ -2087,6 +2219,8 @@ export function MediaContentView({
     bulkMonitorTitles: (monitored: boolean) => Promise<void> | void;
     openBulkTitleEdit: () => void;
     openBulkTitleDelete: () => void;
+    openBulkTitleRename: () => void;
+    canRenameSelectedTitles: boolean;
   };
 }) {
   const t = useTranslate();
@@ -2126,6 +2260,8 @@ export function MediaContentView({
     setCategoryFolderTemplates,
     categorySeasonFolderTemplates,
     setCategorySeasonFolderTemplates,
+    categoryUseSeasonFolders,
+    setCategoryUseSeasonFolders,
     categorySpecialsFolderTemplates,
     setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,
@@ -2202,6 +2338,8 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
+    canViewCatalog,
+    canManageTitle,
     canManageCatalogDiscovery,
     canRequestCatalogDiscovery,
     manageableDiscoveryFacets,
@@ -2272,7 +2410,8 @@ export function MediaContentView({
     applyTitleRename,
     setSelectedOverviewTitleId,
     onCloseOverview,
-    onEditTitle,
+    updateMovieTitleOptions,
+    refreshMovieTitleOptions,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
     viewMode,
@@ -2285,6 +2424,8 @@ export function MediaContentView({
     bulkMonitorTitles,
     openBulkTitleEdit,
     openBulkTitleDelete,
+    openBulkTitleRename,
+    canRenameSelectedTitles,
   } = state;
   const [titleFilterInputValue, setTitleFilterInputValue] =
     React.useState(titleFilter);
@@ -2655,6 +2796,13 @@ export function MediaContentView({
 
   const isTitleCatalogView =
     view === "movies" || view === "series" || view === "anime";
+  // One catalog-wide subscription to the live download queue (import activity
+  // included) feeds the pulsing "Downloading" pill in every display mode. It
+  // deliberately sits outside the catalog's own paging/sorting/title queries so
+  // it can't perturb them.
+  const activeDownloadTitleIds = useActiveDownloadTitleIds({
+    enabled: isTitleCatalogView && canViewCatalog,
+  });
   const selectedTitleCompactDrawerActive =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const selectedTitleTableInlineActive =
@@ -3302,6 +3450,17 @@ export function MediaContentView({
                   >
                     <Pencil className="h-4 w-4" />
                   </TitleTableActionButton>
+                  {canRenameSelectedTitles ? (
+                    <TitleTableActionButton
+                      tone="accent"
+                      label={t("title.renameAction")}
+                      onClick={openBulkTitleRename}
+                      disabled={bulkActionBusy}
+                      className="rounded-md"
+                    >
+                      <FolderPen className="h-4 w-4" />
+                    </TitleTableActionButton>
+                  ) : null}
                   <TitleTableActionButton
                     tone="delete"
                     label={t("label.delete")}
@@ -3385,6 +3544,13 @@ export function MediaContentView({
           handleFolderTemplateChange={handleFolderTemplateChange}
           categorySeasonFolderTemplates={categorySeasonFolderTemplates}
           handleSeasonFolderTemplateChange={handleSeasonFolderTemplateChange}
+          categoryUseSeasonFolders={categoryUseSeasonFolders}
+          handleUseSeasonFoldersChange={(checked) =>
+            setCategoryUseSeasonFolders((previous) => ({
+              ...previous,
+              [activeQualityScopeId]: checked,
+            }))
+          }
           categorySpecialsFolderTemplates={categorySpecialsFolderTemplates}
           handleSpecialsFolderTemplateChange={handleSpecialsFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}
@@ -3715,6 +3881,7 @@ export function MediaContentView({
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
                       scrollContainer={!selectedTitleLayoutActive}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else if (collectionViewMode === "compact") {
@@ -3762,6 +3929,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 } else {
@@ -3810,6 +3978,7 @@ export function MediaContentView({
                       scanLibraryLoading={libraryScanLoading}
                       scanLibraryDisabled={libraryScanDisabled}
                       scanLibraryNotice={libraryScanNotice}
+                      activeDownloadTitleIds={activeDownloadTitleIds}
                     />
                   );
                 }
@@ -3908,6 +4077,17 @@ export function MediaContentView({
                           <Pencil className="h-4 w-4" />
                           {t("label.edit")}
                         </Button>
+                        {canRenameSelectedTitles ? (
+                          <Button
+                            variant="outline"
+                            onClick={openBulkTitleRename}
+                            disabled={bulkActionBusy}
+                            className="justify-center gap-2"
+                          >
+                            <FolderPen className="h-4 w-4" />
+                            {t("title.renameAction")}
+                          </Button>
+                        ) : null}
                         <Button
                           variant="destructive"
                           onClick={openBulkTitleDelete}
@@ -3992,7 +4172,8 @@ export function MediaContentView({
                             ] === true
                           : false
                       }
-                      onEditTitle={onEditTitle}
+                      onUpdateTitleOptions={updateMovieTitleOptions}
+                      onTitleOptionsChanged={refreshMovieTitleOptions}
                       onToggleMonitored={toggleTitleMonitored}
                       onAutoQueue={queueExisting}
                       onRefreshTitles={handleRefreshTitles}
@@ -4016,7 +4197,7 @@ export function MediaContentView({
                       bulkActionBusy={bulkActionBusy}
                       onDelete={handleDeleteCatalogTitle}
                       onClearSelection={onCloseOverview}
-                      canManageTitle={canManageCatalogDiscovery}
+                      canManageTitle={canManageTitle}
                       canRequestMedia={canRequestCatalogDiscovery}
                       manageableDiscoveryFacets={manageableDiscoveryFacetSet}
                       requestableDiscoveryFacets={requestableDiscoveryFacetSet}
@@ -4047,7 +4228,7 @@ export function MediaContentView({
                             selectedTitleListInlineActive ||
                               selectedTitlePosterInlineActive
                               ? "grid h-full items-stretch"
-                              : "flex min-h-0 flex-1 flex-col overflow-hidden",
+                              : "flex min-h-0 flex-1 flex-col overflow-visible min-[981px]:overflow-hidden",
                           )
                         : "grid min-h-0 gap-4",
                       !selectedTitleLayoutActive &&

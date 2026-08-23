@@ -73,6 +73,7 @@ async fn check_emits_manual_interaction_notification_once() {
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         },
         completed_source: None,
         state: TrackedDownloadState::Downloading,
@@ -93,6 +94,7 @@ async fn check_emits_manual_interaction_notification_once() {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 

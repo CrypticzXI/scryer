@@ -17,7 +17,7 @@ use scryer_domain::{
     AppPermission, AppPermissionMask, Collection, CollectionType, Id, Library, LibraryGrant,
     LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User, UserAuthorization,
 };
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 use serde_json::{Value, json};
 use tokio::time::{Duration, timeout};
 

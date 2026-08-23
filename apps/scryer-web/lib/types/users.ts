@@ -6,6 +6,7 @@ export type UserRecord = {
   loginEnabled: boolean;
   isDefaultAdmin: boolean;
   hasPassword: boolean;
+  passwordChangeRequired: boolean;
   hasMfa: boolean;
   hasPasskey: boolean;
   accountKind: UserAccountKind;

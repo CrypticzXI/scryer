@@ -1,5 +1,7 @@
 use super::*;
-use crate::types::{EpisodeMediaAvailability, TitleCatalogFilterCounts};
+use crate::types::{
+    EpisodeMediaAvailability, LoginVerificationChallengeRecord, TitleCatalogFilterCounts,
+};
 use async_trait::async_trait;
 use scryer_domain::{
     CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
@@ -1117,6 +1119,11 @@ pub trait TitleRepository: Send + Sync {
         }
         Ok(ratings)
     }
+    /// Title-local cache of the credits SMG returned for the title's last successful
+    /// hydration, in SMG's order.
+    async fn get_title_credits(&self, _title_id: &str) -> AppResult<Vec<TitleCredit>> {
+        Ok(Vec::new())
+    }
     async fn get_by_facet_and_slug(
         &self,
         facet: MediaFacet,
@@ -1214,6 +1221,12 @@ pub trait TitleRepository: Send + Sync {
         Ok(Vec::new())
     }
     async fn mark_title_metadata_hydration_due_now(&self, id: &str) -> AppResult<()>;
+    async fn mark_titles_metadata_hydration_due_now(&self, ids: &[String]) -> AppResult<()> {
+        for id in ids {
+            self.mark_title_metadata_hydration_due_now(id).await?;
+        }
+        Ok(())
+    }
     async fn schedule_title_metadata_hydration_retry(
         &self,
         id: &str,
@@ -1908,6 +1921,21 @@ pub trait ShowRepository: Send + Sync {
         &self,
         ordered_path: &str,
     ) -> AppResult<Option<Collection>>;
+    /// Batch-load collections by ordered path. Paths without a collection are
+    /// absent from the result. The default fans out to
+    /// `get_collection_by_ordered_path`; SQL stores override with one query.
+    async fn list_collections_by_ordered_paths(
+        &self,
+        ordered_paths: &[String],
+    ) -> AppResult<Vec<Collection>> {
+        let mut collections = Vec::with_capacity(ordered_paths.len());
+        for ordered_path in ordered_paths {
+            if let Some(collection) = self.get_collection_by_ordered_path(ordered_path).await? {
+                collections.push(collection);
+            }
+        }
+        Ok(collections)
+    }
     async fn create_collection(&self, collection: Collection) -> AppResult<Collection>;
     async fn update_collection(
         &self,
@@ -2007,7 +2035,42 @@ pub trait UserRepository: Send + Sync {
     async fn list_all(&self) -> AppResult<Vec<User>>;
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
     async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
-    async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
+    async fn reset_authentication_factors_and_invalidate_sessions(
+        &self,
+        _user_id: &str,
+        _auth_session_version: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "authentication-factor recovery is not configured".into(),
+        ))
+    }
+    async fn update_password_hash(
+        &self,
+        id: &str,
+        password_hash: String,
+        password_change_required: bool,
+    ) -> AppResult<User>;
+    async fn set_temporary_password_and_invalidate_sessions(
+        &self,
+        _id: &str,
+        _password_hash: String,
+        _auth_session_version: &str,
+    ) -> AppResult<User> {
+        Err(AppError::Repository(
+            "temporary-password replacement is not configured".into(),
+        ))
+    }
+    async fn complete_required_password_change(
+        &self,
+        _id: &str,
+        _password_hash: String,
+        _expected_auth_session_version: &Option<String>,
+        _auth_session_version: &str,
+    ) -> AppResult<User> {
+        Err(AppError::Repository(
+            "temporary-password replacement is not configured".into(),
+        ))
+    }
     async fn update_login_status_and_rotate_session(
         &self,
         id: &str,
@@ -2584,6 +2647,35 @@ pub trait WebauthnRepository: Send + Sync {
     async fn take_challenge(&self, id: &str) -> AppResult<Option<WebauthnChallengeRecord>>;
     async fn delete_challenge(&self, id: &str) -> AppResult<()>;
     async fn delete_expired_challenges(&self, now: &str) -> AppResult<u64>;
+    async fn create_login_verification_challenge(
+        &self,
+        _challenge: LoginVerificationChallengeRecord,
+    ) -> AppResult<LoginVerificationChallengeRecord> {
+        Err(AppError::Repository(
+            "login verification challenges are not configured".into(),
+        ))
+    }
+    async fn get_login_verification_challenge(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<LoginVerificationChallengeRecord>> {
+        Ok(None)
+    }
+    async fn take_login_verification_challenge(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<LoginVerificationChallengeRecord>> {
+        Ok(None)
+    }
+    async fn delete_login_verification_challenges_for_user(
+        &self,
+        _user_id: &str,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+    async fn delete_expired_login_verification_challenges(&self, _now: &str) -> AppResult<u64> {
+        Ok(0)
+    }
 }
 
 #[async_trait]
@@ -2653,6 +2745,17 @@ pub trait DomainEventRepository: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> AppResult<Vec<DomainEvent>>;
+    /// Aggregate dashboard activity counts for two adjacent time windows in one
+    /// grouped SQL query. Events are restricted to titles in `library_ids`, the
+    /// current window is `[current_start, current_end)`, and the previous window
+    /// is `[previous_start, current_start)`. An empty `library_ids` counts nothing.
+    async fn count_dashboard_activity_events(
+        &self,
+        library_ids: &[String],
+        previous_start: chrono::DateTime<chrono::Utc>,
+        current_start: chrono::DateTime<chrono::Utc>,
+        current_end: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<DashboardActivityStats>;
     async fn list_after_sequence(
         &self,
         after_sequence: i64,
@@ -2701,6 +2804,18 @@ pub trait IndexerConfigRepository: Send + Sync {
         self.update(IndexerConfigUpdate {
             id: indexer_id.to_string(),
             download_client_id: Some(download_client_id),
+            ..IndexerConfigUpdate::default()
+        })
+        .await
+    }
+    async fn set_seeding_profile_mapping(
+        &self,
+        indexer_id: &str,
+        seeding_profile_id: Option<String>,
+    ) -> AppResult<IndexerConfig> {
+        self.update(IndexerConfigUpdate {
+            id: indexer_id.to_string(),
+            seeding_profile_id: Some(seeding_profile_id),
             ..IndexerConfigUpdate::default()
         })
         .await
@@ -2786,6 +2901,14 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
         stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>>;
 
+    /// Delete every coverage row for `scope_key`, forcing all routed indexers
+    /// to be searched again on the next convergence pass.
+    async fn prune_scope(&self, scope_key: &str) -> AppResult<()>;
+
+    /// Delete coverage rows for one indexer within `scope_key`, forcing only
+    /// that indexer to be searched again on the next convergence pass.
+    async fn prune_scope_indexer(&self, scope_key: &str, indexer_id: &str) -> AppResult<()>;
+
     /// All coverage rows for the given scope keys, fetched in one round-trip
     ///. The wanted views group these by scope key and compare
     /// each row's `fingerprint` to the live one in memory, so a full page's
@@ -2809,6 +2932,21 @@ pub trait DownloadClientConfigRepository: Send + Sync {
         Ok(0)
     }
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
+}
+
+#[async_trait]
+pub trait SeedingProfileRepository: Send + Sync {
+    async fn list(&self) -> AppResult<Vec<scryer_domain::SeedingProfile>>;
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::SeedingProfile>>;
+    async fn create(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile>;
+    async fn update(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile>;
+    async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
 #[async_trait]
@@ -2940,6 +3078,12 @@ pub trait HousekeepingRepository: Send + Sync {
 
 pub trait IndexerStatsTracker: Send + Sync {
     fn record_query(&self, indexer_id: &str, indexer_name: &str, success: bool);
+    /// Record one release grabbed through this indexer and accepted by a
+    /// download client.
+    ///
+    /// Shares the in-memory rolling 24-hour window that backs `record_query`,
+    /// with the same lifetime: it is not persisted and resets on restart.
+    fn record_grab(&self, indexer_id: &str, indexer_name: &str);
     fn record_api_limits(
         &self,
         indexer_id: &str,
@@ -3106,6 +3250,49 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(())
     }
 
+    /// Freeze the seeding goals a torrent grab resolved to onto its submission
+    /// row. Called from the download-client choke point the moment the client
+    /// accepts the torrent, which is before the acquisition layer records the
+    /// submission itself, so implementations must upsert rather than update.
+    async fn record_seed_goals(&self, _record: SeedGoalGrabRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Read the goals a torrent was grabbed under, by download-client identity.
+    async fn get_seed_goals(
+        &self,
+        _identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        Ok(None)
+    }
+
+    /// Read the goals a torrent was grabbed under, by observed info hash — the
+    /// only key a Tier-B evaluator has when it is walking client items.
+    async fn find_seed_goals_by_info_hash(
+        &self,
+        _info_hash: &str,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        Ok(None)
+    }
+
+    /// Batch form of `get_seed_goals`, for the queue projection: it needs the
+    /// goals behind every visible torrent on every refresh, and one query per
+    /// row would put the poll cadence on a per-item round trip. The default
+    /// falls back to the single-row read so no implementor is forced to
+    /// reimplement it.
+    async fn list_seed_goals_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        let mut out = Vec::new();
+        for identity in client_items {
+            if let Some(goals) = self.get_seed_goals(identity).await? {
+                out.push((identity.clone(), goals));
+            }
+        }
+        Ok(out)
+    }
+
     async fn get_submission_actor_snapshot(
         &self,
         _identity: &DownloadSourceIdentity,
@@ -3192,6 +3379,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     }
 
     async fn get_identity_tracked_state(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn get_identity_tracked_state_reason(
         &self,
         _identity: &DownloadSubmissionIdentity,
         _source_identity: Option<&DownloadSourceIdentity>,
@@ -3892,6 +4087,25 @@ pub trait MediaFileRepository: Send + Sync {
 
     async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>>;
 
+    /// Batch-load media files by path, pairing each hit with the path that was
+    /// asked for. Callers key results by the requested path because a stored
+    /// path may differ from it (Windows matches case- and separator-insensitively),
+    /// so the row's own `file_path` is not a reliable lookup key. Paths without a
+    /// tracked file are absent. The default fans out to `get_media_file_by_path`;
+    /// SQL stores override with one query.
+    async fn list_media_files_by_paths(
+        &self,
+        file_paths: &[String],
+    ) -> AppResult<Vec<(String, TitleMediaFile)>> {
+        let mut media_files = Vec::with_capacity(file_paths.len());
+        for file_path in file_paths {
+            if let Some(media_file) = self.get_media_file_by_path(file_path).await? {
+                media_files.push((file_path.clone(), media_file));
+            }
+        }
+        Ok(media_files)
+    }
+
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()>;
 }
 
@@ -3921,7 +4135,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()>;
 
@@ -3941,7 +4154,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Grabbed.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             Some(&transition.grabbed_release),
         )
         .await
@@ -3955,18 +4167,24 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Completed.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             transition.grabbed_release.as_deref(),
         )
         .await
     }
 
+    /// Mark a scope completed.
+    ///
+    /// `landed_import` says whether a file actually landed for this scope, which
+    /// is the only thing the old `current_score` argument was ever used for
+    /// here: a landed import clears the in-flight grab, while a passive scan or
+    /// manual completion leaves it alone. It used to be inferred from
+    /// `current_score.is_some()`, which read a score as a flag.
     async fn complete_acquisition_scope_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
+        landed_import: bool,
     ) -> AppResult<bool> {
         let Some(wanted) = self
             .get_acquisition_scope_state_for_title(title_id, episode_id)
@@ -3978,8 +4196,7 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
         self.transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
             id: wanted.id,
             last_search_at: last_search_at.map(str::to_string),
-            current_score: current_score.or(wanted.current_score),
-            grabbed_release: if current_score.is_some() {
+            grabbed_release: if landed_import {
                 None
             } else {
                 wanted.grabbed_release
@@ -3998,7 +4215,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             &transition.id,
             AcquisitionScopeStatus::Paused.as_str(),
             transition.last_search_at.as_deref(),
-            transition.current_score,
             transition.grabbed_release.as_deref(),
         )
         .await
@@ -4007,7 +4223,7 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
     /// Re-open a scope for acquisition after a failed grab, a rejected import,
     /// or an operator replacement: status back to `wanted`, the in-flight grab
     /// cleared, the upgrade-baseline score and search cooldown preserved. The
-    /// convergence re-open (coverage prune) is the caller's second half — this
+    /// convergence re-open (coverage invalidation) is the caller's second half — this
     /// only resets the state row.
     async fn transition_acquisition_scope_to_reopened(&self, id: &str) -> AppResult<()> {
         let Some(existing) = self.get_acquisition_scope_state_by_id(id).await? else {
@@ -4017,7 +4233,6 @@ pub trait AcquisitionScopeStateRepository: Send + Sync {
             id,
             AcquisitionScopeStatus::Wanted.as_str(),
             existing.last_search_at.as_deref(),
-            existing.current_score,
             None,
         )
         .await
@@ -4209,10 +4424,27 @@ pub trait PendingReleaseRepository: Send + Sync {
         status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<()>;
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()>;
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
     ) -> AppResult<Vec<PendingRelease>>;
+    /// Standby rows for a title, ordered best-first for cross-episode pack
+    /// recovery.
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>>;
+    /// `standby` row counts grouped by wanted item, for the given items only —
+    /// one query, so a Wanted page never reads the whole standby table.
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>>;
     async fn delete_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
@@ -5364,7 +5596,22 @@ pub trait DownloadClient: Send + Sync {
         self.resume_queue_item(id).await
     }
 
-    async fn delete_queue_item(&self, _id: &str, _is_history: bool) -> AppResult<()> {
+    /// Remove one item from the client.
+    ///
+    /// `remove_data` asks the client to delete the payload it downloaded along
+    /// with the entry — Sonarr's `RemoveItem(item, deleteData: true)`, which it
+    /// uses for both post-import and failed-download cleanup. Callers own the
+    /// policy: the terminal-cleanup executor asks for it only where the data is
+    /// Scryer's to reclaim (see
+    /// `import::workflow::results::reconcile_terminal_download_cleanup`), and
+    /// everything else passes `false`. A client that has no way to keep the
+    /// data, or no way to delete it, honors what it can and documents the rest.
+    async fn delete_queue_item(
+        &self,
+        _id: &str,
+        _is_history: bool,
+        _remove_data: bool,
+    ) -> AppResult<()> {
         Err(AppError::Repository(
             "delete is not supported for this download client".to_string(),
         ))
@@ -5375,8 +5622,9 @@ pub trait DownloadClient: Send + Sync {
         _client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.delete_queue_item(id, is_history).await
+        self.delete_queue_item(id, is_history, remove_data).await
     }
 
     async fn delete_queue_item_for_client(
@@ -5384,9 +5632,10 @@ pub trait DownloadClient: Send + Sync {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         let _ = client_type;
-        self.delete_queue_item(id, is_history).await
+        self.delete_queue_item(id, is_history, remove_data).await
     }
 
     async fn mark_imported(&self, _request: &DownloadClientMarkImportedRequest) -> AppResult<()> {

@@ -25,7 +25,8 @@ use scryer_domain::{
     NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
     TitleContextSnapshot,
 };
-use scryer_infrastructure::{MediaServerConnectionStore, NotificationStore};
+use scryer_infrastructure_library::media::servers::MediaServerConnectionStore;
+use scryer_infrastructure_notifications::notifications::store::NotificationStore;
 use scryer_interface::build_schema;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -628,6 +629,7 @@ fn import_completed_event_data(
         dest_path: None,
         quality: None,
         episode_ids,
+        size_bytes: None,
     }
 }
 
@@ -2016,6 +2018,7 @@ async fn notification_dispatcher_delivers_structured_lifecycle_metadata() {
                     current_file_id: Some("file-new".to_string()),
                     old_score: None,
                     new_score: None,
+                    size_bytes: None,
                 }),
             ),
         ),

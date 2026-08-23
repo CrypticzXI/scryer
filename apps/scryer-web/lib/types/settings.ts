@@ -95,8 +95,8 @@ export type SecuritySettings = {
   skipLoginForLocalIps: boolean;
   mfaRequireConfigStepUp: boolean;
   mfaRequirePasswordLogin: boolean;
-  totpRequireJellyfinLogin: boolean;
-  totpRequireEmbyLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
+  mfaRequireEmbyLogin: boolean;
   effectiveFormLoginEnabled: boolean;
   envOverrideActive: boolean;
   envOverrideDescription: string | null;
@@ -252,6 +252,10 @@ export type BackupSettings = {
   effectiveBackupPath: string;
 };
 
+export type PluginAutoUpdateSettings = {
+  enabled: boolean;
+};
+
 export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
@@ -260,7 +264,7 @@ export type AuthRuntimeState = {
   envOverrideActive: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean;
-  totpRequireJellyfinLogin: boolean;
+  mfaRequireJellyfinLogin: boolean;
 };
 
 export type PasskeySummary = {
@@ -304,6 +308,7 @@ export type MediaSettings = {
   libraryPath: string;
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
+  useSeasonFolders: boolean;
   folderTemplate: string;
   seasonFolderTemplate: string | null;
   specialsFolderTemplate: string | null;

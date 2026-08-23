@@ -47,6 +47,7 @@ async fn list_download_queue_reads_cached_observed_items_without_client_calls() 
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Observed Download".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Orphan,
         })
@@ -90,6 +91,7 @@ async fn list_download_queue_reads_cached_observed_items_without_client_calls() 
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition
@@ -174,6 +176,7 @@ async fn list_download_queue_uses_live_queue_only_for_all_activity() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
 
     let items = app
@@ -236,6 +239,7 @@ async fn list_download_queue_for_title_filters_the_shared_cache() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Title Scoped Download".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -279,6 +283,7 @@ async fn list_download_queue_for_title_filters_the_shared_cache() {
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition
@@ -780,6 +785,7 @@ async fn synthetic_download_import_rows_are_enriched_from_submissions_before_per
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Manual Import Visibility".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -868,6 +874,7 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Fixture blocked-1".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -913,6 +920,7 @@ async fn find_download_queue_scope_returns_orphan_without_title_lookup() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Observed Weaver Download".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Orphan,
         })
@@ -976,6 +984,7 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Observed.Manual.Import.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Orphan,
         })
@@ -994,6 +1003,7 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Managed.Manual.Import.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1142,6 +1152,7 @@ async fn manual_import_source_uses_retained_tracked_source_when_live_history_is_
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Retained.Manual.Import.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Orphan,
         })
@@ -1383,6 +1394,7 @@ async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanu
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Already.Imported.Manual.Target.2026".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1527,6 +1539,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     });
     let submission = DownloadSubmission {
@@ -1541,6 +1554,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         source_provider_name: None,
         source_kind: None,
         source_title: Some(title.name.clone()),
+        release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::Title,
     };
@@ -2106,6 +2120,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(title.name.clone()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
@@ -2198,7 +2213,14 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
 
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+        // Usenet: the entry goes, the data stays the client's business.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            item_id.to_string(),
+            true,
+            false,
+        )]
     );
 
     timeout(Duration::from_secs(5), async {
@@ -2267,6 +2289,7 @@ async fn external_failed_snapshot_dispatches_failure_worker_without_completed_ro
             source_provider_name: None,
             source_kind: None,
             source_title: Some(release_title.to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -4047,6 +4070,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     };
 
@@ -4054,6 +4078,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         &app,
         &tracked,
         TrackedDownloadState::Failed,
+        None,
     )
     .await;
 
@@ -4063,7 +4088,14 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
     );
     assert_eq!(
         download_client.deleted_requests.lock().await.clone(),
-        vec![(Some(config.id.clone()), None, item_id.to_string(), true)]
+        // Usenet: the entry goes, the data stays the client's business.
+        vec![(
+            Some(config.id.clone()),
+            None,
+            item_id.to_string(),
+            true,
+            false,
+        )]
     );
 }
 
@@ -4134,6 +4166,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Fresh.Identity.2026.1080p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
@@ -4262,6 +4295,7 @@ async fn import_series_duplicate_destination_requires_catalog_for_already_import
     let parsed = crate::parse_release_metadata(release_name);
     let dest_path = crate::import_workflow::episode_import_dest_path(
         &stored_title,
+        true,
         &parsed,
         "mkv",
         &source_path,
@@ -4538,12 +4572,21 @@ async fn build_fail_closed_pack_fixture(
     )
 }
 
+/// Sparse stand-in episode file, sized to clear both size gates.
+///
+/// It used to be 51 MiB, one megabyte over the sample threshold. Size scoring
+/// now also vetoes a file under a tenth of the size its quality and runtime
+/// imply (`size_implausibly_small_for_quality`), and 51 MiB is not a plausible
+/// 45-minute episode at any of the qualities these fixtures name. The file is
+/// sparse, so the byte count is close to free.
+const PACK_VIDEO_SIZE_BYTES: u64 = 256 * 1024 * 1024;
+
 fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
     let path = dir.join(file_name);
     std::fs::File::create(&path)
         .expect("create source video")
-        .set_len(51 * 1024 * 1024)
-        .expect("size source video above sample threshold");
+        .set_len(PACK_VIDEO_SIZE_BYTES)
+        .expect("size source video above the sample threshold and the minimum-size veto");
     path
 }
 
@@ -4565,6 +4608,151 @@ fn series_pack_completed_download(
         ("*scryer_facet".to_string(), "series".to_string()),
     ];
     completed
+}
+
+/// An upgrade the admission ladder refuses ("existing file is better") is a
+/// fair loss, not a lie: canonical scoring disposes it as `Skip`, so the
+/// release is **not** burned and the download parks as import-blocked rather
+/// than failing (design D17). Only a `Blocklist` disposition — a truth verdict
+/// that the release misrepresented itself — sets `release_burned`; that path
+/// needs runtime media analysis and is covered at the `result_state` level.
+#[tokio::test]
+async fn automatic_episode_upgrade_rejection_is_not_burned() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            library_dir: _library_dir,
+            ..
+        },
+        _submissions,
+    ) = build_fail_closed_pack_fixture(FailClosedPackFixtureOptions {
+        series_root_at_library_dir: true,
+        ..Default::default()
+    })
+    .await;
+
+    let initial_source = tempfile::tempdir().expect("initial source tempdir");
+    write_pack_video(
+        initial_source.path(),
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL.mkv",
+    );
+    let initial = series_pack_completed_download(
+        "burned-upgrade-initial",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
+        initial_source.path(),
+    );
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
+    assert_eq!(
+        initial_result.decision,
+        scryer_domain::ImportDecision::Imported
+    );
+
+    let rejected_source = tempfile::tempdir().expect("rejected source tempdir");
+    write_pack_video(
+        rejected_source.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv",
+    );
+    let rejected = series_pack_completed_download(
+        "burned-upgrade-rejected",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL",
+        rejected_source.path(),
+    );
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &rejected)
+            .await
+            .expect("lower-quality completed import should run")
+    };
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(
+        !result.release_burned,
+        "a release that merely lost the upgrade comparison must not be burned: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir: _library_dir,
+            ..
+        },
+        _submissions,
+    ) = build_fail_closed_pack_fixture(FailClosedPackFixtureOptions {
+        series_root_at_library_dir: true,
+        ..Default::default()
+    })
+    .await;
+    create_second_pack_episode(&app, &user, &title.id, episode.collection_id.clone()).await;
+
+    let initial_source = tempfile::tempdir().expect("initial source tempdir");
+    write_pack_video(
+        initial_source.path(),
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL.mkv",
+    );
+    let initial = series_pack_completed_download(
+        "mixed-burn-initial",
+        &title.id,
+        "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
+        initial_source.path(),
+    );
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
+    assert_eq!(
+        initial_result.decision,
+        scryer_domain::ImportDecision::Imported
+    );
+
+    let mixed_source = tempfile::tempdir().expect("mixed source tempdir");
+    write_pack_video(
+        mixed_source.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv",
+    );
+    write_pack_video(
+        mixed_source.path(),
+        "Fail.Closed.Pack.S01E02.1080p.WEB-DL.mkv",
+    );
+    let mixed = series_pack_completed_download(
+        "mixed-burn-release",
+        &title.id,
+        "Fail.Closed.Pack.S01.1080p.WEB-DL",
+        mixed_source.path(),
+    );
+    let result = {
+        let _probes = probe_sequence_agrees_with_the_names([(1280, 720), (1920, 1080)]);
+        crate::import::import::import_completed_download(&app, &user, &mixed)
+            .await
+            .expect("mixed completed import should run")
+    };
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
 }
 
 #[tokio::test]
@@ -5068,7 +5256,7 @@ async fn manual_import_upgrade_reports_transfer_progress_on_its_record() {
     );
     assert_eq!(
         record.import_transfer_total_bytes,
-        Some(51 * 1024 * 1024),
+        Some(PACK_VIDEO_SIZE_BYTES as i64),
         "{record:?}"
     );
     assert_eq!(
@@ -5127,6 +5315,7 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
         facet: "series".to_string(),
         source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
         observed_release_name: None,
+        release_size_bytes: None,
         purpose: DownloadSubmissionPurpose::Standard,
         scope: SubmissionScope::Episode {
             episode_id: grabbed_episode.id,
@@ -5202,6 +5391,7 @@ async fn record_pack_identity_submission(
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some(source_title.to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope,
         })
@@ -5619,6 +5809,95 @@ async fn automatic_import_applies_single_episode_release_to_its_sole_obfuscated_
     assert!(source_file.exists());
 }
 
+/// Option c, persisted: a file that landed inside the overhead band of its
+/// announced size remembers that announced size on its media-file row (the bar
+/// re-derives the import score from it); a real shortfall, or a grab without an
+/// announced size, remembers nothing.
+#[tokio::test]
+async fn an_imported_file_remembers_the_announced_size_it_was_scored_on() {
+    let landed = PACK_VIDEO_SIZE_BYTES as i64;
+    for (announced, remembered) in [
+        // 256 MiB landed against 264 MiB announced: 97 %, inside the band.
+        (Some(landed + 8 * 1024 * 1024), true),
+        // Half of what was announced: a real shortfall, scored on the landed size.
+        (Some(landed * 2), false),
+        (None, false),
+    ] {
+        let (
+            FailClosedPackFixture {
+                app,
+                user,
+                title,
+                episode,
+                library_dir,
+                ..
+            },
+            download_submissions,
+        ) = fail_closed_pack_fixture_with_submissions().await;
+        let _keep_library = &library_dir;
+        let item_id = "announced-size-single-file";
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(PACK_IDENTITY_EPISODE_RELEASE.to_string()),
+                release_size_bytes: announced,
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: episode.id.clone(),
+                },
+            })
+            .await
+            .expect("record series submission");
+
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let _source_file = write_pack_video(
+            source_dir.path(),
+            &format!("{PACK_IDENTITY_EPISODE_RELEASE}.mkv"),
+        );
+        let completed = series_pack_completed_download(
+            item_id,
+            &title.id,
+            PACK_IDENTITY_EPISODE_RELEASE,
+            source_dir.path(),
+        );
+
+        let result = {
+            let _probe = probe_agrees_with_the_name(1280, 720);
+            crate::import::import::import_completed_download(&app, &user, &completed)
+                .await
+                .expect("completed import should run")
+        };
+        assert_eq!(
+            result.decision,
+            scryer_domain::ImportDecision::Imported,
+            "announced={announced:?}: {result:?}"
+        );
+        let media_files = app
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files");
+        assert_eq!(media_files.len(), 1, "{media_files:?}");
+        assert_eq!(media_files[0].size_bytes, landed);
+        assert_eq!(
+            media_files[0].announced_size_bytes,
+            if remembered { announced } else { None },
+            "announced={announced:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn manual_import_allows_explicit_title_for_missing_download_id_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
@@ -5819,6 +6098,7 @@ async fn completed_import_imports_additional_series_movie_file_from_submission_s
             source_title: Some(
                 "Additional.Series.Movie.Import.The.Movie.2026.1080p.BluRay.x264-Group".to_string(),
             ),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::SeriesMovie {
                 series_movie_link_id: link.id.clone(),
@@ -6150,6 +6430,7 @@ async fn completed_import_uses_durable_scope_over_stale_origin_parameters() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Scope.Conflict.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -6673,6 +6954,7 @@ async fn download_queue_subscription_bootstraps_from_runtime_cache_without_clien
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }];
     app.runtime
         .acquisition
@@ -6856,6 +7138,7 @@ async fn ignore_tracked_download_uses_durable_fallback_idempotently() {
                 source_provider_name: Some("Fixture Indexer".to_string()),
                 source_kind: None,
                 source_title: Some("Durable.Ignore.2026.1080p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
@@ -6952,6 +7235,7 @@ async fn finalize_ignore_preserves_an_imported_outcome() {
                 source_provider_name: Some("Fixture Indexer".to_string()),
                 source_kind: None,
                 source_title: Some("Imported.Then.Deleted.2026.1080p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
             },
@@ -7027,4 +7311,1283 @@ async fn active_library_scans_and_subscription_use_runtime_tracker_state() {
 
     assert_eq!(initial.session_id, session.session_id);
     assert_eq!(initial.facet, session.facet);
+}
+
+// ── decide_import: one gate, three dispositions (D17) ────────────────────────
+//
+// These drive the *real* completed-download path. Until the probe override
+// existed the default test build could only produce a `Consistent` verdict —
+// `probe_and_validate`'s non-mediainfo body synthesizes its analysis from the
+// release name, so the file always agreed with it — and every consequence of a
+// verdict (blocklist rows, reopened scopes, which disposition fires) was
+// asserted only against hand-built values. See `post_download_gate::probe_override`.
+
+/// Everything the four disposition tests share: a movie title with a folder, a
+/// download client, a `Standard` submission, a grabbed scope row, and a source
+/// file above the sample threshold.
+struct DispositionFixture {
+    app: AppUseCase,
+    user: User,
+    title: scryer_domain::Title,
+    title_folder: PathBuf,
+    completed: CompletedDownload,
+    blocklist_repo: Arc<MockBlocklistRepo>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    import_repo: Arc<TrackingImportRepo>,
+    scope_id: String,
+    _library_dir: tempfile::TempDir,
+    _download_dir: tempfile::TempDir,
+}
+
+impl DispositionFixture {
+    async fn scope_status(&self) -> AcquisitionScopeStatus {
+        self.app
+            .services
+            .workflow
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&self.scope_id)
+            .await
+            .expect("scope lookup")
+            .expect("the seeded scope row survives the import")
+            .status
+    }
+
+    async fn blocklisted_titles(&self) -> Vec<String> {
+        self.blocklist_repo
+            .entries
+            .lock()
+            .await
+            .iter()
+            .map(|entry| entry.source_title.clone().unwrap_or_default())
+            .collect()
+    }
+
+    async fn set_submission_purpose(&self, purpose: crate::DownloadSubmissionPurpose) {
+        let mut submissions = self.download_submissions.store.lock().await;
+        let submission = submissions
+            .iter_mut()
+            .find(|submission| {
+                submission.download_client_item_id == self.completed.download_client_item_id
+            })
+            .expect("fixture submission exists");
+        submission.purpose = purpose;
+    }
+
+    fn tracked_import_pending(&self) -> crate::tracked_downloads::TrackedDownload {
+        let mut client_item = queue_history_fixture_item(
+            &self.completed.download_client_item_id,
+            DownloadQueueState::Completed,
+            300 * 1024 * 1024,
+        );
+        client_item.client_id = self.completed.client_id.clone();
+        client_item.client_type = self.completed.client_type.clone();
+        client_item.client_name = "Primary NZBGet".to_string();
+        client_item.title_id = Some(self.title.id.clone());
+        client_item.title_name = self.title.name.clone();
+        client_item.facet = Some("movie".to_string());
+
+        crate::tracked_downloads::TrackedDownload {
+            id: crate::tracked_downloads::tracked_download_id(
+                Some(self.completed.client_id.as_str()),
+                &self.completed.client_type,
+                &self.completed.download_client_item_id,
+            ),
+            client_id: self.completed.client_id.clone(),
+            client_type: self.completed.client_type.clone(),
+            client_item,
+            completed_source: None,
+            state: TrackedDownloadState::ImportPending,
+            status: scryer_domain::TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some(self.title.id.clone()),
+            facet: Some("movie".to_string()),
+            source_title: Some(self.completed.name.clone()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: scryer_domain::TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
+            snapshot_missing_since: None,
+        }
+    }
+
+    async fn latest_import_result(&self) -> crate::ImportResult {
+        let records = self.import_repo.records.lock().await;
+        let result_json = records
+            .iter()
+            .rev()
+            .find_map(|record| record.result_json.as_deref())
+            .expect("completed import stores a result");
+        serde_json::from_str(result_json).expect("stored import result deserializes")
+    }
+}
+
+async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixture {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_imports(import_repo.clone())
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files)
+            .with_blocklist_repo(blocklist_repo.clone())
+    });
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let library_dir = tempfile::tempdir().expect("library tempdir");
+    let title_folder = library_dir.path().join(name);
+    // The upgrade path refuses to recycle a file outside the library's
+    // configured roots, so the fixture's tempdir has to *be* the root.
+    let movie_library = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(MediaFacet::Movie)
+        .await
+        .expect("library lookup")
+        .expect("movie library exists");
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &movie_library.id,
+            movie_library.name.clone(),
+            movie_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: library_dir.path().to_string_lossy().into_owned(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("point the movie library at the fixture root");
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: name.to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2026),
+                runtime_minutes: Some(40),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create movie title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &title_folder.to_string_lossy())
+        .await
+        .expect("set title folder path");
+
+    let scope_id = Id::new().0;
+    app.services
+        .workflow
+        .acquisition_scope_states
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: scope_id.clone(),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_facet: Some(MediaFacet::Movie.as_str().to_string()),
+            library_id: Some(title.library_id.clone()),
+            media_type: "movie".to_string(),
+            // Grabbed, because that is where a completed download leaves it.
+            // A reopen puts it back to `wanted`; a skip or a hold must not.
+            status: AcquisitionScopeStatus::Grabbed,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+            title_slug: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            series_movie_link_id: None,
+            season_number: None,
+            episode_number: None,
+            last_search_at: None,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+        })
+        .await
+        .expect("seed grabbed scope row");
+
+    let item_id = format!("{}-1", name.to_ascii_lowercase().replace(' ', "-"));
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: item_id.clone(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some(release_title.to_string()),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record submission");
+
+    let download_dir = tempfile::tempdir().expect("download tempdir");
+    let source_file = download_dir.path().join(format!("{release_title}.mkv"));
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        // Above the sample threshold and inside a plausible band for a 40-minute
+        // runtime, and small enough that hashing and copying it stay cheap.
+        .set_len(300 * 1024 * 1024)
+        .expect("size source video into a plausible band");
+    let mut completed = completed_download_fixture_item(
+        &item_id,
+        &title.id,
+        release_title,
+        download_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.parameters.clear();
+    *download_client.completed_downloads.lock().await = vec![completed.clone()];
+
+    DispositionFixture {
+        app,
+        user,
+        title,
+        title_folder,
+        completed,
+        blocklist_repo,
+        download_submissions,
+        import_repo,
+        scope_id,
+        _library_dir: library_dir,
+        _download_dir: download_dir,
+    }
+}
+
+async fn seed_primary_movie_file(
+    fixture: &DispositionFixture,
+    file_name: &str,
+    quality_label: &str,
+) -> String {
+    // On disk as well as in the row: the upgrade path recycles the real file,
+    // and refuses outright when its configured root looks empty.
+    std::fs::create_dir_all(&fixture.title_folder).expect("create title folder");
+    std::fs::File::create(fixture.title_folder.join(file_name))
+        .expect("create incumbent file")
+        .set_len(300 * 1024 * 1024)
+        .expect("size incumbent file");
+    fixture
+        .app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: fixture.title.id.clone(),
+            file_path: fixture
+                .title_folder
+                .join(file_name)
+                .to_string_lossy()
+                .into_owned(),
+            size_bytes: 300 * 1024 * 1024,
+            role: MediaFileRole::Primary,
+            quality_label: Some(quality_label.to_string()),
+            resolution: Some(quality_label.to_string()),
+            scene_name: Some(file_name.trim_end_matches(".mkv").to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert incumbent primary file")
+}
+
+/// A probe that simply agrees with the release name.
+///
+/// The feature-off build synthesizes exactly this from the parsed quality, so a
+/// test that wants "no contradiction" used to need no hook at all. It needs one
+/// now: a workspace build unifies `runtime-media-analysis` on (see
+/// `post_download_gate::probe_override`), and the real probe rejects a sparse
+/// fixture for having no readable duration. Installing the agreement explicitly
+/// makes the same test mean the same thing in both builds.
+fn probe_agreement(width: i32, height: i32) -> crate::post_download_gate::ImportedFileAcceptance {
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(width);
+    analysis.video_height = Some(height);
+    crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(analysis),
+        scan_error: None,
+        rule_file_doc: None,
+        audio_language_warning: None,
+    }
+}
+
+fn probe_agrees_with_the_name(
+    width: i32,
+    height: i32,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install(probe_agreement(width, height))
+}
+
+fn probe_sequence_agrees_with_the_names(
+    dimensions: impl IntoIterator<Item = (i32, i32)>,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install_sequence(
+        dimensions
+            .into_iter()
+            .map(|(width, height)| probe_agreement(width, height)),
+    )
+}
+
+async fn primary_movie_files(fixture: &DispositionFixture) -> Vec<crate::TitleMediaFile> {
+    fixture
+        .app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&fixture.title.id)
+        .await
+        .expect("list media files")
+        .into_iter()
+        .filter(|file| file.role.is_primary())
+        .collect()
+}
+
+/// **`Blocklist`.** The release advertised 1080p and the file measures 720p, in
+/// a profile that ranks 1080P above 720P and a scope that already holds a 1080p
+/// file. The release lied, so it is burned and the scope re-opened to look for
+/// a different candidate.
+#[tokio::test]
+async fn a_release_that_lied_about_its_quality_is_blocklisted_and_the_scope_reopened() {
+    let release_title = "Quality Lie Movie.2026.1080p.WEB-DL.x264-GRP";
+    let fixture = disposition_fixture("Quality Lie Movie", release_title).await;
+    let incumbent_id =
+        seed_primary_movie_file(&fixture, "Quality Lie Movie - 1080p.mkv", "1080p").await;
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1280);
+    analysis.video_height = Some(720);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: None,
+            audio_language_warning: None,
+        },
+    );
+
+    let result = crate::import_workflow::import_completed_download(
+        &fixture.app,
+        &fixture.user,
+        &fixture.completed,
+    )
+    .await
+    .expect("the import runs to a decision");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
+    assert!(
+        fixture.blocklisted_titles().await.contains(&expected),
+        "a proven quality lie must be blocklisted, got {:?}",
+        fixture.blocklisted_titles().await
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Wanted,
+        "the scope must reopen so convergence looks for a different release"
+    );
+    let primaries = primary_movie_files(&fixture).await;
+    assert_eq!(
+        primaries.len(),
+        1,
+        "the incumbent must stand alone: {primaries:?}"
+    );
+    assert_eq!(primaries[0].id, incumbent_id);
+}
+
+/// A file rule the operator wrote vetoes the file over something the release name
+/// never disclosed. That is an import failure, so burn this release and reopen
+/// the scope to try another candidate.
+#[tokio::test]
+async fn a_file_the_profile_vetoes_over_an_undisclosed_property_is_blocklisted() {
+    let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
+
+    let policy = scryer_rules::UserPolicy {
+        id: "no_probe_files".to_string(),
+        name: "No probe files".to_string(),
+        rego_source: scryer_rules::rewrite_package_declaration(
+            r#"
+score_entry["operator_refuses_this_file"] := -10000 if {
+    input.file != null
+}
+"#,
+            "no_probe_files",
+        ),
+        origin: scryer_rules::PolicyOrigin::User,
+        applied_facets: vec!["movie".to_string()],
+    };
+    *fixture
+        .app
+        .services
+        .customization
+        .user_rules
+        .write()
+        .expect("user rules lock should be writable") =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("rule fixture should compile");
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1920);
+    analysis.video_height = Some(1080);
+    let rule_file_doc = crate::user_rule_input::file_doc_from_analysis(&analysis);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: Some(rule_file_doc),
+            audio_language_warning: None,
+        },
+    );
+
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a burned import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(result.release_burned, "{result:?}");
+    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
+    assert!(
+        fixture.blocklisted_titles().await.contains(&expected),
+        "an undisclosed veto must burn this release: {:?}",
+        fixture.blocklisted_titles().await
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Wanted,
+        "a burned veto must reopen the scope so convergence can try another release"
+    );
+    assert_eq!(tracked.state, TrackedDownloadState::Failed);
+    assert!(
+        primary_movie_files(&fixture).await.is_empty(),
+        "a held file is not imported"
+    );
+}
+
+/// The same file-rule rejection remains a guard for an operator-chosen release,
+/// but it is held for manual import instead of being burned and retried.
+#[tokio::test]
+async fn operator_queued_file_rule_veto_is_held_without_blocklisting_or_reopening() {
+    let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
+    fixture
+        .set_submission_purpose(crate::DownloadSubmissionPurpose::OperatorQueued)
+        .await;
+
+    let policy = scryer_rules::UserPolicy {
+        id: "no_probe_files".to_string(),
+        name: "No probe files".to_string(),
+        rego_source: scryer_rules::rewrite_package_declaration(
+            r#"
+score_entry["operator_refuses_this_file"] := -10000 if {
+    input.file != null
+}
+"#,
+            "no_probe_files",
+        ),
+        origin: scryer_rules::PolicyOrigin::User,
+        applied_facets: vec!["movie".to_string()],
+    };
+    *fixture
+        .app
+        .services
+        .customization
+        .user_rules
+        .write()
+        .expect("user rules lock should be writable") =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("rule fixture should compile");
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1920);
+    analysis.video_height = Some(1080);
+    let rule_file_doc = crate::user_rule_input::file_doc_from_analysis(&analysis);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: Some(rule_file_doc),
+            audio_language_warning: None,
+        },
+    );
+
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a held import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
+
+    assert_eq!(
+        // A held import is `Skipped` (the manual-import hold), never `Rejected`:
+        // `result_state` parks it as ImportBlocked for the operator.
+        result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
+    assert!(
+        result.error_message.as_deref().is_some_and(
+            |message| message.starts_with("held for manual import because the file failed")
+        ),
+        "{result:?}"
+    );
+    assert!(
+        fixture.blocklisted_titles().await.is_empty(),
+        "an operator-held release must not be blocklisted"
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Grabbed,
+        "a held release leaves the scope alone"
+    );
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        tracked
+            .status_messages
+            .iter()
+            .any(|message| message.starts_with("held for manual import because the file failed")),
+        "{tracked:?}"
+    );
+    assert!(
+        primary_movie_files(&fixture).await.is_empty(),
+        "held files are not imported automatically"
+    );
+}
+
+/// **`Skip`.** The scope already holds a better tier. The release is perfectly
+/// good, it just lost the comparison — so it is not burned, and the scope is not
+/// reopened for a search that has nothing new to find.
+#[tokio::test]
+async fn an_import_that_loses_the_comparison_is_skipped_without_burning_the_release() {
+    let release_title = "Loses Comparison Movie.2026.720p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Loses Comparison Movie", release_title).await;
+    let incumbent_id =
+        seed_primary_movie_file(&fixture, "Loses Comparison Movie - 1080p.mkv", "1080p").await;
+    let _probe = probe_agrees_with_the_name(1280, 720);
+
+    let result = crate::import_workflow::import_completed_download(
+        &fixture.app,
+        &fixture.user,
+        &fixture.completed,
+    )
+    .await
+    .expect("the import runs to a decision");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "{result:?}"
+    );
+    assert!(
+        fixture.blocklisted_titles().await.is_empty(),
+        "losing a comparison is not a lie: {:?}",
+        fixture.blocklisted_titles().await
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Grabbed,
+        "a skip must not reopen the scope"
+    );
+    // **The fall-through bug.** `import_movie_download` had no `else` for a
+    // refused admission and walked straight into the first-import insert, which
+    // defaults `MediaFileRole` to `Primary` — a second primary file for a movie
+    // it had just refused. `decide_import` makes that unrepresentable.
+    let primaries = primary_movie_files(&fixture).await;
+    assert_eq!(
+        primaries.len(),
+        1,
+        "a refused movie import must not insert a second primary file: {primaries:?}"
+    );
+    assert_eq!(primaries[0].id, incumbent_id);
+}
+
+/// **A1, end to end.** A movie incumbent that lives at a path this import would
+/// never write (rename disabled, a changed template, `.mp4` → `.mkv`) must still
+/// be found and recycled. Resolving by destination path came up empty while
+/// admission said the scope was occupied — the condition that panicked the
+/// import task, and that a path filter would silently reintroduce.
+#[tokio::test]
+async fn a_movie_upgrade_finds_its_incumbent_at_another_path() {
+    let release_title = "Renamed Incumbent Movie.2026.1080p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Renamed Incumbent Movie", release_title).await;
+    let incumbent_id =
+        seed_primary_movie_file(&fixture, "preserved.original.name.720p.mp4", "720p").await;
+    let _probe = probe_agrees_with_the_name(1920, 1080);
+
+    let result = crate::import_workflow::import_completed_download(
+        &fixture.app,
+        &fixture.user,
+        &fixture.completed,
+    )
+    .await
+    .expect("the import runs to a decision");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    let primaries = primary_movie_files(&fixture).await;
+    assert!(
+        !primaries.iter().any(|file| file.id == incumbent_id),
+        "the recycled incumbent must be gone: {primaries:?}"
+    );
+    assert_eq!(
+        primaries.len(),
+        1,
+        "exactly one primary file survives an upgrade: {primaries:?}"
+    );
+    assert!(
+        fixture.blocklisted_titles().await.is_empty(),
+        "an honest upgrade burns nothing"
+    );
+}
+
+/// **A1 through the link path, end to end.** The clone of
+/// `completed_import_imports_additional_series_movie_file_from_submission_scope`
+/// the review asked for: a `Standard` submission (so it takes
+/// `import_series_movie_download`'s main path) whose linked incumbent sits at a
+/// path this import would never write. Resolving the row by destination path
+/// leaves it empty while admission says the scope is occupied — the condition
+/// that used to `.expect()` and panic the import task. Reintroducing a
+/// path-scoped incumbent list turns this red.
+#[tokio::test]
+async fn series_movie_link_upgrade_finds_its_incumbent_at_another_path() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_imports(import_repo.clone())
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+            .with_blocklist_repo(blocklist_repo.clone())
+    });
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let library_dir = tempfile::tempdir().expect("library tempdir");
+    let title_folder = library_dir.path().join("Renamed Link Incumbent");
+    let anime_library = app
+        .services
+        .catalog
+        .libraries
+        .default_for_facet(MediaFacet::Anime)
+        .await
+        .expect("library lookup")
+        .expect("anime library exists");
+    app.services
+        .catalog
+        .libraries
+        .update(
+            &anime_library.id,
+            anime_library.name.clone(),
+            anime_library.slug.clone(),
+            vec![LibraryRootDraft {
+                path: library_dir.path().to_string_lossy().into_owned(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("point the anime library at the fixture root");
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Renamed Link Incumbent".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                runtime_minutes: Some(40),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &title_folder.to_string_lossy())
+        .await
+        .expect("set title folder path");
+    let specials = app
+        .create_collection(
+            &user,
+            title.id.clone(),
+            "season".into(),
+            "0".into(),
+            Some("Specials".into()),
+            None,
+            Some("0".into()),
+            Some("3".into()),
+        )
+        .await
+        .expect("create specials collection");
+    let linked_episode = app
+        .create_episode(
+            &user,
+            title.id.clone(),
+            Some(specials.id),
+            "special".into(),
+            Some("3".into()),
+            Some("0".into()),
+            Some("S00E03".into()),
+            Some("Movie Special".into()),
+            None,
+            Some(2_400),
+            false,
+            false,
+        )
+        .await
+        .expect("create linked special episode");
+
+    let mut link_input = test_series_movie_link(
+        &title.id,
+        "Renamed Link Incumbent: The Movie",
+        Some(2026),
+        None,
+        Some("renamed-link-incumbent"),
+    );
+    link_input.linked_episode_id = Some(linked_episode.id.clone());
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(link_input)
+        .await
+        .expect("create series movie link");
+
+    // Deliberately not the path the import writes: rename disabled, a template
+    // change, `.mp4` instead of `.mkv` — all ordinary, all fatal to a path
+    // lookup.
+    std::fs::create_dir_all(title_folder.join("Season 00")).expect("create season folder");
+    let incumbent_path = title_folder
+        .join("Season 00")
+        .join("preserved.original.name.720p.mp4");
+    std::fs::File::create(&incumbent_path)
+        .expect("create incumbent file")
+        .set_len(300 * 1024 * 1024)
+        .expect("size incumbent file");
+    let incumbent_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: incumbent_path.to_string_lossy().into_owned(),
+            size_bytes: 300 * 1024 * 1024,
+            role: MediaFileRole::Primary,
+            quality_label: Some("720p".to_string()),
+            resolution: Some("720p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert linked incumbent");
+    app.services
+        .library
+        .media_files
+        .link_file_to_series_movie(&incumbent_id, &link.id)
+        .await
+        .expect("link incumbent to series movie");
+
+    let release_title = "Renamed.Link.Incumbent.The.Movie.2026.1080p.BluRay.x264-Group";
+    let item_id = "renamed-link-incumbent-1";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            // `Standard`, not `AdditionalFile`: this must take the main link
+            // import path, the one that resolves an incumbent to recycle.
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "anime".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some(release_title.to_string()),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::SeriesMovie {
+                series_movie_link_id: link.id.clone(),
+            },
+        })
+        .await
+        .expect("record series movie submission");
+
+    let download_dir = tempfile::tempdir().expect("download tempdir");
+    let source_file = download_dir.path().join(format!("{release_title}.mkv"));
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(300 * 1024 * 1024)
+        .expect("size source video");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        release_title,
+        download_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.parameters.clear();
+    *download_client.completed_downloads.lock().await = vec![completed.clone()];
+    let _probe = probe_agrees_with_the_name(1920, 1080);
+
+    let result = crate::import_workflow::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("the linked upgrade runs to a decision");
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert!(
+        !files.iter().any(|file| file.id == incumbent_id),
+        "the recycled incumbent must be gone: {files:?}"
+    );
+    let imported = files
+        .iter()
+        .find(|file| file.role.is_primary())
+        .expect("the upgrade landed a primary file");
+    assert_eq!(imported.series_movie_link_ids, vec![link.id]);
+    assert!(
+        blocklist_repo.entries.lock().await.is_empty(),
+        "an honest upgrade burns nothing"
+    );
+}
+
+/// **Minor 5.** A manual series-movie-link import does not go through
+/// `import_series_movie_download` at all, so it never reaches the verdict gate —
+/// whatever the probe reports. Pinned because `operator_initiated_import`'s doc
+/// used to claim it covered "all three import paths", which invited someone to
+/// rely on the bypass flag for a path that never consults it.
+#[tokio::test]
+async fn a_manual_series_movie_link_import_never_reaches_the_verdict_gate() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+            .with_blocklist_repo(blocklist_repo.clone())
+    });
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("seed manual import actor");
+
+    let library_dir = tempfile::tempdir().expect("library tempdir");
+    let title_folder = library_dir.path().join("Manual Link Verdict Bypass");
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Link Verdict Bypass".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                runtime_minutes: Some(40),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &title_folder.to_string_lossy())
+        .await
+        .expect("set title folder path");
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Manual Link Verdict Bypass: The Movie",
+            Some(2026),
+            None,
+            Some("manual-link-verdict-bypass"),
+        ))
+        .await
+        .expect("create series movie link");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = source_dir
+        .path()
+        .join("Manual.Link.Verdict.Bypass.The.Movie.2026.1080p.WEB-DL.mkv");
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(300 * 1024 * 1024)
+        .expect("size source video");
+
+    // The probe reports 720p against a 1080p name — exactly the evidence that
+    // blocklists a release on the automatic lane.
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1280);
+    analysis.video_height = Some(720);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: None,
+            audio_language_warning: None,
+        },
+    );
+
+    let results = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        "manual-import-link-verdict-bypass",
+        &title.id,
+        None,
+        vec![ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().into_owned(),
+            episode_id: None,
+            series_movie_link_id: Some(link.id.clone()),
+        }],
+        Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root")),
+    )
+    .await
+    .expect("execute manual import");
+
+    assert!(
+        results.iter().all(|result| result.success),
+        "the operator's own file must import: {results:?}"
+    );
+    assert!(
+        blocklist_repo.entries.lock().await.is_empty(),
+        "a manual link import must never blocklist the operator's release: {:?}",
+        blocklist_repo.entries.lock().await
+    );
+}
+
+/// **The link dimension of the reopen (D17 / review m7).** A refused link import
+/// used to reopen nothing: `reset_wanted_items_for_retry` had only an episode
+/// list and a title fallback, and a series-movie link's scope row is keyed on
+/// neither — so the link sat permanently un-searched after one bad release.
+/// The reopen now reads the same `BlocklistAttribution` the blocklist entry is
+/// filed under.
+#[tokio::test]
+async fn a_refused_link_import_blocklists_and_reopens_the_link_scope() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_imports(Arc::new(TrackingImportRepo::default()))
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+            .with_blocklist_repo(blocklist_repo.clone())
+    });
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let library_dir = tempfile::tempdir().expect("library tempdir");
+    let title_folder = library_dir.path().join("Refused Link Import");
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Refused Link Import".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                runtime_minutes: Some(40),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create anime title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, &title_folder.to_string_lossy())
+        .await
+        .expect("set title folder path");
+    let link = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &title.id,
+            "Refused Link Import: The Movie",
+            Some(2026),
+            None,
+            Some("refused-link-import"),
+        ))
+        .await
+        .expect("create series movie link");
+
+    // Occupied at 1080p, so a landed 720p is a refusal rather than an
+    // import-and-blocklist.
+    std::fs::create_dir_all(&title_folder).expect("create title folder");
+    let incumbent_path = title_folder.join("Refused Link Import - 1080p.mkv");
+    std::fs::File::create(&incumbent_path)
+        .expect("create incumbent file")
+        .set_len(300 * 1024 * 1024)
+        .expect("size incumbent file");
+    let incumbent_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: incumbent_path.to_string_lossy().into_owned(),
+            size_bytes: 300 * 1024 * 1024,
+            role: MediaFileRole::Primary,
+            quality_label: Some("1080p".to_string()),
+            resolution: Some("1080p".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("insert linked incumbent");
+    app.services
+        .library
+        .media_files
+        .link_file_to_series_movie(&incumbent_id, &link.id)
+        .await
+        .expect("link incumbent to series movie");
+
+    // A decoy: the title-scope row the old `episode_ids.is_empty() => title`
+    // fallback would have reopened. It is stored first, so a lookup that does
+    // not key on the link id finds this one instead. It must stay `grabbed`.
+    let title_scope_id = Id::new().0;
+    app.services
+        .workflow
+        .acquisition_scope_states
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: title_scope_id.clone(),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_facet: Some(MediaFacet::Anime.as_str().to_string()),
+            library_id: Some(title.library_id.clone()),
+            media_type: "anime".to_string(),
+            series_movie_link_id: None,
+            status: AcquisitionScopeStatus::Grabbed,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+            title_slug: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            last_search_at: None,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+        })
+        .await
+        .expect("seed decoy title scope row");
+
+    // The scope row a link lives on: no episode id, a link id, and `grabbed`.
+    let scope_id = Id::new().0;
+    app.services
+        .workflow
+        .acquisition_scope_states
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: scope_id.clone(),
+            title_id: title.id.clone(),
+            title_name: Some(title.name.clone()),
+            title_facet: Some(MediaFacet::Anime.as_str().to_string()),
+            library_id: Some(title.library_id.clone()),
+            media_type: "series_movie".to_string(),
+            series_movie_link_id: Some(link.id.clone()),
+            status: AcquisitionScopeStatus::Grabbed,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+            title_slug: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            season_number: None,
+            episode_number: None,
+            last_search_at: None,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+        })
+        .await
+        .expect("seed grabbed link scope row");
+
+    let release_title = "Refused.Link.Import.The.Movie.2026.1080p.BluRay.x264-Group";
+    let item_id = "refused-link-import-1";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "anime".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some(release_title.to_string()),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::SeriesMovie {
+                series_movie_link_id: link.id.clone(),
+            },
+        })
+        .await
+        .expect("record series movie submission");
+
+    let download_dir = tempfile::tempdir().expect("download tempdir");
+    let source_file = download_dir.path().join(format!("{release_title}.mkv"));
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(300 * 1024 * 1024)
+        .expect("size source video");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        release_title,
+        download_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.parameters.clear();
+    *download_client.completed_downloads.lock().await = vec![completed.clone()];
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1280);
+    analysis.video_height = Some(720);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: None,
+            audio_language_warning: None,
+        },
+    );
+
+    let result = crate::import_workflow::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("the link import runs to a decision");
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+
+    let entries = blocklist_repo.entries.lock().await.clone();
+    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
+    let entry = entries
+        .iter()
+        .find(|entry| entry.source_title.as_deref() == Some(expected.as_str()))
+        .expect("the lying release is blocklisted for the title");
+    assert!(
+        entry
+            .data_json
+            .as_deref()
+            .is_some_and(|data| data.contains(&link.id)),
+        "the blocklist entry must be filed under the link it belongs to: {:?}",
+        entry.data_json
+    );
+
+    let reopened = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .get_acquisition_scope_state_by_id(&scope_id)
+        .await
+        .expect("scope lookup")
+        .expect("the link scope row survives");
+    assert_eq!(
+        reopened.status,
+        AcquisitionScopeStatus::Wanted,
+        "a refused link import must reopen the *link* scope, not the title's"
+    );
+    let decoy = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .get_acquisition_scope_state_by_id(&title_scope_id)
+        .await
+        .expect("scope lookup")
+        .expect("the decoy title scope row survives");
+    assert_eq!(
+        decoy.status,
+        AcquisitionScopeStatus::Grabbed,
+        "the title scope is not this rejection's scope and must be left alone"
+    );
 }

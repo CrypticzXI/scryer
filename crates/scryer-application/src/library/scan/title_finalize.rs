@@ -362,7 +362,7 @@ pub(crate) async fn finalize_title_scan_file(
                 );
             }
         }
-        crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), None)
+        crate::import_workflow::mark_wanted_completed(app, &title.id, Some(&episode.id), false)
             .await;
     }
 
@@ -485,6 +485,7 @@ async fn persist_ignored_movie_scan_file_metadata_error(
             year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
             reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
             error_message: Some(error_message),
+            size_bytes: file.size_bytes,
         },
     )
     .await
@@ -688,7 +689,7 @@ pub(super) async fn finalize_movie_scan_file(
                 error = %err,
                 "failed to list collections during movie scan"
             );
-            crate::import_workflow::mark_wanted_completed(app, &title.id, None, None).await;
+            crate::import_workflow::mark_wanted_completed(app, &title.id, None, false).await;
             if persisted_file.title_updated {
                 app.emit_title_updated_activity(None, title).await;
             }
@@ -708,7 +709,7 @@ pub(super) async fn finalize_movie_scan_file(
         return;
     }
 
-    crate::import_workflow::mark_wanted_completed(app, &title.id, None, None).await;
+    crate::import_workflow::mark_wanted_completed(app, &title.id, None, false).await;
     if persisted_file.title_updated {
         app.emit_title_updated_activity(None, title).await;
     }

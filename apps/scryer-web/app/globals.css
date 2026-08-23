@@ -103,6 +103,7 @@
   --scry-warning-text: #b45309;
   --scry-warning-solid: #d97706;
   --scry-warning-solid-hover: #b45309;
+  --scry-warning-on-solid: #451a03;
   --scry-success: #059669;
   --scry-success-rgb: 5, 150, 105;
   --scry-success-bg: rgba(var(--scry-success-rgb), 0.11);
@@ -263,6 +264,7 @@
   --scry-warning-text: #fde68a;
   --scry-warning-solid: #f59e0b;
   --scry-warning-solid-hover: #d97706;
+  --scry-warning-on-solid: #451a03;
   --scry-success: #34d399;
   --scry-success-rgb: 52, 211, 153;
   --scry-success-bg: rgba(var(--scry-success-rgb), 0.12);
@@ -701,7 +703,12 @@ body {
   color: var(--foreground);
 }
 
-.dark [data-slot="table-head"] {
+/* The checkbox and actions header cells replace the table-head slot with their
+ * own, so every header rule has to name all three or those columns fall back to
+ * the row background. */
+.dark [data-slot="table-head"],
+.dark [data-slot="table-checkbox-head"],
+.dark [data-slot="table-actions-head"] {
   background:
     linear-gradient(180deg, rgba(21, 29, 49, 0.985), rgba(13, 19, 34, 0.985)),
     linear-gradient(90deg, rgba(91, 100, 255, 0.03), rgba(56, 189, 248, 0.016) 100%);
@@ -710,8 +717,10 @@ body {
 }
 
 /* Standard tables keep the original per-cell dark hover gradient. Catalog and
- * plugin rows (excluded here) span the same gradient across the whole row. */
-.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):not([data-ui="settings-user-table-row"]):not([data-ui="settings-plugin-table-row"]):hover > [data-slot="table-cell"] {
+ * settings rows (excluded here) span the same gradient across the whole row.
+ * A row opts in by carrying one of the data-ui values listed below, so both
+ * lists have to stay in sync or a row gets the gradient twice. */
+.dark [data-slot="table-body"] [data-slot="table-row"]:not([data-ui="title-table-row"]):not([data-ui="compact-title-table-row"]):not([data-ui="settings-user-table-row"]):not([data-ui="settings-plugin-table-row"]):not([data-ui="settings-table-row"]):not([data-ui="activity-row"]):not([data-ui="wanted-item-row"]):not([data-ui="pending-release-row"]):hover > [data-slot="table-cell"] {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
@@ -719,7 +728,11 @@ body {
 .dark [data-slot="table-body"] [data-ui="title-table-row"]:hover,
 .dark [data-slot="table-body"] [data-ui="compact-title-table-row"]:hover,
 .dark [data-slot="table-body"] [data-ui="settings-user-table-row"]:hover,
-.dark [data-slot="table-body"] [data-ui="settings-plugin-table-row"]:hover {
+.dark [data-slot="table-body"] [data-ui="settings-plugin-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="settings-table-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="activity-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="wanted-item-row"]:hover,
+.dark [data-slot="table-body"] [data-ui="pending-release-row"]:hover {
   background:
     linear-gradient(90deg, rgba(91, 100, 255, 0.02), rgba(56, 189, 248, 0.012) 72%, transparent 100%);
 }
@@ -1128,7 +1141,9 @@ body {
   border-color: transparent;
 }
 
-.pride [data-slot="table-head"] {
+.pride [data-slot="table-head"],
+.pride [data-slot="table-checkbox-head"],
+.pride [data-slot="table-actions-head"] {
   background:
     linear-gradient(180deg, rgba(37, 22, 66, 0.96), rgba(17, 11, 34, 0.98)),
     linear-gradient(90deg, rgba(255, 76, 168, 0.12), rgba(74, 125, 255, 0.12) 100%);
@@ -1137,12 +1152,16 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.pride [data-slot="table-head"]:first-child {
+.pride [data-slot="table-head"]:first-child,
+.pride [data-slot="table-checkbox-head"]:first-child,
+.pride [data-slot="table-actions-head"]:first-child {
   border-top-left-radius: 0.9rem;
   border-bottom-left-radius: 0.9rem;
 }
 
-.pride [data-slot="table-head"]:last-child {
+.pride [data-slot="table-head"]:last-child,
+.pride [data-slot="table-checkbox-head"]:last-child,
+.pride [data-slot="table-actions-head"]:last-child {
   border-top-right-radius: 0.9rem;
   border-bottom-right-radius: 0.9rem;
 }

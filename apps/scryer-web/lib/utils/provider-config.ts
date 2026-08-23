@@ -1,8 +1,8 @@
 export type ProviderConfigFieldValue =
-  | { __typename: "StringConfigValuePayload"; value: string }
-  | { __typename: "BoolConfigValuePayload"; value: boolean }
-  | { __typename: "IntConfigValuePayload"; value: number }
-  | { __typename: "FloatConfigValuePayload"; value: number }
+  | { __typename: "StringConfigValuePayload"; stringValue: string }
+  | { __typename: "BoolConfigValuePayload"; boolValue: boolean }
+  | { __typename: "IntConfigValuePayload"; intValue: number }
+  | { __typename: "FloatConfigValuePayload"; floatValue: number }
   | { __typename: "SecretConfigValuePayload"; stored: boolean };
 
 export type ProviderConfigValue = {
@@ -40,14 +40,16 @@ export function providerConfigValuesToRecord(
     }
     switch (value.__typename) {
       case "StringConfigValuePayload":
-        record[entry.key] = value.value;
+        record[entry.key] = value.stringValue;
         break;
       case "BoolConfigValuePayload":
-        record[entry.key] = value.value ? "true" : "false";
+        record[entry.key] = value.boolValue ? "true" : "false";
         break;
       case "IntConfigValuePayload":
+        record[entry.key] = String(value.intValue);
+        break;
       case "FloatConfigValuePayload":
-        record[entry.key] = String(value.value);
+        record[entry.key] = String(value.floatValue);
         break;
       case "SecretConfigValuePayload":
         break;

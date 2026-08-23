@@ -23,6 +23,18 @@ export function episodeIdsForCollections(
   return ids;
 }
 
+export function episodeIdsForEpisodeRecord(
+  episodesByCollection: Record<string, readonly EpisodeDetailMergeEpisode[]>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const episodes of Object.values(episodesByCollection)) {
+    for (const episode of episodes) {
+      ids.add(episode.id);
+    }
+  }
+  return ids;
+}
+
 export function mergeLoadedEpisodeDetailsForCollections<
   Episode extends EpisodeDetailMergeEpisode,
 >(

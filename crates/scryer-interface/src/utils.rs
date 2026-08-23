@@ -9,6 +9,7 @@ pub(crate) struct ResolvedTitleOptionsInput {
     pub root_folder_id: Option<Option<String>>,
     pub monitor_type: Option<Option<String>>,
     pub use_season_folders: Option<Option<bool>>,
+    pub metadata_language: Option<Option<String>>,
     pub monitor_specials: Option<Option<bool>>,
     pub inter_season_movies: Option<Option<bool>>,
     pub filler_policy: Option<Option<String>>,

@@ -19,6 +19,13 @@ use scryer_domain::{
 };
 use std::collections::{HashMap, HashSet};
 
+/// Shortest trailing window the dashboard activity aggregate will honour.
+pub const DASHBOARD_ACTIVITY_MIN_WINDOW_HOURS: i64 = 1;
+/// Longest trailing window the dashboard activity aggregate will honour. The
+/// previous window doubles the scanned range, so one week per window is the
+/// practical ceiling for an interactive dashboard read.
+pub const DASHBOARD_ACTIVITY_MAX_WINDOW_HOURS: i64 = 168;
+
 async fn load_library_scan_visibility(
     app: &AppUseCase,
     actor: &User,
@@ -277,6 +284,8 @@ pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
     TitleHistoryEventType::FileRenamed,
     TitleHistoryEventType::DownloadIgnored,
     TitleHistoryEventType::Rematched,
+    TitleHistoryEventType::SeedingStarted,
+    TitleHistoryEventType::SeedingCompleted,
 ];
 
 const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
@@ -292,6 +301,8 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::MediaFileRenamed,
     DomainEventType::MediaRequestSubmitted,
     DomainEventType::DownloadIgnored,
+    DomainEventType::SeedingStarted,
+    DomainEventType::SeedingCompleted,
 ];
 
 pub fn supported_title_history_event_types() -> &'static [TitleHistoryEventType] {
@@ -519,6 +530,8 @@ fn media_request_title_history_records(
             id: format!("{}:{}", event.event_id, title.id),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
+            poster_url: title.poster_url.clone(),
+            library_id: Some(title.library_id.clone()),
             facet: Some(title.facet.clone()),
             episode_id: None,
             episode_ids: Vec::new(),
@@ -543,6 +556,8 @@ fn media_request_title_history_records(
             blocklist_reason: None,
             source_path: None,
             dest_path: None,
+            // A media request predates any file, so there are no bytes to report.
+            size_bytes: None,
             data_json: data_json.clone(),
             occurred_at: event.occurred_at.to_rfc3339(),
             created_at: event.occurred_at.to_rfc3339(),
@@ -635,9 +650,18 @@ async fn hydrate_title_history_record_contexts(
     app: &AppUseCase,
     records: &mut [TitleHistoryRecord],
 ) -> AppResult<()> {
+    // `library_id` is never carried on the event payload, so every distinct
+    // title in the page needs the lookup that title_name/facet already used.
+    // The set is deduplicated by title id, so widening the condition adds at
+    // most one lookup per distinct title on the page, never one per row.
     let missing_title_ids = records
         .iter()
-        .filter(|record| record.title_name.is_none() || record.facet.is_none())
+        .filter(|record| {
+            record.title_name.is_none()
+                || record.facet.is_none()
+                || record.library_id.is_none()
+                || record.poster_url.is_none()
+        })
         .map(|record| record.title_id.clone())
         .collect::<HashSet<_>>();
 
@@ -655,6 +679,12 @@ async fn hydrate_title_history_record_contexts(
             }
             if record.facet.is_none() {
                 record.facet = Some(title.facet.clone());
+            }
+            if record.library_id.is_none() {
+                record.library_id = Some(title.library_id.clone());
+            }
+            if record.poster_url.is_none() {
+                record.poster_url = title.poster_url.clone();
             }
         }
     }
@@ -1493,6 +1523,46 @@ impl AppUseCase {
             None => library_ids,
         });
         project_title_history_page(self, &scoped_filter).await
+    }
+
+    /// Count dashboard activity events over a trailing window and the window
+    /// immediately before it.
+    ///
+    /// `window_hours` is clamped to [`DASHBOARD_ACTIVITY_MIN_WINDOW_HOURS`]
+    /// through [`DASHBOARD_ACTIVITY_MAX_WINDOW_HOURS`]. Library visibility is
+    /// resolved exactly as [`AppUseCase::list_title_history`] resolves it, so
+    /// the tiles never count events the caller could not read in the history
+    /// view. The counting itself is one grouped aggregate in the datastore.
+    pub async fn dashboard_activity_stats(
+        &self,
+        actor: &User,
+        window_hours: i64,
+    ) -> AppResult<DashboardActivityStats> {
+        let window_hours = window_hours.clamp(
+            DASHBOARD_ACTIVITY_MIN_WINDOW_HOURS,
+            DASHBOARD_ACTIVITY_MAX_WINDOW_HOURS,
+        );
+        let library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if library_ids.is_empty() {
+            return Ok(DashboardActivityStats::default());
+        }
+
+        let current_end = Utc::now();
+        let window = chrono::Duration::hours(window_hours);
+        let current_start = current_end - window;
+        let previous_start = current_start - window;
+        self.services
+            .events
+            .domain_events
+            .count_dashboard_activity_events(
+                &library_ids,
+                previous_start,
+                current_start,
+                current_end,
+            )
+            .await
     }
 
     pub async fn list_title_history_for_title(

@@ -48,15 +48,34 @@ use scryer_application::{
         BridgedClientTypesHandle, TrackedDownloadHandle, TrackedDownloadSnapshotIngestHandle,
     },
 };
-use scryer_infrastructure::{
-    BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
-    DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, ImageProxyBlob, ImageProxyRuntime,
-    MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient,
-    PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
-    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore_path,
-    start_weaver_bridge_supervisor, validate_datastore,
+use scryer_infrastructure_acquisition::{
+    downloads::{
+        clients::{
+            BuiltinDownloadClientConnectionTester, PrioritizedDownloadClientRouter,
+            start_weaver_bridge_supervisor,
+        },
+        staged_nzb_store::FileSystemStagedNzbStore,
+    },
+    indexers::{
+        caps::DirectNabCapsSnapshotRefresher, providers::prowlarr::NativeProwlarrIndexerProvider,
+        search_client::MultiIndexerSearchClient,
+    },
 };
+use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
+use scryer_infrastructure_crypto::EncryptionKey;
+use scryer_infrastructure_datastore::MigrationMode;
+use scryer_infrastructure_library::media::{
+    images::{ImageProxyBlob, ImageProxyRuntime},
+    libraries::{renamer::FileSystemLibraryRenamer, scanner::FileSystemLibraryScanner},
+};
+use scryer_infrastructure_metadata::metadata::gateway::client::{
+    MetadataGatewayClient, SmgEnrollmentConfig,
+};
+use scryer_infrastructure_runtime::{
+    DatastoreAssembly, DatastoreConfig, DatastoreCustomizationStore, DatastoreEngine,
+    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore_path, validate_datastore,
+};
+use scryer_infrastructure_workflow::workflow::file_importer::FsFileImporter;
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreDatastoreConfig,
     RestoreDatastoreEngine, RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
@@ -351,7 +370,7 @@ enum VersionLifecycle {
 }
 
 fn log_smg_version_incompatibility(
-    incompat: &scryer_infrastructure::smg_enrollment::VersionIncompatible,
+    incompat: &scryer_infrastructure_metadata::metadata::enrollment::VersionIncompatible,
 ) {
     let env = if std::path::Path::new("/.dockerenv").exists() {
         "docker"
@@ -469,7 +488,7 @@ async fn main() {
                 return;
             }
             "--generate-key" => {
-                let key = scryer_infrastructure::encryption::EncryptionKey::generate();
+                let key = EncryptionKey::generate();
                 println!("{}", key.to_base64());
                 return;
             }
@@ -1009,6 +1028,10 @@ async fn bootstrap_application(
         .with_indexer_config_repositories(
             indexer_configs.clone(),
             datastore.indexer_proxy_configs(),
+        )
+        .with_seed_goal_resolution(
+            datastore.seeding_profiles(),
+            datastore.download_submissions(),
         ),
     );
     let indexer_stats = datastore.indexer_stats_tracker();
@@ -1024,9 +1047,8 @@ async fn bootstrap_application(
             &disabled_builtin_plugins,
         ),
     ));
-    let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(
-        scryer_infrastructure::NativeProwlarrIndexerProvider::new(dynamic_provider),
-    );
+    let plugin_provider: Arc<dyn IndexerPluginProvider> =
+        Arc::new(NativeProwlarrIndexerProvider::new(dynamic_provider));
     let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
             scryer_plugins::build_subtitle_plugin_provider_from_runtime_plugins(
@@ -1176,13 +1198,13 @@ async fn bootstrap_application(
         .with_image_proxy_cache_control(image_proxy_runtime.clone())
         .with_library_scanner(library_scanner)
         .with_library_renamer(library_renamer)
-        .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
+        .with_file_importer(Arc::new(FsFileImporter::new()))
         .with_staged_nzb_store(staged_nzb_store)
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
         .with_indexer_stats(indexer_stats)
         .with_upstream_scheduler(upstream_scheduler.clone())
         .with_indexer_caps_refresher(Arc::new(
-            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new()
+            DirectNabCapsSnapshotRefresher::new()
                 .with_upstream_scheduler(upstream_scheduler.clone()),
         ))
         .with_plugin_http_trust_runtime(plugin_http_runtime)
@@ -1319,6 +1341,17 @@ async fn bootstrap_application(
     )
     .await;
     startup_migrations::_0007_emby_plugin_compatibility::migrate_emby_plugin_compatibility(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+    )
+    .await;
+    startup_migrations::_0008_title_credits_rehydration_018::rehydrate_title_credits_for_018_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        VERSION,
+    )
+    .await;
+    startup_migrations::_0010_download_client_remove_failed_default::flip_download_client_remove_failed_default(
         &app_use_case,
         bootstrap_settings_store.clone(),
     )
@@ -2971,7 +3004,8 @@ mod tests {
         AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
         TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     };
-    use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
+    use scryer_infrastructure_datastore::SqliteServices;
+    use scryer_infrastructure_runtime::DatastoreCustomizationStore;
     use tempfile::tempdir;
     use tower::ServiceExt;
 

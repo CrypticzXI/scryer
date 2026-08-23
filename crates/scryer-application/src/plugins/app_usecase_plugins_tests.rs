@@ -8,7 +8,7 @@ use scryer_domain::{
 use scryer_plugin_sdk::ArchivePluginFormat;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
@@ -798,6 +798,7 @@ impl IndexerPluginProvider for MockPluginProvider {
 struct MockPluginDescriptorLoader {
     descriptors: StdArc<StdMutex<HashMap<Vec<u8>, scryer_plugin_sdk::PluginDescriptor>>>,
     load_calls: StdArc<AtomicUsize>,
+    block_on_current_runtime: AtomicBool,
 }
 
 impl MockPluginDescriptorLoader {
@@ -805,6 +806,7 @@ impl MockPluginDescriptorLoader {
         Self {
             descriptors: StdArc::new(StdMutex::new(HashMap::new())),
             load_calls: StdArc::new(AtomicUsize::new(0)),
+            block_on_current_runtime: AtomicBool::new(false),
         }
     }
 
@@ -818,6 +820,10 @@ impl MockPluginDescriptorLoader {
     fn load_count(&self) -> usize {
         self.load_calls.load(Ordering::Relaxed)
     }
+
+    fn block_on_current_runtime(&self) {
+        self.block_on_current_runtime.store(true, Ordering::Relaxed);
+    }
 }
 
 impl PluginDescriptorLoader for MockPluginDescriptorLoader {
@@ -826,6 +832,9 @@ impl PluginDescriptorLoader for MockPluginDescriptorLoader {
         wasm_bytes: &[u8],
     ) -> AppResult<scryer_plugin_sdk::PluginDescriptor> {
         self.load_calls.fetch_add(1, Ordering::Relaxed);
+        if self.block_on_current_runtime.load(Ordering::Relaxed) {
+            tokio::runtime::Handle::current().block_on(std::future::ready(()));
+        }
         self.descriptors
             .lock()
             .expect("plugin descriptor loader lock")
@@ -871,6 +880,7 @@ fn viewer() -> User {
         id: scryer_domain::Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             default_library: scryer_domain::LibraryPermissionMask::from_permissions([
@@ -888,6 +898,7 @@ fn config_admin() -> User {
         id: scryer_domain::Id::new().0,
         username: "config-admin".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: scryer_domain::UserAuthorization {
             app: scryer_domain::AppPermissionMask::from_permissions([
@@ -1396,6 +1407,7 @@ fn make_indexer_config(provider_type: &str) -> IndexerConfig {
         disabled_until: None,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1425,10 +1437,20 @@ fn bootstrap_plugins_with_supported_features(
     provider: Option<MockPluginProvider>,
     supported_features: &[&str],
 ) -> TestHarness {
+    bootstrap_plugins_inner(provider, supported_features, None)
+}
+
+fn bootstrap_plugins_inner(
+    provider: Option<MockPluginProvider>,
+    supported_features: &[&str],
+    settings: Option<Arc<dyn SettingsRepository>>,
+) -> TestHarness {
     use crate::null_repositories::NullSettingsRepository;
     use crate::null_repositories::test_nulls::*;
     use crate::types::JwtAuthConfig;
 
+    let settings =
+        settings.unwrap_or_else(|| Arc::new(NullSettingsRepository) as Arc<dyn SettingsRepository>);
     let plugin_repo = Arc::new(MockPluginInstallationRepo::new());
     let indexer_config_repo = Arc::new(MockIndexerConfigRepo::new());
     let plugin_descriptor_loader = Arc::new(MockPluginDescriptorLoader::new());
@@ -1442,7 +1464,7 @@ fn bootstrap_plugins_with_supported_features(
         Arc::new(NullDownloadClient),
         Arc::new(NullDownloadClientConfigRepository),
         Arc::new(NullReleaseAttemptRepository),
-        Arc::new(NullSettingsRepository),
+        settings,
         Arc::new(NullQualityProfileRepository),
         String::new(),
     )
@@ -2514,7 +2536,7 @@ async fn list_available_plugins_ignores_cached_community_source_with_unapproved_
 }
 
 #[tokio::test]
-async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_only() {
+async fn list_available_plugins_marks_install_in_progress_for_every_actor() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let initiator = admin();
     let other_actor = config_admin();
@@ -2549,7 +2571,10 @@ async fn list_available_plugins_marks_install_in_progress_for_initiating_actor_o
         .iter()
         .find(|plugin| plugin.id == "alpha")
         .unwrap();
-    assert!(!other_plugin.install_in_progress);
+    assert!(
+        other_plugin.install_in_progress,
+        "the plugin is busy for everyone, whoever started the operation"
+    );
 }
 
 #[tokio::test]
@@ -4112,6 +4137,35 @@ async fn install_uploaded_plugin_accepts_raw_wasm_payload() {
 }
 
 #[tokio::test]
+async fn install_uploaded_plugin_loads_descriptor_on_blocking_pool() {
+    let provider = MockPluginProvider::new().with_provider(
+        "manual-local",
+        "Manual Local",
+        Some("https://example.com"),
+    );
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
+    let descriptor =
+        make_runtime_plugin_load("manual-local-plugin", "indexer", "manual-local").descriptor;
+    h.plugin_descriptor_loader.register(&wasm_bytes, descriptor);
+    h.plugin_descriptor_loader.block_on_current_runtime();
+
+    let installation = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "manual-local-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(&wasm_bytes),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(installation.plugin_id, "manual-local-plugin");
+    assert_eq!(h.plugin_descriptor_loader.load_count(), 1);
+}
+
+#[tokio::test]
 async fn install_uploaded_plugin_accepts_wasm_zstd_and_replaces_existing_installation() {
     let provider = MockPluginProvider::new().with_provider(
         "manual-local",
@@ -4530,4 +4584,455 @@ async fn plugin_catalog_status_returns_cached_status_without_rewriting_it() {
         serde_json::from_str::<serde_json::Value>(&stored.status_json).unwrap(),
         cached_payload
     );
+}
+
+// ── Scheduled plugin auto-update ─────────────────────────────────────────────
+
+/// Answers exactly the one system setting the auto-update scheduler reads.
+struct MockSettingsStore {
+    plugin_auto_update_enabled: bool,
+}
+
+impl MockSettingsStore {
+    fn with_plugin_auto_update(enabled: bool) -> Arc<Self> {
+        Arc::new(Self {
+            plugin_auto_update_enabled: enabled,
+        })
+    }
+}
+
+#[async_trait]
+impl SettingsRepository for MockSettingsStore {
+    async fn get_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        let is_plugin_auto_update = scope == crate::SETTINGS_SCOPE_SYSTEM
+            && key_name == crate::PLUGIN_AUTO_UPDATE_ENABLED_KEY
+            && scope_id.is_none();
+        Ok(is_plugin_auto_update.then(|| self.plugin_auto_update_enabled.to_string()))
+    }
+
+    async fn upsert_setting_json(
+        &self,
+        _scope: &str,
+        _key_name: &str,
+        _scope_id: Option<String>,
+        _value_json: String,
+        _source: &str,
+        _updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_setting_value(
+        &self,
+        _scope: &str,
+        _key_name: &str,
+        _scope_id: Option<String>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_values_for_scope_id(&self, _scope_id: &str) -> AppResult<u32> {
+        Ok(0)
+    }
+}
+
+fn bootstrap_plugins_with_settings(
+    provider: Option<MockPluginProvider>,
+    settings: Arc<MockSettingsStore>,
+) -> TestHarness {
+    bootstrap_plugins_inner(provider, &[], Some(settings))
+}
+
+const AUTO_UPDATE_WASM_BYTES: &[u8] = b"persisted plugin artifact";
+
+fn official_catalog_installation(plugin_id: &str, version: &str) -> PluginInstallation {
+    let mut installation = make_installation(plugin_id, version, false, true);
+    installation.wasm_encoding = PluginWasmEncoding::Identity;
+    installation.wasm_digest_algo = Some("blake3".to_string());
+    installation.wasm_digest = Some(blake3::hash(AUTO_UPDATE_WASM_BYTES).to_hex().to_string());
+    installation.artifact_digest = Some(fixture_artifact_digest().to_string());
+    installation.source_url = Some(fixture_plugin_artifact_url(&format!(
+        "https://example.com/{plugin_id}.wasm"
+    )));
+    installation
+}
+
+async fn seed_auto_update_installation(h: &TestHarness, installation: PluginInstallation) {
+    h.plugin_repo
+        .create_plugin_installation(&installation, Some(AUTO_UPDATE_WASM_BYTES))
+        .await
+        .expect("seed auto-update installation");
+}
+
+async fn auto_update_candidate_ids(h: &TestHarness) -> Vec<String> {
+    h.app
+        .collect_plugin_auto_update_candidates()
+        .await
+        .expect("collect auto-update candidates")
+        .into_iter()
+        .map(|(installation, _)| installation.plugin_id)
+        .collect()
+}
+
+async fn stored_installation(h: &TestHarness, plugin_id: &str) -> PluginInstallation {
+    h.plugin_repo
+        .get_plugin_installation(plugin_id)
+        .await
+        .expect("read installation")
+        .expect("installation exists")
+}
+
+fn auto_update_catalog_entry(id: &str, version: &str, official: bool) -> serde_json::Value {
+    let mut entry = catalog_entry(
+        id,
+        version,
+        false,
+        Some(&format!("https://example.com/{id}.wasm")),
+    );
+    entry["official"] = serde_json::json!(official);
+    entry
+}
+
+#[tokio::test]
+async fn auto_update_selects_only_official_patch_releases() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[
+            auto_update_catalog_entry("patch", "1.2.4", true),
+            auto_update_catalog_entry("minor", "1.3.0", true),
+            auto_update_catalog_entry("major", "2.0.0", true),
+            auto_update_catalog_entry("prerelease", "1.2.4-rc.1", true),
+            auto_update_catalog_entry("same", "1.2.3", true),
+            auto_update_catalog_entry("older", "1.2.2", true),
+            auto_update_catalog_entry("community", "1.2.4", false),
+        ]))
+        .await
+        .expect("store catalog fixture");
+    for plugin_id in [
+        "patch",
+        "minor",
+        "major",
+        "prerelease",
+        "same",
+        "older",
+        "community",
+    ] {
+        seed_auto_update_installation(&h, official_catalog_installation(plugin_id, "1.2.3")).await;
+    }
+
+    assert_eq!(auto_update_candidate_ids(&h).await, vec!["patch"]);
+}
+
+#[tokio::test]
+async fn auto_update_skips_manual_builtin_and_unparseable_installations() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[
+            auto_update_catalog_entry("manual", "1.2.4", true),
+            auto_update_catalog_entry("builtin", "1.2.4", true),
+            auto_update_catalog_entry("unparseable", "1.2.4", true),
+            auto_update_catalog_entry("uncatalogued", "1.2.4", true),
+        ]))
+        .await
+        .expect("store catalog fixture");
+
+    let mut manual = official_catalog_installation("manual", "1.2.3");
+    manual.source_kind = PluginSourceKind::Manual;
+    seed_auto_update_installation(&h, manual).await;
+
+    let mut builtin = official_catalog_installation("builtin", "1.2.3");
+    builtin.source_kind = PluginSourceKind::Bundled;
+    builtin.is_builtin = true;
+    seed_auto_update_installation(&h, builtin).await;
+
+    let mut unparseable = official_catalog_installation("unparseable", "1.2.3");
+    unparseable.version = "not-a-version".to_string();
+    seed_auto_update_installation(&h, unparseable).await;
+
+    // Installed but absent from the catalog: nothing to resolve, nothing to do.
+    seed_auto_update_installation(&h, official_catalog_installation("orphan", "1.2.3")).await;
+
+    assert!(auto_update_candidate_ids(&h).await.is_empty());
+}
+
+#[tokio::test]
+async fn auto_update_selects_same_version_optimized_artifact() {
+    let h = bootstrap_plugins_with_supported_features(Some(MockPluginProvider::new()), &["simd128"]);
+    h.plugin_repo
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some(alpha_baseline_and_simd_catalog_json()),
+        )
+        .await;
+    let mut installation = official_catalog_installation("alpha", "1.0.0");
+    let (algorithm, digest) = parse_digest_string(ALPHA_BASELINE_WASM_DIGEST).unwrap();
+    installation.wasm_digest_algo = Some(algorithm);
+    installation.wasm_digest = Some(digest);
+    installation.artifact_digest = Some(ALPHA_BASELINE_ARTIFACT_DIGEST.to_string());
+    installation.source_url = Some(ALPHA_BASELINE_ARTIFACT_URL.to_string());
+    seed_auto_update_installation(&h, installation).await;
+
+    assert_eq!(auto_update_candidate_ids(&h).await, vec!["alpha"]);
+}
+
+#[tokio::test]
+async fn auto_update_ignores_optimized_artifact_the_host_cannot_run() {
+    let h = bootstrap_plugins_with_supported_features(Some(MockPluginProvider::new()), &[]);
+    h.plugin_repo
+        .store_raw_catalog_source(
+            CENTRAL_CATALOG_SOURCE_KEY,
+            "central",
+            Some(alpha_baseline_and_simd_catalog_json()),
+        )
+        .await;
+    let mut installation = official_catalog_installation("alpha", "1.0.0");
+    let (algorithm, digest) = parse_digest_string(ALPHA_BASELINE_WASM_DIGEST).unwrap();
+    installation.wasm_digest_algo = Some(algorithm);
+    installation.wasm_digest = Some(digest);
+    installation.artifact_digest = Some(ALPHA_BASELINE_ARTIFACT_DIGEST.to_string());
+    installation.source_url = Some(ALPHA_BASELINE_ARTIFACT_URL.to_string());
+    seed_auto_update_installation(&h, installation).await;
+
+    assert!(auto_update_candidate_ids(&h).await.is_empty());
+}
+
+#[tokio::test]
+async fn scheduled_auto_update_does_nothing_while_the_setting_is_off() {
+    let h = bootstrap_plugins_with_settings(
+        Some(MockPluginProvider::new()),
+        MockSettingsStore::with_plugin_auto_update(false),
+    );
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[auto_update_catalog_entry(
+            "prowlarr", "1.2.4", true,
+        )]))
+        .await
+        .expect("store catalog fixture");
+    seed_auto_update_installation(&h, official_catalog_installation("prowlarr", "1.2.3")).await;
+
+    let report = h.app.run_scheduled_plugin_auto_update().await;
+
+    assert!(!report.did_work());
+    assert!(!report.has_failures());
+    assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
+}
+
+#[tokio::test]
+async fn scheduled_auto_update_reports_a_plugin_with_an_operation_in_flight() {
+    let h = bootstrap_plugins_with_settings(
+        Some(MockPluginProvider::new()),
+        MockSettingsStore::with_plugin_auto_update(true),
+    );
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[auto_update_catalog_entry(
+            "prowlarr", "1.2.4", true,
+        )]))
+        .await
+        .expect("store catalog fixture");
+    seed_auto_update_installation(&h, official_catalog_installation("prowlarr", "1.2.3")).await;
+    h.app
+        .runtime
+        .plugins
+        .plugin_install_orchestrator
+        .begin(
+            "interactive-actor",
+            "prowlarr",
+            PluginInstallOperationKind::Upgrade,
+        )
+        .await
+        .expect("interactive operation claims the slot");
+
+    let report = h.app.run_scheduled_plugin_auto_update().await;
+
+    assert!(report.updated.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].plugin_id, "prowlarr");
+    assert!(
+        !report.failed[0].rolled_back,
+        "the slot holder owns the plugin; automation never touched it"
+    );
+    assert!(report.failed[0].rollback_error.is_none());
+    assert!(report.has_failures());
+    assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
+}
+
+#[tokio::test]
+async fn scheduled_auto_update_keeps_going_after_a_failed_candidate() {
+    let h = bootstrap_plugins_with_settings(
+        Some(MockPluginProvider::new()),
+        MockSettingsStore::with_plugin_auto_update(true),
+    );
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[
+            // 'prowlarr' is a reserved first-party provider type, so its upgrade
+            // fails before any artifact is fetched.
+            auto_update_catalog_entry("prowlarr", "1.2.4", true),
+            auto_update_catalog_entry("zeta", "1.2.4", true),
+        ]))
+        .await
+        .expect("store catalog fixture");
+    seed_auto_update_installation(&h, official_catalog_installation("prowlarr", "1.2.3")).await;
+    // Seeded without a persisted artifact: automation refuses to touch a plugin
+    // it could not restore.
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(official_catalog_installation("zeta", "1.2.3"));
+
+    let report = h.app.run_scheduled_plugin_auto_update().await;
+
+    assert!(report.updated.is_empty());
+    assert!(report.error.is_none());
+    assert!(report.has_failures());
+    assert_eq!(
+        report
+            .failed
+            .iter()
+            .map(|failure| failure.plugin_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["prowlarr", "zeta"],
+        "a failed candidate must not stop the ones after it"
+    );
+    assert!(
+        report
+            .failed
+            .iter()
+            .all(|failure| !failure.rolled_back && failure.rollback_error.is_none()),
+        "both candidates failed before the upgrade persisted anything"
+    );
+    assert_eq!(
+        h.plugin_provider
+            .as_ref()
+            .expect("indexer provider")
+            .upsert_count
+            .load(Ordering::Relaxed),
+        0,
+        "an untouched installation is never reloaded into the runtime"
+    );
+    assert_eq!(stored_installation(&h, "prowlarr").await.version, "1.2.3");
+    assert_eq!(stored_installation(&h, "zeta").await.version, "1.2.3");
+    assert_eq!(
+        h.plugin_repo
+            .get_plugin_installation_wasm_payload("prowlarr")
+            .await
+            .expect("read payload")
+            .expect("payload retained")
+            .bytes,
+        AUTO_UPDATE_WASM_BYTES,
+    );
+}
+
+#[tokio::test]
+async fn scheduled_auto_update_retries_a_failed_plugin_on_the_next_cycle() {
+    let h = bootstrap_plugins_with_settings(
+        Some(MockPluginProvider::new()),
+        MockSettingsStore::with_plugin_auto_update(true),
+    );
+    h.plugin_repo
+        .store_catalog_fixture_json(&make_catalog_fixture_json(&[auto_update_catalog_entry(
+            "prowlarr", "1.2.4", true,
+        )]))
+        .await
+        .expect("store catalog fixture");
+    seed_auto_update_installation(&h, official_catalog_installation("prowlarr", "1.2.3")).await;
+
+    let first = h.app.run_scheduled_plugin_auto_update().await;
+    let second = h.app.run_scheduled_plugin_auto_update().await;
+
+    assert_eq!(first.failed.len(), 1);
+    assert_eq!(
+        second.failed.len(),
+        1,
+        "no failure state is persisted, so the same target is retried"
+    );
+    assert_eq!(second.failed[0].plugin_id, "prowlarr");
+}
+
+#[tokio::test]
+async fn plugin_auto_update_rollback_restores_record_wasm_and_runtime() {
+    let provider = MockPluginProvider::new().with_provider("alpha", "Alpha", None);
+    let h = bootstrap_plugins(Some(provider));
+    let prior = official_catalog_installation("alpha", "1.2.3");
+    let prior_payload = PersistedPluginWasmPayload {
+        encoding: prior.wasm_encoding,
+        bytes: AUTO_UPDATE_WASM_BYTES.to_vec(),
+    };
+    seed_auto_update_installation(&h, prior.clone()).await;
+
+    // Stand in for an upgrade that failed after persisting the new record and
+    // replacing the runtime plugin.
+    let replacement_wasm = b"replacement plugin artifact";
+    let mut replacement = prior.clone();
+    replacement.version = "1.2.4".to_string();
+    replacement.provider_type = "alpha_v2".to_string();
+    replacement.wasm_digest = Some(blake3::hash(replacement_wasm).to_hex().to_string());
+    h.plugin_repo
+        .update_plugin_installation(&replacement, Some(replacement_wasm))
+        .await
+        .expect("persist failed upgrade state");
+
+    h.app
+        .restore_plugin_installation_snapshot(&prior, &prior_payload, &replacement)
+        .await
+        .expect("rollback restores the prior installation");
+
+    let restored = stored_installation(&h, "alpha").await;
+    assert_eq!(restored.version, "1.2.3");
+    assert_eq!(restored.provider_type, "alpha");
+    assert_eq!(restored.wasm_digest, prior.wasm_digest);
+    assert_eq!(
+        h.plugin_repo
+            .get_plugin_installation_wasm_payload("alpha")
+            .await
+            .expect("read payload")
+            .expect("payload restored")
+            .bytes,
+        AUTO_UPDATE_WASM_BYTES,
+    );
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(
+        indexer.upsert_count.load(Ordering::Relaxed),
+        1,
+        "the prior runtime plugin is re-activated"
+    );
+    assert_eq!(
+        *indexer
+            .removed_provider_types
+            .lock()
+            .expect("removed provider types lock"),
+        vec!["alpha_v2".to_string()],
+        "the replacement runtime registration is dropped first"
+    );
+}
+
+#[tokio::test]
+async fn plugin_auto_update_rollback_leaves_a_disabled_plugin_out_of_the_runtime() {
+    let provider = MockPluginProvider::new().with_provider("alpha", "Alpha", None);
+    let h = bootstrap_plugins(Some(provider));
+    let mut prior = official_catalog_installation("alpha", "1.2.3");
+    prior.is_enabled = false;
+    let prior_payload = PersistedPluginWasmPayload {
+        encoding: prior.wasm_encoding,
+        bytes: AUTO_UPDATE_WASM_BYTES.to_vec(),
+    };
+    seed_auto_update_installation(&h, prior.clone()).await;
+
+    let mut replacement = prior.clone();
+    replacement.version = "1.2.4".to_string();
+
+    h.app
+        .restore_plugin_installation_snapshot(&prior, &prior_payload, &replacement)
+        .await
+        .expect("rollback restores the prior installation");
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.remove_count.load(Ordering::Relaxed), 0);
 }

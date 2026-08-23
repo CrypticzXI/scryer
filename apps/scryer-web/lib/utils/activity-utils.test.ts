@@ -9,6 +9,10 @@ const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 type QueueRowResult = {
   failureReason: string;
   hasStatusDetails: boolean;
+  hasExpandableDetails: boolean;
+  displayStateKey: string;
+  statusBadgeKey: string;
+  statusLabel: string;
 };
 
 type DeriveQueueRowPresentation = (
@@ -36,6 +40,9 @@ after(async () => {
 });
 
 const translations: Record<string, string> = {
+  "queue.state.completed": "Completed",
+  "queue.state.warning": "Warning",
+  "queue.state.importedSeeding": "Imported · Seeding",
   "queue.blockReasonFallbackUnassigned":
     "Automatic import could not identify a library title. Assign a title to continue.",
   "queue.blockReasonFallbackEpisodic":
@@ -85,6 +92,12 @@ function blockedItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueueI
     trackedStatus: "WARNING",
     trackedStatusMessages: [],
     trackedMatchType: "UNMATCHED",
+    seedingState: null,
+    seedRatio: null,
+    seedRatioGoal: null,
+    seedTimeSeconds: null,
+    seedTimeGoalSeconds: null,
+    isPrivate: null,
     queueScope: null,
     ...overrides,
   };
@@ -123,6 +136,97 @@ test("blocked movie rows direct the operator to review the file mapping", () => 
     row.failureReason,
     translations["queue.blockReasonFallbackReview"],
   );
+});
+
+test("an imported torrent that is still seeding gets its own badge", () => {
+  // The backend deliberately added no display state for it: the row still
+  // displays as COMPLETED, so the badge has to read the tracked state.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      displayState: "COMPLETED",
+      trackedState: "IMPORTED_SEEDING",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: false,
+      seedingState: "SEEDING",
+      seedRatio: 0.8,
+      seedRatioGoal: 1.5,
+    }),
+    translate,
+  );
+
+  assert.equal(row.displayStateKey, "COMPLETED");
+  assert.equal(row.statusBadgeKey, "IMPORTED_SEEDING");
+  assert.equal(row.statusLabel, translations["queue.state.importedSeeding"]);
+});
+
+test("a finished download without a seeding hold keeps the completed badge", () => {
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      displayState: "COMPLETED",
+      trackedState: "IMPORTED",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: false,
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "COMPLETED");
+  assert.equal(row.statusLabel, translations["queue.state.completed"]);
+});
+
+test("a warned download reads as a warning and shows the client's message", () => {
+  // qBittorrent's `error` / `missingFiles` reach the queue as WARNING with the
+  // client's own message, and must not be dressed up as a failed grab.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      state: "WARNING",
+      displayState: "WARNING",
+      trackedState: "DOWNLOADING",
+      trackedStatus: "WARNING",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      progressPercent: 42,
+      attentionRequired: true,
+      attentionReason: "files are missing from the save path",
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "WARNING");
+  assert.equal(row.statusLabel, translations["queue.state.warning"]);
+  assert.equal(row.failureReason, "files are missing from the save path");
+  assert.equal(row.hasStatusDetails, true);
+  assert.equal(row.hasExpandableDetails, true);
+});
+
+test("a warning on a still-seeding import wins over the seeding badge", () => {
+  // The IMPORTED_SEEDING badge only exists because those rows display as
+  // COMPLETED. When the client is reporting a live problem the display state is
+  // already the specific one, and hiding it behind "Imported · Seeding" is how
+  // a stuck torrent looks healthy.
+  const row = deriveQueueRowPresentation(
+    blockedItem({
+      state: "WARNING",
+      displayState: "WARNING",
+      trackedState: "IMPORTED_SEEDING",
+      trackedStatus: "OK",
+      trackedMatchType: "SUBMISSION",
+      titleId: "title-1",
+      attentionRequired: true,
+      attentionReason: "files are missing from the save path",
+      seedingState: "SEEDING",
+    }),
+    translate,
+  );
+
+  assert.equal(row.statusBadgeKey, "WARNING");
+  assert.equal(row.statusLabel, translations["queue.state.warning"]);
+  assert.equal(row.failureReason, "files are missing from the save path");
+  assert.equal(row.hasExpandableDetails, true);
 });
 
 test("backend import-block detail takes precedence over frontend fallback copy", () => {

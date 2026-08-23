@@ -1268,6 +1268,16 @@ impl DomainEventRepository for TestDomainEventRepo {
             .collect())
     }
 
+    async fn count_dashboard_activity_events(
+        &self,
+        _: &[String],
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<crate::DashboardActivityStats> {
+        Ok(crate::DashboardActivityStats::default())
+    }
+
     async fn count_title_history_page_events(
         &self,
         event_types: Option<&[TitleHistoryEventType]>,
@@ -1676,6 +1686,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         },
         completed_source: None,
         state: TrackedDownloadState::Downloading,
@@ -1696,6 +1707,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     }
 }

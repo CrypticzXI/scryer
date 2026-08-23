@@ -215,6 +215,10 @@ async fn maybe_remove_completed_manual_import_download(
         return;
     };
 
+    // No tracked row on this path, so the client entry is assumed present and
+    // the seeding gate decides on the client's own evidence. A torrent still
+    // working off its goal is left alone; the tracked poller picks it up and
+    // parks it in `ImportedSeeding`.
     let _ = reconcile_terminal_download_cleanup(
         app,
         &completed.client_id,
@@ -223,6 +227,13 @@ async fn maybe_remove_completed_manual_import_download(
         library_id.as_deref(),
         Some(&facet),
         TrackedDownloadState::Imported,
+        TerminalFailureOrigin::ClientFailure,
+        None,
+        true,
+        // No tracked row here, so the gate reads the published snapshot.
+        None,
+        // Outside the reconcile tick: no shared prefetch, per-row reads.
+        None,
     )
     .await;
 }
@@ -521,7 +532,8 @@ async fn manual_import_source_was_already_imported(
         .get_tracked_state(&source.identity)
         .await?
         .as_deref()
-        == Some(TrackedDownloadState::Imported.as_str())
+        .and_then(TrackedDownloadState::from_str_opt)
+        .is_some_and(TrackedDownloadState::counts_as_imported)
     {
         return Ok(true);
     }
@@ -1545,8 +1557,10 @@ async fn execute_manual_series_movie_import(
     } else {
         preserved_import_filename(source)
     };
+    let use_season_folders = app.resolve_use_season_folders(title).await?;
     let dest_path = episodic_import_parent_path(
         title,
+        use_season_folders,
         full_folder_path,
         season_folder_template,
         specials_folder_template,
@@ -1569,9 +1583,13 @@ async fn execute_manual_series_movie_import(
         ));
     }
 
-    let import_mode = app
-        .resolve_import_mode(Some(&title.library_id), &title.facet)
-        .await?;
+    let import_mode = crate::seeding_gate::resolve_seeding_safe_import_mode(
+        app,
+        Some(&title.library_id),
+        &title.facet,
+        completed,
+    )
+    .await?;
     let file_result = match import_file_with_record_progress(
         app,
         import_id,
@@ -1606,6 +1624,10 @@ async fn execute_manual_series_movie_import(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                release_evidence.announced_size_bytes(),
+            ),
             role: crate::MediaFileRole::Primary,
             quality_label: quality_label.clone(),
             scene_name: Some(parsed.raw_title.clone()),
@@ -1728,7 +1750,7 @@ async fn execute_manual_series_movie_import(
         }
     }
 
-    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, None).await;
+    mark_wanted_completed_for_series_movie_link(app, &title.id, series_movie_link_id, false).await;
     spawn_post_processing(PostProcessingContext {
         app: app.clone(),
         actor: crate::domain_events::DomainEventActor::from(actor),
@@ -1860,6 +1882,9 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
         .flatten();
 
     let mut results = Vec::new();
+    // Total bytes across every file this manual import brought in; stays `None`
+    // until at least one file reports a size.
+    let mut imported_size_bytes: Option<i64> = None;
 
     for (mapping_index, mapping) in files.iter().enumerate() {
         let source = stored_path_to_path_buf(&mapping.file_path);
@@ -1960,6 +1985,10 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     release_evidence,
                     std::slice::from_ref(&source),
                     Utc::now(),
+                    // An operator picked this file. The same bypass the manual
+                    // episode path passes: no automatic sample rail, and no
+                    // truth-verdict rejection that would blocklist their choice.
+                    crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
                 )
                 .await;
                 let file_result = match result {
@@ -2075,6 +2104,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             actor,
             &title,
             import_id,
+            completed,
             rename_enabled,
             &rename_template,
             &season_folder_template,
@@ -2091,6 +2121,8 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             &quality_profile,
             None,
             crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+            release_evidence.announced_size_bytes(),
             false,
         )
         .await
@@ -2099,6 +2131,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                 dest_path,
                 imported_media_file_id,
                 reason_code,
+                size_bytes,
                 ..
             }) => {
                 if let Some(completed) = completed {
@@ -2115,6 +2148,10 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                         std::slice::from_ref(&episode),
                     )
                     .await;
+                }
+                if let Some(size_bytes) = size_bytes {
+                    imported_size_bytes =
+                        Some(imported_size_bytes.unwrap_or(0).saturating_add(size_bytes));
                 }
                 results.push(manual_import_file_result(
                     mapping,
@@ -2232,6 +2269,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     .and_then(|result| result.dest_path.clone()),
                 quality: None,
                 episode_ids,
+                size_bytes: imported_size_bytes,
             }),
         ))
         .await?;
@@ -2471,6 +2509,7 @@ impl QueuedManualImportOutcome {
             file_size_bytes: None,
             link_type: None,
             error_message: None,
+            release_burned: false,
             started_at: now,
             completed_at: now,
         };

@@ -189,6 +189,7 @@ fn catalog_settings_permission_does_not_include_system_settings() {
         id: Id::new().0,
         username: "catalog-settings".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization::default(),
     };
@@ -424,6 +425,7 @@ fn user_with_limited_permission_masks() {
         id: Id::new().0,
         username: "viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             default_library: LibraryPermissionMask::from_permissions([
@@ -465,6 +467,7 @@ fn user_with_no_permission_masks() {
         id: Id::new().0,
         username: "empty".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -562,6 +565,88 @@ fn import_mode_as_str_and_setting_parse() {
 }
 
 #[test]
+fn seeding_profile_enums_round_trip() {
+    assert_eq!(SeasonPackSeedMode::Inherit.as_str(), "inherit");
+    assert_eq!(SeasonPackSeedMode::Override.as_str(), "override");
+    assert_eq!(
+        SeasonPackSeedMode::parse("override"),
+        Some(SeasonPackSeedMode::Override)
+    );
+    assert_eq!(SeasonPackSeedMode::parse("season"), None);
+    assert_eq!(SeasonPackSeedMode::default(), SeasonPackSeedMode::Inherit);
+
+    assert_eq!(SeedGoalMetAction::RemoveEntry.as_str(), "remove_entry");
+    assert_eq!(SeedGoalMetAction::StopSeeding.as_str(), "stop_seeding");
+    assert_eq!(SeedGoalMetAction::Keep.as_str(), "keep");
+    assert_eq!(
+        SeedGoalMetAction::parse("stop_seeding"),
+        Some(SeedGoalMetAction::StopSeeding)
+    );
+    assert_eq!(SeedGoalMetAction::parse("pause"), None);
+    assert_eq!(SeedGoalMetAction::default(), SeedGoalMetAction::RemoveEntry);
+
+    assert_eq!(PostImportTracking::Park.as_str(), "park");
+    assert_eq!(PostImportTracking::HandOff.as_str(), "hand_off");
+    for mode in [PostImportTracking::Park, PostImportTracking::HandOff] {
+        assert_eq!(PostImportTracking::parse(mode.as_str()), Some(mode));
+    }
+    assert_eq!(PostImportTracking::parse("handoff"), None);
+    // Park is the fail-closed default: Scryer keeps managing the torrent.
+    assert_eq!(PostImportTracking::default(), PostImportTracking::Park);
+    assert!(PostImportTracking::HandOff.is_hand_off());
+    assert!(!PostImportTracking::Park.is_hand_off());
+}
+
+#[test]
+fn seeding_profile_normalizes_and_validates_goals() {
+    let now = chrono::Utc::now();
+    let base = SeedingProfile {
+        id: "profile-1".into(),
+        name: "  Private tracker  ".into(),
+        ratio: Some(1.5),
+        seed_time_minutes: Some(4320),
+        season_pack_mode: SeasonPackSeedMode::Inherit,
+        season_pack_ratio: Some(3.0),
+        season_pack_seed_time_minutes: Some(120),
+        honor_tracker_minimums: true,
+        goal_met_action: SeedGoalMetAction::RemoveEntry,
+        never_remove: false,
+        minimum_seeders: None,
+        post_import_tracking: PostImportTracking::Park,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let inherited = base.clone().normalized();
+    assert_eq!(inherited.name, "Private tracker");
+    assert_eq!(inherited.season_pack_ratio, None);
+    assert_eq!(inherited.season_pack_seed_time_minutes, None);
+    assert_eq!(inherited.effective_ratio(true), Some(1.5));
+    assert_eq!(inherited.effective_seed_time_minutes(true), Some(4320));
+
+    let mut overridden = base.clone();
+    overridden.season_pack_mode = SeasonPackSeedMode::Override;
+    let overridden = overridden.normalized();
+    assert_eq!(overridden.effective_ratio(true), Some(3.0));
+    assert_eq!(overridden.effective_ratio(false), Some(1.5));
+    assert_eq!(overridden.effective_seed_time_minutes(true), Some(120));
+
+    assert!(inherited.validate().is_ok());
+
+    let mut unnamed = base.clone();
+    unnamed.name = "   ".into();
+    assert!(unnamed.validate().is_err());
+
+    let mut zero_ratio = base.clone();
+    zero_ratio.ratio = Some(0.0);
+    assert!(zero_ratio.validate().is_err());
+
+    let mut negative_time = base;
+    negative_time.seed_time_minutes = Some(-1);
+    assert!(negative_time.validate().is_err());
+}
+
+#[test]
 fn import_strategy_as_str() {
     assert_eq!(ImportStrategy::HardLink.as_str(), "hardlink");
     assert_eq!(ImportStrategy::Copy.as_str(), "copy");
@@ -594,5 +679,115 @@ fn config_field_type_accepts_secret_alias() {
     assert_eq!(
         ConfigFieldType::parse("secret"),
         Some(ConfigFieldType::Password)
+    );
+}
+
+// ── TrackedDownloadState::ImportedSeeding ─────────────────────────────────
+
+#[test]
+fn tracked_download_states_round_trip_through_their_wire_names() {
+    for state in [
+        TrackedDownloadState::Downloading,
+        TrackedDownloadState::ImportPending,
+        TrackedDownloadState::Importing,
+        TrackedDownloadState::Imported,
+        TrackedDownloadState::ImportedSeeding,
+        TrackedDownloadState::ImportBlocked,
+        TrackedDownloadState::FailedPending,
+        TrackedDownloadState::Failed,
+        TrackedDownloadState::Ignored,
+    ] {
+        assert_eq!(
+            TrackedDownloadState::from_str_opt(state.as_str()),
+            Some(state),
+            "{} did not round-trip",
+            state.as_str()
+        );
+    }
+    assert_eq!(
+        TrackedDownloadState::ImportedSeeding.as_str(),
+        "imported_seeding"
+    );
+}
+
+#[test]
+fn imported_seeding_is_settled_but_not_terminal() {
+    // Not terminal: the torrent is still live in the client and has to be
+    // re-evaluated against its seeding goal on every poll.
+    assert!(!TrackedDownloadState::ImportedSeeding.is_terminal());
+    // Settled: the payload is already in the library, so no further import
+    // work may be dispatched for it.
+    assert!(TrackedDownloadState::ImportedSeeding.is_import_settled());
+    assert!(TrackedDownloadState::ImportedSeeding.counts_as_imported());
+    assert!(TrackedDownloadState::Imported.counts_as_imported());
+    assert!(!TrackedDownloadState::Failed.counts_as_imported());
+    assert!(!TrackedDownloadState::Downloading.is_import_settled());
+}
+
+// ── seeding history events ────────────────────────────────────────────────
+
+#[test]
+fn seeding_history_event_types_round_trip_through_their_wire_names() {
+    for event_type in TitleHistoryEventType::ALL {
+        assert_eq!(
+            TitleHistoryEventType::parse(event_type.as_str()),
+            Some(*event_type),
+            "{} did not round-trip",
+            event_type.as_str()
+        );
+    }
+    assert_eq!(
+        TitleHistoryEventType::SeedingStarted.as_str(),
+        "seeding_started"
+    );
+    assert_eq!(
+        TitleHistoryEventType::SeedingCompleted.as_str(),
+        "seeding_completed"
+    );
+}
+
+#[test]
+fn seeding_domain_event_types_round_trip_and_match_their_payloads() {
+    for event_type in DomainEventType::variants() {
+        assert_eq!(
+            DomainEventType::parse(event_type.as_str()),
+            Some(event_type),
+            "{} did not round-trip",
+            event_type.as_str()
+        );
+    }
+
+    let started = DomainEventPayload::SeedingStarted(SeedingStartedEventData {
+        title: None,
+        download_client_item_id: "hash-1".to_string(),
+        client_id: None,
+        client_type: Some("qbittorrent".to_string()),
+        source_provider: None,
+        source_title: None,
+        reason: "profile_goal_unmet".to_string(),
+        seed_ratio: Some(0.4),
+        seed_time_seconds: Some(120),
+    });
+    assert_eq!(started.event_type(), DomainEventType::SeedingStarted);
+
+    let completed = DomainEventPayload::SeedingCompleted(SeedingCompletedEventData {
+        title: None,
+        download_client_item_id: "hash-1".to_string(),
+        client_id: None,
+        client_type: Some("qbittorrent".to_string()),
+        source_provider: None,
+        source_title: None,
+        action: "removed".to_string(),
+        reason: "profile_goal_met".to_string(),
+        seed_ratio: Some(2.1),
+        seed_time_seconds: Some(90_000),
+    });
+    assert_eq!(completed.event_type(), DomainEventType::SeedingCompleted);
+
+    // Payloads are persisted as JSON and read back by the history projection.
+    let encoded = serde_json::to_string(&completed).expect("serialize seeding payload");
+    assert_eq!(
+        serde_json::from_str::<DomainEventPayload>(&encoded).expect("deserialize"),
+        completed
     );
 }

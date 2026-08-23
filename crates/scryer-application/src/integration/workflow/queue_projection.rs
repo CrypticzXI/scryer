@@ -101,6 +101,10 @@ fn base_download_queue_display_state(item: &DownloadQueueItem) -> DownloadDispla
         DownloadQueueState::Paused => DownloadDisplayState::Paused,
         DownloadQueueState::Completed => DownloadDisplayState::Completed,
         DownloadQueueState::ImportPending => DownloadDisplayState::ImportPending,
+        // Warning is checked last on purpose: an import overlay or a tracked
+        // block is the more specific answer, and the client's recoverable
+        // problem must not preempt it the way `Failed` does above.
+        DownloadQueueState::Warning => DownloadDisplayState::Warning,
         DownloadQueueState::Failed => DownloadDisplayState::Failed,
     }
 }
@@ -109,7 +113,10 @@ fn bucket_for_base_display_state(state: DownloadDisplayState) -> DownloadQueueBu
         DownloadDisplayState::Queued
         | DownloadDisplayState::Downloading
         | DownloadDisplayState::Paused
-        | DownloadDisplayState::PostProcessing => DownloadQueueBucket::Activity,
+        | DownloadDisplayState::PostProcessing
+        // A warned download is still live in the client and still recoverable,
+        // so it belongs with the activity it is part of, not in history.
+        | DownloadDisplayState::Warning => DownloadQueueBucket::Activity,
         DownloadDisplayState::Importing
         | DownloadDisplayState::ImportPending
         | DownloadDisplayState::ImportBlocked
@@ -133,6 +140,86 @@ pub fn derive_download_queue_display_state(item: &DownloadQueueItem) -> Download
         _ => base_state,
     }
 }
+/// How a torrent's seeding obligation reads to an operator looking at the
+/// queue.
+///
+/// Derived from the same gate that decides whether the entry may be removed, so
+/// the badge and the reconciler can never disagree: every variant is one of the
+/// gate's outcomes, collapsed to what is worth showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadSeedingState {
+    /// A torrent with nothing to report yet — still downloading, or a client
+    /// that exposes no seeding state at all.
+    None,
+    /// Seeding towards an obligation that is not discharged.
+    Seeding,
+    /// The obligation is discharged; the entry is free to be acted on.
+    GoalMet,
+    /// Observed private with no resolved goals: never auto-removed, because
+    /// Scryer has no goal it could prove and a private tracker counts an early
+    /// removal as a hit and run.
+    HeldPrivate,
+    /// The profile says seed forever.
+    NeverRemove,
+}
+
+/// The seeding state to show for one queue row, or `None` when the row has no
+/// torrent seeding information at all (usenet, and clients that report none).
+///
+/// Reads only what is already on the item: the adapter's observation and the
+/// goals the queue enrichment joined from the persisted grab-time resolution.
+pub fn derive_download_seeding_state(item: &DownloadQueueItem) -> Option<DownloadSeedingState> {
+    let snapshot = item.seeding.as_ref()?;
+    let parked_by_the_gate = item.tracked_state == Some(TrackedDownloadState::ImportedSeeding);
+    if !snapshot.has_torrent_signal() && !parked_by_the_gate {
+        // `can_remove`/`can_move_files` alone are reported by usenet clients
+        // too, so they are not evidence that this is a torrent.
+        return None;
+    }
+
+    // Before the payload is complete there is no seeding to report, and a
+    // client's `can_remove: Some(false)` on a half-downloaded torrent means
+    // "not finished", not "still seeding".
+    let payload_complete = parked_by_the_gate
+        || item.progress_percent >= 100
+        || matches!(
+            item.state,
+            DownloadQueueState::Completed | DownloadQueueState::ImportPending
+        );
+    if !payload_complete {
+        return Some(DownloadSeedingState::None);
+    }
+
+    let decision = crate::seeding_gate::evaluate_seeding_gate(&crate::seeding_gate::SeedingGateInput {
+        is_torrent: true,
+        client_type: item.client_type.clone(),
+        present_in_client: true,
+        observation: crate::seeding_gate::observation_from_queue_item(item),
+        goals: Some(crate::PersistedSeedGoals {
+            seed_goal_ratio: snapshot.seed_goal_ratio,
+            seed_goal_seconds: snapshot.seed_goal_seconds,
+            never_remove: snapshot.never_remove,
+            ..crate::PersistedSeedGoals::default()
+        }),
+        now: chrono::Utc::now(),
+    });
+
+    use crate::seeding_gate::reason;
+    Some(match decision.reason {
+        reason::PROFILE_NEVER_REMOVE => DownloadSeedingState::NeverRemove,
+        reason::PRIVATE_WITHOUT_GOALS => DownloadSeedingState::HeldPrivate,
+        reason::PROFILE_GOAL_UNMET | reason::CLIENT_LIMIT_UNMET => DownloadSeedingState::Seeding,
+        reason::PROFILE_GOAL_MET | reason::CLIENT_OBLIGATION_MET => DownloadSeedingState::GoalMet,
+        // A client that cannot answer and a profile with nothing to prove:
+        // the gate holds, and the row is genuinely still seeding as far as
+        // anyone can tell.
+        reason::CLIENT_VERDICT_UNKNOWN => DownloadSeedingState::Seeding,
+        // Blackhole has no session to report on, and a vanished entry is not
+        // in the queue to begin with.
+        _ => DownloadSeedingState::None,
+    })
+}
+
 fn classify_download_queue_item(item: &DownloadQueueItem) -> ClassifiedDownloadQueueItem {
     let base_state = base_download_queue_display_state(item);
     let base_bucket = bucket_for_base_display_state(base_state);
@@ -150,6 +237,10 @@ fn classify_download_queue_item(item: &DownloadQueueItem) -> ClassifiedDownloadQ
         DownloadDisplayState::Queued => Some(DownloadActivityFilter::Queued),
         DownloadDisplayState::Paused => Some(DownloadActivityFilter::Paused),
         DownloadDisplayState::PostProcessing => Some(DownloadActivityFilter::PostProcessing),
+        // Every activity state needs its own filter: the queue page asks for an
+        // explicit list of them, so a state that belongs to no filter is a
+        // state the operator can never see.
+        DownloadDisplayState::Warning => Some(DownloadActivityFilter::Warning),
         _ => None,
     };
 

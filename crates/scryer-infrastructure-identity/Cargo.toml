@@ -1,0 +1,28 @@
+[package]
+name = "scryer-infrastructure-identity"
+version = "0.18.19"
+edition.workspace = true
+publish = false
+
+[dependencies]
+scryer-domain = { path = "../scryer-domain" }
+scryer-application = { path = "../scryer-application" }
+scryer-outbound-http = { path = "../scryer-outbound-http" }
+scryer-infrastructure-sql = { path = "../scryer-infrastructure-sql" }
+scryer-infrastructure-crypto = { path = "../scryer-infrastructure-crypto" }
+scryer-infrastructure-workflow = { path = "../scryer-infrastructure-workflow" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures-util = "0.3"
+quick-xml = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "http2", "gzip", "brotli", "zstd", "deflate", "stream"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+wiremock = { workspace = true }
+

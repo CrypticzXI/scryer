@@ -486,6 +486,7 @@ impl AppUseCase {
             },
             indexer_proxy_config_id,
             download_client_id,
+            seeding_profile_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -684,6 +685,7 @@ impl AppUseCase {
             download_client_id: normalized_download_client_id
                 .clone()
                 .unwrap_or_else(|| existing.download_client_id.clone()),
+            seeding_profile_id: existing.seeding_profile_id.clone(),
             managed_parent_config_id: update
                 .managed_parent_config_id
                 .clone()
@@ -754,6 +756,7 @@ impl AppUseCase {
                 },
                 indexer_proxy_config_id: normalized_indexer_proxy_config_id,
                 download_client_id: normalized_download_client_id,
+                seeding_profile_id: None,
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
@@ -1071,6 +1074,7 @@ impl AppUseCase {
                             enable_auto_search: Some(desired.enable_auto_search),
                             indexer_proxy_config_id: Some(parent.indexer_proxy_config_id.clone()),
                             download_client_id: None,
+                            seeding_profile_id: None,
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
@@ -1108,6 +1112,7 @@ impl AppUseCase {
                             enable_auto_search: desired.enable_auto_search,
                             indexer_proxy_config_id: parent.indexer_proxy_config_id.clone(),
                             download_client_id: None,
+                            seeding_profile_id: None,
                             managed_parent_config_id: Some(parent.id.clone()),
                             managed_child_key: Some(desired.child_key.clone()),
                             managed_metadata_json: desired.managed_metadata_json.clone(),

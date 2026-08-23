@@ -38,6 +38,8 @@ async fn persist_title_folder_ownership_conflict(
         query,
         year_hint,
         LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER,
+        // Folder-ownership conflicts are recorded against a folder, not a file.
+        None,
     );
     persist_library_scan_unmatched_item(app, &item).await?;
     Ok(item)
@@ -872,6 +874,7 @@ pub(super) async fn process_movie_full_scan_candidate(
                 year_hint: candidate.year_hint,
                 reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
                 error_message: None,
+                size_bytes: candidate.file.size_bytes,
             },
         )
         .await
@@ -990,6 +993,8 @@ pub(super) async fn process_series_full_scan_candidate(
                 year_hint: candidate.year_hint,
                 reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
                 error_message: None,
+                // Series candidates are folder-shaped; no single file size.
+                size_bytes: None,
             },
         )
         .await
@@ -1093,6 +1098,8 @@ pub(super) async fn process_series_full_scan_candidate(
                 year_hint: candidate.year_hint,
                 reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
                 error_message: None,
+                // Series candidates are folder-shaped; no single file size.
+                size_bytes: None,
             },
         )
         .await
@@ -1303,6 +1310,8 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
                 year_hint: candidate.year_hint,
                 reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
                 error_message: None,
+                // Series candidates are folder-shaped; no single file size.
+                size_bytes: None,
             },
         )
         .await

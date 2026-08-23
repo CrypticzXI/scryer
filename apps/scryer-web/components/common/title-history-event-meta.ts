@@ -3,10 +3,12 @@ import {
   ArrowDownToLine,
   Ban,
   ArchiveRestore,
+  EyeOff,
   FileEdit,
   HardDrive,
   Replace,
   RefreshCcw,
+  Share2,
   SkipForward,
   Trash2,
   XCircle,
@@ -17,6 +19,7 @@ export const TITLE_HISTORY_FILTERS = [
   "grabbed",
   "download_failed",
   "blocklisted",
+  "download_ignored",
   "scanned",
   "imported",
   "import_failed",
@@ -26,6 +29,8 @@ export const TITLE_HISTORY_FILTERS = [
   "file_deleted",
   "file_renamed",
   "rematched",
+  "seeding_started",
+  "seeding_completed",
 ] as const;
 
 export const WANTED_HISTORY_FILTERS = [
@@ -110,6 +115,24 @@ const eventMeta: Record<string, EventMeta> = {
     iconClassName: "text-[var(--scry-info-text-soft)]",
     labelKey: "history.fileRenamed",
     badgeClassName: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  },
+  seeding_started: {
+    icon: Share2,
+    iconClassName: "text-[var(--scry-info-text-soft)]",
+    labelKey: "history.seedingStarted",
+    badgeClassName: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
+  },
+  seeding_completed: {
+    icon: Share2,
+    iconClassName: "text-[var(--scry-success-text-soft)]",
+    labelKey: "history.seedingCompleted",
+    badgeClassName: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  },
+  download_ignored: {
+    icon: EyeOff,
+    iconClassName: "text-[var(--scry-warning-text)]",
+    labelKey: "history.downloadIgnored",
+    badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   },
   rematched: {
     icon: RefreshCcw,

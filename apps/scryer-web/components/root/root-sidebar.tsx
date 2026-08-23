@@ -78,7 +78,10 @@ import {
   hasAnyLibraryPermission,
 } from "@/lib/utils/permissions";
 import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
-import { canAccessSystemSection } from "@/lib/utils/routes";
+import {
+  canAccessDashboard,
+  canAccessSystemSection,
+} from "@/lib/utils/routes";
 import { selectorId } from "@/lib/utils/dom-ids";
 import ScryerLogo from "@/components/scryer-logo";
 
@@ -145,6 +148,11 @@ type HeaderWithMobileNavigationProps = {
 };
 
 const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
+  {
+    id: "overview",
+    labelKey: "nav.group.overview",
+    items: [{ kind: "view", id: "dashboard" }],
+  },
   {
     id: "catalogs",
     labelKey: "nav.group.catalogs",
@@ -464,12 +472,14 @@ const TOP_NAV_BADGE_GROUP_CLASS =
 const TOP_NAV_BADGE_BASE_CLASS =
   "inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium tabular-nums";
 
-type NavBadgeTone = "cta" | "danger" | "request";
+type NavBadgeTone = "cta" | "danger" | "warning" | "request";
 
 function navBadgeToneClass(tone: NavBadgeTone) {
   switch (tone) {
     case "danger":
       return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
+    case "warning":
+      return "bg-[var(--scry-warning-solid)] text-[var(--scry-warning-on-solid)]";
     case "request":
       return "bg-primary text-primary-foreground";
     case "cta":
@@ -716,6 +726,7 @@ function RootSidebarContent({
           (!MEDIA_NAV_VIEW_IDS.includes(item.id) || canAccessMediaTopNav) &&
           (item.id !== "calendar" || canViewCatalog) &&
           (item.id !== "wanted" || canViewCatalog) &&
+          (item.id !== "dashboard" || canAccessDashboard(canManageSystemSettings)) &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),
@@ -1241,11 +1252,6 @@ function RootSidebarContent({
                               {activityImportBadgeCount}
                             </SidebarMenuBadge>
                           ) : null}
-                          {item.id === "settings" && pluginUpdateCount > 0 ? (
-                            <SidebarMenuBadge className="bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]">
-                              {pluginUpdateCount}
-                            </SidebarMenuBadge>
-                          ) : null}
                         </SidebarMenuItem>
                       </React.Fragment>
                     );
@@ -1324,6 +1330,13 @@ function RootSidebarContent({
                             {activityImportBadgeCount}
                           </SidebarMenuBadge>
                         ) : null}
+                        {isSettingsTop && pluginUpdateCount > 0 ? (
+                          <SidebarMenuBadge
+                            className={navBadgeToneClass("warning")}
+                          >
+                            {pluginUpdateCount}
+                          </SidebarMenuBadge>
+                        ) : null}
                         {isMediaSection ? (
                           <FacetNavBadges
                             importCount={mediaFacetImportBadgeCount}
@@ -1371,7 +1384,7 @@ function RootSidebarContent({
                                         pluginUpdateCount > 0 ? (
                                           <LeafNavBadge
                                             count={pluginUpdateCount}
-                                            tone="danger"
+                                            tone="warning"
                                           />
                                         ) : null}
                                       </SidebarMenuSubButton>

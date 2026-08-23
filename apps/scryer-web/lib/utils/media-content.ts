@@ -36,7 +36,8 @@ export function areNzbgetRoutingSettingsEqual(
     left.recentQueuePriority === right.recentQueuePriority &&
     left.olderQueuePriority === right.olderQueuePriority &&
     left.removeCompleted === right.removeCompleted &&
-    left.removeFailed === right.removeFailed
+    left.removeFailed === right.removeFailed &&
+    left.seedingProfileId === right.seedingProfileId
   );
 }
 

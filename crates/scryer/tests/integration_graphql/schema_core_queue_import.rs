@@ -1526,7 +1526,7 @@ async fn graphql_traverses_core_graph_relationships() {
         last_search_at: None,
         status: scryer_application::AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: Some(120),
+        landed_bar: Some(120),
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: "2026-03-20T00:00:00Z".to_string(),
@@ -1551,10 +1551,12 @@ async fn graphql_traverses_core_graph_relationships() {
         explanation_json: None,
         created_at: "2026-03-20T00:05:00Z".to_string(),
     };
-    scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-        .insert_release_decision(&decision)
-        .await
-        .expect("seed release decision");
+    scryer_infrastructure_library::media::libraries::state_store::WantedStore::new(
+        ctx.db.datastore(),
+    )
+    .insert_release_decision(&decision)
+    .await
+    .expect("seed release decision");
 
     let pending_release = PendingRelease {
         id: Id::new().0,
@@ -1576,8 +1578,10 @@ async fn graphql_traverses_core_graph_relationships() {
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -1783,6 +1787,8 @@ async fn graphql_traverses_core_graph_relationships() {
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
@@ -2298,6 +2304,7 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     };
     let completed = CompletedDownload {
         client_type: "weaver".to_string(),

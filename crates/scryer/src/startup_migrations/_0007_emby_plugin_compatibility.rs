@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use scryer_application::{AppUseCase, SETTINGS_SCOPE_SYSTEM};
-use scryer_infrastructure::SettingsStore;
+use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
 
 const MIGRATION_STATE_KEY: &str = "startup_migration.emby_plugin_compatibility.state";
 const LEGACY_PLUGIN_ID: &str = "mediabrowser";
@@ -84,6 +84,7 @@ fn migration_actor() -> scryer_domain::User {
         id: ACTOR_ID.to_string(),
         username: "system".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: scryer_domain::UserAccountKind::Local,
         authorization: scryer_domain::UserAuthorization::full_admin(),
     }

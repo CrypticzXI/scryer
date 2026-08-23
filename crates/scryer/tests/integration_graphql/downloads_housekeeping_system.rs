@@ -50,6 +50,9 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl() {
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Broken.NZB.Movie.2024".to_string()),
                 source_password: None,
+                info_hash_hint: None,
+                size_bytes: None,
+                seeders: None,
             },
         )
         .await
@@ -150,6 +153,9 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
                 source_password: None,
+                info_hash_hint: None,
+                size_bytes: None,
+                seeders: None,
             },
         )
         .await
@@ -265,21 +271,25 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Pals", "SERIES").await;
 
-    scryer_infrastructure::BlocklistStore::new(ctx.db.datastore())
-        .add(&scryer_application::NewBlocklistEntry {
-            title_id: title_id.clone(),
-            source_title: Some("pals.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
-            source_hint: Some("weaver://job-1".to_string()),
-            quality: None,
-            download_id: Some("job-1".to_string()),
-            reason: Some("download client failure: corrupt archive".to_string()),
-            data: HashMap::new(),
-        })
-        .await
-        .expect("seed blocklist entry");
+    scryer_infrastructure_library::media::libraries::state_store::BlocklistStore::new(
+        ctx.db.datastore(),
+    )
+    .add(&scryer_application::NewBlocklistEntry {
+        title_id: title_id.clone(),
+        source_title: Some("pals.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
+        source_hint: Some("weaver://job-1".to_string()),
+        quality: None,
+        download_id: Some("job-1".to_string()),
+        reason: Some("download client failure: corrupt archive".to_string()),
+        data: HashMap::new(),
+    })
+    .await
+    .expect("seed blocklist entry");
 
-    let release_store =
-        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    let release_store = scryer_infrastructure_workflow::workflow::release_store::ReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    );
     scryer_application::ReleaseAttemptRepository::record_release_attempt(
         &release_store,
         Some(title_id.clone()),

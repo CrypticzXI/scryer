@@ -5,4 +5,6 @@ pub(crate) mod _0004_auto_backup_missing_key_disable;
 pub(crate) mod _0005_title_metadata_rehydration_017;
 pub(crate) mod _0006_quality_profile_default_1080p;
 pub(crate) mod _0007_emby_plugin_compatibility;
+pub(crate) mod _0008_title_credits_rehydration_018;
+pub(crate) mod _0010_download_client_remove_failed_default;
 pub(crate) mod versioning;

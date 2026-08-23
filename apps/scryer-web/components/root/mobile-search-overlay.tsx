@@ -572,29 +572,28 @@ export function MobileSearchOverlay({
       facet: Facet,
       options: MetadataCatalogAddOptions,
     ) => {
-      const titleId = await addMetadataSearchResultToCatalog(
-        result,
-        facet,
-        options,
-      );
-      if (titleId) {
-        const selectedLibrary = librariesByFacet[facet].find(
-          (library) => library.id === options.libraryId,
-        );
-        resetGlobalSearch();
-        closingAfterSuccessfulActionRef.current = true;
-        onOpenOverview?.(viewFromFacet(facet), {
-          id: titleId,
-          slug: result.slug ?? null,
-          libraryId: selectedLibrary?.id ?? options.libraryId ?? null,
-          librarySlug: selectedLibrary?.slug ?? null,
-        });
-      }
-      return titleId;
+      // The overlay stays up so a second title can go straight in; the success
+      // toast owns the jump to the one that was just added.
+      return addMetadataSearchResultToCatalog(result, facet, options, {
+        onViewInCatalog: (titleId) => {
+          const selectedLibrary = librariesByFacet[facet].find(
+            (library) => library.id === options.libraryId,
+          );
+          resetGlobalSearch();
+          onClose();
+          onOpenOverview?.(viewFromFacet(facet), {
+            id: titleId,
+            slug: result.slug ?? null,
+            libraryId: selectedLibrary?.id ?? options.libraryId ?? null,
+            librarySlug: selectedLibrary?.slug ?? null,
+          });
+        },
+      });
     },
     [
       addMetadataSearchResultToCatalog,
       librariesByFacet,
+      onClose,
       onOpenOverview,
       resetGlobalSearch,
     ],
@@ -634,14 +633,11 @@ export function MobileSearchOverlay({
         return;
       }
       setAddDialogTarget(null);
-      if (closingAfterSuccessfulActionRef.current) {
-        closingAfterSuccessfulActionRef.current = false;
-        onClose();
-        return;
-      }
+      // Adding no longer closes the overlay, so the caret always goes back to
+      // the search box ready for the next title.
       restoreMobileSearchInputFocus();
     },
-    [onClose, restoreMobileSearchInputFocus],
+    [restoreMobileSearchInputFocus],
   );
 
   const handleRequestDialogOpenChange = React.useCallback(

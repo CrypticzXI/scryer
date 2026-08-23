@@ -51,6 +51,8 @@ fn library_settings_draft(
 
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
+        metadata_language: input.metadata_language,
+        use_season_folders: input.use_season_folders,
         quality_profile_id: input.quality_profile_id.map(String::from),
         request_quality_profile_ids: input
             .request_quality_profile_ids
@@ -97,6 +99,7 @@ fn library_settings_draft(
                         older_queue_priority: entry.older_queue_priority,
                         remove_completed: entry.remove_completed,
                         remove_failed: entry.remove_failed,
+                        seeding_profile_id: entry.seeding_profile_id.map(|value| value.to_string()),
                     },
                 )
                 .collect()
@@ -322,6 +325,7 @@ impl LibraryMutations {
     }
 
     /// Apply a title rename plan after validating its preview fingerprint and optional idempotency key.
+    #[graphql(deprecation = "use renameTitles, which runs the work as a job")]
     async fn apply_media_rename(
         &self,
         ctx: &Context<'_>,
@@ -393,7 +397,38 @@ impl LibraryMutations {
         })
     }
 
+    /// Start a background job renaming the files of the given titles.
+    async fn rename_titles(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Facet and titles whose files are renamed; the work runs in the background."
+        )]
+        input: RenameTitlesInput,
+    ) -> GqlResult<RenameTitlesPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let title_ids = input
+            .title_ids
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let accepted = app
+            .start_rename_titles_job(&actor, &title_ids, input.facet.into_domain())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(RenameTitlesPayload {
+            job_run: from_job_run(accepted.job_run),
+            accepted_title_ids: accepted
+                .accepted_title_ids
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        })
+    }
+
     /// Apply a facet-wide rename plan after validating its preview fingerprint and optional idempotency key.
+    #[graphql(deprecation = "use renameTitles, which runs the work as a job")]
     async fn apply_media_rename_bulk(
         &self,
         ctx: &Context<'_>,

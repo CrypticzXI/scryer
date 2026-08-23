@@ -1,9 +1,33 @@
+//! The grab side of the loop: find candidates, order them, decide one.
+//!
+//! ```text
+//! Found → Parsed → Scored(announced) → Ranked → Decided → Grabbed
+//! ```
+//!
+//! Each arrow has exactly one owner, and none of them is here:
+//! [`crate::canonical_scoring`] scores, [`crate::acquisition::scoring`] ranks,
+//! [`crate::admission`] decides. This module runs the sequence and records the
+//! reason code, so a lane cannot acquire its own opinion about what a release
+//! is worth.
+//!
+//! Two consequences of that split are worth stating, because they are what the
+//! module is careful about:
+//!
+//! - **Listing metadata orders, it never scores.** Release age,
+//!   indexer priority, seeders, votes and coverage preference decide which
+//!   candidate is looked at first and never enter a number that gets persisted
+//!   or compared across time — none of them can be reconstructed from a media
+//!   row.
+//! - **Whatever this lane grabs, import will accept.** The admission call
+//!   here is the same function the import gate calls, over the same subject
+//!   builder, under a *stricter* policy — so a release that clears the grab
+//!   cannot be refused at import on the same facts.
+
 use super::acquisition::{
     collection_download_submission_scope_for_wanted_item,
     direct_download_submission_scope_for_wanted_item,
 };
 use super::*;
-use crate::acquisition_policy::evaluate_upgrade;
 use crate::acquisition_search_queries::{
     anidb_id_from_external_ids, build_movie_search_queries, build_search_queries,
     imdb_id_from_title, mal_id_from_external_ids, movie_text_search_query,
@@ -14,10 +38,9 @@ use crate::quality::release_parser::ParseDisposition;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
-/// Identity ambiguity for a canonical title (Pillar A tier 0): lookup keys that
-/// cannot identify this title on their own. This includes keys shared with
-/// another library title and the bare form of an explicitly year-qualified
-/// canonical title such as `Tide Chart (2023)`.
+/// Lookup keys that cannot identify a canonical title on their own. This
+/// includes keys shared with another library title and the bare form of an
+/// explicitly year-qualified canonical title such as `Tide Chart (2023)`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TitleIdentityAmbiguity {
     pub(crate) shared_lookup_keys: Vec<String>,
@@ -50,13 +73,13 @@ impl TitleIdentityAmbiguity {
         }
     }
 
-    /// True when an auto candidate must present a positive disambiguator (A2).
+    /// True when an auto candidate must present a positive disambiguator.
     pub(crate) fn requires_disambiguator(&self) -> bool {
         !self.shared_lookup_keys.is_empty()
     }
 
     /// True when `key` is an alias only this title claims within the library
-    /// collision set — the A2(3) "unique alias hit" disambiguator.
+    /// collision set — the "unique alias hit" disambiguator.
     pub(crate) fn key_is_unique_to_title(&self, key: &str) -> bool {
         !self
             .shared_lookup_keys
@@ -84,13 +107,13 @@ impl CanonicalTitleEvidence {
     }
 }
 
-/// How a parsed release name matched a canonical title, retained so the Pillar A
-/// disambiguator check can tell a shared bare key from a unique alias.
+/// How a parsed release name matched a canonical title, retained so the identity
+/// check can tell a shared bare key from a unique alias.
 #[derive(Clone, Debug)]
 pub(crate) struct TitleEvidenceMatch {
     /// The canonical lookup key that actually matched.
     pub(crate) matched_key: String,
-    /// The release carries the title's year (A2(1)).
+    /// The release carries the title's year.
     pub(crate) year_corroborated: bool,
     /// A one-word alias is too weak to establish identity without an external
     /// id (or the title year, represented by `year_corroborated`).
@@ -124,9 +147,7 @@ pub(crate) struct ResolvedReleaseSearchSubject {
     pub(crate) episode: Option<u32>,
     pub(crate) absolute_episode: Option<u32>,
     pub(crate) subject_kind: ReleaseSearchSubjectKind,
-    pub(crate) current_score: Option<i32>,
     pub(crate) last_search_at: Option<String>,
-    pub(crate) grabbed_release: Option<String>,
     pub(crate) submission_scope: SubmissionScope,
 }
 
@@ -137,17 +158,21 @@ pub(crate) enum ReleaseAutoDecisionCode {
     ParseUnparseable,
     TitleMismatch,
     EpisodeMismatch,
+    EpisodeNotMonitored,
     CategoryMismatch,
     AmbiguousIdentity,
     QualityBlocked,
     NegativeScore,
     UpgradeRejected,
     CutoffReached,
+    ProperForOldFile,
     AlreadyActive,
+    QueuedBetterOrEqual,
     DbBlocklisted,
     PendingDelay,
     DownloadClientUnavailable,
     RepackGroupMismatch,
+    MinimumSeeders,
 }
 
 impl ReleaseAutoDecisionCode {
@@ -158,19 +183,23 @@ impl ReleaseAutoDecisionCode {
             "parse_unparseable" => Some(Self::ParseUnparseable),
             "title_mismatch" => Some(Self::TitleMismatch),
             "episode_mismatch" => Some(Self::EpisodeMismatch),
-            // Deliberately the same string the D1 pre-submission gate records on
-            // its Failed attempts, so both category vetoes read alike.
+            "episode_not_monitored" => Some(Self::EpisodeNotMonitored),
+            // Deliberately the same string the pre-submission gate records on
+            // failed attempts, so both category vetoes read alike.
             "category_mismatch" => Some(Self::CategoryMismatch),
             "ambiguous_identity" => Some(Self::AmbiguousIdentity),
             "quality_blocked" => Some(Self::QualityBlocked),
             "negative_score" => Some(Self::NegativeScore),
             "upgrade_rejected" => Some(Self::UpgradeRejected),
             "cutoff_reached" => Some(Self::CutoffReached),
+            "proper_for_old_file" => Some(Self::ProperForOldFile),
             "already_active" => Some(Self::AlreadyActive),
+            "queued_better_or_equal" => Some(Self::QueuedBetterOrEqual),
             "db_blocklisted" => Some(Self::DbBlocklisted),
             "pending_delay" => Some(Self::PendingDelay),
             "download_client_unavailable" => Some(Self::DownloadClientUnavailable),
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
+            "minimum_seeders" => Some(Self::MinimumSeeders),
             _ => None,
         }
     }
@@ -182,17 +211,21 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "parse_unparseable",
             Self::TitleMismatch => "title_mismatch",
             Self::EpisodeMismatch => "episode_mismatch",
+            Self::EpisodeNotMonitored => "episode_not_monitored",
             Self::CategoryMismatch => "category_mismatch",
             Self::AmbiguousIdentity => "ambiguous_identity",
             Self::QualityBlocked => "quality_blocked",
             Self::NegativeScore => "negative_score",
             Self::UpgradeRejected => "upgrade_rejected",
             Self::CutoffReached => "cutoff_reached",
+            Self::ProperForOldFile => "proper_for_old_file",
             Self::AlreadyActive => "already_active",
+            Self::QueuedBetterOrEqual => "queued_better_or_equal",
             Self::DbBlocklisted => "db_blocklisted",
             Self::PendingDelay => "pending_delay",
             Self::DownloadClientUnavailable => "download_client_unavailable",
             Self::RepackGroupMismatch => "repack_group_mismatch",
+            Self::MinimumSeeders => "minimum_seeders",
         }
     }
 
@@ -203,19 +236,35 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "release could not be parsed and blocks auto-grab",
             Self::TitleMismatch => "release title does not match the target title",
             Self::EpisodeMismatch => "release numbering does not match the target episode",
+            // Distinct from `EpisodeMismatch` on purpose: "the numbering does
+            // not match" and "one of these episodes is unmonitored" call for
+            // different operator actions.
+            Self::EpisodeNotMonitored => "release covers an episode this library is not monitoring",
             Self::CategoryMismatch => "indexer category contradicts the target title",
             Self::AmbiguousIdentity => {
                 "canonical title is ambiguous and no disambiguator was present"
             }
             Self::QualityBlocked => "quality profile blocked this release",
-            Self::NegativeScore => "release score is negative after scoring penalties",
+            Self::NegativeScore => {
+                "release score is negative after scoring penalties (no longer emitted)"
+            }
             Self::UpgradeRejected => "upgrade policy rejected this release",
             Self::CutoffReached => "existing file already meets the configured cutoff",
+            Self::ProperForOldFile => {
+                "the existing file is too old to be worth replacing with a PROPER"
+            }
             Self::AlreadyActive => "release is already active or covered in the queue",
+            // Deliberately distinct from `AlreadyActive`: "the same release is
+            // downloading" and "a different, better release is downloading" are
+            // different operator situations.
+            Self::QueuedBetterOrEqual => {
+                "a release already downloading for this scope is equal or better"
+            }
             Self::DbBlocklisted => "release is blocklisted from prior failures",
             Self::PendingDelay => "release is eligible but held by a delay profile",
             Self::DownloadClientUnavailable => "matching download clients are unavailable",
             Self::RepackGroupMismatch => "repack group does not match the existing file",
+            Self::MinimumSeeders => "too few seeders for this indexer's seeding profile",
         }
     }
 
@@ -228,17 +277,36 @@ impl ReleaseAutoDecisionCode {
 pub(crate) struct AutoCandidateEvaluationContext<'a> {
     pub(crate) title: &'a Title,
     pub(crate) subject: &'a ResolvedReleaseSearchSubject,
-    pub(crate) current_score: Option<i32>,
+    /// The primary files occupying this scope, each with a canonical bar.
+    /// Replaces a ledger score that could be null, stale, or the grab-time score
+    /// of a release that never landed.
+    pub(crate) admission: &'a crate::admission::AdmissionSubject,
     pub(crate) last_search_at: Option<&'a str>,
     pub(crate) profile: &'a QualityProfile,
     pub(crate) thresholds: &'a AcquisitionThresholds,
-    pub(crate) cutoff_reached: bool,
+    /// The scope's best incumbent has reached the profile's cutoff — the
+    /// candidate-independent half of Sonarr's `QualityCutoffNotMet`. The
+    /// candidate-dependent half (a same-tier revision upgrade escapes it) lives
+    /// in [`cutoff_refusal`], so there is one cutoff gate rather than a
+    /// scope-level short-circuit in every lane.
+    pub(crate) incumbent_at_cutoff: bool,
+    /// This evaluation is a feed pass rather than an active search, which is the
+    /// condition Sonarr's `ProperSpecification` keys on
+    /// (`if (information.SearchCriteria != null) return Accept()`). The old-file
+    /// guard binds only here.
+    pub(crate) is_rss_lane: bool,
     pub(crate) now: &'a DateTime<Utc>,
     pub(crate) dl_snapshot: Option<&'a crate::acquisition_workflow::DownloadClientSnapshot>,
     pub(crate) db_blocklist: &'a HashSet<String>,
     pub(crate) existing_files: &'a [TitleMediaFile],
     pub(crate) delay_profiles: &'a [DelayProfile],
     pub(crate) failed_routes: Option<&'a [crate::acquisition_workflow::DownloadRouteKey]>,
+    /// Admission threshold per indexer id, resolved once for the batch.
+    /// An indexer absent from the map is treated as unrestricted.
+    pub(crate) minimum_seeders: &'a HashMap<String, i32>,
+    /// Episodes of this title nobody is monitoring, resolved once per scope.
+    /// Empty for a title with no episodes.
+    pub(crate) unmonitored_episode_ids: &'a HashSet<String>,
 }
 
 pub fn release_strategy_kind_for_label(label: &str, is_rss_request: bool) -> ReleaseStrategyKind {
@@ -626,7 +694,7 @@ fn extraction_decomposes_into_evidence_keys(
 
 /// Matching counterpart of [`parsed_release_matches_title_evidence`] that keeps
 /// *which* lookup key matched and whether the release year corroborated it.
-/// Pillar A needs both: a shared bare key is not identity evidence for an
+/// The identity check needs both: a shared bare key is not evidence for an
 /// ambiguous subject, while a unique alias or a year agreement is.
 pub(crate) fn match_parsed_release_to_title_evidence(
     parsed: &ParsedReleaseMetadata,
@@ -729,7 +797,7 @@ pub(crate) fn candidate_matches_title_subject(
 }
 
 /// Matching counterpart of [`candidate_matches_title_subject`] that retains the
-/// Pillar A disambiguator inputs (matched key and year agreement).
+/// disambiguator inputs (matched key and year agreement).
 pub(crate) fn candidate_title_match(
     candidate: &IndexerSearchResult,
     evidence: &CanonicalTitleEvidence,
@@ -750,11 +818,11 @@ pub(crate) fn candidate_title_match(
     })
 }
 
-/// Pillar A2: for an identity-ambiguous subject an auto candidate must present
-/// one positive disambiguator. `external_id_agreement` is the A2(2) input,
-/// computed by [`candidate_external_id_agreement`] from the captured response
-/// attrs. Per §9 decision 3 an indexer-asserted id suffices alone; a
-/// contradicting parsed year has already vetoed the match upstream in
+/// For an identity-ambiguous subject, an automatic candidate must present one
+/// positive disambiguator. `external_id_agreement` is computed by
+/// [`candidate_external_id_agreement`] from the captured response attributes.
+/// An indexer-asserted id suffices alone; a contradicting parsed year has
+/// already vetoed the match upstream in
 /// [`match_parsed_release_to_title_evidence`], so the year veto still outranks
 /// it. Only `Some(true)` satisfies the gate — a disagreement or an absent
 /// assertion is simply not a disambiguator, never a veto of its own.
@@ -764,12 +832,12 @@ pub(crate) fn candidate_presents_identity_disambiguator(
     external_id_agreement: Option<bool>,
 ) -> bool {
     if let Some(evidence_match) = title_match.evidence_match.as_ref() {
-        // A2(1) — the release carries the title's year.
+        // The release carries the title's year.
         if evidence_match.year_corroborated {
             return true;
         }
-        // A2(3) — the matched key is an alias unique to this title within the
-        // library collision set, not the shared bare key.
+        // The matched key is an alias unique to this title within the library
+        // collision set, not the shared bare key.
         if evidence
             .ambiguity
             .key_is_unique_to_title(&evidence_match.matched_key)
@@ -778,12 +846,12 @@ pub(crate) fn candidate_presents_identity_disambiguator(
         }
     }
 
-    // A2(2) — external id agreement. `title_validated_upstream` remains
-    // diagnostic provenance and cannot break an identity tie.
+    // External-id agreement can break the identity tie;
+    // `title_validated_upstream` remains diagnostic provenance and cannot.
     external_id_agreement.unwrap_or(false)
 }
 
-/// A2(2): compare the indexer's response ids against ids Scryer already holds.
+/// Compare the indexer's response ids against ids Scryer already holds.
 ///
 /// `Some(false)` when any comparable id kind disagrees, `Some(true)` when all
 /// comparable kinds agree, and `None` when there was nothing to compare. An
@@ -866,45 +934,72 @@ fn normalized_release_identity(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn media_file_matches_release_identity(file: &TitleMediaFile, release_title: &str) -> bool {
-    if release_title.is_empty() {
-        return false;
-    }
-
+/// Every name a stored file can be recognised by: the release it was grabbed
+/// as, the scene name it carried, and the **stems** of the paths it has lived
+/// at.
+///
+/// Stems, not paths. The path entries are absolute, so an exact comparison
+/// against them is essentially always false — which is why the old rule fell
+/// back to `contains`, and `contains` is what made this check wrong in the
+/// direction that matters: `Show.S01E01.1080p-GRP` is a substring of
+/// `/data/TV/Show/Show.S01E01.1080p-GRP.PROPER.mkv`, so the PROPER of a release
+/// already on disk reported "already active" and could never be grabbed.
+fn release_identities(file: &TitleMediaFile) -> impl Iterator<Item = String> + '_ {
     [
         file.grabbed_release_title.as_deref(),
         file.scene_name.as_deref(),
-        file.original_file_path.as_deref(),
-        Some(file.file_path.as_str()),
     ]
     .into_iter()
     .flatten()
     .map(normalized_release_identity)
-    .any(|candidate| candidate == release_title || candidate.contains(release_title))
+    .chain(
+        [
+            file.original_file_path.as_deref(),
+            Some(file.file_path.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|path| {
+            std::path::Path::new(path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(normalized_release_identity)
+        }),
+    )
 }
 
+/// Has this exact release already landed in the scope? The anti-loop guard: a
+/// re-grab of a file Scryer already holds is never an upgrade.
+///
+/// Scoped by the **subject's incumbent file ids** rather than by a scalar
+/// `episode_id`. `SubmissionScope::episode_id()` is `Some` only for a single
+/// episode, so every pack, batch, title and link scope used to match *any* file
+/// of the title; and a multi-episode file's span lives on the link table, not on
+/// the row's scalar column. The subject already holds exactly the primary files
+/// occupying the scope, whatever its shape, so membership by file id is
+/// span-correct by construction.
 fn candidate_matches_existing_media_file(
     candidate: &IndexerSearchResult,
     existing_files: &[TitleMediaFile],
-    episode_id: Option<&str>,
+    subject: &crate::admission::AdmissionSubject,
 ) -> bool {
     let release_title = normalized_release_identity(&candidate.title);
     if release_title.is_empty() {
         return false;
     }
-
-    existing_files.iter().any(|file| {
-        episode_id.is_none_or(|episode_id| file.episode_id.as_deref() == Some(episode_id))
-            && media_file_matches_release_identity(file, &release_title)
-    })
-}
-
-fn grabbed_release_for_search_subject(item: &AcquisitionScopeState) -> Option<String> {
-    if item.status == AcquisitionScopeStatus::Completed && item.current_score.is_some() {
-        None
-    } else {
-        item.grabbed_release.clone()
+    let in_scope: HashSet<&str> = subject
+        .incumbents()
+        .iter()
+        .map(|incumbent| incumbent.file_id.as_str())
+        .collect();
+    if in_scope.is_empty() {
+        return false;
     }
+
+    existing_files
+        .iter()
+        .filter(|file| in_scope.contains(file.id.as_str()))
+        .any(|file| release_identities(file).any(|identity| identity == release_title))
 }
 
 pub(crate) fn annotate_auto_decision(
@@ -1005,6 +1100,140 @@ fn candidate_numbering_contradicts_subject(
     false
 }
 
+/// A candidate's PROPER/REPACK rank, `0` when it could not be parsed.
+///
+/// An unparsed result already loses on tier and on score; reading it as
+/// revision 0 keeps it from *winning* the revision step, which is the only way
+/// a missing parse could help it.
+fn candidate_revision(candidate: &IndexerSearchResult) -> i32 {
+    candidate
+        .parsed_release_metadata
+        .as_ref()
+        .map_or(0, crate::acquisition::scoring::revision_rank)
+}
+
+/// Sonarr's `IsRevisionUpgrade`: the same quality already on disk, re-released
+/// at a later revision.
+///
+/// Tier-scoped rather than exact-quality-scoped, because Scryer's tiers are
+/// resolution-only until Part 5 — a 1080p WEB-DL PROPER therefore counts as a
+/// revision of a 1080p Bluray. Coarser than Sonarr, and the same coarseness the
+/// rest of the ladder already has.
+///
+/// `false` for an unoccupied scope: there is nothing to be a revision *of*.
+///
+/// Over **any** incumbent of the scope, not only the best one: Sonarr's
+/// `ProperSpecification` and `QualityCutoffNotMet` both iterate every covered
+/// file, so on a pack or multi-episode scope a PROPER of a weaker member is
+/// still a revision upgrade.
+pub(crate) fn candidate_is_revision_upgrade(
+    candidate: crate::admission::CandidateFacts,
+    subject: &crate::admission::AdmissionSubject,
+) -> bool {
+    subject
+        .incumbents()
+        .iter()
+        .any(|incumbent| revision_upgrade_over(candidate, incumbent))
+}
+
+/// Sonarr's `IsRevisionUpgrade` against one file: same tier, later revision.
+fn revision_upgrade_over(
+    candidate: crate::admission::CandidateFacts,
+    incumbent: &crate::admission::Incumbent,
+) -> bool {
+    candidate.tier_index == incumbent.tier_index && candidate.revision > incumbent.revision
+}
+
+/// Has this scope reached its cutoff — **both** halves of it?
+///
+/// Sonarr's `CutoffNotMet` is `QualityCutoffNotMet || CustomFormatCutoffNotMet`,
+/// so a scope is finished only when the quality *and* the format score have both
+/// arrived. Checking the quality half alone would defeat the format cutoff:
+/// `derive_format_cutoff_targets` would nominate a scope whose bar sits below
+/// `cutoff_score`, and every lane would then refuse its candidates
+/// `CutoffReached` because the quality was fine.
+///
+/// An unoccupied scope answers `true` for the score half — there is no bar to
+/// fall short of — which is moot in practice, because a scope with no file has
+/// no analyzed quality either and the quality half is already `false`.
+pub(crate) fn incumbent_at_cutoff(
+    quality_cutoff_met: bool,
+    subject: &crate::admission::AdmissionSubject,
+    cutoff_score: Option<i32>,
+) -> bool {
+    quality_cutoff_met
+        && cutoff_score.is_none_or(|cutoff| {
+            subject
+                .best_incumbent()
+                .is_none_or(|(_, bar)| bar >= cutoff)
+        })
+}
+
+/// The one cutoff gate.
+///
+/// Sonarr's `QualityCutoffNotMet` is two halves: the scope's best file has
+/// reached the profile cutoff (`incumbent_at_cutoff`, resolved per scope by the
+/// lane), **and** the candidate is not a revision upgrade over it. Both halves
+/// used to live in different places — a scope-level `if cutoff_reached { return }`
+/// in each of the three auto lanes, which is why a PROPER could never reach a
+/// scope that had otherwise finished.
+///
+/// The old-file guard is **cutoff-independent** and keyed on the revision
+/// escape: the candidate genuinely is a PROPER over a file Scryer holds, and
+/// Scryer is declining it on age alone, whether or not the scope has reached
+/// its cutoff — Sonarr's `ProperSpecification` never consults the cutoff. It is
+/// a *different* refusal with its own reason code. RSS/pending only — that
+/// specification accepts unconditionally when a search produced the candidate.
+pub(crate) fn cutoff_refusal(
+    candidate: crate::admission::CandidateFacts,
+    subject: &crate::admission::AdmissionSubject,
+    incumbent_at_cutoff: bool,
+    is_rss_lane: bool,
+    now: &DateTime<Utc>,
+) -> Option<ReleaseAutoDecisionCode> {
+    // The revision escape and the old-file guard come first, because both are
+    // cutoff-independent: Sonarr's `ProperSpecification` rejects a PROPER for a
+    // week-old file whether or not the scope has reached its cutoff, and a
+    // PROPER over a below-cutoff file is still the revision upgrade the ladder
+    // admits. Gating the age check behind `incumbent_at_cutoff` made it inert
+    // for every below-cutoff scope — exactly the scopes that see the most
+    // PROPERs.
+    if candidate_is_revision_upgrade(candidate, subject) {
+        let proper_for_old_file = is_rss_lane
+            && subject.incumbents().iter().any(|incumbent| {
+                revision_upgrade_over(candidate, incumbent)
+                    && crate::acquisition_policy::file_predates_proper_window(
+                        Some(incumbent.created_at.as_str()),
+                        now,
+                    )
+            });
+        return proper_for_old_file.then_some(ReleaseAutoDecisionCode::ProperForOldFile);
+    }
+    if !incumbent_at_cutoff {
+        return None;
+    }
+    Some(ReleaseAutoDecisionCode::CutoffReached)
+}
+
+/// Apply the shared admission rule to one search candidate.
+fn candidate_meets_minimum_seeders(
+    candidate: &IndexerSearchResult,
+    thresholds: &HashMap<String, i32>,
+) -> bool {
+    let threshold = candidate
+        .indexer_id
+        .as_deref()
+        .and_then(|indexer_id| thresholds.get(indexer_id))
+        .copied()
+        .unwrap_or(0);
+    crate::acquisition::seed_goals::meets_minimum_seeders(
+        candidate.source_kind,
+        candidate.indexer_id.as_deref(),
+        crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+        threshold,
+    )
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
@@ -1032,12 +1261,32 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::EpisodeMismatch;
     }
 
-    // Pillar D2: the indexer filed this release under a category that
-    // contradicts the subject. Checked before the ambiguity gate because it is
-    // the sharper reason — an explicit contradiction rather than absent
-    // evidence — and it is the only category protection torrent/magnet grabs and
-    // out-of-band plugin NZB fetches get, since D1 only sees NZBs Scryer itself
-    // downloads before submission.
+    // Sonarr's `MonitoredEpisodeSpecification`. A multi-episode release that
+    // reaches into an episode nobody is monitoring brings unwanted bytes with
+    // the wanted ones, and there is no way to take half a file.
+    //
+    // `EpisodeSet` only. `SingleEpisode` coverage is already monitored-filtered
+    // by target derivation and by the RSS lane. A `Collection` is exempt because
+    // a season pack's scope *is* its monitored members; refusing a whole season
+    // because one episode is unmonitored would reintroduce the partial-monitoring
+    // trap.
+    if !matches!(
+        context.subject.submission_scope,
+        SubmissionScope::Collection { .. }
+    ) && let Some(SubmissionScope::EpisodeSet { episode_ids }) = &candidate.coverage_scope
+        && episode_ids
+            .iter()
+            .any(|episode_id| context.unmonitored_episode_ids.contains(episode_id))
+    {
+        return ReleaseAutoDecisionCode::EpisodeNotMonitored;
+    }
+
+    // The indexer filed this release under a category that contradicts the
+    // subject. Checked before the ambiguity gate because it is the sharper
+    // reason — an explicit contradiction rather than absent evidence — and it
+    // is the only category protection torrent/magnet grabs and out-of-band
+    // plugin NZB fetches get. The pre-submission gate sees only NZBs Scryer
+    // itself downloads before submission.
     // Compare against the facet the subject was SEARCHED as, not the owning
     // title's facet: a series-movie subject is movie-faceted while its owner
     // is a series, and a correctly categorized Movies release must not read
@@ -1058,6 +1307,14 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
+    // Swarm health, checked after the sharper vetoes above so a release that is
+    // both mis-categorised and dead still reports the reason an operator can
+    // act on. This is admission only: nothing is recorded, so the same release
+    // becomes eligible again the moment the swarm recovers.
+    if !candidate_meets_minimum_seeders(candidate, context.minimum_seeders) {
+        return ReleaseAutoDecisionCode::MinimumSeeders;
+    }
+
     let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
     if external_id_agreement == Some(false) {
         return ReleaseAutoDecisionCode::TitleMismatch;
@@ -1071,8 +1328,8 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::AmbiguousIdentity;
     }
 
-    // Pillar A3: a bare release name is not identity evidence when the subject's
-    // canonical title collides with another library title.
+    // A bare release name is not identity evidence when the subject's canonical
+    // title collides with another library title.
     if context
         .subject
         .title_evidence
@@ -1096,18 +1353,45 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::QualityBlocked;
     }
 
-    if context.cutoff_reached {
-        return ReleaseAutoDecisionCode::CutoffReached;
-    }
-
     let candidate_score = candidate
         .quality_profile_decision
         .as_ref()
         .map(|decision| decision.preference_score)
         .unwrap_or(0);
-    if candidate_score < 0 {
-        return ReleaseAutoDecisionCode::NegativeScore;
+    // Built before the cutoff gate because that gate needs the candidate's tier
+    // and revision, not just the scope's state.
+    let candidate_facts = crate::admission::CandidateFacts::new(
+        crate::quality_profile::quality_tier_index(
+            &context.profile.criteria,
+            candidate
+                .parsed_release_metadata
+                .as_ref()
+                .and_then(|parsed| parsed.quality.as_deref()),
+        ),
+        candidate_revision(candidate),
+        candidate_score,
+    );
+
+    if let Some(code) = cutoff_refusal(
+        candidate_facts,
+        context.admission,
+        context.incumbent_at_cutoff,
+        context.is_rss_lane,
+        context.now,
+    ) {
+        return code;
     }
+
+    // No hardcoded zero floor. Zero stopped meaning anything once quality tier
+    // left the score: every listed tier used to contribute 3200/900/300, so a
+    // release had to be genuinely bad to fall below zero, and now a perfectly
+    // ordinary one can. The score is a relative, within-tier quantity — the only
+    // absolute floor is the profile's own `min_score_to_grab`, applied by
+    // `apply_min_score_gate` and carried here as a block, which is Sonarr's
+    // opt-in `MinFormatScore` rather than a built-in rule.
+    //
+    // `NegativeScore` stays in the decision-code enum so historical rows still
+    // decode.
 
     if let Some(dl_snapshot) = context.dl_snapshot
         && dl_snapshot.is_active(&candidate.title)
@@ -1115,11 +1399,7 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::AlreadyActive;
     }
 
-    if candidate_matches_existing_media_file(
-        candidate,
-        context.existing_files,
-        context.subject.submission_scope.episode_id(),
-    ) {
+    if candidate_matches_existing_media_file(candidate, context.existing_files, context.admission) {
         return ReleaseAutoDecisionCode::AlreadyActive;
     }
 
@@ -1130,28 +1410,76 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::DownloadClientUnavailable;
     }
 
-    let decision = evaluate_upgrade(
-        candidate_score,
-        context.current_score,
-        context.profile.criteria.allow_upgrades,
-        context.last_search_at,
-        context.now,
-        context.thresholds,
-        context.profile.criteria.min_score_to_grab,
-    );
-    if !decision.is_accept() {
+    // The same gate the import path runs, over the same incumbents. That shared
+    // predicate is what stops Scryer queueing a download it would then refuse.
+    // Grab additionally applies the persona's churn thresholds, so it is the
+    // stricter of the two — safe, because anything it declines is never fetched.
+    let policy = crate::admission::AdmissionPolicy {
+        allow_upgrades: context.profile.criteria.allow_upgrades,
+        min_delta: context.thresholds.same_tier_min_delta,
+        // Sonarr reads `UpgradeAllowed ? CutoffFormatScore : MinFormatScore`
+        // here; the `else` arm is unreachable in this ladder, because a
+        // no-upgrade profile returns `UpgradesDisabled` before either gate
+        // consults the cutoff. So this is just the cutoff.
+        cutoff_score: context.profile.criteria.cutoff_score,
+        manual_override: false,
+        // The grab lanes, and only the grab lanes, treat in-flight submissions
+        // as pseudo-incumbents.
+        applies_to_queue: true,
+    };
+    let verdict = crate::admission::evaluate_admission(context.admission, candidate_facts, &policy);
+    if let Some(rejection) = verdict.rejection() {
+        // The decision row records the *bar* the gate compared against; this
+        // records which file set it. Two files can share a score, and an
+        // operator asking "why did this not grab" needs the row, not the number.
+        tracing::debug!(
+            release = candidate.title.as_str(),
+            reason = ?rejection.reason,
+            incumbent_file_id = rejection.incumbent_file_id.as_str(),
+            incumbent_file_path = rejection.incumbent_file_path.as_str(),
+            "admission refused a grab candidate"
+        );
+        // One refusal reads as its own thing rather than as a generic upgrade
+        // rejection: an operator can act on "something better is already
+        // downloading", and cannot act on "upgrade policy said no".
+        return match rejection.reason {
+            crate::admission::AdmissionRejectionReason::QueuedEqualOrBetter { .. } => {
+                ReleaseAutoDecisionCode::QueuedBetterOrEqual
+            }
+            _ => ReleaseAutoDecisionCode::UpgradeRejected,
+        };
+    }
+
+    // Churn guard: a freshly-imported scope is left alone briefly even when a
+    // better release shows up. This gates *starting* work, so it is a grab-only
+    // concern and deliberately absent from the shared verdict.
+    if let Some(incumbent) = context.admission.best_incumbent()
+        && crate::acquisition_policy::upgrade_cooldown_is_active(
+            crate::acquisition_policy::CooldownCandidate {
+                tier_index: candidate_facts.tier_index,
+                score: candidate_score,
+            },
+            incumbent,
+            context.last_search_at,
+            context.now,
+            context.thresholds,
+        )
+    {
         return ReleaseAutoDecisionCode::UpgradeRejected;
     }
 
-    if crate::acquisition_policy::should_skip_repack_group_mismatch(
+    // After admission on purpose: a same-tier higher-revision candidate now
+    // admits above, so this rule runs on exactly the population Sonarr's
+    // `RepackSpecification` checks — the repacks that would otherwise be fetched.
+    if crate::acquisition_policy::repack_group_mismatch(
         candidate,
-        context.existing_files,
-        context.subject.submission_scope.episode_id(),
+        candidate_facts,
+        context.admission,
     ) {
         return ReleaseAutoDecisionCode::RepackGroupMismatch;
     }
 
-    if let Some(delay_decision) = crate::delay_profile::resolve_delay_decision(
+    if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
         context.delay_profiles,
         &context.title.tags,
         &context.title.facet,
@@ -1161,6 +1489,7 @@ pub(crate) fn evaluate_auto_candidate(
             .as_deref()
             .and_then(crate::quality_profile::parse_published_at),
         candidate_score,
+        None,
         context.now,
     ) && delay_decision.should_hold()
     {
@@ -1189,12 +1518,12 @@ fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Optio
 }
 
 impl AppUseCase {
-    /// Library-local identity ambiguity for a search subject (Pillar A tier 0).
+    /// Library-local identity ambiguity for a search subject.
     /// Reads the cached monitored-title matcher, whose normalized-title index is
     /// already built from `canonical_title_lookup_keys`, so a convergence cycle
     /// pays for one index build instead of a query per subject. Falls back to
-    /// "not ambiguous" when the index cannot be loaded — Pillar B still catches
-    /// the bad import.
+    /// "not ambiguous" when the index cannot be loaded; the import gate still
+    /// catches the mismatch.
     pub(crate) async fn title_identity_ambiguity(&self, title: &Title) -> TitleIdentityAmbiguity {
         match self.monitored_title_matcher().await {
             Ok(matcher) => TitleIdentityAmbiguity::from_shared_keys(
@@ -1314,16 +1643,15 @@ impl AppUseCase {
             .collect::<Vec<_>>();
         let delay_profiles = self.load_delay_profiles().await;
         let now = Utc::now();
+        let cutoff_scope = self.cutoff_scope_for(&subject.submission_scope).await;
         let analyzed_cutoff_quality =
             crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
                 &existing_files,
-                subject.submission_scope.episode_id(),
-                subject.submission_scope.series_movie_link_id(),
+                &cutoff_scope,
             );
         let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
-                subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
                 analyzed_cutoff_quality,
             )
@@ -1340,20 +1668,123 @@ impl AppUseCase {
             }
         };
 
+        // One catalog read per scope, shared by the unmonitored-episode refusal
+        // and by the queued pseudo-incumbents' runtime-basis calculation.
+        let (catalog_episodes, catalog_collections) = if title.facet == MediaFacet::Movie {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                self.services
+                    .catalog
+                    .shows
+                    .list_episodes_for_title(&title.id)
+                    .await
+                    .unwrap_or_default(),
+                self.services
+                    .catalog
+                    .shows
+                    .list_collections_for_title(&title.id)
+                    .await
+                    .unwrap_or_default(),
+            )
+        };
+        let unmonitored_episode_ids: HashSet<String> = catalog_episodes
+            .iter()
+            .filter(|episode| !episode.monitored)
+            .map(|episode| episode.id.clone())
+            .collect();
+
+        let minimum_seeders = self.minimum_seeders_for_candidates(&results).await;
+        // What is actually in the way, scored the way the import gate will score
+        // it — not the ledger's recollection of a past grab.
+        let scoring_context = self
+            .resolve_canonical_scoring_context(title, &upgrade_context.profile)
+            .await;
+        let mut admission = self
+            .admission_subject_for_scope(
+                title,
+                &subject.submission_scope,
+                &scoring_context,
+                None,
+                crate::quality::canonical_context::SubjectIntent::Grab,
+            )
+            .await;
+        // **What is already downloading counts too.** Sonarr's
+        // `QueueSpecification` compares a queued release the same way it
+        // compares a file on disk, and the convergence lane's old answer — a
+        // scope-level "something is in flight, skip" — could not tell an
+        // identical re-grab from a genuine upgrade over a slow download.
+        //
+        // An unobservable queue is the one case that still hard-skips, in the
+        // lane; here it means the pseudo-incumbents would be built from a
+        // snapshot that reports everything as active, so they are skipped.
+        if !dl_snapshot.queue_listing_failed() {
+            let submissions = self
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            if !submissions.is_empty() {
+                let identities = submissions
+                    .iter()
+                    .map(crate::contracts::DownloadSourceIdentity::from_submission)
+                    .collect::<Vec<_>>();
+                let tracked_states = self
+                    .services
+                    .workflow
+                    .download_submissions
+                    .list_identity_tracked_states_for_client_items(&identities)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(identity, state)| {
+                        scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                            .map(|state| (identity, state))
+                    })
+                    .collect();
+                let membership = self
+                    .scope_membership_for(title, &subject.submission_scope)
+                    .await;
+                let queued = self
+                    .queued_releases_for_scope(
+                        title,
+                        &membership.view(),
+                        &scoring_context,
+                        &submissions,
+                        &tracked_states,
+                        &dl_snapshot,
+                        &catalog_episodes,
+                        &catalog_collections,
+                    )
+                    .await;
+                admission = admission.with_queued(queued);
+            }
+        }
         let evaluation_context = AutoCandidateEvaluationContext {
             title,
             subject,
-            current_score: subject.current_score,
+            admission: &admission,
             last_search_at: subject.last_search_at.as_deref(),
             profile: &upgrade_context.profile,
             thresholds: &upgrade_context.thresholds,
-            cutoff_reached: upgrade_context.cutoff_reached,
+            incumbent_at_cutoff: incumbent_at_cutoff(
+                upgrade_context.cutoff_reached,
+                &admission,
+                upgrade_context.profile.criteria.cutoff_score,
+            ),
+            // Convergence and interactive both land here, and neither is a feed
+            // pass: the old-file guard is Sonarr's RSS-only rule.
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: Some(&dl_snapshot),
             db_blocklist: &db_blocklist,
             existing_files: &existing_files,
             delay_profiles: &delay_profiles,
             failed_routes: None,
+            minimum_seeders: &minimum_seeders,
+            unmonitored_episode_ids: &unmonitored_episode_ids,
         };
 
         for candidate in &mut results {
@@ -1417,9 +1848,7 @@ impl AppUseCase {
             episode: None,
             absolute_episode: None,
             subject_kind: ReleaseSearchSubjectKind::Title,
-            current_score: wanted.as_ref().and_then(|item| item.current_score),
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-            grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
             submission_scope: SubmissionScope::Title,
         })
     }
@@ -1538,9 +1967,7 @@ impl AppUseCase {
             episode: Some(episode_num),
             absolute_episode,
             subject_kind: ReleaseSearchSubjectKind::Episode,
-            current_score: wanted.as_ref().and_then(|item| item.current_score),
             last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-            grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
             submission_scope: episode_record
                 .as_ref()
                 .map(|episode| SubmissionScope::Episode {
@@ -1607,9 +2034,7 @@ impl AppUseCase {
             episode: None,
             absolute_episode: None,
             subject_kind: ReleaseSearchSubjectKind::Season,
-            current_score: item.current_score,
             last_search_at: item.last_search_at.clone(),
-            grabbed_release: grabbed_release_for_search_subject(item),
             submission_scope: collection_download_submission_scope_for_wanted_item(item, episode),
         })
     }
@@ -1684,9 +2109,7 @@ impl AppUseCase {
                 episode: None,
                 absolute_episode: None,
                 subject_kind: ReleaseSearchSubjectKind::Title,
-                current_score: wanted.as_ref().and_then(|item| item.current_score),
                 last_search_at: wanted.as_ref().and_then(|item| item.last_search_at.clone()),
-                grabbed_release: wanted.as_ref().and_then(grabbed_release_for_search_subject),
                 submission_scope: SubmissionScope::SeriesMovie {
                     series_movie_link_id: link.id.clone(),
                 },
@@ -1742,9 +2165,7 @@ impl AppUseCase {
                 "episode" => ReleaseSearchSubjectKind::Episode,
                 _ => ReleaseSearchSubjectKind::Title,
             },
-            current_score: item.current_score,
             last_search_at: item.last_search_at.clone(),
-            grabbed_release: grabbed_release_for_search_subject(item),
             submission_scope: direct_download_submission_scope_for_wanted_item(item, episode),
         }
     }
@@ -1827,6 +2248,7 @@ mod tests {
             provenance,
             candidate_token: None,
             queue_scope: None,
+            coverage_scope: None,
             auto_eligible: None,
             auto_decision_code: None,
             auto_decision_summary: None,
@@ -1842,6 +2264,7 @@ mod tests {
             role: crate::MediaFileRole::Primary,
             file_path: format!("/data/series/{release_title}.mkv"),
             size_bytes: 1,
+            announced_size_bytes: None,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: Some("720p".to_string()),
@@ -1853,6 +2276,8 @@ mod tests {
             video_bitrate_kbps: None,
             video_bit_depth: None,
             video_hdr_format: None,
+            dovi_profile: None,
+            dovi_bl_compat_id: None,
             video_frame_rate: None,
             video_profile: None,
             audio_codec: None,
@@ -1888,35 +2313,62 @@ mod tests {
         }
     }
 
-    fn make_wanted_item(
-        status: AcquisitionScopeStatus,
-        current_score: Option<i32>,
-        grabbed_release: Option<&str>,
-    ) -> AcquisitionScopeState {
-        AcquisitionScopeState {
-            id: "wanted-1".to_string(),
-            title_id: "title-1".to_string(),
-            title_name: None,
-            title_slug: None,
-            title_facet: None,
-            library_id: None,
-            library_name: None,
-            library_slug: None,
-            episode_id: None,
-            collection_id: None,
-            series_movie_link_id: None,
-            season_number: None,
-            episode_number: None,
-            media_type: "movie".to_string(),
+    /// A search subject over an explicit episode span.
+    fn episode_set_subject(title: &Title, episode_ids: &[&str]) -> ResolvedReleaseSearchSubject {
+        ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(title),
+            queries: vec![title.name.clone()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            mal_id: None,
+            category: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
+            runtime_minutes: title.runtime_minutes,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Title,
             last_search_at: None,
-            status,
-            grabbed_release: grabbed_release.map(str::to_string),
-            current_score,
-            latest_release_decision: None,
-            mismatch_recovery_eligible: false,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Utc::now().to_rfc3339(),
+            submission_scope: SubmissionScope::EpisodeSet {
+                episode_ids: episode_ids.iter().map(|id| (*id).to_string()).collect(),
+            },
         }
+    }
+
+    /// A scope with nothing in it: the gate then has no bar to enforce, which is
+    /// the starting point for most of these cases.
+    fn empty_admission() -> crate::admission::AdmissionSubject {
+        crate::admission::AdmissionSubject::new(crate::admission::AdmissionScope::Title, [])
+    }
+
+    /// A scope already holding one primary file at `score`.
+    fn admission_holding(score: i32) -> crate::admission::AdmissionSubject {
+        crate::admission::AdmissionSubject::new(
+            crate::admission::AdmissionScope::Title,
+            [(
+                crate::admission::Incumbent {
+                    // Tier-neutral on purpose: these cases are about the score
+                    // comparison, so the incumbent sits in the same (unlisted)
+                    // tier as the candidate and the tier gate is a no-op.
+                    tier_index: None,
+                    revision: 0,
+                    file_id: "file-1".to_string(),
+                    file_path: "/data/Movies/Nightfall (2022)/Nightfall.mkv".to_string(),
+                    release_group: None,
+                    score,
+                    covers: Vec::new(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+                true,
+            )],
+        )
     }
 
     fn allowed_quality_decision(score: i32) -> QualityProfileDecision {
@@ -1926,6 +2378,7 @@ mod tests {
             allowed: true,
             block_codes: Vec::new(),
             preference_score: score,
+            tier_index: None,
         }
     }
 
@@ -2016,35 +2469,149 @@ mod tests {
             episode: None,
             absolute_episode: None,
             subject_kind: ReleaseSearchSubjectKind::Title,
-            current_score: None,
             last_search_at: None,
-            grabbed_release: None,
             submission_scope: SubmissionScope::Title,
         };
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
 
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
             ReleaseAutoDecisionCode::TitleMismatch
         );
+    }
+
+    /// A torrent candidate from `indexer` reporting `seeders`.
+    fn torrent_candidate(
+        release_title: &str,
+        indexer: &str,
+        seeders: Option<i64>,
+    ) -> IndexerSearchResult {
+        let mut candidate = make_candidate(release_title, None);
+        candidate.indexer_id = Some(indexer.to_string());
+        candidate.source_kind = Some(DownloadSourceKind::MagnetUri);
+        if let Some(seeders) = seeders {
+            candidate
+                .extra
+                .insert("seeders".to_string(), serde_json::json!(seeders));
+        }
+        candidate
+    }
+
+    #[test]
+    fn a_dead_torrent_reports_minimum_seeders_without_being_recorded() {
+        let mut title = make_title();
+        title.name = "Amber Circuit".to_string();
+        title.facet = MediaFacet::Movie;
+        title.year = Some(2001);
+        let subject = ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(&title),
+            queries: vec![title.name.clone()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            mal_id: None,
+            category: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
+            runtime_minutes: title.runtime_minutes,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Title,
+            last_search_at: None,
+            submission_scope: SubmissionScope::Title,
+        };
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let mut minimum_seeders = HashMap::new();
+        minimum_seeders.insert("idx-private".to_string(), 1);
+        let no_unmonitored_episodes = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            admission: &empty_admission(),
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_routes: None,
+            minimum_seeders: &minimum_seeders,
+            unmonitored_episode_ids: &no_unmonitored_episodes,
+        };
+
+        let dead = torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", Some(0));
+        assert_eq!(
+            evaluate_auto_candidate(&dead, &context),
+            ReleaseAutoDecisionCode::MinimumSeeders
+        );
+        assert!(
+            !ReleaseAutoDecisionCode::MinimumSeeders.is_eligible(),
+            "auto search must skip it and move to the next candidate"
+        );
+
+        // Everything below asserts the gate does not fire rather than asserting
+        // eligibility: this fixture carries no quality decision, so evaluation
+        // continues past this gate and stops at the quality one. What matters
+        // here is that the swarm check let the candidate through.
+        for (label, candidate) in [
+            // Recovered swarm — nothing about the earlier rejection was
+            // recorded, so the same release is judged afresh.
+            (
+                "recovered",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", Some(1)),
+            ),
+            // An indexer with no resolved threshold.
+            (
+                "unthresholded indexer",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-public", Some(0)),
+            ),
+            // An indexer that reports no seeder count at all.
+            (
+                "unknown count",
+                torrent_candidate("Amber.Circuit.2001.1080p.WEB-DL", "idx-private", None),
+            ),
+        ] {
+            assert_ne!(
+                evaluate_auto_candidate(&candidate, &context),
+                ReleaseAutoDecisionCode::MinimumSeeders,
+                "{label} must not be rejected for seeders"
+            );
+        }
     }
 
     fn numbering_scoped_subject(
@@ -2072,9 +2639,7 @@ mod tests {
             episode,
             absolute_episode: None,
             subject_kind: ReleaseSearchSubjectKind::Episode,
-            current_score: None,
             last_search_at: None,
-            grabbed_release: None,
             submission_scope: SubmissionScope::Title,
         }
     }
@@ -2094,20 +2659,24 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
 
         assert_eq!(
@@ -2128,20 +2697,24 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
 
         assert_eq!(
@@ -2165,20 +2738,24 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
 
         assert_eq!(
@@ -2209,7 +2786,7 @@ mod tests {
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
     }
 
-    // ── Pillar A: identity ambiguity + required disambiguators ───────────────
+    // ── Identity ambiguity and required disambiguators ──────────────────────
 
     /// The incident pair: a live-action `Tide Chart` (2023, series) and the
     /// anime `Tide Chart` (1999) in the same library, both claiming the bare
@@ -2267,20 +2844,24 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title,
             subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
         evaluate_auto_candidate(candidate, &context)
     }
@@ -2312,8 +2893,8 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_year_disambiguator() {
-        // A2(1): the release carries the live-action title's year, so it names
-        // one of the two colliding titles and clears the identity gate.
+        // The release carries the live-action title's year, so it names one of
+        // the two colliding titles and clears the identity gate.
         let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate("Tide.Chart.2023.S02E01.1080p.WEB-DL.x264-GRP", None);
@@ -2326,7 +2907,7 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_unique_alias_disambiguator() {
-        // A2(3): the matched key is an alias only the live-action title claims.
+        // The matched key is an alias only the live-action title claims.
         let (live_action, library) = tide_chart_library(vec!["Tide Chart Live Action".to_string()]);
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate("Tide.Chart.Live.Action.S02E01.1080p.WEB-DL.x264-GRP", None);
@@ -2484,20 +3065,24 @@ mod tests {
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::from(["tide.chart.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &live_action,
             subject: &subject,
-            current_score: None,
+            admission: &empty_admission(),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
@@ -2527,7 +3112,7 @@ mod tests {
         );
     }
 
-    // ── A2(2) + D2: indexer response attributes ─────────────────────────────
+    // ── Indexer response attributes ─────────────────────────────────────────
 
     fn series_episode_candidate(
         release_title: &str,
@@ -2547,8 +3132,8 @@ mod tests {
 
     #[test]
     fn anime_only_response_category_vetoes_a_series_subject() {
-        // D2 on the response lane: the indexer filed this under anime only, and
-        // the wanted item is a plain series episode.
+        // The indexer filed this under anime only, and the wanted item is a
+        // plain series episode.
         let mut title = make_title();
         title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
@@ -2587,8 +3172,8 @@ mod tests {
 
     #[test]
     fn ambiguous_title_accepts_response_id_disambiguator() {
-        // A2(2): the indexer asserts the live-action title's own TVDB id, which
-        // per §9 decision 3 suffices on its own for a bare release name.
+        // The indexer asserts the live-action title's own TVDB id, which
+        // suffices on its own for a bare release name.
         let (live_action, library) = tide_chart_library(Vec::new());
         let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         subject.tvdb_id = Some("393199".to_string());
@@ -2725,21 +3310,41 @@ mod tests {
             "Nightfall.S01E01.1080p.WEB-DL",
             Some("episode-1"),
         )];
+        let occupied = crate::admission::AdmissionSubject::new(
+            crate::admission::AdmissionScope::Episodes(vec!["episode-1".to_string()]),
+            [(
+                crate::admission::Incumbent {
+                    tier_index: Some(1),
+                    revision: 0,
+                    file_id: existing[0].id.clone(),
+                    file_path: existing[0].file_path.clone(),
+                    release_group: None,
+                    score: 900,
+                    covers: vec!["episode-1".to_string()],
+                    created_at: existing[0].created_at.clone(),
+                },
+                true,
+            )],
+        );
+        let elsewhere = crate::admission::AdmissionSubject::new(
+            crate::admission::AdmissionScope::Episodes(vec!["episode-2".to_string()]),
+            [],
+        );
 
         assert!(candidate_matches_existing_media_file(
-            &candidate,
-            &existing,
-            Some("episode-1")
+            &candidate, &existing, &occupied
         ));
         assert!(!candidate_matches_existing_media_file(
-            &candidate,
-            &existing,
-            Some("episode-2")
+            &candidate, &existing, &elsewhere
         ));
     }
 
     #[test]
     fn analyzed_cutoff_quality_matches_the_current_scope() {
+        use crate::acquisition::decision_helpers::{
+            CutoffScope, analyzed_cutoff_quality_for_scope,
+        };
+
         let mut title_file = make_media_file("Nightfall.2022.1080p.WEB-DL", None);
         title_file.quality_label = Some("1080p".to_string());
         title_file.acquisition_score = Some(900);
@@ -2747,40 +3352,94 @@ mod tests {
         let existing = vec![title_file, episode_file];
 
         assert_eq!(
-            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
+            analyzed_cutoff_quality_for_scope(
                 &existing,
-                Some("episode-1"),
-                None,
+                &CutoffScope::Episode("episode-1".to_string()),
             ),
             Some("720p")
         );
         assert_eq!(
-            crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
-                &existing, None, None,
-            ),
+            analyzed_cutoff_quality_for_scope(&existing, &CutoffScope::Title),
             Some("1080p")
         );
     }
 
+    /// **M3.** A pack scope has no episode id and no link id, so it used to fall
+    /// into the title-scoped branch and match nothing for a series: a season
+    /// entirely at cutoff read as "not reached" and could be re-fetched whole.
+    ///
+    /// The answer for a multi-member scope is the **weakest** member, and `None`
+    /// while any member is empty — a season is at cutoff only when all of it is.
     #[test]
-    fn completed_current_score_suppresses_stale_grabbed_release_cutoff() {
-        let completed = make_wanted_item(
-            AcquisitionScopeStatus::Completed,
-            Some(1200),
-            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
-        );
-        assert_eq!(grabbed_release_for_search_subject(&completed), None);
+    fn a_pack_scope_reports_the_weakest_member_quality() {
+        use crate::acquisition::decision_helpers::{
+            CutoffScope, analyzed_cutoff_quality_for_scope,
+        };
 
-        let grabbed = make_wanted_item(
-            AcquisitionScopeStatus::Grabbed,
-            Some(1200),
-            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#),
+        let mut first = make_media_file("Nightfall.S01E01.1080p.WEB-DL", Some("episode-1"));
+        first.quality_label = Some("1080p".to_string());
+        // A high stored score on the weakest file used to win the election.
+        let mut second = make_media_file("Nightfall.S01E02.720p.WEB-DL", Some("episode-2"));
+        second.quality_label = Some("720p".to_string());
+        second.acquisition_score = Some(9_000);
+        let existing = vec![first, second];
+
+        let members =
+            |ids: &[&str]| CutoffScope::Episodes(ids.iter().map(|id| (*id).to_string()).collect());
+
+        assert_eq!(
+            analyzed_cutoff_quality_for_scope(&existing, &members(&["episode-1", "episode-2"])),
+            Some("720p"),
+            "the season is only as good as its worst episode"
         );
         assert_eq!(
-            grabbed_release_for_search_subject(&grabbed),
-            Some(r#"{"title":"Nightfall.2022.1080p.WEB-DL"}"#.to_string())
+            analyzed_cutoff_quality_for_scope(&existing, &members(&["episode-1"])),
+            Some("1080p")
         );
+        assert_eq!(
+            analyzed_cutoff_quality_for_scope(
+                &existing,
+                &members(&["episode-1", "episode-2", "episode-3"])
+            ),
+            None,
+            "a missing member means the season has not reached any cutoff"
+        );
+        assert_eq!(
+            analyzed_cutoff_quality_for_scope(&existing, &members(&[])),
+            None
+        );
+    }
 
+    /// The cutoff-defining file is elected by **quality**, not by the stored
+    /// `acquisition_score` — which is display history on an old scale and, before
+    /// vetoes became verdicts, could be −10 000.
+    #[test]
+    fn the_cutoff_file_is_elected_by_quality_not_by_a_stored_score() {
+        use crate::acquisition::decision_helpers::{
+            CutoffScope, analyzed_cutoff_quality_for_scope,
+        };
+
+        let mut good = make_media_file("Nightfall.S01E01.2160p.WEB-DL", Some("episode-1"));
+        good.quality_label = Some("2160p".to_string());
+        good.acquisition_score = Some(-10_000);
+        let mut poor = make_media_file("Nightfall.S01E01.720p.WEB-DL", Some("episode-1"));
+        poor.quality_label = Some("720p".to_string());
+        poor.acquisition_score = Some(9_000);
+        let existing = vec![good, poor];
+
+        assert_eq!(
+            analyzed_cutoff_quality_for_scope(
+                &existing,
+                &CutoffScope::Episode("episode-1".to_string()),
+            ),
+            Some("2160p")
+        );
+    }
+
+    /// A scope that is already occupied refuses a candidate it cannot beat — on
+    /// the library's own evidence, not on a number remembered by the ledger row.
+    #[test]
+    fn an_occupied_scope_refuses_a_candidate_it_cannot_beat() {
         let title = make_title();
         let mut candidate = make_candidate("Nightfall.2022.1080p.WEB-DL", None);
         candidate.quality_profile_decision = Some(allowed_quality_decision(2400));
@@ -2804,34 +3463,633 @@ mod tests {
             episode: None,
             absolute_episode: None,
             subject_kind: ReleaseSearchSubjectKind::Title,
-            current_score: completed.current_score,
             last_search_at: None,
-            grabbed_release: grabbed_release_for_search_subject(&completed),
             submission_scope: SubmissionScope::Title,
         };
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
         let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
             subject: &subject,
-            current_score: subject.current_score,
+            // The premise is "something is already there", which is now a fact
+            // about the library rather than a number on the ledger row.
+            admission: &admission_holding(1_200),
             last_search_at: None,
             profile: &profile,
             thresholds: &thresholds,
-            cutoff_reached: false,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
             failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &HashSet::new(),
         };
 
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
             ReleaseAutoDecisionCode::Eligible
         );
+    }
+
+    // ── The one cutoff gate, and the PROPER escape ──────────────────────────
+
+    mod cutoff {
+        use super::*;
+        use crate::admission::{AdmissionScope, AdmissionSubject, CandidateFacts, Incumbent};
+
+        fn now() -> DateTime<Utc> {
+            DateTime::parse_from_rfc3339("2026-08-21T12:00:00Z")
+                .expect("fixture timestamp")
+                .with_timezone(&Utc)
+        }
+
+        /// A title scope holding one primary file at `score`, tier-neutral so the
+        /// score is what decides.
+        fn holding_at(score: i32) -> AdmissionSubject {
+            AdmissionSubject::new(
+                AdmissionScope::Title,
+                [(
+                    Incumbent {
+                        tier_index: None,
+                        revision: 0,
+                        file_id: "file-1".to_string(),
+                        file_path: "/data/Movies/Nightfall (2022)/Nightfall.mkv".to_string(),
+                        release_group: None,
+                        score,
+                        covers: Vec::new(),
+                        created_at: "2026-08-20T00:00:00Z".to_string(),
+                    },
+                    true,
+                )],
+            )
+        }
+
+        /// A plain title search subject for this fixture's title.
+        fn title_subject(title: &Title) -> ResolvedReleaseSearchSubject {
+            ResolvedReleaseSearchSubject {
+                title_id: title.id.clone(),
+                title_tags: title.tags.clone(),
+                title_evidence: canonical_title_evidence(title),
+                queries: vec![title.name.clone()],
+                imdb_id: None,
+                tmdb_id: None,
+                tvdb_id: None,
+                anidb_id: None,
+                mal_id: None,
+                category: title.facet.as_str().to_string(),
+                owner_facet: title.facet.clone(),
+                search_facet: title.facet.clone(),
+                id_search_facet: None,
+                newznab_categories: Vec::new(),
+                runtime_minutes: title.runtime_minutes,
+                season: None,
+                episode: None,
+                absolute_episode: None,
+                subject_kind: ReleaseSearchSubjectKind::Title,
+                last_search_at: None,
+                submission_scope: SubmissionScope::Title,
+            }
+        }
+
+        /// One primary file at tier 1, revision 0, imported `days_ago` days back.
+        fn holding(revision: i32, days_ago: i64) -> AdmissionSubject {
+            AdmissionSubject::new(
+                AdmissionScope::Title,
+                [(
+                    Incumbent {
+                        tier_index: Some(1),
+                        revision,
+                        file_id: "file-1".to_string(),
+                        file_path: "/data/Movies/Nightfall (2022)/Nightfall.mkv".to_string(),
+                        release_group: None,
+                        score: 900,
+                        covers: Vec::new(),
+                        created_at: (now() - chrono::Duration::days(days_ago)).to_rfc3339(),
+                    },
+                    true,
+                )],
+            )
+        }
+
+        /// The cutoff has two halves and a scope is finished only when **both**
+        /// have arrived, which is Sonarr's
+        /// `CutoffNotMet = QualityCutoffNotMet || CustomFormatCutoffNotMet`.
+        ///
+        /// Gating on the quality alone would defeat the format-score cutoff:
+        /// `derive_format_cutoff_targets` nominates exactly the scopes whose
+        /// quality is fine and whose bar is below `cutoff_score`, and every lane
+        /// would then refuse their candidates `CutoffReached`.
+        #[test]
+        fn the_cutoff_needs_both_the_quality_and_the_score() {
+            // Quality at cutoff, bar 300, cutoff_score 500: not finished.
+            let below = holding_at(300);
+            assert!(!incumbent_at_cutoff(true, &below, Some(500)));
+            // Bar 600: finished.
+            let at = holding_at(600);
+            assert!(incumbent_at_cutoff(true, &at, Some(500)));
+            // No `cutoff_score` configured: the quality half decides alone.
+            assert!(incumbent_at_cutoff(true, &below, None));
+            assert!(!incumbent_at_cutoff(false, &at, Some(500)));
+            // An unoccupied scope has no bar to fall short of; the quality half
+            // is what keeps it out.
+            let empty = AdmissionSubject::new(AdmissionScope::Title, []);
+            assert!(incumbent_at_cutoff(true, &empty, Some(500)));
+            assert!(!incumbent_at_cutoff(false, &empty, Some(500)));
+        }
+
+        /// …and through the real gate: a same-tier candidate scoring 600 over a
+        /// bar of 300 is eligible while `cutoff_score` is 500, and refused once
+        /// the bar reaches it.
+        #[test]
+        fn a_format_cutoff_target_is_still_grabbable() {
+            let title = make_title();
+            let subject = title_subject(&title);
+            let mut candidate = make_candidate("Nightfall.2022.1080p.WEB-DL", None);
+            candidate.quality_profile_decision = Some(allowed_quality_decision(600));
+
+            let profile = QualityProfile::default();
+            let thresholds = AcquisitionThresholds::default();
+            let now = Utc::now();
+            let db_blocklist = HashSet::new();
+            let no_minimum_seeders = HashMap::new();
+            let no_unmonitored = HashSet::new();
+
+            let evaluate = |admission: &AdmissionSubject| {
+                let context = AutoCandidateEvaluationContext {
+                    title: &title,
+                    subject: &subject,
+                    admission,
+                    last_search_at: None,
+                    profile: &profile,
+                    thresholds: &thresholds,
+                    incumbent_at_cutoff: incumbent_at_cutoff(true, admission, Some(500)),
+                    is_rss_lane: true,
+                    now: &now,
+                    dl_snapshot: None,
+                    db_blocklist: &db_blocklist,
+                    existing_files: &[],
+                    delay_profiles: &[],
+                    failed_routes: None,
+                    minimum_seeders: &no_minimum_seeders,
+                    unmonitored_episode_ids: &no_unmonitored,
+                };
+                evaluate_auto_candidate(&candidate, &context)
+            };
+
+            let below = holding_at(300);
+            assert_eq!(evaluate(&below), ReleaseAutoDecisionCode::Eligible);
+            let at = holding_at(600);
+            assert_eq!(
+                evaluate(&at),
+                ReleaseAutoDecisionCode::CutoffReached,
+                "once the bar reaches the score cutoff the scope really is finished"
+            );
+        }
+
+        /// A scope below cutoff never consults the candidate at all: the gate is
+        /// the *scope's* state first.
+        #[test]
+        fn a_scope_below_cutoff_is_not_gated() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 0, 100),
+                    &holding(0, 1),
+                    false,
+                    true,
+                    &now(),
+                ),
+                None
+            );
+        }
+
+        /// Sonarr's `QualityCutoffNotMet`: at cutoff, a plain release of the
+        /// same quality has nothing to offer.
+        #[test]
+        fn a_non_revision_candidate_at_cutoff_is_refused() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 0, 9_000),
+                    &holding(0, 1),
+                    true,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::CutoffReached)
+            );
+        }
+
+        /// …and the point of the whole change: a PROPER of the file at cutoff
+        /// gets through. This is what the three lane-level
+        /// `if cutoff_reached { return }` short-circuits made impossible.
+        #[test]
+        fn a_proper_escapes_the_cutoff_on_the_feed_lane() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 1),
+                    true,
+                    true,
+                    &now(),
+                ),
+                None
+            );
+        }
+
+        /// A better *tier* is not a revision upgrade, so it stays refused at
+        /// cutoff — Scryer's cutoff means "good enough", and Sonarr's
+        /// `IsRevisionUpgrade` is same-quality by construction.
+        #[test]
+        fn a_better_tier_candidate_is_still_refused_at_cutoff() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(0), 1, 9_000),
+                    &holding(0, 1),
+                    true,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::CutoffReached)
+            );
+        }
+
+        /// Sonarr's `ProperSpecification`: a PROPER for a file imported more
+        /// than a week ago is declined on age, with its own reason code so an
+        /// operator can tell it from a plain cutoff.
+        #[test]
+        fn a_proper_for_a_week_old_file_is_refused_on_the_feed_lane() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 30),
+                    true,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::ProperForOldFile)
+            );
+        }
+
+        /// …and it is feed-only. `ProperSpecification.cs` accepts unconditionally
+        /// when a search produced the candidate, so an operator's search (or the
+        /// convergence lane, which annotates through the same path) is not
+        /// subject to the age guard.
+        #[test]
+        fn the_old_file_guard_does_not_bind_an_active_search() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 30),
+                    true,
+                    false,
+                    &now(),
+                ),
+                None
+            );
+        }
+
+        /// An unoccupied scope cannot be at cutoff, but if a lane ever says it
+        /// is, "no incumbent" must not read as "revision upgrade".
+        #[test]
+        fn an_unoccupied_scope_has_nothing_to_be_a_revision_of() {
+            let empty = AdmissionSubject::new(AdmissionScope::Title, []);
+            assert!(!candidate_is_revision_upgrade(
+                CandidateFacts::new(Some(1), 2, 100),
+                &empty
+            ));
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 2, 100),
+                    &empty,
+                    true,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::CutoffReached)
+            );
+        }
+
+        /// The window boundary, read the way Sonarr reads it: **midnight** minus
+        /// seven days, against the file's import time — not a rolling 168 hours.
+        #[test]
+        fn the_proper_window_closes_at_utc_midnight_minus_seven_days() {
+            use crate::acquisition_policy::file_predates_proper_window;
+            let now = now();
+            // Midnight − 7 days is 2026-08-14T00:00:00Z.
+            assert!(file_predates_proper_window(
+                Some("2026-08-13T23:59:59Z"),
+                &now
+            ));
+            assert!(!file_predates_proper_window(
+                Some("2026-08-14T00:00:00Z"),
+                &now
+            ));
+            // 7 days and 2 hours ago is *inside* the window, because the
+            // boundary is a calendar day rather than an elapsed duration.
+            assert!(!file_predates_proper_window(
+                Some("2026-08-14T10:00:00Z"),
+                &now
+            ));
+            // An absent or unreadable import time never refuses.
+            assert!(!file_predates_proper_window(None, &now));
+            assert!(!file_predates_proper_window(Some("whenever"), &now));
+        }
+
+        /// **Final review M1.** The old-file guard is cutoff-independent. A
+        /// PROPER for a month-old file is declined on the feed lane whether or
+        /// not the scope has reached its cutoff — Sonarr's `ProperSpecification`
+        /// never looks at the cutoff — and a PROPER for a fresh below-cutoff
+        /// file is still the revision upgrade the ladder admits.
+        #[test]
+        fn the_old_file_guard_binds_below_the_cutoff_too() {
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 30),
+                    false,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::ProperForOldFile),
+                "a below-cutoff scope holding an old file must still refuse the PROPER on the feed lane"
+            );
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 1),
+                    false,
+                    true,
+                    &now(),
+                ),
+                None,
+                "a PROPER over a fresh below-cutoff file is an ordinary revision upgrade"
+            );
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &holding(0, 30),
+                    false,
+                    false,
+                    &now(),
+                ),
+                None,
+                "an active search is never subject to the age guard"
+            );
+        }
+
+        /// The guard reads every incumbent, not only the best: a pack or
+        /// multi-episode scope whose weaker member is a month old still refuses
+        /// the PROPER that would replace it.
+        #[test]
+        fn the_old_file_guard_reads_every_incumbent_not_only_the_best() {
+            let member = |id: &str, score: i32, days_ago: i64, covers: &str| {
+                (
+                    Incumbent {
+                        tier_index: Some(1),
+                        revision: 0,
+                        file_id: id.to_string(),
+                        file_path: format!("/data/TV/{id}.mkv"),
+                        release_group: None,
+                        score,
+                        covers: vec![covers.to_string()],
+                        created_at: (now() - chrono::Duration::days(days_ago)).to_rfc3339(),
+                    },
+                    true,
+                )
+            };
+            let subject = AdmissionSubject::new(
+                AdmissionScope::Episodes(vec!["ep-01".to_string(), "ep-02".to_string()]),
+                [
+                    member("fresh", 950, 1, "ep-01"),
+                    member("old", 900, 30, "ep-02"),
+                ],
+            );
+            assert_eq!(
+                cutoff_refusal(
+                    CandidateFacts::new(Some(1), 1, 100),
+                    &subject,
+                    false,
+                    true,
+                    &now(),
+                ),
+                Some(ReleaseAutoDecisionCode::ProperForOldFile),
+                "the best incumbent is fresh, but the PROPER would also replace the old one"
+            );
+        }
+    }
+
+    /// Sonarr's `MonitoredEpisodeSpecification`: a batch that reaches
+    /// into an episode nobody is monitoring brings unwanted bytes with the
+    /// wanted ones, and there is no way to take half a file.
+    #[test]
+    fn a_batch_touching_an_unmonitored_episode_is_refused() {
+        let title = make_title();
+        let subject = episode_set_subject(&title, &["episode-1", "episode-2"]);
+        let mut candidate = make_candidate("Nightfall.S01E01-E02.1080p.WEB-DL", None);
+        candidate.quality_profile_decision = Some(allowed_quality_decision(900));
+        candidate.coverage_scope = Some(SubmissionScope::EpisodeSet {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+        });
+
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
+        let admission = empty_admission();
+        let unmonitored: HashSet<String> = ["episode-2".to_string()].into_iter().collect();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            admission: &admission,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &unmonitored,
+        };
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::EpisodeNotMonitored
+        );
+
+        // Every episode monitored: the same batch is fine.
+        let all_monitored = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            unmonitored_episode_ids: &all_monitored,
+            ..context
+        };
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::Eligible
+        );
+    }
+
+    /// A **Collection** scope is exempt. A season pack's scope already *is* its
+    /// monitored members, and refusing the whole season because one episode is
+    /// unmonitored would reintroduce the partial-monitoring trap.
+    #[test]
+    fn a_season_pack_is_exempt_from_the_unmonitored_refusal() {
+        let title = make_title();
+        let mut subject = episode_set_subject(&title, &["episode-1", "episode-2"]);
+        subject.submission_scope = SubmissionScope::Collection {
+            collection_id: "season-1".to_string(),
+        };
+        let mut candidate = make_candidate("Nightfall.S01.1080p.WEB-DL", None);
+        candidate.quality_profile_decision = Some(allowed_quality_decision(900));
+        candidate.coverage_scope = Some(SubmissionScope::EpisodeSet {
+            episode_ids: vec!["episode-1".to_string(), "episode-2".to_string()],
+        });
+
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let no_minimum_seeders = HashMap::new();
+        let admission = empty_admission();
+        let unmonitored: HashSet<String> = ["episode-2".to_string()].into_iter().collect();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            admission: &admission,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            incumbent_at_cutoff: false,
+            is_rss_lane: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_routes: None,
+            minimum_seeders: &no_minimum_seeders,
+            unmonitored_episode_ids: &unmonitored,
+        };
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::Eligible
+        );
+    }
+
+    // ── The anti-loop check and unmonitored episodes ─────────────────────────
+
+    mod already_imported {
+        use super::*;
+
+        fn subject_holding(file: &TitleMediaFile) -> crate::admission::AdmissionSubject {
+            crate::admission::AdmissionSubject::new(
+                crate::admission::AdmissionScope::Episodes(vec!["episode-1".to_string()]),
+                [(
+                    crate::admission::Incumbent {
+                        tier_index: Some(1),
+                        revision: 0,
+                        file_id: file.id.clone(),
+                        file_path: file.file_path.clone(),
+                        release_group: None,
+                        score: 900,
+                        covers: vec!["episode-1".to_string()],
+                        created_at: file.created_at.clone(),
+                    },
+                    true,
+                )],
+            )
+        }
+
+        /// Re-grabbing the identical release is never an upgrade, whichever name
+        /// the row remembers it by.
+        #[test]
+        fn the_same_release_is_recognised_by_every_name_the_row_keeps() {
+            const RELEASE: &str = "Nightfall.S01E01.1080p.WEB-DL-GRP";
+            let release = RELEASE;
+            let mutations: [fn(&mut TitleMediaFile); 4] = [
+                |file| file.grabbed_release_title = Some(RELEASE.to_string()),
+                |file| file.scene_name = Some(RELEASE.to_string()),
+                |file| file.file_path = format!("/data/TV/Nightfall/{RELEASE}.mkv"),
+                |file| {
+                    file.original_file_path = Some(format!("/downloads/{RELEASE}/{RELEASE}.mkv"));
+                },
+            ];
+            for mutate in mutations {
+                let mut file = make_media_file("Something.Else", Some("episode-1"));
+                file.grabbed_release_title = None;
+                file.scene_name = None;
+                file.original_file_path = None;
+                mutate(&mut file);
+                let subject = subject_holding(&file);
+                assert!(
+                    candidate_matches_existing_media_file(
+                        &make_candidate(release, None),
+                        std::slice::from_ref(&file),
+                        &subject,
+                    ),
+                    "the identical release was not recognised: {file:?}"
+                );
+            }
+        }
+
+        /// **The defect.** The old rule matched on `contains` against whole
+        /// paths, so `Nightfall.S01E01.1080p-GRP` matched a stored path of
+        /// `.../Nightfall.S01E01.1080p-GRP.PROPER.mkv` — and the PROPER of a
+        /// release already on disk reported "already active" and could never be
+        /// grabbed. Comparing file *stems* exactly is what fixes it, and it is
+        /// what makes the revision comparison reachable at all.
+        #[test]
+        fn a_proper_of_a_release_on_disk_is_still_grabbable() {
+            let mut file = make_media_file("Nightfall.S01E01.1080p.WEB-DL-GRP", Some("episode-1"));
+            file.grabbed_release_title = Some("Nightfall.S01E01.1080p.WEB-DL-GRP".to_string());
+            file.scene_name = None;
+            file.file_path = "/data/TV/Nightfall/Nightfall.S01E01.1080p.WEB-DL-GRP.mkv".to_string();
+            file.original_file_path = None;
+            let subject = subject_holding(&file);
+
+            assert!(!candidate_matches_existing_media_file(
+                &make_candidate("Nightfall.S01E01.1080p.WEB-DL.PROPER-GRP", None),
+                std::slice::from_ref(&file),
+                &subject,
+            ));
+            // …and the release itself is still recognised, so the anti-loop
+            // guard has not simply been switched off.
+            assert!(candidate_matches_existing_media_file(
+                &make_candidate("Nightfall.S01E01.1080p.WEB-DL-GRP", None),
+                std::slice::from_ref(&file),
+                &subject,
+            ));
+        }
+
+        /// Membership is by the subject's incumbent ids, so a file that is not
+        /// in the scope cannot report a match — which is what the old scalar
+        /// `episode_id` filter got wrong for every pack, batch, title and link
+        /// scope (it matched *any* file of the title).
+        #[test]
+        fn a_file_outside_the_scope_is_not_consulted() {
+            let release = "Nightfall.S01E01.1080p.WEB-DL-GRP";
+            let mut file = make_media_file(release, Some("episode-1"));
+            file.grabbed_release_title = Some(release.to_string());
+            let empty_subject = crate::admission::AdmissionSubject::new(
+                crate::admission::AdmissionScope::Episodes(vec!["episode-1".to_string()]),
+                [],
+            );
+
+            assert!(!candidate_matches_existing_media_file(
+                &make_candidate(release, None),
+                std::slice::from_ref(&file),
+                &empty_subject,
+            ));
+        }
     }
 }

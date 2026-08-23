@@ -2,6 +2,8 @@ import { createContext, useContext } from "react";
 
 export type GlobalStatusOptions = {
   toastId?: string;
+  /** Set when the caller renders its own richer toast for the same event. */
+  suppressToast?: boolean;
 };
 
 export type SetGlobalStatus = (status: string, options?: GlobalStatusOptions) => void;

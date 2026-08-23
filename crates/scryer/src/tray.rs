@@ -1,5 +1,35 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(any(windows, test))]
+use std::ffi::OsStr;
+
+#[cfg(any(windows, test))]
+const SCRYER_ENV_PREFIX: &str = "SCRYER_";
+#[cfg(any(windows, test))]
+const AUTH_ENABLED_ENV: &str = "SCRYER_AUTH_ENABLED";
+
+#[cfg(any(windows, test))]
+fn should_remove_inherited_scryer_env(name: &OsStr, value: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    let is_scryer_env = name
+        .get(..SCRYER_ENV_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(SCRYER_ENV_PREFIX));
+    if !is_scryer_env {
+        return false;
+    }
+
+    if !name.eq_ignore_ascii_case(AUTH_ENABLED_ENV) {
+        return true;
+    }
+
+    !value.to_str().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        )
+    })
+}
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("scryer-tray is only supported on Windows");
@@ -432,10 +462,10 @@ mod windows {
             let log_file = self.profile_dir.join("logs").join("scryer.log");
             let mut command = Command::new(&scryer_exe);
             // A desktop profile must not inherit a portable/server instance's database,
-            // credentials, bind address, or other SCRYER_* runtime configuration. Users can
-            // configure the desktop instance through its own profile files and UI.
-            for (name, _) in std::env::vars_os() {
-                if name.to_string_lossy().starts_with("SCRYER_") {
+            // credentials, bind address, or other SCRYER_* runtime configuration. Preserve a
+            // security-strengthening auth override so the tray cannot silently disable auth.
+            for (name, value) in std::env::vars_os() {
+                if super::should_remove_inherited_scryer_env(&name, &value) {
                     command.env_remove(name);
                 }
             }
@@ -868,5 +898,44 @@ mod windows {
                 "Global\\ScryerMedia.Scryer.Desktop.v1.Tray.00530059004C00490058005C00610069"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod inherited_env_tests {
+    use std::ffi::OsStr;
+
+    use super::should_remove_inherited_scryer_env;
+
+    #[test]
+    fn preserves_security_strengthening_auth_override() {
+        for value in ["1", "true", "TRUE", " yes ", "y", "on"] {
+            assert!(!should_remove_inherited_scryer_env(
+                OsStr::new("scryer_auth_enabled"),
+                OsStr::new(value)
+            ));
+        }
+    }
+
+    #[test]
+    fn removes_auth_overrides_that_do_not_enable_auth() {
+        for value in ["0", "false", "no", "n", "off", "invalid", ""] {
+            assert!(should_remove_inherited_scryer_env(
+                OsStr::new("SCRYER_AUTH_ENABLED"),
+                OsStr::new(value)
+            ));
+        }
+    }
+
+    #[test]
+    fn isolates_other_scryer_environment_variables() {
+        assert!(should_remove_inherited_scryer_env(
+            OsStr::new("scryer_bind"),
+            OsStr::new("0.0.0.0:8080")
+        ));
+        assert!(!should_remove_inherited_scryer_env(
+            OsStr::new("PATH"),
+            OsStr::new("example")
+        ));
     }
 }

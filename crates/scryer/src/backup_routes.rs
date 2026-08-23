@@ -7,7 +7,7 @@ use axum::extract::{Path as AxumPath, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use scryer_application::{AppError, AppUseCase, BackupInfo, BackupStatus};
-use scryer_infrastructure::{
+use scryer_infrastructure_runtime::{
     DatastoreConfig, DatastoreEngine, datastore_file_path,
     restore_prepared_backup_directory_to_datastore,
 };
@@ -491,7 +491,7 @@ mod tests {
             &DatastoreConfig::sqlite(
                 format!("sqlite://{}", target_db.display()),
                 data_dir,
-                scryer_infrastructure::MigrationMode::Apply,
+                scryer_infrastructure_datastore::MigrationMode::Apply,
             ),
         )
         .await
@@ -526,7 +526,7 @@ mod tests {
             &DatastoreConfig::sqlite(
                 format!("sqlite://{}", target_db.display()),
                 data_dir,
-                scryer_infrastructure::MigrationMode::Apply,
+                scryer_infrastructure_datastore::MigrationMode::Apply,
             ),
         )
         .await
@@ -564,9 +564,9 @@ mod tests {
             &DatastoreConfig::postgres(
                 "postgres://localhost/scryer".to_string(),
                 "postgres://localhost/scryer".to_string(),
-                scryer_infrastructure::DatastoreConfigSource::EnvDbUrl,
+                scryer_infrastructure_runtime::DatastoreConfigSource::EnvDbUrl,
                 data_dir,
-                scryer_infrastructure::MigrationMode::Apply,
+                scryer_infrastructure_datastore::MigrationMode::Apply,
             ),
             |prepared_bundle_dir, _| async move {
                 assert_eq!(
@@ -610,9 +610,9 @@ mod tests {
             &DatastoreConfig::postgres(
                 "postgres://localhost/scryer".to_string(),
                 "postgres://localhost/scryer".to_string(),
-                scryer_infrastructure::DatastoreConfigSource::EnvDbUrl,
+                scryer_infrastructure_runtime::DatastoreConfigSource::EnvDbUrl,
                 data_dir,
-                scryer_infrastructure::MigrationMode::Apply,
+                scryer_infrastructure_datastore::MigrationMode::Apply,
             ),
             |_, _| async move { Err(AppError::Repository("restore failed".into())) },
         )
@@ -653,7 +653,7 @@ mod tests {
             &DatastoreConfig::sqlite(
                 format!("sqlite://{}", target_db.display()),
                 data_dir,
-                scryer_infrastructure::MigrationMode::Apply,
+                scryer_infrastructure_datastore::MigrationMode::Apply,
             ),
         )
         .await

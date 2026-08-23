@@ -17,7 +17,7 @@ use scryer_application::{LibraryRootDraft, MediaFileRepository, ShowRepository, 
 use scryer_domain::{
     AppPermission, AppPermissionMask, LibraryPermission, LibraryPermissionMask, MediaFacet, User,
 };
-use scryer_infrastructure::SettingDefinitionSeed;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 
 const IRON_VALE_TVDB_ID: i64 = 420_424;
 const MINIMUM_IRON_VALE_IMPORTED_FILE_COUNT: usize = 12;

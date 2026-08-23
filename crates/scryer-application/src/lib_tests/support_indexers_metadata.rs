@@ -57,6 +57,7 @@ impl IndexerClient for MockIndexerClient {
                 auto_decision_summary: None,
                 candidate_token: None,
                 queue_scope: None,
+                coverage_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -168,6 +169,17 @@ pub(super) struct RecordedIndexerSearch {
 #[derive(Default, Clone)]
 pub(super) struct TrackingIndexerClient {
     pub(super) searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
+    pub(super) season_pack_titles: Vec<String>,
+}
+
+impl TrackingIndexerClient {
+    pub(super) fn with_season_pack_titles(
+        mut self,
+        titles: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.season_pack_titles = titles.into_iter().collect();
+        self
+    }
 }
 
 #[async_trait]
@@ -202,40 +214,54 @@ impl IndexerClient for TrackingIndexerClient {
             (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
             (None, _) => format!("{query}.2024.1080p.WEB-DL"),
         };
-        let release_slug = release_title.replace([' ', '/'], ".");
+        let release_titles =
+            if season.is_some() && episode.is_none() && !self.season_pack_titles.is_empty() {
+                self.season_pack_titles.clone()
+            } else {
+                vec![release_title]
+            };
 
         Ok(IndexerSearchResponse {
             indexer_outcomes: Vec::new(),
-            results: vec![IndexerSearchResult {
-                indexer_id: None,
-                source: "nzbgeek".into(),
-                title: release_title.clone(),
-                link: Some(format!("https://example.invalid/info/{release_slug}")),
-                download_url: Some(format!(
-                    "https://example.invalid/download/{release_slug}.nzb"
-                )),
-                source_kind: Some(DownloadSourceKind::NzbUrl),
-                size_bytes: None,
-                published_at: Some("1970-01-01T00:00:00Z".into()),
-                thumbs_up: None,
-                thumbs_down: None,
-                indexer_languages: None,
-                indexer_subtitles: None,
-                indexer_grabs: None,
-                password_hint: None,
-                parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
-                quality_profile_decision: None,
-                extra: Default::default(),
-                response_attributes: Default::default(),
-                guid: Some(format!("guid-{release_slug}")),
-                info_url: Some(format!("https://example.invalid/info/{release_slug}")),
-                provenance: None,
-                auto_eligible: None,
-                auto_decision_code: None,
-                auto_decision_summary: None,
-                candidate_token: None,
-                queue_scope: None,
-            }],
+            results: release_titles
+                .into_iter()
+                .map(|release_title| {
+                    let release_slug = release_title.replace([' ', '/'], ".");
+                    IndexerSearchResult {
+                        indexer_id: None,
+                        source: "nzbgeek".into(),
+                        title: release_title.clone(),
+                        link: Some(format!("https://example.invalid/info/{release_slug}")),
+                        download_url: Some(format!(
+                            "https://example.invalid/download/{release_slug}.nzb"
+                        )),
+                        source_kind: Some(DownloadSourceKind::NzbUrl),
+                        size_bytes: None,
+                        published_at: Some("1970-01-01T00:00:00Z".into()),
+                        thumbs_up: None,
+                        thumbs_down: None,
+                        indexer_languages: None,
+                        indexer_subtitles: None,
+                        indexer_grabs: None,
+                        password_hint: None,
+                        parsed_release_metadata: Some(crate::parse_release_metadata(
+                            &release_title,
+                        )),
+                        quality_profile_decision: None,
+                        extra: Default::default(),
+                        response_attributes: Default::default(),
+                        guid: Some(format!("guid-{release_slug}")),
+                        info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                        provenance: None,
+                        auto_eligible: None,
+                        auto_decision_code: None,
+                        auto_decision_summary: None,
+                        candidate_token: None,
+                        queue_scope: None,
+                        coverage_scope: None,
+                    }
+                })
+                .collect(),
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -251,9 +277,17 @@ pub(super) struct FixedReleaseIndexerClient {
     /// Indexer ids this stand-in reports as having fired. Empty by default — set via [`with_fired_indexers`] when a test
     /// drives the real coverage chokepoint and needs specific indexers recorded.
     pub(super) fired_indexer_ids: Vec<String>,
+    /// Enabled indexer ids requested by each search call. This observes the
+    /// routing plan separately from the stand-in's configured response.
+    requested_indexer_id_sets: Arc<Mutex<Vec<Vec<String>>>>,
     /// When set, every fired indexer reports `Fired { empty: true }` and the
     /// response carries no results — a genuine zero-hit response.
     pub(super) empty_response: bool,
+    /// Reported seeder count, written onto `extra["seeders"]` — exactly where
+    /// the indexer adapter writes it and where `seeders_from_extra` reads it.
+    /// Deliberately independent of the release's source kind: the capture path
+    /// under test reads the map, not the protocol.
+    pub(super) seeders: Option<i64>,
 }
 
 impl FixedReleaseIndexerClient {
@@ -262,8 +296,15 @@ impl FixedReleaseIndexerClient {
             release_title: release_title.into(),
             indexer_languages: None,
             fired_indexer_ids: Vec::new(),
+            requested_indexer_id_sets: Arc::new(Mutex::new(Vec::new())),
             empty_response: false,
+            seeders: None,
         }
+    }
+
+    pub(super) fn with_seeders(mut self, seeders: i64) -> Self {
+        self.seeders = Some(seeders);
+        self
     }
 
     pub(super) fn with_fired_indexers(
@@ -278,6 +319,10 @@ impl FixedReleaseIndexerClient {
         self.empty_response = true;
         self
     }
+
+    pub(super) async fn requested_indexer_id_sets(&self) -> Vec<Vec<String>> {
+        self.requested_indexer_id_sets.lock().await.clone()
+    }
 }
 
 #[async_trait]
@@ -290,7 +335,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _facet: Option<String>,
         _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
-        _indexer_routing: Option<IndexerRoutingPlan>,
+        indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
         _season: Option<u32>,
         _episode: Option<u32>,
@@ -299,6 +344,17 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _learning_context: Option<crate::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        let mut requested_indexer_ids = indexer_routing
+            .into_iter()
+            .flat_map(|plan| plan.entries)
+            .filter(|(_, entry)| entry.enabled)
+            .map(|(indexer_id, _)| indexer_id)
+            .collect::<Vec<_>>();
+        requested_indexer_ids.sort();
+        self.requested_indexer_id_sets
+            .lock()
+            .await
+            .push(requested_indexer_ids);
         let indexer_outcomes = self
             .fired_indexer_ids
             .iter()
@@ -319,6 +375,10 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 grab_max: None,
             });
         }
+        let mut extra = std::collections::HashMap::new();
+        if let Some(seeders) = self.seeders {
+            extra.insert("seeders".to_string(), serde_json::json!(seeders));
+        }
         Ok(IndexerSearchResponse {
             indexer_outcomes,
             results: vec![IndexerSearchResult {
@@ -338,7 +398,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 password_hint: None,
                 parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
                 quality_profile_decision: None,
-                extra: Default::default(),
+                extra,
                 response_attributes: Default::default(),
                 guid: Some("guid-fixed-release".to_string()),
                 info_url: Some("https://example.invalid/info".to_string()),
@@ -348,6 +408,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 auto_decision_summary: None,
                 candidate_token: None,
                 queue_scope: None,
+                coverage_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -432,6 +493,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
                 auto_decision_summary: None,
                 candidate_token: None,
                 queue_scope: None,
+                coverage_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -536,6 +598,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
                 auto_decision_summary: None,
                 candidate_token: None,
                 queue_scope: None,
+                coverage_scope: None,
             }],
             api_current: None,
             api_max: None,
@@ -585,13 +648,20 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
 #[derive(Clone)]
 pub(super) struct MultiReleaseIndexerClient {
     pub(super) release_titles: Vec<String>,
+    info_hash_hint: Option<String>,
 }
 
 impl MultiReleaseIndexerClient {
     pub(super) fn new(release_titles: Vec<&str>) -> Self {
         Self {
             release_titles: release_titles.into_iter().map(str::to_string).collect(),
+            info_hash_hint: None,
         }
+    }
+
+    pub(super) fn with_info_hash_hint(mut self, info_hash_hint: impl Into<String>) -> Self {
+        self.info_hash_hint = Some(info_hash_hint.into());
+        self
     }
 }
 
@@ -637,7 +707,16 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     password_hint: None,
                     parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
                     quality_profile_decision: None,
-                    extra: Default::default(),
+                    extra: self
+                        .info_hash_hint
+                        .as_ref()
+                        .map(|hash| {
+                            std::collections::HashMap::from([(
+                                "info_hash".to_string(),
+                                serde_json::Value::String(hash.clone()),
+                            )])
+                        })
+                        .unwrap_or_default(),
                     response_attributes: Default::default(),
                     guid: Some(format!("guid-multi-release-{index}")),
                     info_url: Some(format!("https://example.invalid/info/{index}")),
@@ -647,6 +726,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     auto_decision_summary: None,
                     candidate_token: None,
                     queue_scope: None,
+                    coverage_scope: None,
                 })
                 .collect(),
             api_current: None,

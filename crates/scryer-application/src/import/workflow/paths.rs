@@ -73,6 +73,11 @@ pub(crate) enum ReleaseEvidence {
         /// fallback name when `source_title` is missing; never the identity.
         #[serde(default)]
         observed_release_name: Option<String>,
+        /// The size the indexer announced for this grab
+        /// (`download_submissions.release_size_bytes`); the import scores the
+        /// size term on it when the landed file is within the overhead band.
+        #[serde(default)]
+        release_size_bytes: Option<i64>,
         purpose: crate::DownloadSubmissionPurpose,
         scope: SubmissionScope,
     },
@@ -135,6 +140,7 @@ impl ReleaseEvidence {
             facet: submission.facet.clone(),
             source_title,
             observed_release_name,
+            release_size_bytes: submission.release_size_bytes,
             purpose: submission.purpose,
             scope: submission.scope.clone(),
         }
@@ -167,11 +173,28 @@ impl ReleaseEvidence {
         }
     }
 
+    /// The size the indexer announced for a Scryer grab; `None` for adopted
+    /// downloads and grabs recorded without one.
+    pub(crate) fn announced_size_bytes(&self) -> Option<i64> {
+        match self {
+            Self::ScryerSubmission {
+                release_size_bytes, ..
+            } => *release_size_bytes,
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
     pub(crate) fn purpose(&self) -> crate::DownloadSubmissionPurpose {
         match self {
             Self::ScryerSubmission { purpose, .. } => *purpose,
             Self::DownloaderObservation { .. } => crate::DownloadSubmissionPurpose::Standard,
         }
+    }
+
+    /// Whether a completed download was selected by an operator. Client-only
+    /// observations have no such durable intent and remain automatic.
+    pub(crate) fn import_origin(&self) -> crate::import_decide::ImportOrigin {
+        crate::import_decide::ImportOrigin::from_submission_purpose(self.purpose())
     }
 
     /// The release name to parse and score: the persisted indexer title for a
@@ -449,8 +472,11 @@ async fn completed_download_already_imported_for_current_attempt(
         return Ok(false);
     }
 
-    if completed_download_terminal_state_for_resolution(app, completed, resolution).await?
-        == Some(TrackedDownloadState::Imported)
+    // `ImportedSeeding` counts as imported here: the payload is in the library
+    // and only the torrent's seeding obligation is still open.
+    if completed_download_terminal_state_for_resolution(app, completed, resolution)
+        .await?
+        .is_some_and(TrackedDownloadState::counts_as_imported)
     {
         return Ok(true);
     }
@@ -545,6 +571,7 @@ fn completed_download_import_identity_for_resolution(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub(crate) struct ImportPathSettings {
     pub(crate) media_root: String,
     pub(crate) rename_enabled: bool,

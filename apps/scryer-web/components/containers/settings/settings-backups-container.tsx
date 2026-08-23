@@ -1026,6 +1026,7 @@ export function SettingsBackupsContainer() {
 
                     return (
                       <TableRow
+                        data-ui="settings-table-row"
                         key={backup.filename}
                         id={selectorId("settings-backup-row", "created-at", backup.createdAt)}
                         className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"

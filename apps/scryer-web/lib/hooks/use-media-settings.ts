@@ -94,6 +94,10 @@ export type UseMediaSettingsResult = {
   setCategorySeasonFolderTemplates: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, string>>
   >;
+  categoryUseSeasonFolders: Record<ViewCategoryId, boolean>;
+  setCategoryUseSeasonFolders: React.Dispatch<
+    React.SetStateAction<Record<ViewCategoryId, boolean>>
+  >;
   categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
   setCategorySpecialsFolderTemplates: React.Dispatch<
     React.SetStateAction<Record<ViewCategoryId, string>>
@@ -257,6 +261,13 @@ export function useMediaSettings({
       SERIES: DEFAULT_SEASON_FOLDER_TEMPLATE,
       ANIME: DEFAULT_SEASON_FOLDER_TEMPLATE,
     });
+  const [categoryUseSeasonFolders, setCategoryUseSeasonFolders] = React.useState<
+    Record<ViewCategoryId, boolean>
+  >({
+    MOVIE: true,
+    SERIES: true,
+    ANIME: true,
+  });
   const [categorySpecialsFolderTemplates, setCategorySpecialsFolderTemplates] =
     React.useState<Record<ViewCategoryId, string>>({
       MOVIE: DEFAULT_SPECIALS_FOLDER_TEMPLATE,
@@ -668,6 +679,12 @@ export function useMediaSettings({
             mediaSettings.seasonFolderTemplate || DEFAULT_SEASON_FOLDER_TEMPLATE,
           ),
         );
+        setCategoryUseSeasonFolders((previous) => {
+          const nextValue = mediaSettings.useSeasonFolders !== false;
+          return previous[mediaSettingsScopeId] === nextValue
+            ? previous
+            : { ...previous, [mediaSettingsScopeId]: nextValue };
+        });
         setCategorySpecialsFolderTemplates((previous) =>
           updateFacetScopedStringRecord(
             previous,
@@ -1119,7 +1136,12 @@ export function useMediaSettings({
                 categoryRequiredAudioLanguages[activeQualityScopeId] ?? [],
               folderTemplate,
               ...(episodicScope
-                ? { seasonFolderTemplate, specialsFolderTemplate }
+                ? {
+                    seasonFolderTemplate,
+                    specialsFolderTemplate,
+                    useSeasonFolders:
+                      categoryUseSeasonFolders[activeQualityScopeId] !== false,
+                  }
                 : {}),
               renameEnabled,
               ...renameConfigInput,
@@ -1169,6 +1191,7 @@ export function useMediaSettings({
       activeQualityScopeId,
       categoryFillerPolicies,
       categoryFolderTemplates,
+      categoryUseSeasonFolders,
       categorySeasonFolderTemplates,
       categorySpecialsFolderTemplates,
       categoryRequiredAudioLanguages,
@@ -1316,6 +1339,8 @@ export function useMediaSettings({
     setCategoryFolderTemplates,
     categorySeasonFolderTemplates,
     setCategorySeasonFolderTemplates,
+    categoryUseSeasonFolders,
+    setCategoryUseSeasonFolders,
     categorySpecialsFolderTemplates,
     setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,

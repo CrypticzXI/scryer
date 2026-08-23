@@ -6,11 +6,6 @@ const DEFAULT_ADMIN_USERNAME: &str = "admin";
 const RECOVERY_ADMIN_USERNAME: &str = "recovery-admin";
 const ANONYMOUS_AUDIT_USERNAME: &str = "anonymous";
 
-#[cfg(unix)]
-fn to_u64<T: Into<u64>>(value: T) -> u64 {
-    value.into()
-}
-
 impl AppUseCase {
     fn required_startup_admin_app_permissions() -> scryer_domain::AppPermissionMask {
         scryer_domain::UserAuthorization::full_admin().app
@@ -139,10 +134,7 @@ impl AppUseCase {
             .await?;
 
         let mut seen_paths = std::collections::HashSet::new();
-        #[cfg(unix)]
         let mut results = Vec::new();
-        #[cfg(not(unix))]
-        let results = Vec::new();
 
         for library in libraries {
             for root in library.roots {
@@ -151,10 +143,9 @@ impl AppUseCase {
                     continue;
                 }
 
-                #[cfg(unix)]
-                if let Some(stat) = statvfs_path(&path) {
-                    let total = to_u64(stat.f_blocks) * to_u64(stat.f_frsize);
-                    let free = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
+                if let Some(space) = filesystem_space(&path) {
+                    let total = space.total_bytes;
+                    let free = space.available_bytes;
                     let used = total.saturating_sub(free);
                     results.push(DiskSpaceInfo {
                         path,
@@ -165,14 +156,6 @@ impl AppUseCase {
                     });
                 } else {
                     tracing::warn!(path = path.as_str(), "failed to query disk space");
-                }
-                #[cfg(not(unix))]
-                {
-                    tracing::debug!(
-                        path = path.as_str(),
-                        "disk space reporting not available on this platform"
-                    );
-                    let _ = path;
                 }
             }
         }
@@ -255,7 +238,7 @@ impl AppUseCase {
                     .services
                     .identity
                     .users
-                    .update_password_hash(&found.id, self.hash_password(password)?)
+                    .update_password_hash(&found.id, self.hash_password(password)?, false)
                     .await?;
             }
             self.refresh_cached_jwt_signing_key(&found).await?;
@@ -266,6 +249,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.to_string(),
             password_hash: Some(self.hash_password(password)?),
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         };
@@ -301,6 +285,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         };
@@ -377,13 +362,14 @@ impl AppUseCase {
                         .into(),
                 ));
             }
-            self.update_user_password_hash(&existing, &existing.id, password.to_string())
+            self.update_user_password_hash(&existing, &existing.id, password.to_string(), false)
                 .await?
         } else {
             let user = User {
                 id: Id::new().0,
                 username: RECOVERY_ADMIN_USERNAME.to_string(),
                 password_hash: Some(self.hash_password(password)?),
+                password_change_required: false,
                 account_kind: scryer_domain::UserAccountKind::Local,
                 authorization: Default::default(),
             };
@@ -545,6 +531,7 @@ impl AppUseCase {
             id: Id::new().0,
             username: username.clone(),
             password_hash: Some(password_hash),
+            password_change_required: true,
             account_kind: scryer_domain::UserAccountKind::Local,
             authorization: Default::default(),
         };
@@ -586,7 +573,7 @@ impl AppUseCase {
             .services
             .identity
             .users
-            .update_password_hash(user_id, password_hash)
+            .update_password_hash(user_id, password_hash, false)
             .await?;
         self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
             .await?;
@@ -630,7 +617,7 @@ impl AppUseCase {
             ));
         }
 
-        self.update_user_password_hash(actor, &actor.id, password)
+        self.update_user_password_hash(actor, &actor.id, password, false)
             .await
     }
 
@@ -659,7 +646,7 @@ impl AppUseCase {
             return Err(AppError::Validation("current password is required".into()));
         }
 
-        self.update_user_password_hash(actor, &actor.id, password)
+        self.update_user_password_hash(actor, &actor.id, password, false)
             .await
     }
 
@@ -678,8 +665,96 @@ impl AppUseCase {
             ));
         }
 
-        self.update_user_password_hash(actor, user_id, password)
-            .await
+        if password.is_empty() {
+            return Err(AppError::Validation("password is required".into()));
+        }
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
+        self.validate_new_local_password(&password).await?;
+        let password_hash = self.hash_password(&password)?;
+        let user = self
+            .services
+            .identity
+            .users
+            .set_temporary_password_and_invalidate_sessions(user_id, password_hash, &Id::new().0)
+            .await?;
+        self.refresh_cached_jwt_signing_key(&user).await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
+        self.emit_configuration_changed_event(
+            actor,
+            "temporary_password",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(user)
+    }
+
+    pub async fn complete_required_password_change(
+        &self,
+        actor: &User,
+        password: String,
+        expected_auth_session_version: &Option<String>,
+    ) -> AppResult<(User, Option<String>)> {
+        if password.is_empty() {
+            return Err(AppError::Validation("password is required".into()));
+        }
+        let existing = self
+            .services
+            .identity
+            .users
+            .get_by_id(&actor.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {}", actor.id)))?;
+        if !existing.account_kind.allows_local_credentials() {
+            return Err(AppError::Validation(
+                "externally managed users cannot set a Scryer password".into(),
+            ));
+        }
+
+        self.validate_new_local_password(&password).await?;
+        if let Some(password_hash) = existing.password_hash.as_deref()
+            && self.validate_password(&password, password_hash)?
+        {
+            return Err(AppError::Validation(
+                "new password must differ from the temporary password".into(),
+            ));
+        }
+        let auth_session_version = Id::new().0;
+        let user = self
+            .services
+            .identity
+            .users
+            .complete_required_password_change(
+                &actor.id,
+                self.hash_password(&password)?,
+                expected_auth_session_version,
+                &auth_session_version,
+            )
+            .await?;
+        self.refresh_cached_jwt_signing_key(&user).await?;
+        self.revoke_oauth_refresh_grants_for_user(&actor.id, "password_changed")
+            .await?;
+        self.emit_configuration_changed_event(
+            actor,
+            "temporary_password",
+            Some(user.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok((user, Some(auth_session_version)))
     }
 
     async fn update_user_password_hash(
@@ -687,6 +762,7 @@ impl AppUseCase {
         actor: &User,
         user_id: &str,
         password: String,
+        password_change_required: bool,
     ) -> AppResult<User> {
         if password.is_empty() {
             return Err(AppError::Validation("password is required".into()));
@@ -711,11 +787,11 @@ impl AppUseCase {
             .services
             .identity
             .users
-            .update_password_hash(user_id, password_hash)
-            .await?;
-        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .update_password_hash(user_id, password_hash, password_change_required)
             .await?;
         self.refresh_cached_jwt_signing_key(&user).await?;
+        self.revoke_oauth_refresh_grants_for_user(user_id, "password_changed")
+            .await?;
         self.emit_configuration_changed_event(
             actor,
             "user_password",
@@ -977,14 +1053,16 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("user {}", user_id)))?;
 
         if user.id == actor.id {
-            return Err(AppError::Validation("cannot reset your own MFA".into()));
+            return Err(AppError::Validation(
+                "cannot reset your own authentication factors".into(),
+            ));
         }
 
         let auth_session_version = Id::new().0;
         self.services
             .identity
-            .totp
-            .reset_user_mfa_and_invalidate_sessions(user_id, &auth_session_version)
+            .users
+            .reset_authentication_factors_and_invalidate_sessions(user_id, &auth_session_version)
             .await?;
         self.revoke_oauth_refresh_grants_for_user(user_id, "auth_session_changed")
             .await?;
@@ -992,7 +1070,7 @@ impl AppUseCase {
         self.refresh_cached_jwt_signing_key(&user).await?;
         self.emit_configuration_changed_event(
             actor,
-            "user_mfa",
+            "user_authentication_factors",
             Some(user.id.clone()),
             ConfigurationChangeAction::Updated,
         )

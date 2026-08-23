@@ -7,7 +7,6 @@ import {
   PowerOff,
   RefreshCw,
   Trash2,
-  TriangleAlert,
 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { PluginVisualLabel } from "@/components/common/plugin-visual";
@@ -43,6 +42,7 @@ import type {
   IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
+  IndexerDownloadClientMappingCatalog,
   IndexerDownloadClientMappingCatalogResource,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
@@ -52,10 +52,22 @@ import {
   AUTOMATIC_DOWNLOAD_CLIENT_ID,
   getIndexerDownloadClientDraftMappingViewModel,
   getIndexerDownloadClientMappingViewModel,
+  isManagementOnlyIndexer,
   type IndexerDownloadClientMappingViewModel,
 } from "@/lib/utils/indexer-download-client-mapping";
+import type { IndexerSettingsTab } from "@/components/root/types";
+import type { SeedingProfileOption } from "@/lib/types/seeding-profiles";
+import {
+  SEEDING_PROFILE_INHERIT_VALUE,
+  seedingProfileInheritOptionKey,
+  seedingProfileSelectValue,
+  seedingProfileSelectValueToId,
+  supportsSeedingProfileAssignment,
+} from "@/lib/utils/seeding-profiles";
 
 type SettingsIndexersSectionProps = {
+  /// Which pane of the Indexers page to render; the page's rail owns the choice.
+  indexerSettingsTab?: IndexerSettingsTab;
   editingIndexerId: string | null;
   indexerDraft: IndexerDraft;
   setIndexerDraft: React.Dispatch<React.SetStateAction<IndexerDraft>>;
@@ -73,6 +85,12 @@ type SettingsIndexersSectionProps = {
   setIndexerDownloadClientMapping: (
     indexerId: string,
     downloadClientId: string | null,
+  ) => Promise<void> | void;
+  seedingProfileOptions: SeedingProfileOption[];
+  mutatingIndexerSeedingProfileIds: ReadonlySet<string>;
+  setIndexerSeedingProfile: (
+    indexerId: string,
+    seedingProfileId: string | null,
   ) => Promise<void> | void;
   indexerProxyConfigs: IndexerProxyRecord[];
   indexerProxyDraft: IndexerProxyDraft;
@@ -591,7 +609,185 @@ function IndexerDownloadClientCell({
   );
 }
 
+/**
+ * Seeding-profile assignment for one indexer, rendered beside the
+ * download-client mapping control. The backend rejects assignment on anything
+ * that is not torrent-capable, so non-torrent indexers get the same
+ * "not applicable" treatment the mapping control uses.
+ */
+function IndexerSeedingProfileSelect({
+  selectId,
+  label,
+  value,
+  options,
+  supported,
+  prowlarrManaged = false,
+  prowlarrMinimumSeeders = null,
+  isPending,
+  disabled = false,
+  showLabel = false,
+  onChange,
+}: {
+  selectId: string;
+  label: string;
+  value: string | null;
+  options: SeedingProfileOption[];
+  supported: boolean;
+  /// Prowlarr supplied seed criteria for this child, so the null option means
+  /// "use them" rather than "inherit the default".
+  prowlarrManaged?: boolean;
+  /// Prowlarr's imported `appMinimumSeeders` for this child, or null when it
+  /// supplied none. It governs admission whether or not Prowlarr also sent
+  /// goals, so the inherit option names it instead of claiming a bare default.
+  prowlarrMinimumSeeders?: number | null;
+  isPending: boolean;
+  disabled?: boolean;
+  showLabel?: boolean;
+  onChange: (seedingProfileId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const statusId = `${selectId}-status`;
+
+  if (!supported) {
+    return (
+      <div className="space-y-1.5">
+        {showLabel ? <Label className="block">{label}</Label> : null}
+        <span
+          className="text-muted-foreground"
+          data-testid={`${selectId}-not-applicable`}
+        >
+          {t("settings.seedingProfileNotApplicable")}
+        </span>
+      </div>
+    );
+  }
+
+  const isMissing =
+    value !== null && !options.some((option) => option.id === value);
+  const prowlarrMinimum = prowlarrMinimumSeeders ?? null;
+  const inheritLabel = t(
+    seedingProfileInheritOptionKey(prowlarrManaged, prowlarrMinimum),
+    { count: prowlarrMinimum ?? 0 },
+  );
+
+  return (
+    <div className="min-w-[190px] space-y-1.5">
+      <Label className={showLabel ? "block" : "sr-only"} htmlFor={selectId}>
+        {label}
+      </Label>
+      <Select
+        value={seedingProfileSelectValue(value)}
+        onValueChange={(nextValue) =>
+          void onChange(seedingProfileSelectValueToId(nextValue))
+        }
+      >
+        <SelectTrigger
+          id={selectId}
+          data-testid={selectId}
+          // Readable without opening the menu: the trigger only renders the
+          // selected option's text, so the imported threshold needs its own
+          // hook for assertions and for support reading a screenshot.
+          data-prowlarr-minimum-seeders={
+            prowlarrMinimum === null ? undefined : String(prowlarrMinimum)
+          }
+          className="w-full"
+          disabled={isPending || disabled}
+          aria-describedby={isMissing ? statusId : undefined}
+          aria-busy={isPending}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem
+            value={SEEDING_PROFILE_INHERIT_VALUE}
+            data-testid={`${selectId}-inherit`}
+          >
+            {inheritLabel}
+          </SelectItem>
+          {isMissing && value ? (
+            <SelectItem value={value}>
+              {t("settings.seedingProfileMissing", { id: value })}
+            </SelectItem>
+          ) : null}
+          {options.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.name}
+            </SelectItem>
+          ))}
+          {options.length === 0 ? (
+            // A Sonarr user lands here first; without this the dropdown is a
+            // dead end that never says where profiles come from.
+            <SelectItem value="__none-available" disabled>
+              {t("settings.seedingProfileNoneAvailable")}
+            </SelectItem>
+          ) : null}
+        </SelectContent>
+      </Select>
+      {isMissing ? (
+        <p
+          id={statusId}
+          role="alert"
+          className="text-xs text-[var(--scry-danger-text-soft)]"
+        >
+          {t("settings.seedingProfileMissing", { id: value })}
+        </p>
+      ) : isPending ? (
+        <p id={statusId} role="status" className="text-xs text-muted-foreground">
+          {t("status.indexerSeedingProfileSaving")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function IndexerSeedingProfileCell({
+  indexer,
+  catalog,
+  options,
+  isPending,
+  disabled,
+  onChange,
+}: {
+  indexer: IndexerRecord;
+  catalog: IndexerDownloadClientMappingCatalog | null;
+  options: SeedingProfileOption[];
+  isPending: boolean;
+  disabled: boolean;
+  onChange: (seedingProfileId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const selectId = selectorId("settings-indexer-seeding-profile", indexer.id);
+  if (!catalog) {
+    return (
+      <span className="text-muted-foreground" data-testid={`${selectId}-loading`}>
+        {t("label.loading")}
+      </span>
+    );
+  }
+  const protocolFamilies = catalog.indexers.find(
+    (entry) => entry.id === indexer.id,
+  )?.protocolFamilies;
+  return (
+    <IndexerSeedingProfileSelect
+      selectId={selectId}
+      label={t("settings.seedingProfileIndexerLabel", { name: indexer.name })}
+      value={indexer.seedingProfileId}
+      options={options}
+      prowlarrManaged={indexer.hasProwlarrSeedCriteria}
+      prowlarrMinimumSeeders={indexer.prowlarrMinimumSeeders}
+      supported={
+        !isManagementOnlyIndexer(indexer) &&
+        supportsSeedingProfileAssignment(protocolFamilies)
+      }
+      isPending={isPending}
+      disabled={disabled}
+      onChange={onChange}
+    />
+  );
+}
+
 export function SettingsIndexersSection({
+  indexerSettingsTab = "indexers",
   editingIndexerId,
   indexerDraft,
   setIndexerDraft,
@@ -605,6 +801,9 @@ export function SettingsIndexersSection({
   refreshIndexerDownloadClientMappingCatalog,
   mutatingIndexerMappingIds,
   setIndexerDownloadClientMapping,
+  seedingProfileOptions,
+  mutatingIndexerSeedingProfileIds,
+  setIndexerSeedingProfile,
   indexerProxyConfigs,
   indexerProxyDraft,
   setIndexerProxyDraft,
@@ -665,6 +864,16 @@ export function SettingsIndexersSection({
       (proxy) => proxy.isEnabled || proxy.id === selectedIndexerProxyId,
     );
   }, [indexerProxyConfigs, selectedIndexerProxyId]);
+  // Protocol families for the provider the editor is currently on: seeding
+  // profiles only apply to torrent-capable indexers.
+  const draftProtocolFamilies = React.useMemo(
+    () =>
+      indexerDownloadClientMappingCatalogResource.catalog?.providerCompatibility.find(
+        (entry) =>
+          entry.providerType.trim().toLowerCase() === normalizedProviderType,
+      )?.protocolFamilies ?? [],
+    [indexerDownloadClientMappingCatalogResource.catalog, normalizedProviderType],
+  );
 
   // Build provider type options from loaded plugins, falling back to hardcoded list
   const providerTypeOptions = React.useMemo(() => {
@@ -752,6 +961,11 @@ export function SettingsIndexersSection({
             nextMappingCompatibility?.supportsMapping === false
               ? null
               : prev.downloadClientId,
+          seedingProfileId: supportsSeedingProfileAssignment(
+            nextMappingCompatibility?.protocolFamilies,
+          )
+            ? prev.seedingProfileId
+            : null,
           storedSecretKeys: [],
           configValues: nextConfigValues,
         };
@@ -764,17 +978,17 @@ export function SettingsIndexersSection({
     ],
   );
 
+  const showProxies = indexerSettingsTab === "proxies";
+  const showIndexers = indexerSettingsTab === "indexers";
+
   return (
     <div id="settings-indexers-section" className="flex flex-col gap-4 text-sm">
-      <div id="settings-indexer-proxies-panel" className="order-last space-y-4">
+      {showProxies ? (
+      <div id="settings-indexer-proxies-panel" className="space-y-4">
       <div id="settings-indexer-proxies-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="flex items-center gap-2 text-base">
-            Indexer proxies
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
-              <TriangleAlert className="h-3.5 w-3.5" />
-              Beta
-            </span>
+            {t("settings.indexerProxies")}
           </CardTitle>
         </div>
         <div className="overflow-x-auto">
@@ -792,7 +1006,7 @@ export function SettingsIndexersSection({
             </TableHeader>
             <TableBody>
               {indexerProxyConfigs.map((proxy) => (
-                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)}>
+                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)} data-ui="settings-table-row">
                   <TableCell className="font-medium">{proxy.name}</TableCell>
                   <TableCell>
                     {proxy.providerType === "trawl" ? "Trawl" : "Byparr"}
@@ -1003,7 +1217,10 @@ export function SettingsIndexersSection({
         </div>
       )}
       </div>
+      ) : null}
 
+      {showIndexers ? (
+      <>
       <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -1018,7 +1235,7 @@ export function SettingsIndexersSection({
           />
         </div>
         <div className="overflow-x-auto">
-          <Table id="settings-indexers-table" className="min-w-[1160px]">
+          <Table id="settings-indexers-table" className="min-w-[1360px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
@@ -1027,6 +1244,9 @@ export function SettingsIndexersSection({
                 <TableHead>Proxy</TableHead>
                 <TableHead className="min-w-[220px]">
                   {t("settings.indexerDownloadClient")}
+                </TableHead>
+                <TableHead className="min-w-[200px]">
+                  {t("settings.seedingProfileColumn")}
                 </TableHead>
                 <TableHead className="text-center">
                   {t("label.enabled")}
@@ -1054,6 +1274,7 @@ export function SettingsIndexersSection({
                   : null;
                 return (
                 <TableRow
+                  data-ui="settings-table-row"
                   key={indexer.id}
                   id={selectorId("settings-indexer-row", indexer.name)}
                   className={indexer.isManaged ? "bg-muted/25" : undefined}
@@ -1118,6 +1339,18 @@ export function SettingsIndexersSection({
                       onRetry={refreshIndexerDownloadClientMappingCatalog}
                       onChange={(downloadClientId) =>
                         setIndexerDownloadClientMapping(indexer.id, downloadClientId)
+                      }
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <IndexerSeedingProfileCell
+                      indexer={indexer}
+                      catalog={indexerDownloadClientMappingCatalogResource.catalog}
+                      options={seedingProfileOptions}
+                      isPending={mutatingIndexerSeedingProfileIds.has(indexer.id)}
+                      disabled={editingIndexerId === indexer.id && isEditorOpen}
+                      onChange={(seedingProfileId) =>
+                        setIndexerSeedingProfile(indexer.id, seedingProfileId)
                       }
                     />
                   </TableCell>
@@ -1389,6 +1622,26 @@ export function SettingsIndexersSection({
                 onRetry={refreshIndexerDownloadClientMappingCatalog}
               />
             )}
+            {indexerDownloadClientMappingCatalogResource.catalog ? (
+              <IndexerSeedingProfileSelect
+                selectId="settings-indexer-seeding-profile-form"
+                label={t("settings.seedingProfileColumn")}
+                value={indexerDraft.seedingProfileId}
+                options={seedingProfileOptions}
+                supported={
+                  !isManagedSyncProvider &&
+                  supportsSeedingProfileAssignment(draftProtocolFamilies)
+                }
+                isPending={mutatingIndexerId !== null}
+                showLabel
+                onChange={(seedingProfileId) =>
+                  setIndexerDraft((previous) => ({
+                    ...previous,
+                    seedingProfileId,
+                  }))
+                }
+              />
+            ) : null}
             </div>
 
             {selectedProviderFields.length > 0 ? (
@@ -1530,6 +1783,8 @@ export function SettingsIndexersSection({
           />
         </div>
       )}
+      </>
+      ) : null}
     </div>
   );
 }

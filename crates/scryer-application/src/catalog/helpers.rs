@@ -9,6 +9,7 @@ pub(crate) struct DownloadClientRoutingEntry {
     pub(crate) older_queue_priority: Option<String>,
     pub(crate) remove_completed: bool,
     pub(crate) remove_failed: bool,
+    pub(crate) seeding_profile_id: Option<String>,
 }
 
 pub(crate) fn default_download_client_routing_entry() -> DownloadClientRoutingEntry {
@@ -18,7 +19,8 @@ pub(crate) fn default_download_client_routing_entry() -> DownloadClientRoutingEn
         recent_queue_priority: None,
         older_queue_priority: None,
         remove_completed: true,
-        remove_failed: false,
+        remove_failed: true,
+        seeding_profile_id: None,
     }
 }
 
@@ -63,7 +65,7 @@ fn read_routing_bool(raw_value: Option<&serde_json::Value>, default: bool) -> bo
 /// Parse a stored download-client routing JSON object into the typed entry.
 ///
 /// Per-field default fallbacks (`removeCompleted` → `true`, `removeFailed` →
-/// `false`) and legacy key aliases (`removeComplete`, `remove_completed`,
+/// `true`) and legacy key aliases (`removeComplete`, `remove_completed`,
 /// `recentPriority`, etc.) are transitional legacy-compat behavior. The
 /// canonical write paths in `settings.rs` and the startup
 /// `normalize_routing_settings` migration always emit fully-materialized
@@ -99,7 +101,12 @@ pub(crate) fn parse_download_client_routing_entry(
                 .get("removeFailed")
                 .or_else(|| config.get("remove_failed"))
                 .or_else(|| config.get("removeFailure")),
-            false,
+            true,
+        ),
+        seeding_profile_id: read_routing_string(
+            config
+                .get("seedingProfileId")
+                .or_else(|| config.get("seeding_profile_id")),
         ),
     }
 }
@@ -357,7 +364,7 @@ mod routing_tests {
     }
 
     #[test]
-    fn routing_entry_defaults_remove_completed_when_flag_is_missing() {
+    fn routing_entry_defaults_remove_completed_and_failed_when_flags_are_missing() {
         let entry = parse_download_client_routing_entry(&json!({
             "enabled": true,
             "category": "series"
@@ -366,7 +373,35 @@ mod routing_tests {
         assert!(entry.enabled);
         assert_eq!(entry.category.as_deref(), Some("series"));
         assert!(entry.remove_completed);
-        assert!(!entry.remove_failed);
+        assert!(entry.remove_failed);
+        assert_eq!(entry.seeding_profile_id, None);
+    }
+
+    #[test]
+    fn routing_entry_parses_seeding_profile_id_from_either_key_shape() {
+        let camel = parse_download_client_routing_entry(&json!({
+            "enabled": true,
+            "seedingProfileId": "  profile-1  "
+        }));
+        assert_eq!(camel.seeding_profile_id.as_deref(), Some("profile-1"));
+
+        let snake = parse_download_client_routing_entry(&json!({
+            "enabled": true,
+            "seeding_profile_id": "profile-2"
+        }));
+        assert_eq!(snake.seeding_profile_id.as_deref(), Some("profile-2"));
+
+        let cleared = parse_download_client_routing_entry(&json!({
+            "enabled": true,
+            "seedingProfileId": null
+        }));
+        assert_eq!(cleared.seeding_profile_id, None);
+
+        let blank = parse_download_client_routing_entry(&json!({
+            "enabled": true,
+            "seedingProfileId": "   "
+        }));
+        assert_eq!(blank.seeding_profile_id, None);
     }
 }
 

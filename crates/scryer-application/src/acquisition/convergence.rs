@@ -434,6 +434,23 @@ pub(crate) struct ScopeConvergence {
     pub routed_indexer_ids: Vec<String>,
 }
 
+/// Coverage invalidation policy used when an acquisition scope is re-opened.
+///
+/// Operator-triggered searches and mismatch recovery use [`Self::All`] to
+/// override convergence. Failed grabs and rejected imports use
+/// [`Self::Indexer`] to retry only the provider that failed. [`Self::Keep`]
+/// resets only the state row, retaining deliberately-valid coverage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CoverageReopen {
+    /// Reset the scope's state row only. Every failure path uses this: the
+    /// scope's saved search results are tried before any indexer is queried,
+    /// and a scope whose results are exhausted stays converged.
+    Keep,
+    /// Forget every indexer's coverage for the scope (operator triggers:
+    /// search-again, queue replacement, search-monitored).
+    All,
+}
+
 /// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
 /// derivable target identity), which is never a convergence unit. Episode sets /
 /// season packs converge as first-class units keyed on their canonical member set
@@ -463,6 +480,21 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
         }
         SubmissionScope::Orphan => None,
     }
+}
+
+/// Stable convergence key derived from a persisted acquisition scope state.
+/// Returns `None` only when the state has no derivable target identity.
+pub(crate) fn convergence_scope_key_for_state(item: &AcquisitionScopeState) -> Option<String> {
+    convergence_scope_key(
+        &SubmissionScope::from_persisted(
+            &item.title_id,
+            item.episode_id.clone(),
+            item.collection_id.clone(),
+            item.series_movie_link_id.clone(),
+            None,
+        ),
+        &item.title_id,
+    )
 }
 
 /// Deterministic version string for a quality profile's acceptance criteria. Any
@@ -522,7 +554,6 @@ impl AppUseCase {
         let context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
-                subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
                 None,
             )
@@ -651,10 +682,15 @@ impl AppUseCase {
         }
     }
 
-    /// Re-open a scope after a failed grab, rejected import, or operator
-    /// replacement. The acquisition state returns to `wanted`, but convergence
-    /// coverage remains intact because it records searches that already occurred.
-    pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &AcquisitionScopeState) {
+    /// Re-open an acquisition state row and apply its coverage invalidation
+    /// policy before waking the convergence cursor. Operator triggers use
+    /// [`CoverageReopen::All`]; failures use `Indexer` when their source is
+    /// known (or `All` when it is not); fingerprint rematches use `Keep`.
+    pub(crate) async fn reopen_wanted_scope_for_acquisition(
+        &self,
+        item: &AcquisitionScopeState,
+        coverage: CoverageReopen,
+    ) {
         if let Err(error) = self
             .services
             .workflow
@@ -668,7 +704,44 @@ impl AppUseCase {
                 "failed to reset wanted state row while re-opening scope"
             );
         }
+
+        if let Some(scope_key) = convergence_scope_key_for_state(item) {
+            match coverage {
+                CoverageReopen::Keep => {}
+                CoverageReopen::All => self.prune_scope_key_coverage(&scope_key, None).await,
+            }
+        }
         self.runtime.acquisition.acquisition_wake.notify_one();
+    }
+
+    /// Best-effort coverage invalidation for a caller that already has a
+    /// convergence scope key. `None` removes the whole scope; `Some` removes
+    /// only that indexer's coverage row.
+    pub(crate) async fn prune_scope_key_coverage(&self, scope_key: &str, indexer_id: Option<&str>) {
+        let result = match indexer_id {
+            Some(indexer_id) => {
+                self.services
+                    .integrations
+                    .scope_indexer_coverage
+                    .prune_scope_indexer(scope_key, indexer_id)
+                    .await
+            }
+            None => {
+                self.services
+                    .integrations
+                    .scope_indexer_coverage
+                    .prune_scope(scope_key)
+                    .await
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                scope_key,
+                indexer_id = indexer_id.unwrap_or(""),
+                error = %error,
+                "failed to prune convergence coverage while re-opening acquisition scope"
+            );
+        }
     }
 }
 
@@ -840,6 +913,45 @@ mod tests {
             profile_criteria_version(&base),
             profile_criteria_version(&audio_edited),
             "a required-audio change must change the version"
+        );
+    }
+
+    /// **D19.** Adding a field to `QualityProfileCriteria` must not move the
+    /// fingerprint of a profile that does not set it.
+    ///
+    /// This hash feeds `compute_search_fingerprint`, which decides whether a
+    /// scope's convergence coverage is still valid. A new key in the
+    /// serialization invalidates **every scope in the library** on upgrade and
+    /// triggers a full re-search — a library-wide indexer sweep as the side
+    /// effect of a settings field nobody set. `cutoff_score` therefore carries
+    /// `skip_serializing_if = "Option::is_none"`, and this pins it two ways: the
+    /// builtin 4K profile's fingerprint is hard-coded, and the key must be
+    /// absent from the serialization entirely — which is what makes the
+    /// hard-coded value the same one the profile hashed to before the field
+    /// existed. Any future criteria field has to clear both.
+    #[test]
+    fn an_unset_new_criteria_field_does_not_move_the_profile_fingerprint() {
+        let base = test_criteria();
+        assert_eq!(base.cutoff_score, None);
+        assert_eq!(
+            profile_criteria_version(&base),
+            "797bd8459663cb2b52ed3bd9601946f5f8baf570a93f59d686eb959cd987c3f8",
+            "the fingerprint of a profile that sets no new field must not move"
+        );
+
+        let serialized =
+            serde_json::to_value(&base).expect("criteria serialize for the fingerprint");
+        assert!(
+            serialized.get("cutoff_score").is_none(),
+            "an unset `cutoff_score` must not appear in the fingerprint input at all"
+        );
+
+        // …and a profile that *does* set it is genuinely a different profile.
+        let mut with_cutoff = base.clone();
+        with_cutoff.cutoff_score = Some(400);
+        assert_ne!(
+            profile_criteria_version(&base),
+            profile_criteria_version(&with_cutoff)
         );
     }
 }

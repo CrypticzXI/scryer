@@ -374,6 +374,41 @@ struct CountSummary {
     count: u32,
 }
 
+const PLUGIN_CATALOG_REFRESHED_MESSAGE: &str = "Plugin catalog refreshed";
+
+/// Outcome for the plugin catalog refresh job. The message and summary stay
+/// exactly as they were whenever automatic plugin updates did nothing, so the
+/// default (opt-out) configuration is indistinguishable from before.
+fn plugin_registry_refresh_outcome(
+    report: crate::plugins::runtime::PluginAutoUpdateReport,
+) -> JobExecutionOutcome {
+    if !report.did_work() {
+        return JobExecutionOutcome::new(Some(PLUGIN_CATALOG_REFRESHED_MESSAGE.to_string()), None);
+    }
+
+    let failed_count = report.failed.len() + usize::from(report.error.is_some());
+    let mut message = format!(
+        "{PLUGIN_CATALOG_REFRESHED_MESSAGE}; auto-updated {} plugin(s)",
+        report.updated.len()
+    );
+    if failed_count > 0 {
+        message.push_str(&format!("; {failed_count} failed"));
+    }
+
+    let summary_json = serde_json::to_string(&json!({
+        "updated": report.updated,
+        "failed": report.failed,
+        "error": report.error,
+    }))
+    .ok();
+
+    if report.has_failures() {
+        JobExecutionOutcome::warning(Some(message), summary_json)
+    } else {
+        JobExecutionOutcome::new(Some(message), summary_json)
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 struct LibraryScanRunSummary {
     scanned: usize,
@@ -671,7 +706,7 @@ impl AppUseCase {
             return Ok(false);
         }
         match run.job_key {
-            JobKey::TitleDeletion => Ok(true),
+            JobKey::TitleDeletion | JobKey::TitleRename => Ok(true),
             JobKey::MediaFileDeletion | JobKey::RecycleBinRestore | JobKey::RecycleBinPurge => {
                 let Some((prefix, remainder)) = run.operation_type.split_once(':') else {
                     return Ok(false);
@@ -772,6 +807,7 @@ impl AppUseCase {
             && !matches!(
                 job_key,
                 JobKey::TitleDeletion
+                    | JobKey::TitleRename
                     | JobKey::MediaFileDeletion
                     | JobKey::RecycleBinRestore
                     | JobKey::RecycleBinPurge
@@ -1433,9 +1469,8 @@ impl AppUseCase {
             )),
             JobKey::PluginRegistryRefresh => {
                 self.refresh_plugin_catalog_internal().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some("Plugin catalog refreshed".to_string()),
-                    None,
+                Ok(plugin_registry_refresh_outcome(
+                    self.run_scheduled_plugin_auto_update().await,
                 ))
             }
             JobKey::Housekeeping => {
@@ -1554,6 +1589,9 @@ impl AppUseCase {
             }
             JobKey::TitleDeletion => Err(AppError::Validation(
                 "title deletion jobs must be started from the title deletion mutation".into(),
+            )),
+            JobKey::TitleRename => Err(AppError::Validation(
+                "title rename jobs must be started from the rename mutation".into(),
             )),
             JobKey::MediaFileDeletion => Err(AppError::Validation(
                 "media file deletion jobs must be started from the media file deletion mutation"
@@ -3286,7 +3324,84 @@ fn summary_text_from_library_scan(summary: &LibraryScanSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::runtime::{
+        PluginAutoUpdateFailure, PluginAutoUpdateReport, PluginAutoUpdateUpgrade,
+    };
     use chrono::TimeZone;
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_is_unchanged_when_automation_does_nothing() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport::default());
+
+        assert_eq!(
+            outcome.summary_text.as_deref(),
+            Some("Plugin catalog refreshed")
+        );
+        assert!(outcome.summary_json.is_none());
+        assert!(outcome.status_override.is_none());
+    }
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_reports_applied_updates() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
+            updated: vec![PluginAutoUpdateUpgrade {
+                plugin_id: "alpha".to_string(),
+                from_version: "1.2.3".to_string(),
+                to_version: "1.2.4".to_string(),
+            }],
+            ..Default::default()
+        });
+
+        assert!(outcome.status_override.is_none());
+        let summary_text = outcome.summary_text.expect("summary text");
+        assert_eq!(
+            summary_text,
+            "Plugin catalog refreshed; auto-updated 1 plugin(s)"
+        );
+        let summary: serde_json::Value =
+            serde_json::from_str(&outcome.summary_json.expect("summary json"))
+                .expect("summary json parses");
+        assert_eq!(summary["updated"][0]["pluginId"], "alpha");
+        assert_eq!(summary["updated"][0]["fromVersion"], "1.2.3");
+        assert_eq!(summary["updated"][0]["toVersion"], "1.2.4");
+        assert!(
+            summary["failed"]
+                .as_array()
+                .expect("failed array")
+                .is_empty()
+        );
+        assert!(summary["error"].is_null());
+    }
+
+    #[test]
+    fn plugin_catalog_refresh_outcome_warns_on_failures() {
+        let outcome = plugin_registry_refresh_outcome(PluginAutoUpdateReport {
+            failed: vec![PluginAutoUpdateFailure {
+                plugin_id: "alpha".to_string(),
+                error: "validation: boom".to_string(),
+                rolled_back: false,
+                rollback_error: Some("restore failed".to_string()),
+            }],
+            error: Some("catalog unavailable".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(outcome.status_override, Some(JobRunStatus::Warning));
+        assert!(
+            outcome
+                .summary_text
+                .expect("summary text")
+                .contains("2 failed")
+        );
+        let summary: serde_json::Value =
+            serde_json::from_str(&outcome.summary_json.expect("summary json"))
+                .expect("summary json parses");
+        assert_eq!(summary["failed"][0]["pluginId"], "alpha");
+        assert_eq!(summary["failed"][0]["error"], "validation: boom");
+        assert_eq!(summary["failed"][0]["rolledBack"], false);
+        assert_eq!(summary["failed"][0]["rollbackError"], "restore failed");
+        assert_eq!(summary["error"], "catalog unavailable");
+    }
 
     #[test]
     fn discovery_next_run_ignores_the_incremental_bucket_before_the_first_snapshot() {

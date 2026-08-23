@@ -64,8 +64,21 @@ export function validateFolderTemplateSyntax(
   }
 
   let i = 0;
+  let escapedLiteralOpenCount = 0;
   let sawRequiredToken = requiredToken === undefined;
   while (i < trimmed.length) {
+    if (trimmed.startsWith("{{", i)) {
+      escapedLiteralOpenCount += 1;
+      i += 2;
+      continue;
+    }
+    if (trimmed.startsWith("}}", i)) {
+      if (escapedLiteralOpenCount > 0) {
+        escapedLiteralOpenCount -= 1;
+      }
+      i += 2;
+      continue;
+    }
     if (trimmed[i] === "{") {
       const closeIndex = trimmed.indexOf("}", i + 1);
       if (closeIndex === -1) {
@@ -93,6 +106,11 @@ export function validateFolderTemplateSyntax(
       }
       i = closeIndex + 1;
     } else if (trimmed[i] === "}") {
+      if (escapedLiteralOpenCount > 0) {
+        escapedLiteralOpenCount -= 1;
+        i++;
+        continue;
+      }
       return { kind: "unmatchedClose" };
     } else {
       const character = trimmed[i];

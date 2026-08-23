@@ -89,34 +89,89 @@ pub(crate) fn download_submission_scope_for_release_title(
 
     direct_download_submission_scope_for_wanted_item(item, episode)
 }
+/// What a scope stands for once its catalog lookups are done.
+///
+/// Scope intersection is asked in two places — "does this submission block that
+/// wanted row" and "is this submission in flight for the scope I am about to
+/// grab into" (D18) — and they must not answer differently, which they would if
+/// each pattern-matched the enum in its own direction. Resolving the target side
+/// to members first makes one predicate serve both.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ScopeMembership<'a> {
+    /// Episodes the scope covers. Empty for title and series-movie-link scopes.
+    pub episode_ids: &'a [String],
+    /// Collections those episodes belong to; usually one, empty when unresolved.
+    pub collection_ids: &'a [String],
+    pub series_movie_link_id: Option<&'a str>,
+}
+
+/// [`ScopeMembership`] with the lookups owned, for callers that resolve it once
+/// and then borrow it per submission.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OwnedScopeMembership {
+    pub episode_ids: Vec<String>,
+    pub collection_ids: Vec<String>,
+    pub series_movie_link_id: Option<String>,
+}
+
+impl OwnedScopeMembership {
+    pub(crate) fn view(&self) -> ScopeMembership<'_> {
+        ScopeMembership {
+            episode_ids: &self.episode_ids,
+            collection_ids: &self.collection_ids,
+            series_movie_link_id: self.series_movie_link_id.as_deref(),
+        }
+    }
+}
+
+/// Does a submission's scope overlap the scope described by `target`?
+pub(crate) fn submission_scope_intersects(
+    submission: &SubmissionScope,
+    target: &ScopeMembership<'_>,
+) -> bool {
+    let covers = |episode_id: &String| target.episode_ids.contains(episode_id);
+    match submission {
+        // An orphan grab occupies nothing.
+        SubmissionScope::Orphan => false,
+        // A title-scoped download is the whole title, so it covers everything
+        // under it.
+        SubmissionScope::Title => true,
+        SubmissionScope::Episode { episode_id } => covers(episode_id),
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.iter().any(covers),
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => target.series_movie_link_id == Some(series_movie_link_id.as_str()),
+        SubmissionScope::Collection { collection_id } => {
+            target.collection_ids.iter().any(|id| id == collection_id)
+        }
+    }
+}
+
 pub(crate) fn submission_blocks_wanted_item(
     submission: &DownloadSubmission,
     item: &AcquisitionScopeState,
     episode_collection_id: Option<&str>,
 ) -> bool {
-    match &submission.scope {
-        SubmissionScope::Orphan => false,
-        SubmissionScope::Title => true,
-        SubmissionScope::Episode { episode_id } => {
-            item.media_type == "episode" && item.episode_id.as_deref() == Some(episode_id.as_str())
-        }
-        SubmissionScope::EpisodeSet { episode_ids } => {
-            item.media_type == "episode"
-                && item.episode_id.as_ref().is_some_and(|episode_id| {
-                    episode_ids.iter().any(|candidate| candidate == episode_id)
-                })
-        }
-        SubmissionScope::SeriesMovie {
-            series_movie_link_id,
-        } => {
-            item.media_type == "series_movie"
-                && item.series_movie_link_id.as_deref() == Some(series_movie_link_id.as_str())
-        }
-        SubmissionScope::Collection { collection_id } => match item.media_type.as_str() {
-            "episode" => episode_collection_id == Some(collection_id.as_str()),
-            _ => false,
+    let episode_ids: Vec<String> = if item.media_type == "episode" {
+        item.episode_id.clone().into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    let collection_ids: Vec<String> = if item.media_type == "episode" {
+        episode_collection_id.map(str::to_string).into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    submission_scope_intersects(
+        &submission.scope,
+        &ScopeMembership {
+            episode_ids: &episode_ids,
+            collection_ids: &collection_ids,
+            series_movie_link_id: (item.media_type == "series_movie")
+                .then_some(item.series_movie_link_id.as_deref())
+                .flatten(),
         },
-    }
+    )
 }
 fn resolved_failed_release_hint(failed_submission: Option<&DownloadSubmission>) -> Option<String> {
     failed_submission
@@ -133,7 +188,6 @@ async fn mark_wanted_item_failed_without_reacquire(
             &item.id,
             AcquisitionScopeStatus::Wanted.as_str(),
             item.last_search_at.as_deref(),
-            item.current_score,
             None,
         )
         .await
@@ -259,10 +313,11 @@ impl AppUseCase {
                 continue;
             }
 
-            // A rematch changes the scope's fingerprint, so stale coverage is
-            // already ignored — the re-open prunes it eagerly and wakes the
-            // cursor so recovery starts on the next cycle.
-            self.reopen_wanted_scope_for_acquisition(item).await;
+            // This operator-authorized recovery can change a title or alias
+            // without changing the search fingerprint, so it must override
+            // convergence and search every routed indexer again.
+            self.reopen_wanted_scope_for_acquisition(item, CoverageReopen::All)
+                .await;
             queued += 1;
         }
 
@@ -281,7 +336,7 @@ impl AppUseCase {
 impl AppUseCase {
     /// Re-open every fileless monitored episode scope of `title` (optionally
     /// restricted to one season) for acquisition: the derived target set already
-    /// contains them; the re-open prunes any coverage so even converged scopes
+    /// contains them; the re-open prunes all coverage so even converged scopes
     /// are searched again on the next cycle (§D5 — a trigger overrides
     /// convergence). Scopes with an in-flight grab are skipped.
     async fn reopen_series_scopes_for_search(

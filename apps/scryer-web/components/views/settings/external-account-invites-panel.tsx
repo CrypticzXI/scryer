@@ -670,6 +670,7 @@ export function ExternalAccountInvitesPanel({
                     const status = inviteStatus(invite, t);
                     return (
                       <TableRow
+                        data-ui="settings-table-row"
                         key={invite.id}
                         id={selectorId(
                           "settings-external-account-invite-row",

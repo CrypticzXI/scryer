@@ -4,7 +4,7 @@ use scryer_application::{
     AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
     SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::SettingsStore;
+use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
 
 fn parse_bootstrap_bool_token(raw: &str) -> Option<bool> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -146,7 +146,7 @@ pub(crate) async fn disable_auto_backups_without_key(settings_store: Arc<Setting
 mod tests {
     use super::*;
     use crate::settings_bootstrap::seed_service_setting_definitions;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
+    use scryer_infrastructure_datastore::{MigrationMode, SqliteServices};
 
     async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let temp = tempfile::tempdir().expect("tempdir");

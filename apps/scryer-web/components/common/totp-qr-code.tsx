@@ -1,7 +1,9 @@
-import { QRCode } from "react-qr-code";
+import qrcode from "qrcode-generator";
+import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 
-const TOTP_QR_CODE_SIZE = 256;
+const TOTP_QR_CELL_SIZE = 8;
+const TOTP_QR_QUIET_ZONE_MODULES = 4;
 
 type TotpQrCodeProps = {
   value: string;
@@ -16,20 +18,34 @@ export function TotpQrCode({
   className,
   ariaLabel = "TOTP setup QR code",
 }: TotpQrCodeProps) {
+  const image = useMemo(() => {
+    const code = qrcode(0, "L");
+    code.addData(value);
+    code.make();
+    const pixelSize =
+      (code.getModuleCount() + TOTP_QR_QUIET_ZONE_MODULES * 2) *
+      TOTP_QR_CELL_SIZE;
+
+    return {
+      pixelSize,
+      src: code.createDataURL(
+        TOTP_QR_CELL_SIZE,
+        TOTP_QR_QUIET_ZONE_MODULES,
+      ),
+    };
+  }, [value]);
+
   return (
     <div
       id={id}
-      className={cn("inline-flex rounded-md bg-white p-6 shadow-sm", className)}
+      className={cn("inline-flex max-w-full rounded-md bg-white shadow-sm", className)}
     >
-      <QRCode
-        aria-label={ariaLabel}
-        bgColor="#FFFFFF"
-        className="block h-auto max-w-full"
-        fgColor="#000000"
-        level="L"
-        shapeRendering="crispEdges"
-        size={TOTP_QR_CODE_SIZE}
-        value={value}
+      <img
+        alt={ariaLabel}
+        className="block h-auto max-w-full [image-rendering:pixelated]"
+        height={image.pixelSize}
+        src={image.src}
+        width={image.pixelSize}
       />
     </div>
   );

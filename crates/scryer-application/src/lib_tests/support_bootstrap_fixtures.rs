@@ -44,6 +44,7 @@ pub(super) fn test_user_with_app_permissions(
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -68,7 +69,62 @@ pub(super) async fn title_updated_events(app: &AppUseCase, title_id: &str) -> Ve
         .expect("title updated events should load")
 }
 
+/// Records every `record_grab` call so tests can prove a submission path
+/// actually reports the grab, and against which indexer id.
+///
+/// Uses `std::sync::Mutex` because `record_grab` is a synchronous trait method;
+/// the ambient `Mutex` in these fixtures is tokio's async one.
+#[derive(Default)]
+pub(super) struct RecordingIndexerStatsTracker {
+    pub(super) grabs: RecordedGrabs,
+}
+
+impl crate::IndexerStatsTracker for RecordingIndexerStatsTracker {
+    fn record_query(&self, _indexer_id: &str, _indexer_name: &str, _success: bool) {}
+
+    fn record_grab(&self, indexer_id: &str, indexer_name: &str) {
+        self.grabs
+            .lock()
+            .expect("grab log mutex")
+            .push((indexer_id.to_string(), indexer_name.to_string()));
+    }
+
+    fn record_api_limits(
+        &self,
+        _indexer_id: &str,
+        _api_current: Option<u32>,
+        _api_max: Option<u32>,
+        _grab_current: Option<u32>,
+        _grab_max: Option<u32>,
+    ) {
+    }
+
+    fn all_stats(&self) -> Vec<crate::IndexerQueryStats> {
+        Vec::new()
+    }
+}
+
+/// Shared handle to a [`RecordingIndexerStatsTracker`]'s log of
+/// `(indexer_id, indexer_name)` pairs.
+pub(super) type RecordedGrabs = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// Same app as [`bootstrap`], with the indexer stats tracker swapped for one
+/// that records grabs, and the recorder handed back to the caller.
+pub(super) fn bootstrap_with_grab_recorder() -> (AppUseCase, User, RecordedGrabs) {
+    let tracker = Arc::new(RecordingIndexerStatsTracker::default());
+    let grabs = Arc::clone(&tracker.grabs);
+    let (app, user) = bootstrap_with_services(Arc::new(MockUserRepo::default()), Some(tracker));
+    (app, user, grabs)
+}
+
 pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase, User) {
+    bootstrap_with_services(users, None)
+}
+
+fn bootstrap_with_services(
+    users: Arc<MockUserRepo>,
+    indexer_stats: Option<Arc<RecordingIndexerStatsTracker>>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
@@ -83,7 +139,7 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
-    let services = AppServices::builder(
+    let mut services_builder = AppServices::builder(
         titles.clone(),
         shows,
         users,
@@ -97,8 +153,11 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
         String::new(),
     )
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
-    .with_libraries(Arc::new(MockLibraryRepo::default()))
-    .build_partial_for_tests();
+    .with_libraries(Arc::new(MockLibraryRepo::default()));
+    if let Some(indexer_stats) = indexer_stats {
+        services_builder = services_builder.with_indexer_stats(indexer_stats);
+    }
+    let services = services_builder.build_partial_for_tests();
     let mut registry = FacetRegistry::new();
     registry.register(Arc::new(MovieFacetHandler));
     registry.register(Arc::new(SeriesFacetHandler::new(
@@ -464,6 +523,7 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         studio: "Test Studio".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
         ratings: Default::default(),
+        credits: Vec::new(),
     }
 }
 
@@ -688,6 +748,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
         store: Arc::new(Mutex::new(configs)),
     });
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
+    let seeding_profiles = Arc::new(MockSeedingProfileRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
@@ -709,6 +770,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
         String::new(),
     )
     .with_plugin_provider(plugin_provider)
+    .with_seeding_profiles(seeding_profiles)
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();
@@ -819,6 +881,7 @@ pub(super) fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str)
         enable_auto_search: true,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1433,6 +1496,7 @@ pub(super) fn build_test_unmatched_item(
         reason_code: "no_metadata_match".to_string(),
         error_message: None,
         search_attempts: vec![],
+        size_bytes: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     }
@@ -1480,6 +1544,7 @@ pub(super) fn empty_update_media_settings_with_roots(
         library_path: None,
         root_folders: Some(root_folders),
         required_audio_languages: None,
+        use_season_folders: None,
         folder_template: None,
         season_folder_template: None,
         specials_folder_template: None,
@@ -1507,6 +1572,7 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
         library_path: None,
         root_folders: None,
         required_audio_languages: None,
+        use_season_folders: None,
         folder_template: None,
         season_folder_template: None,
         specials_folder_template: None,
@@ -1532,6 +1598,8 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
 pub(super) fn empty_library_settings_override() -> LibrarySettingsOverrideDraft {
     LibrarySettingsOverrideDraft {
         required_audio_languages: None,
+        metadata_language: None,
+        use_season_folders: None,
         quality_profile_id: None,
         request_quality_profile_ids: None,
         scoring_persona: None,
@@ -1629,6 +1697,7 @@ pub(super) fn cutoff_projection_test_profile(id: &str, cutoff_tier: &str) -> Qua
             scoring_overrides: ScoringOverrides::default(),
             cutoff_tier: Some(cutoff_tier.to_string()),
             min_score_to_grab: None,
+            cutoff_score: None,
             facet_persona_overrides: HashMap::new(),
         },
     }
@@ -1676,6 +1745,7 @@ pub(super) fn queue_history_fixture_item(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }
 }
 
@@ -1771,6 +1841,7 @@ pub(super) async fn set_download_client_cleanup_routing(
         user,
         facet,
         vec![DownloadClientRoutingSettingsEntry {
+            seeding_profile_id: None,
             client_id: client_id.to_string(),
             enabled: true,
             category: None,
@@ -1825,6 +1896,7 @@ pub(super) fn failed_history_item(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding: None,
     }
 }
 
@@ -1858,6 +1930,8 @@ pub(super) fn pending_movie_release(
         source_password: None,
         published_at: Some(now.to_rfc3339()),
         info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
     }
 }
 
@@ -1908,7 +1982,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),
@@ -2018,7 +2092,7 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
-                current_score: None,
+                landed_bar: None,
                 latest_release_decision: None,
                 mismatch_recovery_eligible: false,
                 created_at: Utc::now().to_rfc3339(),

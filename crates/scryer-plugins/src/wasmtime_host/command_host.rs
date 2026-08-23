@@ -17,7 +17,7 @@ use scryer_plugin_sdk::host::{
 use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use wasmtime::{Caller, Linker, Memory};
 
-use crate::plugin_http_host::{PluginHttpHost, PluginHttpRequest};
+use crate::plugin_http_host::{IndexerProxyPolicy, PluginHttpHost, PluginHttpRequest};
 use crate::wasmtime_host::sandbox::HostCtx;
 
 const MAX_RESPONSE_HANDLES: usize = 32;
@@ -80,6 +80,53 @@ impl CommandHost {
                 timeout,
             })),
         }
+    }
+
+    /// Build the host services for a command-ABI indexer.
+    ///
+    /// Indexers differ from download clients in exactly two ways, and both live
+    /// in egress: a configured indexer proxy has to wrap every request, and the
+    /// managed-destination cooldown key has to be carried so a shared upstream
+    /// (a Prowlarr parent, say) throttles as one destination rather than once
+    /// per child. Everything else — descriptor-bound config, plugin state, the
+    /// timeout — is identical, so this mirrors `for_download_client` rather
+    /// than growing it another two arguments that every caller passes `None` to.
+    pub(crate) fn for_indexer(
+        plugin_id: String,
+        config: BTreeMap<String, String>,
+        allowed_hosts: Vec<String>,
+        indexer_proxy_policy: Option<IndexerProxyPolicy>,
+        destination_cooldown_key: Option<String>,
+        timeout: Duration,
+        max_http_response_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(CommandHostState {
+                next_handle: 1,
+                responses: HashMap::new(),
+            })),
+            services: Some(Arc::new(CommandHostServices {
+                plugin_id,
+                config,
+                state: Mutex::new(CommandState::default()),
+                http: PluginHttpHost::new(
+                    allowed_hosts,
+                    indexer_proxy_policy,
+                    destination_cooldown_key,
+                    max_http_response_bytes,
+                ),
+                timeout,
+            })),
+        }
+    }
+
+    pub(crate) fn rate_limit_message(&self) -> Option<String> {
+        let services = self.services.as_ref()?;
+        services
+            .http
+            .rate_limit_message(&services.plugin_id)
+            .ok()
+            .flatten()
     }
 
     fn call(&self, encoded_request: &[u8]) -> Result<u32, String> {
@@ -170,8 +217,9 @@ impl CommandHost {
                         Some(services.timeout),
                     )
                     .and_then(|body| {
+                        let status = services.http.status_code(&services.plugin_id)?;
                         Ok(PluginHttpResponse {
-                            status: services.http.status_code(&services.plugin_id)?,
+                            status,
                             headers: services
                                 .http
                                 .headers(&services.plugin_id)?
@@ -262,7 +310,7 @@ fn unsupported_response(request: PluginHostRequest) -> PluginHostResponse {
 }
 
 pub(crate) fn add_to_linker(linker: &mut Linker<HostCtx>) -> wasmtime::Result<()> {
-    linker.func_wrap(HOST_ABI_MODULE, "scryer_host_call", host_call)?;
+    linker.func_wrap_async(HOST_ABI_MODULE, "scryer_host_call", host_call)?;
     linker.func_wrap(
         HOST_ABI_MODULE,
         "scryer_host_response_len",
@@ -281,17 +329,23 @@ pub(crate) fn add_to_linker(linker: &mut Linker<HostCtx>) -> wasmtime::Result<()
     Ok(())
 }
 
-fn host_call(mut caller: Caller<'_, HostCtx>, request_ptr: i32, request_len: i32) -> i32 {
-    let Ok(request) = read_memory(&mut caller, request_ptr, request_len) else {
-        return 0;
-    };
-    caller
-        .data()
-        .command_host
-        .call(&request)
-        .ok()
-        .and_then(|handle| i32::try_from(handle).ok())
-        .unwrap_or(0)
+fn host_call(
+    mut caller: Caller<'_, HostCtx>,
+    (request_ptr, request_len): (i32, i32),
+) -> Box<dyn std::future::Future<Output = i32> + Send + '_> {
+    let request = read_memory(&mut caller, request_ptr, request_len);
+    let command_host = caller.data().command_host.clone();
+    Box::new(async move {
+        let Ok(request) = request else {
+            return 0;
+        };
+        tokio::task::spawn_blocking(move || command_host.call(&request))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|handle| i32::try_from(handle).ok())
+            .unwrap_or(0)
+    })
 }
 
 fn host_response_len(caller: Caller<'_, HostCtx>, handle: i32) -> i32 {

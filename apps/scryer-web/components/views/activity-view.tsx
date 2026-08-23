@@ -178,6 +178,12 @@ const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] 
     icon: HardDrive,
     iconClassName: "text-[var(--scry-info-text-soft)]",
   },
+  {
+    value: "WARNING",
+    labelKey: "activity.activityFilter.warning",
+    icon: CircleAlert,
+    iconClassName: "text-[var(--scry-warning-text)]",
+  },
 ];
 
 const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = [

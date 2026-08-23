@@ -8,6 +8,7 @@ use scryer_application::{
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
     JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
+    PendingImportReasonClass as AppPendingImportReasonClass,
     PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
     ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
     SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
@@ -35,6 +36,17 @@ impl FromApplication<AppPendingImportStatus> for PendingImportStatusValue {
         match value {
             AppPendingImportStatus::Pending => Self::Pending,
             AppPendingImportStatus::Ignored => Self::Ignored,
+        }
+    }
+}
+
+impl FromApplication<AppPendingImportReasonClass> for PendingImportReasonClassValue {
+    fn from_application(value: AppPendingImportReasonClass) -> Self {
+        match value {
+            AppPendingImportReasonClass::Unmatched => Self::Unmatched,
+            AppPendingImportReasonClass::Ambiguous => Self::Ambiguous,
+            AppPendingImportReasonClass::QualityUnknown => Self::QualityUnknown,
+            AppPendingImportReasonClass::Other => Self::Other,
         }
     }
 }
@@ -86,7 +98,7 @@ impl FromApplication<AppDownloadSourceKind> for DownloadSourceKindValue {
 impl IntoApplication<AppDownloadSubmissionPurpose> for QueueDownloadPurposeValue {
     fn into_application(self) -> AppDownloadSubmissionPurpose {
         match self {
-            Self::Standard => AppDownloadSubmissionPurpose::Standard,
+            Self::Standard => AppDownloadSubmissionPurpose::OperatorQueued,
             Self::AdditionalFile => AppDownloadSubmissionPurpose::AdditionalFile,
         }
     }
@@ -119,6 +131,7 @@ impl FromApplication<scryer_application::DownloadDisplayState> for DownloadDispl
             scryer_application::DownloadDisplayState::PostProcessing => Self::PostProcessing,
             scryer_application::DownloadDisplayState::Completed => Self::Completed,
             scryer_application::DownloadDisplayState::Failed => Self::Failed,
+            scryer_application::DownloadDisplayState::Warning => Self::Warning,
             scryer_application::DownloadDisplayState::Importing => Self::Importing,
             scryer_application::DownloadDisplayState::ImportPending => Self::ImportPending,
             scryer_application::DownloadDisplayState::ImportBlocked => Self::ImportBlocked,
@@ -126,6 +139,18 @@ impl FromApplication<scryer_application::DownloadDisplayState> for DownloadDispl
             scryer_application::DownloadDisplayState::Ignored => Self::Ignored,
             scryer_application::DownloadDisplayState::Removing => Self::Removing,
             scryer_application::DownloadDisplayState::RemoveFailed => Self::RemoveFailed,
+        }
+    }
+}
+
+impl FromApplication<scryer_application::DownloadSeedingState> for DownloadSeedingStateValue {
+    fn from_application(value: scryer_application::DownloadSeedingState) -> Self {
+        match value {
+            scryer_application::DownloadSeedingState::None => Self::None,
+            scryer_application::DownloadSeedingState::Seeding => Self::Seeding,
+            scryer_application::DownloadSeedingState::GoalMet => Self::GoalMet,
+            scryer_application::DownloadSeedingState::HeldPrivate => Self::HeldPrivate,
+            scryer_application::DownloadSeedingState::NeverRemove => Self::NeverRemove,
         }
     }
 }
@@ -138,6 +163,7 @@ impl IntoApplication<scryer_application::DownloadActivityFilter> for DownloadAct
             Self::Queued => scryer_application::DownloadActivityFilter::Queued,
             Self::Paused => scryer_application::DownloadActivityFilter::Paused,
             Self::PostProcessing => scryer_application::DownloadActivityFilter::PostProcessing,
+            Self::Warning => scryer_application::DownloadActivityFilter::Warning,
         }
     }
 }
@@ -317,6 +343,7 @@ impl IntoApplication<AppJobKey> for JobKeyValue {
             Self::DiscoverySync => AppJobKey::DiscoverySync,
             Self::TitleImageCacheRefresh => AppJobKey::TitleImageCacheRefresh,
             Self::TitleDeletion => AppJobKey::TitleDeletion,
+            Self::TitleRename => AppJobKey::TitleRename,
             Self::MediaFileDeletion => AppJobKey::MediaFileDeletion,
             Self::RecycleBinRestore => AppJobKey::RecycleBinRestore,
             Self::RecycleBinPurge => AppJobKey::RecycleBinPurge,
@@ -346,6 +373,7 @@ impl FromApplication<AppJobKey> for JobKeyValue {
             AppJobKey::DiscoverySync => Self::DiscoverySync,
             AppJobKey::TitleImageCacheRefresh => Self::TitleImageCacheRefresh,
             AppJobKey::TitleDeletion => Self::TitleDeletion,
+            AppJobKey::TitleRename => Self::TitleRename,
             AppJobKey::MediaFileDeletion => Self::MediaFileDeletion,
             AppJobKey::RecycleBinRestore => Self::RecycleBinRestore,
             AppJobKey::RecycleBinPurge => Self::RecycleBinPurge,
@@ -479,5 +507,22 @@ impl IntoApplication<AppScoringOverrides> for ScoringOverridesInput {
             prefer_lossless_audio: self.prefer_lossless_audio,
             block_upscaled: self.block_upscaled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_queue_download_purposes_preserve_their_application_lanes() {
+        assert_eq!(
+            QueueDownloadPurposeValue::Standard.into_application(),
+            AppDownloadSubmissionPurpose::OperatorQueued
+        );
+        assert_eq!(
+            QueueDownloadPurposeValue::AdditionalFile.into_application(),
+            AppDownloadSubmissionPurpose::AdditionalFile
+        );
     }
 }

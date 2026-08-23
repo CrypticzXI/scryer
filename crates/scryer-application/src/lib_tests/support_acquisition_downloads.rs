@@ -262,6 +262,8 @@ pub(super) struct TrackingDownloadSubmissionRepo {
     pub(super) record_submission_error: Arc<Mutex<Option<String>>>,
     pub(super) identities: DownloadSubmissionIdentities,
     pub(super) identity_states: DownloadIdentityStates,
+    pub(super) identity_state_reasons: Arc<Mutex<HashMap<String, String>>>,
+    pub(super) identity_state_details: Arc<Mutex<HashMap<String, String>>>,
     pub(super) tracked_states: TrackedDownloadStates,
     pub(super) deleted_title_ids: Arc<Mutex<Vec<String>>>,
     pub(super) list_for_title_calls: Arc<Mutex<Vec<String>>>,
@@ -320,7 +322,6 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         id: &str,
         status: &str,
         last_search_at: Option<&str>,
-        current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         let mut store = self.store.lock().await;
@@ -331,7 +332,6 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
         item.status = AcquisitionScopeStatus::parse(status)
             .ok_or_else(|| AppError::Repository(format!("invalid wanted status {status}")))?;
         item.last_search_at = last_search_at.map(str::to_string);
-        item.current_score = current_score;
         item.grabbed_release = grabbed_release.map(str::to_string);
         item.updated_at = Utc::now().to_rfc3339();
         drop(store);
@@ -607,7 +607,6 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
                     wanted_item_id,
                     AcquisitionScopeStatus::Grabbed.as_str(),
                     commit.last_search_at.as_deref(),
-                    commit.current_score,
                     Some(&commit.grabbed_release),
                 )
                 .await?;
@@ -632,10 +631,9 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
                     .grabbed_pending_release_id
                     .as_deref()
                     .is_none_or(|pending_release_id| release.id != pending_release_id);
-            let should_supersede = matches!(
-                release.status,
-                PendingReleaseStatus::Waiting | PendingReleaseStatus::Standby
-            );
+            // Mirrors `commit_successful_grab_tx`: only delay-waiting siblings
+            // are superseded; saved search results stay for the failure walk.
+            let should_supersede = matches!(release.status, PendingReleaseStatus::Waiting);
             if is_sibling && should_supersede {
                 release.status = PendingReleaseStatus::Superseded;
             }
@@ -815,14 +813,26 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         identity: &DownloadSubmissionIdentity,
         source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
-        _reason: Option<&str>,
-        _detail: Option<&str>,
+        reason: Option<&str>,
+        detail: Option<&str>,
     ) -> AppResult<()> {
         if let Some(key) = download_identity_state_key(identity, source_identity) {
             self.identity_states
                 .lock()
                 .await
-                .insert(key, tracked_state.to_string());
+                .insert(key.clone(), tracked_state.to_string());
+            let mut reasons = self.identity_state_reasons.lock().await;
+            if let Some(reason) = reason {
+                reasons.insert(key.clone(), reason.to_string());
+            } else {
+                reasons.remove(&key);
+            }
+            let mut details = self.identity_state_details.lock().await;
+            if let Some(detail) = detail {
+                details.insert(key, detail.to_string());
+            } else {
+                details.remove(&key);
+            }
         }
         Ok(())
     }
@@ -836,6 +846,28 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
             return Ok(None);
         };
         Ok(self.identity_states.lock().await.get(&key).cloned())
+    }
+
+    async fn get_identity_tracked_state_reason(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+        Ok(self.identity_state_reasons.lock().await.get(&key).cloned())
+    }
+
+    async fn get_identity_tracked_state_detail(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+        Ok(self.identity_state_details.lock().await.get(&key).cloned())
     }
 
     async fn list_for_client_items(
@@ -960,6 +992,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: None,
+                release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Orphan,
             });
@@ -1136,6 +1169,23 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         Ok(())
     }
 
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()> {
+        if let Some(release) = self
+            .store
+            .lock()
+            .await
+            .iter_mut()
+            .find(|release| release.id == id)
+        {
+            release.delay_until = delay_until.to_string();
+        }
+        Ok(())
+    }
+
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
@@ -1151,6 +1201,44 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             })
             .cloned()
             .collect())
+    }
+
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        let mut counts = std::collections::HashMap::<String, i64>::new();
+        for release in self.store.lock().await.iter() {
+            if release.status == PendingReleaseStatus::Standby
+                && wanted_item_ids.contains(&release.wanted_item_id)
+            {
+                *counts.entry(release.wanted_item_id.clone()).or_default() += 1;
+            }
+        }
+        Ok(counts)
+    }
+
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        let mut releases = self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| {
+                release.title_id == title_id && release.status == PendingReleaseStatus::Standby
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        releases.sort_by(|left, right| {
+            right
+                .release_score
+                .cmp(&left.release_score)
+                .then_with(|| left.added_at.cmp(&right.added_at))
+        });
+        Ok(releases)
     }
 
     async fn delete_standby_pending_releases_for_wanted_item(
@@ -1331,6 +1419,7 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
 #[derive(Clone)]
 pub(super) enum StubSubmitError {
     SubmitUnavailable(String),
+    SourceGone(String),
     /// The router exhausted every prioritized client (typed).
     FailoverExhausted(String),
     /// A plain repository error — including the exact text the router used to
@@ -1350,6 +1439,7 @@ impl StubSubmitError {
     pub(super) fn into_app_error(self) -> AppError {
         match self {
             Self::SubmitUnavailable(message) => AppError::download_submit_unavailable(message),
+            Self::SourceGone(message) => AppError::DownloadSourceGone(message),
             Self::FailoverExhausted(message) => {
                 AppError::download_submit_failover_exhausted(message)
             }
@@ -1371,6 +1461,7 @@ pub(super) struct StubDownloadClient {
     pub(super) deleted_requests: DeletedDownloadRequests,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
+    pub(super) submit_errors: Arc<Mutex<std::collections::VecDeque<StubSubmitError>>>,
     /// NZB payload the real pre-submission category gate is run against, so a
     /// caller-level test can exercise the production veto instead of a
     /// hand-written error string.
@@ -1378,6 +1469,10 @@ pub(super) struct StubDownloadClient {
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
+    pub(super) submitted_info_hash_hints: Arc<Mutex<Vec<Option<String>>>>,
+    /// Tracker-declared minimums as they reached the client, so a caller-level
+    /// test can prove the clamp inputs survived the path under test.
+    pub(super) submitted_seed_minimums: Arc<Mutex<Vec<crate::ReleaseSeedMinimums>>>,
     pub(super) queue_calls: Arc<Mutex<usize>>,
     pub(super) queue_for_title_calls: Arc<Mutex<Vec<String>>>,
     pub(super) history_calls: Arc<Mutex<usize>>,
@@ -1387,6 +1482,10 @@ pub(super) struct StubDownloadClient {
     pub(super) recent_completed_download_calls: Arc<Mutex<Vec<usize>>>,
     pub(super) targeted_completed_downloads: Arc<Mutex<HashMap<String, CompletedDownload>>>,
     pub(super) targeted_completed_download_calls: Arc<Mutex<Vec<String>>>,
+    /// `(client_id, item_id)` for every pause the caller issued. Pause is how a
+    /// `StopSeeding` seeding profile stops a finished torrent uploading, so the
+    /// gate's non-removal actions are observable.
+    pub(super) paused_requests: PausedDownloadRequests,
 }
 
 impl StubDownloadClient {
@@ -1396,6 +1495,13 @@ impl StubDownloadClient {
 
     pub(super) async fn set_submit_error(&self, error: Option<StubSubmitError>) {
         *self.submit_error.lock().await = error;
+    }
+
+    pub(super) async fn set_submit_errors(
+        &self,
+        errors: impl IntoIterator<Item = StubSubmitError>,
+    ) {
+        *self.submit_errors.lock().await = errors.into_iter().collect();
     }
 
     pub(super) async fn set_grab_info_hash(&self, info_hash: Option<&str>) {
@@ -1414,6 +1520,7 @@ impl StubDownloadClient {
         client_type: Option<&str>,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
         if let Some(error) = self.delete_error.lock().await.clone() {
             return Err(AppError::Repository(error));
@@ -1427,6 +1534,7 @@ impl StubDownloadClient {
             client_type.map(str::to_string),
             id.to_string(),
             is_history,
+            remove_data,
         ));
         Ok(())
     }
@@ -1454,6 +1562,22 @@ impl DownloadClient for StubDownloadClient {
             .lock()
             .await
             .push(request.source_password.clone());
+        self.submitted_info_hash_hints
+            .lock()
+            .await
+            .push(request.info_hash_hint.clone());
+        self.submitted_seed_minimums
+            .lock()
+            .await
+            .push(crate::ReleaseSeedMinimums {
+                min_seed_ratio: request.tracker_min_seed_ratio,
+                min_seed_time_minutes: request.tracker_min_seed_time_minutes,
+                season_pack_seed_ratio: request.season_pack_seed_ratio,
+                season_pack_seed_time_minutes: request.season_pack_seed_time_minutes,
+            });
+        if let Some(error) = self.submit_errors.lock().await.pop_front() {
+            return Err(error.into_app_error());
+        }
         if let Some(error) = self.submit_error.lock().await.clone() {
             return Err(error.into_app_error());
         }
@@ -1572,8 +1696,14 @@ impl DownloadClient for StubDownloadClient {
             .find(|item| item.download_client_item_id == download_client_item_id))
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
-        self.record_delete(None, None, id, is_history).await
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
+        self.record_delete(None, None, id, is_history, remove_data)
+            .await
     }
 
     async fn delete_queue_item_for_client_id(
@@ -1581,8 +1711,9 @@ impl DownloadClient for StubDownloadClient {
         client_id: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.record_delete(Some(client_id), None, id, is_history)
+        self.record_delete(Some(client_id), None, id, is_history, remove_data)
             .await
     }
 
@@ -1591,9 +1722,26 @@ impl DownloadClient for StubDownloadClient {
         client_type: &str,
         id: &str,
         is_history: bool,
+        remove_data: bool,
     ) -> AppResult<()> {
-        self.record_delete(None, Some(client_type), id, is_history)
+        self.record_delete(None, Some(client_type), id, is_history, remove_data)
             .await
+    }
+
+    async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
+        self.paused_requests
+            .lock()
+            .await
+            .push((None, id.to_string()));
+        Ok(())
+    }
+
+    async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
+        self.paused_requests
+            .lock()
+            .await
+            .push((Some(client_id.to_string()), id.to_string()));
+        Ok(())
     }
 }
 

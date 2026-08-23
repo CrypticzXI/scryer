@@ -4,7 +4,7 @@ use super::*;
 async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry() {
     // Legacy-compat coverage: a stored scope JSON exists but does not include
     // an entry for "weaver". Read path must fall back to the canonical
-    // defaults (`removeCompleted=true`, `removeFailed=false`). New installs
+    // defaults (`removeCompleted=true`, `removeFailed=true`). New installs
     // converge on fully-materialized entries via `normalize_routing_settings`.
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
@@ -31,7 +31,7 @@ async fn remove_completed_download_defaults_true_when_scope_has_no_saved_entry()
             .await
     );
     assert!(
-        !app.should_remove_failed_download(None, &MediaFacet::Movie, "weaver")
+        app.should_remove_failed_download(None, &MediaFacet::Movie, "weaver")
             .await
     );
 }
@@ -167,6 +167,7 @@ async fn library_settings_download_client_routing_override_normalizes_current_cl
         &movie_library_id,
         LibrarySettingsOverrideDraft {
             download_client_routing: Some(vec![DownloadClientRoutingSettingsEntry {
+                seeding_profile_id: None,
                 client_id: primary.id.clone(),
                 enabled: true,
                 category: Some("movies".to_string()),
@@ -222,7 +223,7 @@ async fn library_settings_download_client_routing_override_normalizes_current_cl
     assert_eq!(secondary_entry.recent_queue_priority, None);
     assert_eq!(secondary_entry.older_queue_priority, None);
     assert!(secondary_entry.remove_completed);
-    assert!(!secondary_entry.remove_failed);
+    assert!(secondary_entry.remove_failed);
 
     let tertiary_entry = routing
         .iter()
@@ -233,7 +234,7 @@ async fn library_settings_download_client_routing_override_normalizes_current_cl
     assert_eq!(tertiary_entry.recent_queue_priority, None);
     assert_eq!(tertiary_entry.older_queue_priority, None);
     assert!(tertiary_entry.remove_completed);
-    assert!(!tertiary_entry.remove_failed);
+    assert!(tertiary_entry.remove_failed);
 }
 
 #[tokio::test]
@@ -382,7 +383,7 @@ async fn ensure_download_client_routing_entry_for_client_writes_full_default_ent
             Some(&serde_json::json!(""))
         );
         assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(true)));
-        assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(false)));
+        assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(true)));
         assert!(entry.contains_key("priority"));
     }
 }
@@ -427,7 +428,7 @@ async fn normalize_routing_settings_backfills_partial_legacy_download_client_jso
         .and_then(|v| v.as_object())
         .expect("weaver entry");
     assert_eq!(entry.get("removeCompleted"), Some(&serde_json::json!(true)));
-    assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(false)));
+    assert_eq!(entry.get("removeFailed"), Some(&serde_json::json!(true)));
     assert_eq!(
         entry.get("recentQueuePriority"),
         Some(&serde_json::json!(""))
@@ -615,6 +616,7 @@ async fn ensure_indexer_routing_entries_for_existing_indexers_backfills_missing_
             enable_auto_search: true,
             indexer_proxy_config_id: None,
             download_client_id: None,
+            seeding_profile_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,

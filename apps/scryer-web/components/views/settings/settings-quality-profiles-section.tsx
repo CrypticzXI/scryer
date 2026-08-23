@@ -710,6 +710,7 @@ export function SettingsQualityProfilesSection({
               ) : (
                 qualityProfiles.map((profile) => (
                   <TableRow
+                    data-ui="settings-table-row"
                     key={profile.id}
                     id={selectorId("settings-quality-profile-row", profile.name)}
                     className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"

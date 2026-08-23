@@ -353,10 +353,17 @@ fn is_login_mutation_field(name: &str) -> bool {
         name,
         "login"
             | "loginWithJellyfin"
+            | "loginWithEmby"
             | "loginWithPlex"
             | "completeLoginMfaEnrollment"
             | "webauthnAuthenticateStart"
             | "webauthnAuthenticateComplete"
+            | "loginVerificationPasskeyStart"
+            | "loginVerificationPasskeyComplete"
+            | "loginVerificationTotpComplete"
+            | "webauthnLoginEnrollmentStart"
+            | "webauthnLoginEnrollmentComplete"
+            | "completeRequiredPasswordChange"
     )
 }
 

@@ -10,6 +10,8 @@ mod activity_history;
 mod auth_runtime_passkeys;
 #[path = "integration_graphql/backups.rs"]
 mod backups;
+#[path = "integration_graphql/dashboard.rs"]
+mod dashboard;
 #[path = "integration_graphql/dataloader_enrichment.rs"]
 mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
@@ -36,6 +38,8 @@ mod schema_core_queue_import;
 mod security_settings;
 #[path = "integration_graphql/title_catalog.rs"]
 mod title_catalog;
+#[path = "integration_graphql/title_credits.rs"]
+mod title_credits;
 #[path = "integration_graphql/title_image_cache.rs"]
 mod title_image_cache;
 #[path = "integration_graphql/title_match.rs"]
@@ -55,10 +59,10 @@ use scryer_application::{
     CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
     InsertMediaFileInput, JwtSessionScope, LibraryRepository, LibraryRootDraft, MediaFileAnalysis,
     MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
-    PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary,
-    TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository,
-    UserRepository, WebauthnCredentialRecord, WebauthnRepository,
+    PendingReleaseRepository, ReleaseDecision, SettingsRepository, ShowRepository,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary, TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord,
+    TotpRepository, UserRepository, WebauthnCredentialRecord, WebauthnRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -69,10 +73,13 @@ use scryer_domain::{
     MediaServerProvider, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
     TitleContextSnapshot, User, UserAuthorization,
 };
-use scryer_infrastructure::{
-    DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
-    SettingDefinitionSeed, TotpStore, WebauthnStore,
+use scryer_infrastructure_identity::users::{totp_store::TotpStore, webauthn_store::WebauthnStore};
+use scryer_infrastructure_library::media::{
+    libraries::renamer::FileSystemLibraryRenamer, search::media_file_store::MediaFileStore,
+    servers::MediaServerConnectionStore,
 };
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::stores::DownloadSubmissionStore;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::{BTreeMap, HashMap};
@@ -199,6 +206,7 @@ fn manage_users_actor(username: &str) -> User {
         id: Id::new().0,
         username: username.to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::from_permissions([scryer_domain::AppPermission::ManageUsers]),
@@ -211,22 +219,31 @@ fn manage_users_actor(username: &str) -> User {
     }
 }
 
-async fn enroll_totp_for_test_and_current_code(ctx: &TestContext, user: &User) -> String {
+async fn enroll_totp_for_test_credentials(ctx: &TestContext, user: &User) -> (String, String) {
     let enrollment = ctx
         .app
         .totp_enrollment_start(user)
         .await
         .expect("start TOTP enrollment");
     let code = test_totp_code(&enrollment.secret_base32);
-    ctx.app
+    let completed = ctx
+        .app
         .totp_enrollment_complete(user, &enrollment.challenge_id, &code)
         .await
         .expect("complete TOTP enrollment");
-    test_totp_code_for_step_offset(&enrollment.secret_base32, 1)
+    let recovery_code = completed
+        .recovery_codes
+        .into_iter()
+        .next()
+        .expect("TOTP enrollment provides recovery codes");
+    (
+        test_totp_code_for_step_offset(&enrollment.secret_base32, 1),
+        recovery_code,
+    )
 }
 
 async fn enroll_totp_for_test(ctx: &TestContext, user: &User) {
-    enroll_totp_for_test_and_current_code(ctx, user).await;
+    let _ = enroll_totp_for_test_credentials(ctx, user).await;
 }
 
 async fn enable_form_login_with_config_step_up(
@@ -275,18 +292,20 @@ async fn enable_form_login_with_config_step_up(
         .await
         .unwrap();
     ctx.auth_runtime.apply_saved_security_settings(true, false);
-    let totp_code = enroll_totp_for_test_and_current_code(ctx, &admin).await;
+    let (totp_code, recovery_code) = enroll_totp_for_test_credentials(ctx, &admin).await;
 
     let login = gql(
         ctx,
         r#"
-        mutation Login($username: String!, $password: String!) {
-          login(input: { username: $username, password: $password }) {
+        mutation Login($username: String!, $password: String!, $totpCode: String!) {
+          login(input: { username: $username, password: $password, totpCode: $totpCode }) {
             token
           }
         }
         "#,
-        json!({ "username": username, "password": password }),
+        // Preserve the untouched TOTP code for the step-up assertion below;
+        // recovery codes are a supported primary-login fallback.
+        json!({ "username": username, "password": password, "totpCode": recovery_code }),
     )
     .await;
     assert_no_errors(&login);
@@ -571,6 +590,91 @@ impl MediaFileRepository for FailingMediaFileRepo {
 
     async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
         self.inner.delete_media_file(file_id).await
+    }
+}
+
+/// Delegating [`SettingsRepository`] double that separates direct explicit
+/// reads from scoped batch reads for request-loader regression coverage.
+struct CountingSettingsRepo {
+    inner: std::sync::Arc<dyn SettingsRepository>,
+    direct_explicit_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    batch_explicit_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    global_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl SettingsRepository for CountingSettingsRepo {
+    async fn get_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        self.global_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get_setting_json(scope, key_name, scope_id).await
+    }
+
+    async fn get_setting_json_explicit(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        self.direct_explicit_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .get_setting_json_explicit(scope, key_name, scope_id)
+            .await
+    }
+
+    async fn list_setting_json_explicit_for_scope_ids(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_ids: &[String],
+    ) -> AppResult<Vec<(String, String)>> {
+        self.batch_explicit_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner
+            .list_setting_json_explicit_for_scope_ids(scope, key_name, scope_ids)
+            .await
+    }
+
+    async fn upsert_setting_json(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+        value_json: String,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .upsert_setting_json(
+                scope,
+                key_name,
+                scope_id,
+                value_json,
+                source,
+                updated_by_user_id,
+            )
+            .await
+    }
+
+    async fn delete_setting_value(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_id: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .delete_setting_value(scope, key_name, scope_id)
+            .await
+    }
+
+    async fn delete_values_for_scope_id(&self, scope_id: &str) -> AppResult<u32> {
+        self.inner.delete_values_for_scope_id(scope_id).await
     }
 }
 
@@ -1604,6 +1708,33 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 key_name: "plexmatch.write_on_import.anime".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "metadata_language".into(),
+                data_type: "string".into(),
+                default_value_json: "\"eng\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "metadata_language.title_override".into(),
+                data_type: "string".into(),
+                default_value_json: "null".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "rename.use_season_folders".into(),
+                data_type: "boolean".into(),
+                default_value_json: "true".into(),
                 is_sensitive: false,
                 validation_json: None,
             },

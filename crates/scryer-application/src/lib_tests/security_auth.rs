@@ -112,6 +112,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             app.hash_password(short_password)
                 .expect("hash short password"),
         ),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -318,6 +319,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
         id: "existing-short-v1-password-user".to_string(),
         username: "existing_short_v1_password".to_string(),
         password_hash: Some(legacy_hash.clone()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -379,6 +381,7 @@ async fn local_password_login_requires_exact_spacing() {
         id: "exact-spacing-login-user".to_string(),
         username: "exact_spacing_login".to_string(),
         password_hash: Some(app.hash_password(password).expect("hash spaced password")),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -409,6 +412,7 @@ async fn change_own_password_requires_exact_current_password_spacing() {
         id: "exact-current-password-user".to_string(),
         username: "exact_current_password".to_string(),
         password_hash: Some(app.hash_password(old_password).expect("hash old password")),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -512,6 +516,7 @@ async fn issue_and_authenticate_token_round_trips() {
         id: "user-jwt-1".to_string(),
         username: "jwt_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -537,6 +542,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         id: "user-jwt-no-session-version".to_string(),
         username: "jwt_no_session_version".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -562,6 +568,8 @@ async fn token_signed_without_auth_session_version_authenticates() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -582,6 +590,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
         id: "user-jwt-mfa-enroll".to_string(),
         username: "jwt_mfa_enroll".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -593,7 +602,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
         .unwrap();
 
     let token = app
-        .issue_mfa_enrollment_token(&user, false)
+        .issue_mfa_enrollment_token(&user, false, false, None)
         .await
         .expect("issue enrollment token");
     let (decoded, claims) = app
@@ -608,7 +617,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
     assert!(!claims.persist_session);
 
     let persistent_token = app
-        .issue_mfa_enrollment_token(&user, true)
+        .issue_mfa_enrollment_token(&user, true, false, None)
         .await
         .expect("issue persistent enrollment token");
     let (_, persistent_claims) = app
@@ -625,6 +634,7 @@ async fn login_mfa_claim_does_not_imply_step_up_claim() {
         id: "user-jwt-login-mfa".to_string(),
         username: "jwt_login_mfa".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -687,6 +697,7 @@ async fn legacy_token_without_scope_claim_defaults_to_full_scope() {
         id: "user-jwt-legacy-scope".to_string(),
         username: "jwt_legacy_scope".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -902,6 +913,7 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         id: "user-oauth-app-permission-claim".to_string(),
         username: "oauth_app_permission_claim".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -931,6 +943,8 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -956,6 +970,7 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         id: "user-oauth-actor-capability-claim".to_string(),
         username: "oauth_actor_capability_claim".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -985,6 +1000,8 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1023,6 +1040,9 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some(" release-password ".to_string()),
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
 
     let token = app
@@ -1087,6 +1107,9 @@ async fn release_candidate_token_rejects_missing_password_ticket() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("release-password".to_string()),
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
 
     let token = app
@@ -1142,6 +1165,9 @@ async fn release_candidate_token_drops_placeholder_password_flags() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("protected".to_string()),
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
 
     let token = app
@@ -1189,6 +1215,9 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
     let scope = SubmissionScope::EpisodeSet {
         episode_ids: vec![
@@ -1212,6 +1241,109 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
 }
 
 #[tokio::test]
+async fn release_candidate_token_carries_size_and_seeder_count_to_redemption() {
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_seeders_user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+    // No indexer id, so admission accepts regardless; this is about the count
+    // surviving the round trip rather than about the verdict.
+    let selection = QueuedReleaseSelection {
+        indexer_id: None,
+        source_hint: Some("magnet:?xt=urn:btih:abc".to_string()),
+        source_kind: Some(DownloadSourceKind::MagnetUri),
+        source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
+        source_password: None,
+        info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+        size_bytes: Some(1_234_567_890),
+        seeders: Some(42),
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-seeders",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let (decoded, _) = app
+        .verify_release_candidate_token_for_signed_scope(
+            &authenticated_user,
+            "title-seeders",
+            &token,
+        )
+        .await
+        .expect("candidate token should verify");
+
+    assert_eq!(
+        decoded.seeders,
+        Some(42),
+        "redemption must be able to re-judge admission from the token alone"
+    );
+    assert_eq!(decoded.size_bytes, Some(1_234_567_890));
+    assert_eq!(
+        decoded.info_hash_hint.as_deref(),
+        Some("abcdef0123456789abcdef0123456789abcdef01")
+    );
+}
+
+#[tokio::test]
+async fn a_token_minted_before_this_feature_still_redeems() {
+    // The legacy-token grace: claims without a `seeders` field deserialize as
+    // unknown, and unknown is eligible. A candidate whose count was known to be
+    // zero therefore slips through for the remainder of its short TTL. That is
+    // a deliberate, bounded migration window — not the same thing as an indexer
+    // that genuinely reports nothing.
+    let (app, admin) = bootstrap();
+    let (_created, authenticated_user) = create_authenticated_user(
+        &app,
+        &admin,
+        "release_legacy_token_user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await;
+    let selection = QueuedReleaseSelection {
+        indexer_id: None,
+        source_hint: Some("magnet:?xt=urn:btih:def".to_string()),
+        source_kind: Some(DownloadSourceKind::MagnetUri),
+        source_title: Some("Example.Legacy.1080p.WEB-DL".to_string()),
+        source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
+    };
+
+    let token = app
+        .issue_release_candidate_token(
+            &authenticated_user,
+            "title-legacy",
+            &SubmissionScope::Title,
+            &selection,
+        )
+        .await
+        .expect("candidate token should issue");
+    let (decoded, _) = app
+        .verify_release_candidate_token_for_signed_scope(
+            &authenticated_user,
+            "title-legacy",
+            &token,
+        )
+        .await
+        .expect("a token without a seeder count must still redeem");
+
+    assert_eq!(decoded.seeders, None);
+    assert_eq!(decoded.info_hash_hint, None);
+}
+
+#[tokio::test]
 async fn release_candidate_token_rejects_tampering() {
     let (app, admin) = bootstrap();
     let (_created, authenticated_user) = create_authenticated_user(
@@ -1228,6 +1360,9 @@ async fn release_candidate_token_rejects_tampering() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
 
     let token = app
@@ -1279,6 +1414,9 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
 
     let token = app
@@ -1345,6 +1483,9 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
     let token = app
         .issue_release_candidate_token(
@@ -1391,6 +1532,9 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
+        seeders: None,
     };
     let token = app
         .issue_release_candidate_token(
@@ -1602,6 +1746,7 @@ async fn expired_token_returns_unauthorized() {
         id: "user-jwt-3".to_string(),
         username: "exp_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1628,6 +1773,8 @@ async fn expired_token_returns_unauthorized() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1644,6 +1791,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         id: "user-jwt-4".to_string(),
         username: "iss_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1669,6 +1817,8 @@ async fn wrong_issuer_token_returns_unauthorized() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1689,6 +1839,7 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
         id: "user-jwt-cache-1".to_string(),
         username: "cache_user".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1712,9 +1863,10 @@ async fn authenticate_token_uses_cached_signing_key_and_loads_current_user() {
 }
 
 #[tokio::test]
-async fn passkey_registration_requires_password_backed_user() {
+async fn passkey_registration_allows_external_user() {
     let users = Arc::new(MockUserRepo::default());
     let mut user = test_user_with_app_permissions("jellyfin_user", AppPermissionMask::NONE);
+    user.account_kind = scryer_domain::UserAccountKind::ExternalAutoProvisioned;
     user.authorization.actor_capabilities = scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT;
     users.create(user.clone()).await.expect("create user");
 
@@ -1728,13 +1880,10 @@ async fn passkey_registration_requires_password_backed_user() {
 
     let result = app.webauthn_register_start(&user, true).await;
 
-    match result {
-        Err(AppError::Validation(message)) => {
-            assert_eq!(message, "passkeys require a password-backed account");
-        }
-        Err(error) => panic!("expected password-backed validation error, got {error}"),
-        Ok(_) => panic!("expected password-backed validation error"),
-    }
+    assert!(
+        matches!(&result, Err(AppError::Repository(message)) if message == "not configured"),
+        "the external user should pass eligibility checks before reaching the WebAuthn repository: {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -1757,6 +1906,7 @@ async fn passkey_management_requires_enabled_form_login() {
         id: "passkey-form-login-user".to_string(),
         username: "passkey_form_login".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1938,6 +2088,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         id: "user-jwt-malformed".to_string(),
         username: "jwt_claims".to_string(),
         password_hash: Some(TEST_PASSWORD_HASH.to_string()),
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -1967,6 +2118,8 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
         persist_session: false,
+        auth_session_version: None,
+        password_change_required_after_enrollment: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);

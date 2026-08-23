@@ -488,6 +488,7 @@ async fn prepare_completed_import_request(
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::AlreadyImported),
+            release_burned: false,
             ..base_completed_import_result("", &completed, &release_evidence, started_at)
         };
         return Ok(CompletedImportProgress::Finished(result));
@@ -550,6 +551,7 @@ async fn validate_completed_import_source_and_mark_processing(
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
+            release_burned: false,
             ..base_completed_import_result(
                 &request.import_id,
                 &request.completed,
@@ -609,6 +611,7 @@ async fn finalize_completed_import_error(
         decision: ImportDecision::Failed,
         skip_reason,
         error_message: Some(error.to_string()),
+        release_burned: false,
         ..base_completed_import_result(
             &request.import_id,
             &request.completed,

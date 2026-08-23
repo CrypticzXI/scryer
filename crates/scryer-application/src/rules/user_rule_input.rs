@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{IndexerSearchResult, ParsedReleaseMetadata, QualityProfile, QualityProfileDecision};
+use crate::{ParsedReleaseMetadata, QualityProfile, QualityProfileDecision};
 
 pub(crate) struct ReleaseRuntimeInfo<'a> {
     pub size_bytes: Option<i64>,
@@ -241,61 +241,7 @@ fn is_retagged_release(parsed: &ParsedReleaseMetadata) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct SearchRuleInputContext<'a> {
-    pub(crate) category: Option<&'a str>,
-    pub(crate) library_name: Option<&'a str>,
-    pub(crate) original_language: Option<&'a str>,
-    pub(crate) original_country: Option<&'a str>,
-    pub(crate) title_tags: &'a [String],
-    pub(crate) runtime_minutes: Option<i32>,
-}
-
-pub(crate) fn build_search_rule_input(
-    parsed: &ParsedReleaseMetadata,
-    profile: &QualityProfile,
-    result: &IndexerSearchResult,
-    decision: &QualityProfileDecision,
-    context: SearchRuleInputContext<'_>,
-) -> scryer_rules::UserRuleInput {
-    build_rule_input(
-        parsed,
-        profile,
-        decision,
-        ReleaseRuntimeInfo {
-            size_bytes: result.size_bytes,
-            published_at: result.published_at.as_deref(),
-            thumbs_up: result.thumbs_up,
-            thumbs_down: result.thumbs_down,
-            is_password_protected: result
-                .extra
-                .get("password_protected")
-                .and_then(|value| value.as_bool())
-                .or_else(|| {
-                    crate::release_password_protection_hint(result.password_hint.as_deref())
-                }),
-            extra: Some(&result.extra),
-            indexer_languages: result.indexer_languages.as_deref(),
-        },
-        RuleContextInfo {
-            title_id: None,
-            library_name: context.library_name,
-            category: context.category,
-            original_language: context.original_language,
-            original_country: context.original_country,
-            title_tags: context.title_tags,
-            has_existing_file: false,
-            existing_score: None,
-            search_mode: "auto",
-            runtime_minutes: context.runtime_minutes,
-            is_filler: false,
-        },
-        None,
-    )
-}
-
-#[cfg(feature = "runtime-media-analysis")]
-pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scryer_rules::FileDoc {
+pub(crate) fn file_doc_from_analysis(analysis: &crate::MediaFileAnalysis) -> scryer_rules::FileDoc {
     let audio_languages = crate::normalize_detected_audio_languages(
         analysis.audio_languages.iter().map(String::as_str),
     );
@@ -304,7 +250,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
     );
 
     scryer_rules::FileDoc {
-        video_codec: analysis.video_codec.clone(),
+        video_codec: analysis.video_codec.as_ref().map(ToString::to_string),
         video_width: analysis.video_width,
         video_height: analysis.video_height,
         video_bitrate_kbps: analysis.video_bitrate_kbps,
@@ -360,7 +306,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IndexerResponseAttributes, QualityProfileCriteria, ScoringSource};
+    use crate::{QualityProfileCriteria, ScoringSource};
     use std::collections::HashMap;
 
     fn test_profile() -> QualityProfile {
@@ -389,6 +335,7 @@ mod tests {
                 scoring_overrides: crate::ScoringOverrides::default(),
                 cutoff_tier: None,
                 min_score_to_grab: None,
+                cutoff_score: None,
                 facet_persona_overrides: HashMap::new(),
             },
         }
@@ -405,184 +352,12 @@ mod tests {
             allowed: true,
             block_codes: vec![],
             preference_score: 1200,
+            tier_index: Some(0),
         }
     }
 
     fn test_parsed() -> ParsedReleaseMetadata {
         crate::parse_release_metadata("Test.Movie.2024.2160p.WEB-DL.H.265.DDP5.1-Group")
-    }
-
-    #[test]
-    fn build_search_rule_input_keeps_file_null() {
-        let input = build_search_rule_input(
-            &test_parsed(),
-            &test_profile(),
-            &IndexerSearchResult {
-                indexer_id: None,
-                source: "test-indexer".to_string(),
-                title: "Test Movie".to_string(),
-                link: None,
-                download_url: None,
-                source_kind: None,
-                size_bytes: Some(8_000_000_000),
-                published_at: Some("2026-03-10T12:00:00Z".to_string()),
-                thumbs_up: Some(5),
-                thumbs_down: Some(1),
-                indexer_languages: None,
-                indexer_subtitles: None,
-                indexer_grabs: None,
-                password_hint: Some("secret".to_string()),
-                parsed_release_metadata: None,
-                quality_profile_decision: None,
-                extra: HashMap::from([("indexer".to_string(), serde_json::json!("test"))]),
-                response_attributes: IndexerResponseAttributes::default(),
-                guid: None,
-                info_url: None,
-                provenance: None,
-                candidate_token: None,
-                queue_scope: None,
-                auto_eligible: None,
-                auto_decision_code: None,
-                auto_decision_summary: None,
-            },
-            &test_decision(),
-            SearchRuleInputContext {
-                category: Some("movie"),
-                library_name: Some("Movies"),
-                original_language: Some("fr-FR"),
-                original_country: Some("France"),
-                title_tags: &["anime".to_string()],
-                runtime_minutes: Some(120),
-            },
-        );
-
-        let value = serde_json::to_value(input).unwrap();
-        assert!(value["file"].is_null());
-        assert_eq!(value["context"]["library_name"], "Movies");
-        assert_eq!(value["context"]["original_language"], "fra");
-        assert_eq!(value["context"]["original_country"], "FR");
-        assert_eq!(value["context"]["inferred_original_audio_language"], "fra");
-        assert_eq!(value["release"]["extra"]["indexer"], "test");
-        assert_eq!(value["release"]["is_password_protected"], true);
-    }
-
-    #[test]
-    fn build_search_rule_input_normalizes_password_placeholders() {
-        for (password_hint, expected) in [
-            (Some("0".to_string()), Some(false)),
-            (Some("false".to_string()), Some(false)),
-            (Some("no".to_string()), Some(false)),
-            (Some("1".to_string()), Some(true)),
-            (Some("true".to_string()), Some(true)),
-            (Some("protected".to_string()), Some(true)),
-            (Some("   ".to_string()), None),
-        ] {
-            let input = build_search_rule_input(
-                &test_parsed(),
-                &test_profile(),
-                &IndexerSearchResult {
-                    indexer_id: None,
-                    source: "test-indexer".to_string(),
-                    title: "Test Movie".to_string(),
-                    link: None,
-                    download_url: None,
-                    source_kind: None,
-                    size_bytes: Some(8_000_000_000),
-                    published_at: Some("2026-03-10T12:00:00Z".to_string()),
-                    thumbs_up: Some(5),
-                    thumbs_down: Some(1),
-                    indexer_languages: None,
-                    indexer_subtitles: None,
-                    indexer_grabs: None,
-                    password_hint,
-                    parsed_release_metadata: None,
-                    quality_profile_decision: None,
-                    extra: HashMap::new(),
-                    response_attributes: IndexerResponseAttributes::default(),
-                    guid: None,
-                    info_url: None,
-                    provenance: None,
-                    candidate_token: None,
-                    queue_scope: None,
-                    auto_eligible: None,
-                    auto_decision_code: None,
-                    auto_decision_summary: None,
-                },
-                &test_decision(),
-                SearchRuleInputContext {
-                    category: Some("movie"),
-                    library_name: Some("Movies"),
-                    original_language: None,
-                    original_country: None,
-                    title_tags: &[],
-                    runtime_minutes: Some(120),
-                },
-            );
-
-            let value = serde_json::to_value(input).unwrap();
-            match expected {
-                Some(value_expected) => {
-                    assert_eq!(value["release"]["is_password_protected"], value_expected);
-                }
-                None => {
-                    assert!(
-                        value["release"]["is_password_protected"].is_null(),
-                        "empty password hints should normalize away"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn build_search_rule_input_preserves_protection_hint_from_extra() {
-        let input = build_search_rule_input(
-            &test_parsed(),
-            &test_profile(),
-            &IndexerSearchResult {
-                indexer_id: None,
-                source: "test-indexer".to_string(),
-                title: "Test Movie".to_string(),
-                link: None,
-                download_url: None,
-                source_kind: None,
-                size_bytes: Some(8_000_000_000),
-                published_at: Some("2026-03-10T12:00:00Z".to_string()),
-                thumbs_up: Some(5),
-                thumbs_down: Some(1),
-                indexer_languages: None,
-                indexer_subtitles: None,
-                indexer_grabs: None,
-                password_hint: Some("1".to_string()),
-                parsed_release_metadata: None,
-                quality_profile_decision: None,
-                extra: HashMap::from([(
-                    "password_protected".to_string(),
-                    serde_json::Value::from(true),
-                )]),
-                response_attributes: IndexerResponseAttributes::default(),
-                guid: None,
-                info_url: None,
-                provenance: None,
-                candidate_token: None,
-                queue_scope: None,
-                auto_eligible: None,
-                auto_decision_code: None,
-                auto_decision_summary: None,
-            },
-            &test_decision(),
-            SearchRuleInputContext {
-                category: Some("movie"),
-                library_name: Some("Movies"),
-                original_language: None,
-                original_country: None,
-                title_tags: &[],
-                runtime_minutes: Some(120),
-            },
-        );
-
-        let value = serde_json::to_value(input).unwrap();
-        assert_eq!(value["release"]["is_password_protected"], true);
     }
 
     #[cfg(feature = "runtime-media-analysis")]
@@ -624,7 +399,9 @@ mod tests {
                 runtime_minutes: Some(120),
                 is_filler: false,
             },
-            Some(build_file_doc(&analysis)),
+            Some(file_doc_from_analysis(
+                &crate::post_download_gate::build_media_file_analysis(&analysis),
+            )),
         );
 
         let value = serde_json::to_value(input).unwrap();

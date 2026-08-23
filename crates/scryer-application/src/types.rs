@@ -4,6 +4,7 @@ use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, T
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
+use crate::acquisition::seed_goals::ReleaseSeedMinimums;
 use crate::library_scan::LibraryScanSummary;
 use crate::quality_profile::QualityProfileDecision;
 use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
@@ -29,6 +30,23 @@ pub struct TitleRatingSummary {
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<TitleExternalRating>,
+}
+
+/// One cast or crew credit as returned by SMG for a title. Crew records share the
+/// shape with cast records; `character_name`/`language` are simply empty for them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleCredit {
+    pub kind: String,
+    pub person_id: String,
+    pub person_name: String,
+    pub person_original_name: String,
+    pub person_image_url: String,
+    pub person_source: String,
+    pub person_external_id: String,
+    pub character_name: String,
+    pub language: String,
+    pub billing_order: i32,
+    pub episode_count: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +84,9 @@ pub struct TitleMetadataUpdate {
     pub digital_release_date: Option<String>,
     /// Ratings returned by SMG/MDBList. `Some(default)` clears stale stored ratings.
     pub ratings: Option<TitleRatingSummary>,
+    /// Complete credit set returned by SMG. `Some(vec![])` clears the stale cache;
+    /// `None` leaves the existing rows untouched for callers that do not hydrate.
+    pub credits: Option<Vec<TitleCredit>>,
     /// Additional external IDs to merge onto the title (e.g. MAL, AniList from anime mappings).
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).
@@ -624,6 +645,13 @@ pub struct TitleMediaFile {
     pub series_movie_link_ids: Vec<String>,
     pub file_path: String,
     pub size_bytes: i64,
+    /// The announced (indexer-advertised) size this row was scored on, kept only
+    /// when the import actually scored on it: the file landed within the normal
+    /// overhead band of what its release advertised
+    /// (`canonical_scoring::size_basis_bytes`). `None` means the row is scored
+    /// on its real size — every row written before the column existed, scanned
+    /// files, adopted downloads, and files that landed short of the band.
+    pub announced_size_bytes: Option<i64>,
     pub role: crate::MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,
@@ -637,6 +665,8 @@ pub struct TitleMediaFile {
     pub video_bitrate_kbps: Option<i32>,
     pub video_bit_depth: Option<i32>,
     pub video_hdr_format: Option<String>,
+    pub dovi_profile: Option<u8>,
+    pub dovi_bl_compat_id: Option<u8>,
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
@@ -720,6 +750,9 @@ pub enum DownloadDisplayState {
     PostProcessing,
     Completed,
     Failed,
+    /// The client reports a recoverable problem; the row stays in the activity
+    /// list with its message instead of being presented as a dead grab.
+    Warning,
     Importing,
     ImportPending,
     ImportBlocked,
@@ -736,6 +769,7 @@ pub enum DownloadActivityFilter {
     Queued,
     Paused,
     PostProcessing,
+    Warning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -948,7 +982,63 @@ pub struct PendingImportItem {
     pub query: String,
     pub year_hint: Option<i32>,
     pub reason: String,
+    /// Coarse bucket derived from `reason`, for UI grouping and filtering.
+    pub reason_class: PendingImportReasonClass,
     pub search_attempts: Vec<PendingImportSearchAttempt>,
+    /// Size of the pending file: the size the scanner persisted, else a
+    /// filesystem stat taken while assembling the page. `None` when the item is
+    /// a folder or the file is no longer readable.
+    pub size_bytes: Option<i64>,
+    pub created_at: String,
+}
+
+/// Coarse classification of why an item is awaiting import resolution.
+///
+/// The free-text `reason` stays the authoritative scanner code; this is the
+/// stable bucket the dashboard groups by, so new scanner codes land in
+/// [`PendingImportReasonClass::Other`] instead of breaking the API.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingImportReasonClass {
+    /// Metadata lookup returned no candidates at all.
+    Unmatched,
+    /// Candidates were returned but none could be accepted automatically.
+    Ambiguous,
+    /// The file's media metadata could not be read, so quality is unknown.
+    QualityUnknown,
+    /// Any other scanner reason code.
+    #[default]
+    Other,
+}
+
+impl PendingImportReasonClass {
+    /// Bucket a scanner `reason_code`. Unknown codes classify as
+    /// [`PendingImportReasonClass::Other`] rather than erroring, so the scanner
+    /// can add codes without a coordinated API change.
+    pub fn from_reason_code(reason_code: &str) -> Self {
+        match reason_code.trim() {
+            // A lookup ran and produced nothing to choose from.
+            "no_metadata_search_results" | "no_metadata_match" | "episode_lookup_failed" => {
+                Self::Unmatched
+            }
+            // A lookup produced candidates but none could be accepted.
+            "no_acceptable_metadata_match" => Self::Ambiguous,
+            // Media analysis failed, so the file's quality is unknown.
+            "skipped_file_metadata_unreadable" => Self::QualityUnknown,
+            // `episode_identity_missing`, `skipped_unusable_title_evidence`, and
+            // `title_already_owns_another_folder` are parse/ownership problems
+            // rather than match outcomes, so they fall through to `Other`.
+            _ => Self::Other,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmatched => "unmatched",
+            Self::Ambiguous => "ambiguous",
+            Self::QualityUnknown => "quality_unknown",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1030,7 +1120,6 @@ impl AcquisitionScopeStatus {
 pub struct AcquisitionScopeGrabTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: String,
 }
 
@@ -1038,7 +1127,6 @@ pub struct AcquisitionScopeGrabTransition {
 pub struct AcquisitionScopeCompleteTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
 
@@ -1046,7 +1134,6 @@ pub struct AcquisitionScopeCompleteTransition {
 pub struct AcquisitionScopePauseTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
 
@@ -1073,6 +1160,10 @@ pub struct LibraryScanUnmatchedItem {
     pub reason_code: String,
     pub error_message: Option<String>,
     pub search_attempts: Vec<LibraryScanUnmatchedSearchAttempt>,
+    /// Size of the unmatched file when the scanner knew it. `None` for
+    /// folder-shaped items and for rows recorded before the column existed;
+    /// readers fall back to a filesystem stat rather than backfilling.
+    pub size_bytes: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1105,7 +1196,9 @@ pub struct AcquisitionScopeState {
     pub last_search_at: Option<String>,
     pub status: AcquisitionScopeStatus,
     pub grabbed_release: Option<String>,
-    pub current_score: Option<i32>,
+    /// The bar this scope's landed file sets, resolved from the library rather
+    /// than stored. `None` when nothing occupies the scope.
+    pub landed_bar: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecision>,
     pub mismatch_recovery_eligible: bool,
     pub created_at: String,
@@ -1182,6 +1275,21 @@ pub struct PendingRelease {
     pub published_at: Option<String>,
     /// Torrent info hash — passed to download client for magnet resolution.
     pub info_hash: Option<String>,
+    /// Tracker-declared seeding minimums lifted off the release `extra` map at
+    /// park time. The `extra` map itself is not persisted, so without these the
+    /// delayed grab would reach the client with profile goals but no tracker
+    /// clamp — the immediate-grab paths read them straight off the release.
+    /// Rows parked before migration 0165 read back as all-`None`.
+    pub seed_minimums: ReleaseSeedMinimums,
+    /// Seeders the indexer reported when the row was parked (migration 0169).
+    ///
+    /// Kept so automatic promotion can re-judge the swarm against the threshold
+    /// in force *now* rather than the one that applied at park time. Sonarr does
+    /// the same: `RssSyncService` re-runs every specification over the pending
+    /// list using the seeders stored on the original release. `None` is unknown
+    /// — for a row parked before this column existed, or an indexer that reports
+    /// nothing — and unknown always stays eligible.
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1510,6 +1618,17 @@ pub struct IndexerSearchResult {
     pub provenance: Option<ReleaseCandidateProvenance>,
     pub candidate_token: Option<String>,
     pub queue_scope: Option<SubmissionScope>,
+    /// What this release actually covers, as resolved against the catalog while
+    /// it was scored.
+    ///
+    /// Deliberately not `queue_scope`, which means something else — the scope a
+    /// *queued grab* will use — and is only populated on the interactive
+    /// annotation path. This one is the release's own coverage, and it exists so
+    /// the auto evaluator can refuse a multi-episode release that reaches into
+    /// an episode nobody is monitoring (D21). `resolve_release_coverage` already
+    /// computed it during scoring; before this it was dropped on the floor and
+    /// only its `coverage_distance` survived into the search rank.
+    pub coverage_scope: Option<SubmissionScope>,
     pub auto_eligible: Option<bool>,
     pub auto_decision_code: Option<String>,
     pub auto_decision_summary: Option<String>,
@@ -1670,6 +1789,7 @@ mod canonical_download_source_tests {
             provenance: None,
             candidate_token: None,
             queue_scope: None,
+            coverage_scope: None,
             auto_eligible: None,
             auto_decision_code: None,
             auto_decision_summary: None,
@@ -1827,6 +1947,61 @@ impl WebauthnChallengeType {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebauthnChallengePurpose {
+    StandaloneAuthentication,
+    LoginVerification,
+    AccountRegistration,
+    LoginEnrollment,
+}
+
+impl WebauthnChallengePurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StandaloneAuthentication => "standalone_authentication",
+            Self::LoginVerification => "login_verification",
+            Self::AccountRegistration => "account_registration",
+            Self::LoginEnrollment => "login_enrollment",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "standalone_authentication" => Some(Self::StandaloneAuthentication),
+            "login_verification" => Some(Self::LoginVerification),
+            "account_registration" => Some(Self::AccountRegistration),
+            "login_enrollment" => Some(Self::LoginEnrollment),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginVerificationMethod {
+    LocalPassword,
+    Jellyfin,
+    Emby,
+}
+
+impl LoginVerificationMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalPassword => "local_password",
+            Self::Jellyfin => "jellyfin",
+            Self::Emby => "emby",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local_password" => Some(Self::LocalPassword),
+            "jellyfin" => Some(Self::Jellyfin),
+            "emby" => Some(Self::Emby),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebauthnCredentialRecord {
     pub id: String,
@@ -1843,6 +2018,8 @@ pub struct WebauthnChallengeRecord {
     pub id: String,
     pub user_id: Option<String>,
     pub challenge_type: WebauthnChallengeType,
+    pub purpose: WebauthnChallengePurpose,
+    pub login_verification_challenge_id: Option<String>,
     pub state_json: String,
     pub created_at: String,
     pub expires_at: String,
@@ -1852,6 +2029,38 @@ pub struct WebauthnChallengeRecord {
 pub struct WebauthnChallengeStart {
     pub challenge_id: String,
     pub options_json: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginVerificationChallengeRecord {
+    pub id: String,
+    pub user_id: String,
+    pub login_method: LoginVerificationMethod,
+    pub persist_session: bool,
+    pub allow_passkey: bool,
+    pub allow_totp: bool,
+    pub auth_session_version: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginVerificationSatisfied {
+    pub mfa_verified_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Session version observed before a factor was verified. When
+    /// `mfa_verified_until` is set, callers must bind the issued token to this
+    /// version so an administrator reset cannot race token issuance.
+    pub auth_session_version: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginVerificationRequirement {
+    Satisfied(LoginVerificationSatisfied),
+    EnrollmentRequired {
+        auth_session_version: Option<String>,
+    },
+    Challenge(LoginVerificationChallengeRecord),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1944,6 +2153,7 @@ pub enum JwtSessionScope {
     #[default]
     Full,
     MfaEnrollment,
+    PasswordChangeRequired,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1952,6 +2162,8 @@ pub struct AuthenticatedTokenClaims {
     pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
     pub persist_session: bool,
+    pub auth_session_version: Option<String>,
+    pub password_change_required_after_enrollment: bool,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
     pub oauth_authorization_source: OAuthAuthorizationSource,
@@ -2080,6 +2292,10 @@ pub(crate) struct JwtClaims {
     pub auth_scope: JwtSessionScope,
     #[serde(default, rename = "persistSession")]
     pub persist_session: bool,
+    #[serde(default, rename = "authSessionVersion")]
+    pub auth_session_version: Option<String>,
+    #[serde(default, rename = "passwordChangeRequiredAfterEnrollment")]
+    pub password_change_required_after_enrollment: bool,
     #[serde(default, rename = "oauthClientId")]
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]
@@ -2118,6 +2334,16 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub source_title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_ref: Option<String>,
+    /// Absent on tokens minted before torrent info-hash handoff existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
+    /// Absent on tokens minted before minimum-seeder admission existed, which
+    /// reads as an unknown count and therefore stays eligible for the rest of
+    /// that token's short TTL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2345,6 +2571,7 @@ pub struct CollectionEpisodeProgressSummary {
     pub owned_episodes: i64,
     pub monitored_episodes: i64,
     pub total_episodes: i64,
+    pub episode_records_total: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -2436,6 +2663,13 @@ pub struct IndexerQueryStats {
     pub queries_last_24h: u32,
     pub successful_last_24h: u32,
     pub failed_last_24h: u32,
+    /// Releases grabbed through this indexer in the trailing 24 hours.
+    ///
+    /// Scryer's own count of accepted download-client submissions, not a
+    /// provider-reported quota counter like `grab_current`. It shares the
+    /// in-memory rolling window that backs `queries_last_24h`, so it resets
+    /// when the process restarts.
+    pub grabs_last_24h: u32,
     pub last_query_at: Option<String>,
     pub api_current: Option<u32>,
     pub api_max: Option<u32>,
@@ -2884,5 +3118,68 @@ mod tests {
             )
             .expect("full path resolves conflict");
         assert_eq!(hint.ids[0].value, "366972");
+    }
+}
+
+#[cfg(test)]
+mod pending_import_reason_class_tests {
+    use super::PendingImportReasonClass;
+
+    /// Pins the scanner reason codes this repo actually emits to their buckets.
+    /// If a scanner code is renamed, this fails rather than silently
+    /// reclassifying those rows as `Other`.
+    #[test]
+    fn scanner_reason_codes_map_to_expected_classes() {
+        for (code, expected) in [
+            (
+                "no_metadata_search_results",
+                PendingImportReasonClass::Unmatched,
+            ),
+            ("episode_lookup_failed", PendingImportReasonClass::Unmatched),
+            ("no_metadata_match", PendingImportReasonClass::Unmatched),
+            (
+                "no_acceptable_metadata_match",
+                PendingImportReasonClass::Ambiguous,
+            ),
+            (
+                "skipped_file_metadata_unreadable",
+                PendingImportReasonClass::QualityUnknown,
+            ),
+            ("episode_identity_missing", PendingImportReasonClass::Other),
+            (
+                "skipped_unusable_title_evidence",
+                PendingImportReasonClass::Other,
+            ),
+            (
+                "title_already_owns_another_folder",
+                PendingImportReasonClass::Other,
+            ),
+        ] {
+            assert_eq!(
+                PendingImportReasonClass::from_reason_code(code),
+                expected,
+                "reason code {code} should classify as {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_and_blank_reason_codes_fall_back_to_other() {
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code("some_future_scanner_code"),
+            PendingImportReasonClass::Other
+        );
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code(""),
+            PendingImportReasonClass::Other
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_defeat_classification() {
+        assert_eq!(
+            PendingImportReasonClass::from_reason_code("  no_metadata_search_results  "),
+            PendingImportReasonClass::Unmatched
+        );
     }
 }

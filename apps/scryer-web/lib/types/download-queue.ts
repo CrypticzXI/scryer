@@ -9,6 +9,7 @@ export type DownloadQueueState =
   | "PAUSED"
   | "COMPLETED"
   | "IMPORT_PENDING"
+  | "WARNING"
   | "FAILED";
 
 export type ImportStatus =
@@ -41,12 +42,20 @@ export type TrackedDownloadState =
   | "IMPORT_PENDING"
   | "IMPORTING"
   | "IMPORTED"
+  | "IMPORTED_SEEDING"
   | "IMPORT_BLOCKED"
   | "FAILED_PENDING"
   | "FAILED"
   | "IGNORED";
 
 export type TrackedDownloadStatus = "OK" | "WARNING" | "ERROR";
+
+export type DownloadSeedingState =
+  | "NONE"
+  | "SEEDING"
+  | "GOAL_MET"
+  | "HELD_PRIVATE"
+  | "NEVER_REMOVE";
 
 export type DownloadDisplayState =
   | "QUEUED"
@@ -55,6 +64,7 @@ export type DownloadDisplayState =
   | "POST_PROCESSING"
   | "COMPLETED"
   | "FAILED"
+  | "WARNING"
   | "IMPORTING"
   | "IMPORT_PENDING"
   | "IMPORT_BLOCKED"
@@ -68,7 +78,8 @@ export type DownloadActivityFilter =
   | "DOWNLOADING"
   | "QUEUED"
   | "PAUSED"
-  | "POST_PROCESSING";
+  | "POST_PROCESSING"
+  | "WARNING";
 
 export type DownloadImportFilter =
   | "ALL"
@@ -132,6 +143,16 @@ export type DownloadQueueItem = {
   trackedStatus: TrackedDownloadStatus | null;
   trackedStatusMessages: string[];
   trackedMatchType: TitleMatchType | null;
+  // Seeding progress. Every queue document selects these, so they are always
+  // present on the wire; each is nullable because the observation, the goal and
+  // the private flag are independently unknowable. `null` means "not observed"
+  // and must never be rendered as zero, and `isPrivate: null` never means public.
+  seedingState: DownloadSeedingState | null;
+  seedRatio: number | null;
+  seedRatioGoal: number | null;
+  seedTimeSeconds: number | null;
+  seedTimeGoalSeconds: number | null;
+  isPrivate: boolean | null;
   queueScope: ReleaseQueueScope | null;
 };
 

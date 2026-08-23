@@ -8,6 +8,20 @@ export type IndexerRecord = {
   baseUrl: string;
   indexerProxyConfigId: string | null;
   downloadClientId: string | null;
+  /** Seeding profile assigned to this indexer. null inherits the routing/global default. */
+  seedingProfileId: string | null;
+  /**
+   * Whether Prowlarr supplied seed criteria for this managed child. When it did
+   * and no profile is assigned, those criteria apply; picking a profile
+   * overrides them.
+   */
+  hasProwlarrSeedCriteria: boolean;
+  /**
+   * Minimum seeders Prowlarr imported for this managed child, or null when it
+   * supplied none. Read-only: 0 means Prowlarr turned the seeder check off, and
+   * assigning a profile overrides the imported value.
+   */
+  prowlarrMinimumSeeders: number | null;
   hasApiKey: boolean;
   storedSecretKeys: string[];
   rateLimitSeconds: number | null;
@@ -48,6 +62,7 @@ export type IndexerDraft = {
   providerType: string;
   indexerProxyConfigId: string | null;
   downloadClientId: string | null;
+  seedingProfileId: string | null;
   storedSecretKeys: string[];
   isEnabled: boolean;
   enableInteractiveSearch: boolean;

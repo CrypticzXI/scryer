@@ -24,14 +24,20 @@ use scryer_application::{
     StagedNzbRef,
 };
 use scryer_domain::DownloadClientConfig;
-use scryer_infrastructure::{
-    DownloadClientConfigStore, FileSystemStagedNzbStore, NzbgetDownloadClient,
-    PrioritizedDownloadClientRouter, SabnzbdDownloadClient, WeaverDownloadClient,
+use scryer_infrastructure_acquisition::downloads::{
+    clients::{
+        NzbgetDownloadClient, PrioritizedDownloadClientRouter, SabnzbdDownloadClient,
+        WeaverDownloadClient,
+    },
+    config_store::DownloadClientConfigStore,
+    staged_nzb_store::FileSystemStagedNzbStore,
 };
 use scryer_plugins::WasmDownloadClientPluginProvider;
 
-fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
-    scryer_infrastructure::NzbgetDownloadClient::new(
+fn new_nzbget_client(
+    uri: &str,
+) -> scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient {
+    scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         uri.to_string(),
         Some("test-user".to_string()),
         Some("test-pass".to_string()),
@@ -39,8 +45,10 @@ fn new_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
     )
 }
 
-async fn new_submit_nzbget_client(uri: &str) -> scryer_infrastructure::NzbgetDownloadClient {
-    scryer_infrastructure::NzbgetDownloadClient::with_staged_nzb_store(
+async fn new_submit_nzbget_client(
+    uri: &str,
+) -> scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient {
+    scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::with_staged_nzb_store(
         uri.to_string(),
         Some("test-user".to_string()),
         Some("test-pass".to_string()),
@@ -388,6 +396,10 @@ fn request_with_staged_nzb(
         info_hash_hint: None,
         seed_goal_ratio: None,
         seed_goal_seconds: None,
+        tracker_min_seed_ratio: None,
+        tracker_min_seed_time_minutes: None,
+        season_pack_seed_ratio: None,
+        season_pack_seed_time_minutes: None,
         is_recent: None,
         season_pack: None,
         purpose: DownloadSubmissionPurpose::Standard,
@@ -433,7 +445,7 @@ async fn nzbget_test_connection_returns_version() {
 
 #[tokio::test]
 async fn nzbget_test_connection_unreachable() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://127.0.0.1:1".to_string(),
         None,
         None,
@@ -759,7 +771,7 @@ async fn nzbget_delete_queue_item() {
         .await;
 
     let result = new_nzbget_client(&ctx.nzbget_server.uri())
-        .delete_queue_item("12345", false)
+        .delete_queue_item("12345", false, false)
         .await;
     assert!(result.is_ok(), "delete should succeed: {:?}", result.err());
 }
@@ -777,7 +789,7 @@ async fn nzbget_delete_history_item() {
         .await;
 
     let result = new_nzbget_client(&ctx.nzbget_server.uri())
-        .delete_queue_item("999", true)
+        .delete_queue_item("999", true, false)
         .await;
     assert!(
         result.is_ok(),
@@ -1078,7 +1090,7 @@ async fn nzbget_submit_download_uses_staged_cache_entry_without_refetch() {
 
 #[tokio::test]
 async fn nzbget_endpoint_appends_jsonrpc() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789".to_string(),
         None,
         None,
@@ -1089,7 +1101,7 @@ async fn nzbget_endpoint_appends_jsonrpc() {
 
 #[tokio::test]
 async fn nzbget_endpoint_preserves_existing_jsonrpc() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789/jsonrpc".to_string(),
         None,
         None,
@@ -1100,7 +1112,7 @@ async fn nzbget_endpoint_preserves_existing_jsonrpc() {
 
 #[tokio::test]
 async fn nzbget_endpoint_strips_trailing_slash() {
-    let client = scryer_infrastructure::NzbgetDownloadClient::new(
+    let client = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::new(
         "http://localhost:6789/".to_string(),
         None,
         None,
@@ -2095,7 +2107,7 @@ async fn sabnzbd_delete_queue_item() {
         .await;
 
     let result = new_sabnzbd_client(&server.uri())
-        .delete_queue_item("SABnzbd_nzo_kyt1f0", false)
+        .delete_queue_item("SABnzbd_nzo_kyt1f0", false, false)
         .await;
     assert!(result.is_ok(), "delete should succeed: {:?}", result.err());
 }
@@ -2114,7 +2126,7 @@ async fn sabnzbd_delete_history_item() {
         .await;
 
     let result = new_sabnzbd_client(&server.uri())
-        .delete_queue_item("SABnzbd_nzo_hist01", true)
+        .delete_queue_item("SABnzbd_nzo_hist01", true, false)
         .await;
     assert!(
         result.is_ok(),

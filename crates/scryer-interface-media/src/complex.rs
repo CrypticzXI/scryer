@@ -8,7 +8,8 @@ use crate::mappers::{
     fallback_episode_media_availability, from_collection, from_discovery_item,
     from_download_queue_item, from_episode, from_episode_media_availability, from_library_settings,
     from_pending_release, from_release_decision, from_series_movie_link, from_submission_scope,
-    from_title, from_title_media_file, from_title_rating_summary, from_wanted_item,
+    from_title, from_title_credit, from_title_media_file, from_title_rating_summary,
+    from_wanted_item,
 };
 use crate::types::*;
 
@@ -376,6 +377,38 @@ impl TitlePayload {
         .await
     }
 
+    /// Cast and crew cached from this title's last metadata hydration, ordered
+    /// by billing rank. Reads the local cache only; hydration refills it.
+    async fn credits(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Credit kinds to include, e.g. [\"actor\", \"voice_actor\"] for cast. \
+                    Omit or leave empty for every cached kind."
+        )]
+        kinds: Option<Vec<String>>,
+        #[graphql(
+            desc = "Maximum credits to return; defaults to 15 and clamps to 0 through 50.",
+            default = 15
+        )]
+        limit: i32,
+    ) -> GqlResult<Vec<TitleCreditPayload>> {
+        Box::pin(async move {
+            let app = app_from_ctx(ctx)?;
+            let actor = actor_from_ctx(ctx)?;
+            let title_id = self.id.as_ref();
+            let credits = app
+                .title_credits(&actor, title_id, kinds.as_deref(), i64::from(limit))
+                .await
+                .map_err(to_gql_error)?;
+            Ok(credits
+                .into_iter()
+                .map(|credit| from_title_credit(&app, title_id, credit))
+                .collect())
+        })
+        .await
+    }
+
     /// Discovery items related to this title, limited to the requested count.
     async fn more_like_this(
         &self,
@@ -422,6 +455,153 @@ impl TitlePayload {
             .map_err(to_gql_error)
         })
         .await
+    }
+
+    /// Explicit metadata-language override, or null when the global default is inherited.
+    async fn metadata_language_override(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            return loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await;
+        }
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .title_metadata_language_override(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Metadata language after applying title and library overrides.
+    async fn effective_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<String> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            if let Some(language) = loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await?
+            {
+                return Ok(language);
+            }
+            if let Some(language) = loaders
+                .library_metadata_language_override
+                .load_one(self.library_id.to_string())
+                .await?
+            {
+                return Ok(language);
+            }
+            return Ok(loaders
+                .global_metadata_language
+                .load_one("metadata-language".to_owned())
+                .await?
+                .unwrap_or_else(|| "eng".to_owned()));
+        }
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .effective_metadata_language_for_title(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Whether this title inherits metadata language from its library or the global default.
+    async fn inherits_metadata_language(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            return Ok(loaders
+                .title_metadata_language_override
+                .load_one(self.id.to_string())
+                .await?
+                .is_none());
+        }
+        Box::pin(async move {
+            Ok(app_from_ctx(ctx)?
+                .title_metadata_language_override(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)?
+                .is_none())
+        })
+        .await
+    }
+
+    /// Explicit season-folder override, or null when library/facet settings are inherited.
+    async fn use_season_folders_override(&self) -> Option<bool> {
+        (self.facet != MediaFacetValue::Movie)
+            .then_some(self.use_season_folders)
+            .flatten()
+    }
+
+    /// Whether this title uses season folders after applying inheritance.
+    async fn effective_use_season_folders(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        if self.facet == MediaFacetValue::Movie {
+            return Ok(true);
+        }
+        if let Some(use_season_folders) = self.use_season_folders {
+            return Ok(use_season_folders);
+        }
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            if let Some(use_season_folders) = loaders
+                .library_use_season_folders_override
+                .load_one(self.library_id.to_string())
+                .await?
+            {
+                return Ok(use_season_folders);
+            }
+            return Ok(loaders
+                .facet_use_season_folders_override
+                .load_one(self.facet.into_domain().as_str().to_owned())
+                .await?
+                .unwrap_or(true));
+        }
+        Box::pin(async move {
+            app_from_ctx(ctx)?
+                .effective_use_season_folders_for_title(self.id.as_ref())
+                .await
+                .map_err(to_gql_error)
+        })
+        .await
+    }
+
+    /// Whether this title inherits the season-folder setting from its library or facet.
+    async fn inherits_use_season_folders(&self) -> bool {
+        self.facet == MediaFacetValue::Movie || self.use_season_folders.is_none()
+    }
+
+    /// Filler policy after applying the title override or library/facet default.
+    async fn effective_filler_policy(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<FillerPolicyValue>> {
+        if self.facet != MediaFacetValue::Anime {
+            return Ok(None);
+        }
+        if let Some(policy) = self.filler_policy {
+            return Ok(Some(policy));
+        }
+        app_from_ctx(ctx)?
+            .effective_filler_policy_for_title(self.id.as_ref())
+            .await
+            .map(|policy| policy.and_then(|policy| FillerPolicyValue::from_app_str(&policy)))
+            .map_err(to_gql_error)
+    }
+
+    /// Recap policy after applying the title override or library/facet default.
+    async fn effective_recap_policy(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<RecapPolicyValue>> {
+        if self.facet != MediaFacetValue::Anime {
+            return Ok(None);
+        }
+        if let Some(policy) = self.recap_policy {
+            return Ok(Some(policy));
+        }
+        app_from_ctx(ctx)?
+            .effective_recap_policy_for_title(self.id.as_ref())
+            .await
+            .map(|policy| policy.and_then(|policy| RecapPolicyValue::from_app_str(&policy)))
+            .map_err(to_gql_error)
     }
 
     /// Title-specific required audio-language override, or null when the facet setting is inherited.
@@ -798,6 +978,32 @@ impl CollectionPayload {
                 .into_iter()
                 .find(|summary| summary.collection_id == collection_id)
                 .map(|summary| summary.total_episodes))
+        })
+        .await
+    }
+
+    /// Total episode records in this collection including uncountable placeholders (TBA/undated), populated when requested.
+    async fn episode_records_total(&self, ctx: &Context<'_>) -> GqlResult<Option<i64>> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            let summary = loaders
+                .collection_episode_progress
+                .load_one((self.title_id.to_string(), self.id.to_string()))
+                .await?;
+            return Ok(summary.map(|summary| summary.episode_records_total));
+        }
+        Box::pin(async move {
+            let app = app_from_ctx(ctx)?;
+            let actor = actor_from_ctx(ctx)?;
+            let title_id = self.title_id.to_string();
+            let collection_id = self.id.to_string();
+            let summaries = app
+                .list_collection_episode_progress_summaries(&actor, std::slice::from_ref(&title_id))
+                .await
+                .map_err(to_gql_error)?;
+            Ok(summaries
+                .into_iter()
+                .find(|summary| summary.collection_id == collection_id)
+                .map(|summary| summary.episode_records_total))
         })
         .await
     }

@@ -8,9 +8,10 @@ import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 import type { MediaRenamePlan } from "@/components/common/media-rename-plan-panel";
 import {
   addTitleMutation,
-  applyMediaRenameMutation,
+  renameTitlesMutation,
   buildSetTitleMonitoredBatchMutation,
   buildUpdateTitleBatchMutation,
+  updateTitleMutation,
   createLibraryMutation,
   deleteMediaFileMutation,
   deleteLibraryMutation,
@@ -46,12 +47,15 @@ import {
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
 import { selectedOverviewUsesMovieRecord } from "@/lib/utils/selected-overview-policy";
-import { editDialogTargets } from "@/lib/utils/title-edit-dialog";
 import {
   CATEGORY_SCOPE_MAP,
   QUALITY_PROFILE_INHERIT_VALUE,
   viewToFacet,
 } from "@/lib/constants/settings";
+import {
+  CATALOG_TITLES_REFRESH_EVENT,
+  catalogTitlesRefreshDetail,
+} from "@/lib/events/catalog-titles";
 import { isAbortError } from "@/lib/graphql/urql-client";
 import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
 import type { InteractiveSearchProgress } from "@/lib/graphql/release-search";
@@ -99,6 +103,7 @@ import {
 } from "@/lib/utils/catalog-bootstrap-policy";
 import { isMediaSettingsSection } from "@/lib/utils/routes";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
+import { useBulkRename } from "@/lib/hooks/use-bulk-rename";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
 import { useMediaSettings } from "@/lib/hooks/use-media-settings";
@@ -132,6 +137,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
+import { BulkRenamePreviewSummary } from "@/components/common/bulk-rename-preview-summary";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -220,7 +226,9 @@ type MediaContentContainerProps = {
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
   canManageLibrarySettings: boolean;
+  canViewCatalog: boolean;
   canManageTitle: boolean;
+  canManageTitlesInLibrary: (libraryId: string | null | undefined) => boolean;
   canRequestMedia: boolean;
   authorizationSignature: string;
   onOpenOverview: (
@@ -408,6 +416,9 @@ function mergePreferLoadedImageFields(
         ? current.canonicalTags
         : incoming.canonicalTags,
     ratings: incoming.ratings === undefined ? current.ratings : incoming.ratings,
+    // Catalog list refreshes omit credits; treating that as "no cast" would
+    // blank the overview rail on every list refresh.
+    credits: incoming.credits === undefined ? current.credits : incoming.credits,
     metadataFetchedAt: incoming.metadataFetchedAt ?? current.metadataFetchedAt,
   };
 }
@@ -608,6 +619,8 @@ function librarySettingsInput(
   }
   return {
     requiredAudioLanguages: settings.requiredAudioLanguages,
+    metadataLanguage: settings.metadataLanguage,
+    useSeasonFolders: settings.useSeasonFolders,
     qualityProfileId: settings.qualityProfileId,
     requestQualityProfileIds: settings.requestQualityProfileIds,
     scoringPersona: settings.scoringPersona,
@@ -730,7 +743,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageSystemSettings,
   canManageCatalogSettings,
   canManageLibrarySettings,
+  canViewCatalog,
   canManageTitle,
+  canManageTitlesInLibrary,
   canRequestMedia,
   authorizationSignature,
   onOpenOverview,
@@ -1193,8 +1208,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
-  const [titleEditTarget, setTitleEditTarget] =
-    React.useState<TitleRecord | null>(null);
   const shouldLoadMediaSettings =
     shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
@@ -1598,13 +1611,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
-  const editDialogTitles = React.useMemo(
-    () => editDialogTargets(titleEditTarget, selectedTitles),
-    [selectedTitles, titleEditTarget],
-  );
+  const editDialogTitles = selectedTitles;
   const selectedTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
     [selectedTitles],
+  );
+  // Renaming rewrites files on disk, so it needs manage rights on every library
+  // the selection touches, not just on one of them.
+  const canRenameSelectedTitles = React.useMemo(
+    () =>
+      selectedTitleLibraryIds.length > 0 &&
+      selectedTitleLibraryIds.every((libraryId) =>
+        canManageTitlesInLibrary(libraryId),
+      ),
+    [canManageTitlesInLibrary, selectedTitleLibraryIds],
   );
   const editDialogTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(editDialogTitles.map((title) => title.libraryId))),
@@ -1804,6 +1824,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setCategoryFolderTemplates,
     categorySeasonFolderTemplates,
     setCategorySeasonFolderTemplates,
+    categoryUseSeasonFolders,
+    setCategoryUseSeasonFolders,
     categorySpecialsFolderTemplates,
     setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,
@@ -2621,6 +2643,27 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     };
   }, [refreshTrackedDeletionJobs]);
 
+  React.useEffect(() => {
+    const handleCatalogTitlesRefresh = (event: Event) => {
+      const { facet } = catalogTitlesRefreshDetail(event);
+      if (facet && facet !== activeFacet) {
+        return;
+      }
+      void refreshTitles();
+      void refreshCatalogDiscovery();
+    };
+
+    window.addEventListener(
+      CATALOG_TITLES_REFRESH_EVENT,
+      handleCatalogTitlesRefresh,
+    );
+    return () =>
+      window.removeEventListener(
+        CATALOG_TITLES_REFRESH_EVENT,
+        handleCatalogTitlesRefresh,
+      );
+  }, [activeFacet, refreshCatalogDiscovery, refreshTitles]);
+
   const {
     bulkDeleteDialogOpen,
     setBulkDeleteDialogOpen,
@@ -2657,8 +2700,33 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     aggregateDeletePreviews,
   });
 
+  const {
+    bulkRenameDialogOpen,
+    bulkRenamePreviewLoading,
+    bulkRenamePreviewError,
+    bulkRenamePlansByTitleId,
+    bulkRenameSummary,
+    bulkRenameConfirmDisabled,
+    closeBulkRenameDialog,
+    confirmBulkRenameTitles,
+    openBulkTitleRename,
+  } = useBulkRename({
+    selectedTitles,
+    canRenameSelectedTitles,
+    bulkActionBusy,
+    setBulkActionBusy,
+    client,
+    t,
+    setGlobalStatus,
+    recordCriticalCatalogMutation,
+    registerInteractiveJobRun,
+    setSelectedTitleIds,
+    batchFailureDetail,
+    withFailureDetail,
+  });
+
   React.useEffect(() => {
-    if (selectedTitles.length > 0 || titleEditTarget !== null) {
+    if (selectedTitles.length > 0) {
       return;
     }
     setBulkEditDialogOpen(false);
@@ -2668,9 +2736,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewLoading(false);
     setBulkDeletePreviewError(null);
     setBulkDeletePreviewsByTitleId({});
+    closeBulkRenameDialog();
   }, [
     selectedTitles.length,
-    titleEditTarget,
+    closeBulkRenameDialog,
     setBulkDeleteDialogOpen,
     setBulkDeleteFilesOnDisk,
     setBulkDeletePreviewError,
@@ -2937,6 +3006,35 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [applyRefreshedTitleRecord, client],
   );
 
+  const refreshMovieTitleOptions = React.useCallback(
+    async (title: TitleRecord) => {
+      await Promise.all([
+        refreshMovieSidePanelOverview(title.id),
+        reloadTitles(),
+      ]);
+    },
+    [refreshMovieSidePanelOverview, reloadTitles],
+  );
+
+  const updateMovieTitleOptions = React.useCallback(
+    async (title: TitleRecord, options: TitleOptionUpdates) => {
+      if (title.facet !== "MOVIE") {
+        return;
+      }
+      recordCriticalCatalogMutation();
+      const { error } = await client
+        .mutation(updateTitleMutation, {
+          input: { titleId: title.id, options },
+        })
+        .toPromise();
+      if (error) {
+        throw error;
+      }
+      await refreshMovieTitleOptions(title);
+    },
+    [client, recordCriticalCatalogMutation, refreshMovieTitleOptions],
+  );
+
   // Movie overviews use the selected-title panel. When a slug deep link selects
   // a movie that is not part of the current catalog page, fetch its panel detail
   // so the pane can render it instead of the list bouncing back.
@@ -3021,37 +3119,36 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const applyTitleRename = React.useCallback(
-    async (title: TitleRecord, plan: MediaRenamePlan) => {
+    async (title: TitleRecord, _plan: MediaRenamePlan) => {
       try {
         recordCriticalCatalogMutation();
+        // One title can be a thousand files, so this starts a job and the
+        // title stays locked until the job is done with it.
         const { data, error } = await client
           .mutation<{
-            applyMediaRename: {
-              applied: number;
-              skipped: number;
-              failed: number;
+            renameTitles: {
+              acceptedTitleIds: string[];
+              jobRun?: unknown;
             };
-          }>(applyMediaRenameMutation, {
+          }>(renameTitlesMutation, {
             input: {
               facet: title.facet,
-              titleId: title.id,
-              fingerprint: plan.fingerprint,
+              titleIds: [title.id],
             },
           })
           .toPromise();
         if (error) {
           throw error;
         }
+        if ((data?.renameTitles.acceptedTitleIds.length ?? 0) === 0) {
+          throw new Error(t("status.bulkRenameFailed"));
+        }
+        const run = normalizeJobRun(data?.renameTitles.jobRun);
+        if (run) {
+          registerInteractiveJobRun(run);
+        }
 
-        const result = data?.applyMediaRename;
-        setGlobalStatus(
-          t("status.renameApplied", {
-            applied: result?.applied ?? 0,
-            skipped: result?.skipped ?? 0,
-            failed: result?.failed ?? 0,
-          }),
-        );
-        await refreshMovieSidePanelOverview(title.id);
+        setGlobalStatus(t("status.renameQueued"));
         return true;
       } catch (error) {
         setGlobalStatus(
@@ -3063,7 +3160,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     [
       client,
       recordCriticalCatalogMutation,
-      refreshMovieSidePanelOverview,
+      registerInteractiveJobRun,
       setGlobalStatus,
       t,
     ],
@@ -3619,6 +3716,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           titleId: title.id,
           scope: releaseQueueScopeInput(release, { title: true }),
           candidateToken: release.candidateToken,
+          sizeBytes: release.sizeBytes ?? null,
         };
         const replacesPrimary = hasPrimaryMediaFile(title.mediaFiles);
         const mutation = replacesPrimary
@@ -3669,6 +3767,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
               titleId: title.id,
               scope: releaseQueueScopeInput(release, { title: true }),
               candidateToken: release.candidateToken,
+              sizeBytes: release.sizeBytes ?? null,
               purpose: "ADDITIONAL_FILE",
             },
           })
@@ -3975,9 +4074,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             }
           });
         }
-        if (titleEditTarget === null) {
-          setSelectedTitleIds(new Set(failedIds));
-        }
+        setSelectedTitleIds(new Set(failedIds));
 
         const detail = batchFailureDetail(result.error);
         if (succeededIds.length === 0) {
@@ -3988,7 +4085,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         setBulkEditDialogOpen(false);
-        setTitleEditTarget(null);
         if (failedIds.length > 0) {
           setGlobalStatus(
             withFailureDetail(
@@ -4023,7 +4119,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       reloadTitles,
       setGlobalStatus,
       t,
-      titleEditTarget,
     ],
   );
 
@@ -4112,7 +4207,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setGlobalStatus("Bulk actions require titles from one library.");
       return;
     }
-    setTitleEditTarget(null);
     setBulkEditDialogOpen(true);
   }, [
     bulkActionBusy,
@@ -4120,17 +4214,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedTitles.length,
     setGlobalStatus,
   ]);
-
-  const openTitleEdit = React.useCallback(
-    (title: TitleRecord) => {
-      if (bulkActionBusy) {
-        return;
-      }
-      setTitleEditTarget(title);
-      setBulkEditDialogOpen(true);
-    },
-    [bulkActionBusy],
-  );
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -5150,6 +5233,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           setCategoryFolderTemplates,
           categorySeasonFolderTemplates,
           setCategorySeasonFolderTemplates,
+          categoryUseSeasonFolders,
+          setCategoryUseSeasonFolders,
           categorySpecialsFolderTemplates,
           setCategorySpecialsFolderTemplates,
           categoryRenameTemplates,
@@ -5225,6 +5310,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           monitoredTitles: visibleTitles,
           titleContextTitles: titleContextSourceTitles,
           catalogDiscoveryGroups: activeCatalogDiscoveryGroups,
+          canViewCatalog,
           canManageTitle,
           canRequestMedia,
           canManageCatalogDiscovery,
@@ -5292,7 +5378,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           deleteLibrary,
           onOpenOverview,
           onCloseOverview: handleCloseOverview,
-          onEditTitle: openTitleEdit,
+          updateMovieTitleOptions,
+          refreshMovieTitleOptions,
           selectedOverviewTitleId,
           selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,
@@ -5324,6 +5411,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           bulkMonitorTitles,
           openBulkTitleEdit,
           openBulkTitleDelete,
+          openBulkTitleRename,
+          canRenameSelectedTitles,
         }}
       />
       {canManageTitle ? (
@@ -5339,20 +5428,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )}
           manageableLibraries={librariesByFacet[addDiscoveryFacet] ?? []}
           rootFolderOptions={rootFoldersByFacet[addDiscoveryFacet] ?? []}
-          onAdd={async (result, facet, options) => {
-            const titleId = await addMetadataSearchResultToCatalog(
-              result,
-              facet,
-              options,
-            );
-            if (titleId) {
-              await Promise.all([
-                refreshTitles(),
-                refreshCatalogDiscovery(),
-              ]);
-            }
-            return titleId;
-          }}
+          onAdd={(result, facet, options) =>
+            // The catalog reload rides the catalog-titles event, same as an add
+            // made from global search.
+            addMetadataSearchResultToCatalog(result, facet, options)
+          }
         />
       ) : null}
       {canRequestMedia ? (
@@ -5383,15 +5463,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ) : null}
       <BulkTitleEditDialog
         open={bulkEditDialogOpen}
-        onOpenChange={(open) => {
-          setBulkEditDialogOpen(open);
-          if (!open) {
-            setTitleEditTarget(null);
-          }
-        }}
+        onOpenChange={setBulkEditDialogOpen}
         view={view}
         selectedTitles={editDialogTitles}
-        directTitle={titleEditTarget}
         qualityProfiles={qualityProfiles}
         rootFolders={editDialogRootFolders}
         busy={bulkActionBusy}
@@ -5433,6 +5507,30 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             />
           ) : null}
         </div>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={bulkRenameDialogOpen}
+        title={t("title.bulkRenameTitle")}
+        description={t("title.bulkRenameDescription", {
+          count: selectedTitles.length,
+        })}
+        confirmLabel={t("rename.applyButton")}
+        cancelLabel={t("label.cancel")}
+        contentClassName="max-w-4xl"
+        confirmButtonVariant="primary"
+        confirmButtonId="bulk-rename-apply"
+        isBusy={bulkActionBusy}
+        confirmDisabled={bulkRenameConfirmDisabled}
+        onConfirm={confirmBulkRenameTitles}
+        onCancel={closeBulkRenameDialog}
+      >
+        <BulkRenamePreviewSummary
+          titles={selectedTitles}
+          plansByTitleId={bulkRenamePlansByTitleId}
+          summary={bulkRenameSummary}
+          loading={bulkRenamePreviewLoading}
+          error={bulkRenamePreviewError}
+        />
       </ConfirmDialog>
       <ConfirmDialog
         open={titleToDelete !== null}

@@ -52,6 +52,9 @@ function queueStateSortRank(state: string | null | undefined): number {
     case "importpending":
     case "completed":
       return 3;
+    // Both states want the operator's attention, so they sort together at the
+    // end; only their handling differs.
+    case "warning":
     case "failed":
       return 4;
     default:
@@ -152,12 +155,19 @@ function queueItemRecencyValue(
 }
 
 function transientQueueStateRank(displayState: string | null | undefined): number {
+  // `warning` ranks with the terminal states: a client that starts reporting a
+  // problem is the fresher, more specific observation, exactly as `failed` was
+  // before it had its own state — without a rank here the merge keeps the stale
+  // downloading row and the badge never catches up. `warning` deliberately
+  // stays out of `isTransientQueueDisplayState`: a warned row that disappears
+  // from the authoritative list is gone, and must not be resurrected.
   switch (normalizeQueueState(displayState)) {
     case "completed":
     case "failed":
     case "remove_failed":
     case "import_failed":
     case "import_blocked":
+    case "warning":
       return 6;
     case "import_pending":
       return 5;
@@ -234,6 +244,17 @@ function fillMissingQueueItemFields(
         ? primary.trackedStatusMessages
         : secondary.trackedStatusMessages,
     trackedMatchType: primary.trackedMatchType ?? secondary.trackedMatchType,
+    // A present observation always wins and an absent one inherits the last
+    // known value, matching how the tracker retains seeding observations
+    // server-side: a row that blinks to "unknown" between two sources would
+    // make the badge and the numbers flicker on every poll.
+    seedingState: primary.seedingState ?? secondary.seedingState,
+    seedRatio: primary.seedRatio ?? secondary.seedRatio,
+    seedRatioGoal: primary.seedRatioGoal ?? secondary.seedRatioGoal,
+    seedTimeSeconds: primary.seedTimeSeconds ?? secondary.seedTimeSeconds,
+    seedTimeGoalSeconds:
+      primary.seedTimeGoalSeconds ?? secondary.seedTimeGoalSeconds,
+    isPrivate: primary.isPrivate ?? secondary.isPrivate,
     queueScope: primary.queueScope ?? secondary.queueScope,
   };
 }
@@ -517,6 +538,10 @@ export function matchesActivityStatuses(
       return statuses.includes("PAUSED");
     case "POST_PROCESSING":
       return statuses.includes("POST_PROCESSING");
+    // A warned download is still live in the client, so it belongs with the
+    // activity it is part of rather than with the failed history.
+    case "WARNING":
+      return statuses.includes("WARNING");
     default:
       return false;
   }

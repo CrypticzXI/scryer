@@ -16,6 +16,7 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useIndexersSubscription } from "@/lib/hooks/use-indexers-subscription";
+import type { IndexerSettingsTab } from "@/components/root/types";
 import type {
   ConfigFieldDef,
   IndexerProxyDraft,
@@ -48,6 +49,7 @@ import {
   deleteIndexerProxyConfigMutation,
   syncIndexerConfigMutation,
   setIndexerDownloadClientMappingMutation,
+  setIndexerSeedingProfileMutation,
   testIndexerConnectionMutation,
   testIndexerProxyConfigMutation,
   updateIndexerMutation,
@@ -57,6 +59,7 @@ import {
   providerConfigRecordToValues,
   providerConfigValuesToRecord,
 } from "@/lib/utils/provider-config";
+import { useSeedingProfileOptions } from "@/lib/hooks/use-seeding-profile-options";
 
 type SettingsIndexersSectionProps = ComponentProps<
   typeof SettingsIndexersSection
@@ -67,6 +70,7 @@ const INDEXER_INITIAL_DRAFT = {
   providerType: "",
   indexerProxyConfigId: null as string | null,
   downloadClientId: null as string | null,
+  seedingProfileId: null as string | null,
   storedSecretKeys: [] as string[],
   isEnabled: true,
   enableInteractiveSearch: true,
@@ -209,6 +213,7 @@ function findMissingRequiredConfigField(
 }
 
 type SettingsIndexersContainerProps = {
+  indexerSettingsTab?: IndexerSettingsTab;
   providerCatalogVersion?: number;
   indexerDownloadClientMappingCatalogResource: IndexerDownloadClientMappingCatalogResource;
   updateIndexerDownloadClientMappingCatalog: (
@@ -242,6 +247,7 @@ function cloneIndexerDraft(
 }
 
 export function SettingsIndexersContainer({
+  indexerSettingsTab = "indexers",
   providerCatalogVersion = 0,
   indexerDownloadClientMappingCatalogResource,
   updateIndexerDownloadClientMappingCatalog,
@@ -257,6 +263,11 @@ export function SettingsIndexersContainer({
   const [mutatingIndexerMappingIds, setMutatingIndexerMappingIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const { options: seedingProfileOptions } = useSeedingProfileOptions();
+  const [
+    mutatingIndexerSeedingProfileIds,
+    setMutatingIndexerSeedingProfileIds,
+  ] = useState<Set<string>>(() => new Set());
   const [indexerProxyConfigs, setIndexerProxyConfigs] = useState<
     IndexerProxyRecord[]
   >([]);
@@ -470,6 +481,20 @@ export function SettingsIndexersContainer({
     setAwaitingBaselineSync(true);
   }, [resetIndexerDraft]);
 
+  // Editor-form variant of the assignment: no optimistic row update and no
+  // status toast, because the surrounding save already reports its own result.
+  const applyIndexerSeedingProfile = useCallback(
+    async (indexerId: string, seedingProfileId: string | null) => {
+      const { error } = await client
+        .mutation(setIndexerSeedingProfileMutation, {
+          input: { indexerId, seedingProfileId },
+        })
+        .toPromise();
+      if (error) throw error;
+    },
+    [client],
+  );
+
   const submitIndexer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
@@ -485,6 +510,7 @@ export function SettingsIndexersContainer({
       providerType: normalizedProviderType,
       indexerProxyConfigId: indexerDraft.indexerProxyConfigId,
       downloadClientId: indexerDraft.downloadClientId,
+      seedingProfileId: indexerDraft.seedingProfileId,
       isEnabled: indexerDraft.isEnabled,
       enableInteractiveSearch: indexerDraft.enableInteractiveSearch,
       enableAutoSearch: indexerDraft.enableAutoSearch,
@@ -525,9 +551,10 @@ export function SettingsIndexersContainer({
     setMutatingIndexerId(editingIndexerId || "new");
     try {
       if (editingIndexerId) {
-        const existingDownloadClientId =
-          settingsIndexers.find((indexer) => indexer.id === editingIndexerId)
-            ?.downloadClientId ?? null;
+        const existingIndexer = settingsIndexers.find(
+          (indexer) => indexer.id === editingIndexerId,
+        );
+        const existingDownloadClientId = existingIndexer?.downloadClientId ?? null;
         const { error } = await client
           .mutation(updateIndexerMutation, {
             input: {
@@ -546,9 +573,20 @@ export function SettingsIndexersContainer({
           })
           .toPromise();
         if (error) throw error;
+        // Seeding-profile assignment is not part of the indexer input: it goes
+        // through its own mutation so the torrent-capability check stays
+        // single-sourced server-side.
+        if (
+          payload.seedingProfileId !== (existingIndexer?.seedingProfileId ?? null)
+        ) {
+          await applyIndexerSeedingProfile(
+            editingIndexerId,
+            payload.seedingProfileId,
+          );
+        }
         setGlobalStatus(t("status.indexerUpdated"));
       } else {
-        const { error } = await client
+        const { data, error } = await client
           .mutation(createIndexerMutation, {
             input: {
               name: payload.name,
@@ -563,6 +601,15 @@ export function SettingsIndexersContainer({
           })
           .toPromise();
         if (error) throw error;
+        const createdIndexerId = data?.createIndexerConfig?.id as
+          | string
+          | undefined;
+        if (payload.seedingProfileId && createdIndexerId) {
+          await applyIndexerSeedingProfile(
+            createdIndexerId,
+            payload.seedingProfileId,
+          );
+        }
         setGlobalStatus(t("status.indexerCreated"));
       }
       resetIndexerDraft();
@@ -599,6 +646,7 @@ export function SettingsIndexersContainer({
       providerType: indexer.providerType,
       indexerProxyConfigId: indexer.indexerProxyConfigId ?? null,
       downloadClientId: indexer.downloadClientId ?? null,
+      seedingProfileId: indexer.seedingProfileId ?? null,
       storedSecretKeys: indexer.storedSecretKeys,
       isEnabled: indexer.isEnabled,
       enableInteractiveSearch: indexer.enableInteractiveSearch,
@@ -768,6 +816,63 @@ export function SettingsIndexersContainer({
       t,
       updateIndexerDownloadClientMappingCatalog,
     ],
+  );
+
+  const setIndexerSeedingProfile = useCallback(
+    async (indexerId: string, seedingProfileId: string | null) => {
+      const indexer = settingsIndexers.find((entry) => entry.id === indexerId);
+      const indexerName = indexer?.name ?? indexerId;
+      const previousSeedingProfileId = indexer?.seedingProfileId ?? null;
+
+      setMutatingIndexerSeedingProfileIds((previous) =>
+        updatePendingIndexerMappingIds(previous, indexerId, true),
+      );
+      setSettingsIndexers((previous) =>
+        previous.map((entry) =>
+          entry.id === indexerId ? { ...entry, seedingProfileId } : entry,
+        ),
+      );
+      setGlobalStatus(t("status.indexerSeedingProfileSaving"));
+
+      try {
+        const { data, error } = await client
+          .mutation(setIndexerSeedingProfileMutation, {
+            input: { indexerId, seedingProfileId },
+          })
+          .toPromise();
+        if (error) throw error;
+
+        const resolvedSeedingProfileId =
+          data?.setIndexerSeedingProfile?.seedingProfileId ?? null;
+        setSettingsIndexers((previous) =>
+          previous.map((entry) =>
+            entry.id === indexerId
+              ? { ...entry, seedingProfileId: resolvedSeedingProfileId }
+              : entry,
+          ),
+        );
+        setGlobalStatus(
+          t("status.indexerSeedingProfileSaved", { name: indexerName }),
+        );
+      } catch (error) {
+        setSettingsIndexers((previous) =>
+          previous.map((entry) =>
+            entry.id === indexerId
+              ? { ...entry, seedingProfileId: previousSeedingProfileId }
+              : entry,
+          ),
+        );
+        // The backend rejects non-torrent indexers by name; keep that wording.
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      } finally {
+        setMutatingIndexerSeedingProfileIds((previous) =>
+          updatePendingIndexerMappingIds(previous, indexerId, false),
+        );
+      }
+    },
+    [client, setGlobalStatus, settingsIndexers, t],
   );
 
   const toggleIndexerEnabled = useCallback(
@@ -1060,6 +1165,7 @@ export function SettingsIndexersContainer({
           )
         : null}
       <SettingsIndexersSection
+        indexerSettingsTab={indexerSettingsTab}
         editingIndexerId={editingIndexerId}
         indexerDraft={indexerDraft}
         setIndexerDraft={setIndexerDraft}
@@ -1077,6 +1183,9 @@ export function SettingsIndexersContainer({
         }
         mutatingIndexerMappingIds={mutatingIndexerMappingIds}
         setIndexerDownloadClientMapping={setIndexerDownloadClientMapping}
+        seedingProfileOptions={seedingProfileOptions}
+        mutatingIndexerSeedingProfileIds={mutatingIndexerSeedingProfileIds}
+        setIndexerSeedingProfile={setIndexerSeedingProfile}
         indexerProxyConfigs={indexerProxyConfigs}
         indexerProxyDraft={indexerProxyDraft}
         setIndexerProxyDraft={setIndexerProxyDraft}

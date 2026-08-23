@@ -55,11 +55,11 @@ use crate::{
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
     RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
     SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
-    ScopeIndexerCoverageRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
-    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
-    TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
-    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
-    TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
+    ScopeIndexerCoverageRepository, SeedingProfileRepository, SettingsRepository, StagedNzbRef,
+    StagedNzbStore, SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob,
+    TitleImageKind, TitleImageProcessor, TitleImageRepository, TitleImageSourceResult,
+    TitleImageSyncTask, TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
     UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity,
     WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
     WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
@@ -67,6 +67,38 @@ use crate::{
     types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
     types::TotpRecoveryCodeRecord,
 };
+
+#[derive(Default)]
+pub struct NullSeedingProfileRepository;
+
+#[async_trait]
+impl SeedingProfileRepository for NullSeedingProfileRepository {
+    async fn list(&self) -> AppResult<Vec<scryer_domain::SeedingProfile>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _id: &str) -> AppResult<Option<scryer_domain::SeedingProfile>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        Ok(profile)
+    }
+
+    async fn update(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        Ok(profile)
+    }
+
+    async fn delete(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 pub struct NullIndexerProxyConfigRepository;
@@ -136,6 +168,14 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
         _stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> AppResult<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn prune_scope_indexer(&self, _scope_key: &str, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
     }
 
     async fn list_coverage_for_scope_keys(
@@ -1082,7 +1122,6 @@ impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
         _id: &str,
         _status: &str,
         _last_search_at: Option<&str>,
-        _current_score: Option<i32>,
         _grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         Err(AppError::Repository(
@@ -1451,6 +1490,7 @@ pub struct NullIndexerStatsTracker;
 
 impl IndexerStatsTracker for NullIndexerStatsTracker {
     fn record_query(&self, _indexer_id: &str, _indexer_name: &str, _success: bool) {}
+    fn record_grab(&self, _indexer_id: &str, _indexer_name: &str) {}
     fn record_api_limits(
         &self,
         _indexer_id: &str,
@@ -1671,6 +1711,16 @@ impl DomainEventRepository for NullDomainEventRepository {
         _: Option<&str>,
     ) -> AppResult<i64> {
         Ok(0)
+    }
+
+    async fn count_dashboard_activity_events(
+        &self,
+        _: &[String],
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<crate::DashboardActivityStats> {
+        Ok(crate::DashboardActivityStats::default())
     }
 
     async fn list_title_history_page_events(
@@ -1932,11 +1982,26 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<()> {
         Ok(())
     }
+    async fn update_pending_release_delay_until(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         _: &str,
     ) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
+    }
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        _: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        Ok(vec![])
+    }
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        _: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        Ok(std::collections::HashMap::new())
     }
     async fn delete_standby_pending_releases_for_wanted_item(&self, _: &str) -> AppResult<()> {
         Ok(())
@@ -3135,7 +3200,7 @@ pub mod test_nulls {
         async fn auth_session_version(&self, _: &str) -> AppResult<Option<String>> {
             Ok(None)
         }
-        async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {
+        async fn update_password_hash(&self, _: &str, _: String, _: bool) -> AppResult<User> {
             Err(AppError::Repository("not configured".into()))
         }
         async fn update_login_status_and_rotate_session(

@@ -29,7 +29,8 @@ use scryer_domain::{
     DomainEventPayload, DomainEventType, ImportMode, LibraryPermissionMask, MediaFacet,
     MediaFileDeletedReason, Title, User, UserAuthorization,
 };
-use scryer_infrastructure::{FsFileImporter, MediaFileStore};
+use scryer_infrastructure_library::media::search::media_file_store::MediaFileStore;
+use scryer_infrastructure_workflow::workflow::file_importer::FsFileImporter;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -488,6 +489,7 @@ async fn seed_media_file(
         title_id: title_id.to_string(),
         file_path: file_path.to_string_lossy().to_string(),
         size_bytes: size,
+        announced_size_bytes: None,
         quality_label: Some("720p".to_string()),
         acquisition_score: Some(score),
         ..Default::default()
@@ -578,6 +580,7 @@ fn test_actor() -> User {
         id: scryer_domain::Id::new().0,
         username: "admin".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,

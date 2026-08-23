@@ -11,7 +11,11 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
-import { pluginsQuery, pluginInstallProgressSubscription } from "@/lib/graphql/queries";
+import {
+  pluginsQuery,
+  pluginAutoUpdateSettingsQuery,
+  pluginInstallProgressSubscription,
+} from "@/lib/graphql/queries";
 import {
   beginInstallPluginMutation,
   beginUpgradePluginMutation,
@@ -21,7 +25,9 @@ import {
   installUploadedPluginMutation,
   uninstallPluginMutation,
   togglePluginMutation,
+  updatePluginAutoUpdateSettingsMutation,
 } from "@/lib/graphql/mutations";
+import type { PluginAutoUpdateSettings } from "@/lib/types/settings";
 import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog-subscription";
 import { wsClient } from "@/lib/graphql/ws-client";
 import {
@@ -48,6 +54,14 @@ type PluginInstallProgressSubscriptionResult = {
   data?: {
     pluginInstallProgress?: PluginInstallProgressRecord;
   };
+};
+
+type PluginAutoUpdateSettingsQueryResult = {
+  pluginAutoUpdateSettings?: PluginAutoUpdateSettings | null;
+};
+
+type UpdatePluginAutoUpdateSettingsResult = {
+  updatePluginAutoUpdateSettings?: PluginAutoUpdateSettings | null;
 };
 
 function extractPluginMutationErrorMessage(error: unknown): string | null {
@@ -156,6 +170,9 @@ export function SettingsPluginsContainer() {
   const [manualUploadRiskAccepted, setManualUploadRiskAccepted] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(false);
+  const [autoUpdateLoading, setAutoUpdateLoading] = useState(true);
+  const [autoUpdateSaving, setAutoUpdateSaving] = useState(false);
 
   const setPlugins = useCallback((
     next:
@@ -295,6 +312,44 @@ export function SettingsPluginsContainer() {
   useEffect(() => {
     void refreshPlugins();
   }, [refreshPlugins]);
+
+  const fetchAutoUpdateSettings = useCallback(async () => {
+    setAutoUpdateLoading(true);
+    try {
+      const { data, error } = await client
+        .query<PluginAutoUpdateSettingsQueryResult>(pluginAutoUpdateSettingsQuery, {})
+        .toPromise();
+      if (error) throw error;
+      setAutoUpdateEnabled(data?.pluginAutoUpdateSettings?.enabled ?? false);
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+    } finally {
+      setAutoUpdateLoading(false);
+    }
+  }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    void fetchAutoUpdateSettings();
+  }, [fetchAutoUpdateSettings]);
+
+  const updateAutoUpdateEnabled = useCallback(async (enabled: boolean) => {
+    setAutoUpdateSaving(true);
+    try {
+      const { data, error } = await client
+        .mutation<UpdatePluginAutoUpdateSettingsResult>(
+          updatePluginAutoUpdateSettingsMutation,
+          { input: { enabled } },
+        )
+        .toPromise();
+      if (error) throw error;
+      setAutoUpdateEnabled(data?.updatePluginAutoUpdateSettings?.enabled ?? enabled);
+      setGlobalStatus(t("status.pluginAutoUpdateSettingsSaved"));
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setAutoUpdateSaving(false);
+    }
+  }, [client, setGlobalStatus, t]);
 
   useProviderCatalogSubscription(() => {
     if (
@@ -733,6 +788,10 @@ export function SettingsPluginsContainer() {
         manualBusy={manualBusy}
         showManualInstall={showManualInstall}
         headerActionsTarget={headerActionsTarget}
+        autoUpdateEnabled={autoUpdateEnabled}
+        autoUpdateLoading={autoUpdateLoading}
+        autoUpdateSaving={autoUpdateSaving}
+        onAutoUpdateEnabledChange={updateAutoUpdateEnabled}
         remoteActionsBlocked={{
           refresh: blockedRemoteActions.has("catalog_refresh"),
           install: blockedRemoteActions.has("install"),

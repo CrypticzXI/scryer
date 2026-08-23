@@ -6,6 +6,7 @@ import {
   normalizeQueueState,
 } from "@/lib/utils/download-queue";
 import { manualImportActions } from "@/lib/utils/manual-import-actions";
+import { isImportedSeedingRow } from "@/lib/utils/seeding-progress";
 
 export type TranslateFn = ReturnType<typeof useTranslate>;
 
@@ -17,6 +18,11 @@ export const queueStateClasses: Record<string, string> = {
   post_processing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   paused: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   completed: "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
+  // Imported and still seeding is a healthy post-import state, so it stays in
+  // the success family that `completed` uses; the stronger border is what makes
+  // it legible as its own thing rather than a warning.
+  imported_seeding:
+    "border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]",
   importing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   removing: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
@@ -24,6 +30,9 @@ export const queueStateClasses: Record<string, string> = {
   import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   ignored: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  // A recoverable client problem: loud enough to be noticed, not dressed as a
+  // dead grab.
+  warning: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
 
@@ -33,6 +42,7 @@ export const queueStateLabels: Record<string, string> = {
   post_processing: "queue.state.postProcessing",
   paused: "queue.state.paused",
   completed: "queue.state.completed",
+  imported_seeding: "queue.state.importedSeeding",
   importing: "queue.state.importing",
   removing: "queue.deleting",
   import_pending: "queue.state.importPending",
@@ -40,10 +50,12 @@ export const queueStateLabels: Record<string, string> = {
   import_failed: "queue.manualImportFailed",
   ignored: "queue.state.ignored",
   remove_failed: "queue.removeFailed",
+  warning: "queue.state.warning",
   failed: "queue.state.failed",
 };
 
 export const queueStateAttention: Record<string, boolean> = {
+  warning: true,
   failed: true,
   importing: true,
   removing: true,
@@ -95,6 +107,8 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
           return 2;
         case "post_processing":
           return 3;
+        case "warning":
+          return 4;
         default:
           return 99;
       }
@@ -106,6 +120,14 @@ export type QueueRowPresentation = {
   trackedStateKey: string;
   trackedMatchTypeKey: string;
   displayStateKey: string;
+  /**
+   * Key the status badge renders under. It is the display state for every row
+   * except one: a tracked download parked in `IMPORTED_SEEDING` displays as
+   * `COMPLETED` (the backend deliberately added no display state for it), so
+   * the badge reads the tracked state to keep "imported, still seeding" from
+   * being indistinguishable from a finished usenet download.
+   */
+  statusBadgeKey: string;
   percent: number;
   remainingLabel: string | null;
   hasTransferProgress: boolean;
@@ -133,6 +155,14 @@ export function deriveQueueRowPresentation(
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
   const displayStateKey = queueItem.displayState;
+  // The seeding badge exists only because those rows display as `COMPLETED`. A
+  // client warning is already the specific state, so it must not be hidden
+  // behind "Imported · Seeding" — that is exactly how a stuck torrent would
+  // look healthy.
+  const statusBadgeKey =
+    isImportedSeedingRow(queueItem) && displayStateKey !== "WARNING"
+      ? "IMPORTED_SEEDING"
+      : displayStateKey;
   const reportedFailureReason = buildQueueStatusDetail(queueItem);
   const facetKey = normalizeQueueState(queueItem.facet);
   const failureReason =
@@ -178,9 +208,10 @@ export function deriveQueueRowPresentation(
           ? t("queue.transfer.finalizing")
           : displayStateKey === "POST_PROCESSING"
             ? t(postProcessingStatusKey)
-            : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
+            : t(queueStateLabels[statusBadgeKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
+      stateKey === "warning" ||
       displayStateKey === "REMOVE_FAILED" ||
       displayStateKey === "IMPORT_BLOCKED" ||
       displayStateKey === "IMPORT_FAILED") &&
@@ -210,7 +241,10 @@ export function deriveQueueRowPresentation(
   const hasExpandableDetails =
     (displayStateKey === "IMPORT_BLOCKED" ||
       displayStateKey === "IMPORT_FAILED" ||
-      displayStateKey === "REMOVE_FAILED") &&
+      displayStateKey === "REMOVE_FAILED" ||
+      // The client's message is the whole point of a warning: it is what tells
+      // the operator which recoverable problem to go and fix.
+      displayStateKey === "WARNING") &&
     (failureReason.length > 0 || releaseTitle !== "—");
 
   return {
@@ -218,6 +252,7 @@ export function deriveQueueRowPresentation(
     trackedStateKey,
     trackedMatchTypeKey,
     displayStateKey,
+    statusBadgeKey,
     percent,
     remainingLabel,
     hasTransferProgress,
@@ -353,6 +388,7 @@ export function getProgressBarColor(stateKey: string): string {
     case "remove_failed":
       return "bg-[var(--scry-danger-solid)]";
     case "paused":
+    case "warning":
       return "bg-[var(--scry-warning-solid)]";
     case "import_pending":
       return "bg-[rgb(var(--scry-accent-rgb))]";

@@ -364,7 +364,6 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       effectiveFormLoginEnabled: effectiveFormLoginEnabled === true,
       passkeyEnabled,
       userId,
-      accountKind,
     })) {
       setPasskeys([]);
       setLoadingPasskeys(false);
@@ -398,7 +397,6 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       }
     }
   }, [
-    accountKind,
     authLoading,
     client,
     effectiveFormLoginEnabled,
@@ -572,7 +570,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [externalAuthSettings]);
 
   const handleAddPasskey = useCallback(async () => {
-    if (!userId || hasPassword !== true || accountKind !== "LOCAL") return;
+    if (!userId) return;
 
     setAddingPasskey(true);
     try {
@@ -584,7 +582,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     } finally {
       setAddingPasskey(false);
     }
-  }, [accountKind, client, formatPasskeyError, hasPassword, setGlobalStatus, t, userId]);
+  }, [client, formatPasskeyError, setGlobalStatus, t, userId]);
 
   const handleDeletePasskey = useCallback(async (id: string) => {
     setDeletingPasskeyId(id);
@@ -988,8 +986,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
-      showPasskeys={Boolean(userId) && accountKind === "LOCAL"}
-      canAddPasskey={accountKind === "LOCAL" && hasPassword === true}
+      showPasskeys={Boolean(userId)}
+      canAddPasskey={Boolean(userId)}
       passkeys={passkeys}
       oauthApps={oauthApps}
       totpStatus={totpStatus}

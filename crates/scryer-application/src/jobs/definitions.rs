@@ -156,6 +156,7 @@ pub enum JobKey {
     DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
+    TitleRename,
     MediaFileDeletion,
     RecycleBinRestore,
     RecycleBinPurge,
@@ -183,6 +184,7 @@ impl JobKey {
             Self::DiscoverySync => "discovery_sync",
             Self::TitleImageCacheRefresh => "title_image_cache_refresh",
             Self::TitleDeletion => "title_deletion",
+            Self::TitleRename => "title_rename",
             Self::MediaFileDeletion => "media_file_deletion",
             Self::RecycleBinRestore => "recycle_bin_restore",
             Self::RecycleBinPurge => "recycle_bin_purge",
@@ -210,6 +212,7 @@ impl JobKey {
             "discovery_sync" => Some(Self::DiscoverySync),
             "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
             "title_deletion" => Some(Self::TitleDeletion),
+            "title_rename" => Some(Self::TitleRename),
             "media_file_deletion" => Some(Self::MediaFileDeletion),
             "recycle_bin_restore" => Some(Self::RecycleBinRestore),
             "recycle_bin_purge" => Some(Self::RecycleBinPurge),
@@ -238,6 +241,7 @@ impl JobKey {
             Self::DiscoverySync => "Discovery Sync",
             Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
             Self::TitleDeletion => "Title Deletion",
+            Self::TitleRename => "Title Rename",
             Self::MediaFileDeletion => "Media File Deletion",
             Self::RecycleBinRestore => "Recycle Bin Restore",
             Self::RecycleBinPurge => "Recycle Bin Purge",
@@ -281,6 +285,7 @@ impl JobKey {
                 "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
             }
             Self::TitleDeletion => "Delete selected titles from the catalog.",
+            Self::TitleRename => "Rename files for selected titles.",
             Self::MediaFileDeletion => "Delete a media file from disk and the catalog.",
             Self::RecycleBinRestore => "Restore a recycled file to its library.",
             Self::RecycleBinPurge => "Permanently delete selected recycled files.",
@@ -308,6 +313,7 @@ impl JobKey {
             | Self::DiscoverySync
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion
+            | Self::TitleRename
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge => JobCategory::System,
@@ -344,6 +350,7 @@ impl JobKey {
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion
+            | Self::TitleRename
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge
@@ -371,6 +378,7 @@ impl JobKey {
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion
+            | Self::TitleRename
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge
@@ -412,6 +420,7 @@ impl JobKey {
             self,
             Self::AutoBackup
                 | Self::TitleDeletion
+                | Self::TitleRename
                 | Self::MediaFileDeletion
                 | Self::RecycleBinRestore
                 | Self::RecycleBinPurge

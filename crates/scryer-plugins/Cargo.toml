@@ -1,6 +1,6 @@
 [package]
 name = "scryer-plugins"
-version = "0.18.16"
+version = "0.18.19"
 edition.workspace = true
 
 [dependencies]
@@ -9,6 +9,7 @@ scryer-domain = { path = "../scryer-domain" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }
 scryer-rules = { path = "../scryer-rules" }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
@@ -17,7 +18,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-aws-lc-sys = "0.43"
+aws-lc-sys = "0.44"
 crc-fast = "1.10.0"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "http2"] }
 quick-xml = { workspace = true }

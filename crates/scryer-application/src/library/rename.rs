@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use aws_lc_rs::digest as aws_lc_digest;
@@ -10,6 +9,8 @@ use scryer_domain::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::activity::NotificationMediaUpdate;
 use crate::domain_events::{
@@ -22,8 +23,8 @@ use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DEFAULT_FOLDER_TEMPLATE_ANIME,
     DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_SEASON_FOLDER_TEMPLATE,
     DEFAULT_SPECIALS_FOLDER_TEMPLATE, DownloadSourceIdentity, FOLDER_TEMPLATE_KEY,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
-    use_season_folders,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, SEASON_FOLDER_TEMPLATE_KEY,
+    SPECIALS_FOLDER_TEMPLATE_KEY, TitleMediaFile, parse_release_metadata,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,7 +163,15 @@ pub struct RenameApplyResult {
 #[async_trait]
 pub trait LibraryRenamer: Send + Sync {
     async fn validate_targets(&self, plan: &RenamePlan) -> AppResult<()>;
-    async fn apply_plan(&self, plan: &RenamePlan) -> AppResult<Vec<RenameApplyItemResult>>;
+    /// Applies the plan, then puts the configured permissions on each moved
+    /// file. Permissions are resolved by the caller because only it can read
+    /// settings; a mover that guessed from the source would let a move change
+    /// access that an operator deliberately configured.
+    async fn apply_plan(
+        &self,
+        plan: &RenamePlan,
+        permissions: &crate::ImportFilePermissions,
+    ) -> AppResult<Vec<RenameApplyItemResult>>;
     async fn rollback(
         &self,
         applied_items: &[RenameApplyItemResult],
@@ -180,7 +189,11 @@ impl LibraryRenamer for NullLibraryRenamer {
         ))
     }
 
-    async fn apply_plan(&self, _plan: &RenamePlan) -> AppResult<Vec<RenameApplyItemResult>> {
+    async fn apply_plan(
+        &self,
+        _plan: &RenamePlan,
+        _permissions: &crate::ImportFilePermissions,
+    ) -> AppResult<Vec<RenameApplyItemResult>> {
         Err(AppError::Repository(
             "library renamer is not configured".into(),
         ))
@@ -201,8 +214,11 @@ const RENAME_MISSING_METADATA_POLICY_GLOBAL_KEY: &str = "rename.missing_metadata
 const DEFAULT_COLLISION_POLICY: RenameCollisionPolicy = RenameCollisionPolicy::Skip;
 const DEFAULT_MISSING_METADATA_POLICY: RenameMissingMetadataPolicy =
     RenameMissingMetadataPolicy::FallbackTitle;
+#[cfg(windows)]
 const GENERATED_COMPONENT_MAX_BYTES: usize = 240;
+#[cfg(windows)]
 const GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES: usize = 24;
+const MAX_RENAME_TEMPLATE_PADDING_WIDTH: usize = 240;
 
 #[derive(Default)]
 struct RenamePersistenceState {
@@ -219,9 +235,24 @@ struct RenameRollbackOutcome {
     detail: String,
 }
 
+/// Facet-level rename settings, resolved once per plan.
+///
+/// Every field here is constant across the titles in one plan, so reading them
+/// per title only repeats the same settings queries. The media root is the one
+/// path input that genuinely varies, and it stays a per-title lookup.
+/// Titles planned at once inside one batched preview.
+///
+/// The per-title fan-out this batch replaced ran four requests at a time, so
+/// the batch has to overlap at least as much to stay faster than it. The cap
+/// keeps a large selection from monopolizing the database pool.
+const RENAME_PREVIEW_TITLE_CONCURRENCY: usize = 8;
+
+#[derive(Clone)]
 struct RenamePlanSettings {
     template: String,
     folder_template: String,
+    season_folder_template: String,
+    specials_folder_template: String,
     collision_policy: RenameCollisionPolicy,
     missing_metadata_policy: RenameMissingMetadataPolicy,
 }
@@ -266,6 +297,70 @@ impl AppUseCase {
         .await
     }
 
+    /// Previews each title's rename plan, resolving shared settings once.
+    ///
+    /// Titles keep their own plan (and their own fingerprint, which apply still
+    /// validates per title); batching only removes the per-request title load,
+    /// permission check, and settings reads that a preview-per-title fan-out
+    /// repeats for every title.
+    pub async fn preview_rename_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+        facet: MediaFacet,
+    ) -> AppResult<Vec<RenamePlan>> {
+        // Authorize every title before reading any settings, so an actor who
+        // cannot see these titles learns nothing about the facet's renamer.
+        // This keeps the single-title ordering: load, authorize, then check.
+        let mut titles = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+            if title.facet != facet {
+                return Err(AppError::Validation(
+                    "requested facet does not match title facet".into(),
+                ));
+            }
+            titles.push(title);
+        }
+
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
+        let settings = self.read_rename_plan_settings(&facet).await?;
+
+        // Each title plans against its own state, so they are independent and
+        // run concurrently. Planning one title at a time would serialize work
+        // the per-title callers used to overlap, making the batch slower than
+        // the fan-out it replaced however little per-title work it saves.
+        futures_util::stream::iter(titles.into_iter().map(|title| {
+            let settings = settings.clone();
+            async move {
+                self.build_rename_plan_for_titles(
+                    title.facet.clone(),
+                    std::slice::from_ref(&title),
+                    Some(title.id.clone()),
+                    settings,
+                )
+                .await
+            }
+        }))
+        .buffered(RENAME_PREVIEW_TITLE_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await
+    }
+
     pub async fn preview_rename_for_facet(
         &self,
         actor: &User,
@@ -278,12 +373,30 @@ impl AppUseCase {
         }
 
         let settings = self.read_rename_plan_settings(&facet).await?;
-        let mut titles = self
+        let titles = self
             .services
             .catalog
             .titles
             .list(Some(facet.clone()), None)
             .await?;
+        // A facet plan must never reach into a library the actor cannot manage:
+        // holding a catalog-settings permission is not the same as being allowed
+        // to rewrite someone else's library.
+        let mut manageable = Vec::with_capacity(titles.len());
+        for title in titles {
+            if self
+                .require_library_permission(
+                    actor,
+                    &title.library_id,
+                    scryer_domain::LibraryPermission::ManageTitles,
+                )
+                .await
+                .is_ok()
+            {
+                manageable.push(title);
+            }
+        }
+        let mut titles = manageable;
         titles.sort_by(|left, right| left.id.cmp(&right.id));
         self.build_rename_plan_for_titles(facet, &titles, None, settings)
             .await
@@ -401,6 +514,20 @@ impl AppUseCase {
         Ok(RenamePlanSettings {
             template: self.resolve_rename_template(facet).await?,
             folder_template: self.read_folder_template(facet_settings).await?,
+            season_folder_template: normalize_season_folder_template_or_default(
+                self.read_setting_string_value(
+                    SEASON_FOLDER_TEMPLATE_KEY,
+                    Some(facet_settings.scope_id),
+                )
+                .await?,
+            ),
+            specials_folder_template: normalize_specials_folder_template_or_default(
+                self.read_setting_string_value(
+                    SPECIALS_FOLDER_TEMPLATE_KEY,
+                    Some(facet_settings.scope_id),
+                )
+                .await?,
+            ),
             collision_policy: self.read_collision_policy(facet_settings).await?,
             missing_metadata_policy: self.read_missing_metadata_policy(facet_settings).await?,
         })
@@ -431,11 +558,30 @@ impl AppUseCase {
             .validate_targets(&preview)
             .await?;
 
+        // Configured permissions win over whatever the files carried before, the
+        // way Sonarr applies ChmodFolder/ChownGroup after every transfer rather
+        // than preserving the source's mode.
+        // Plans are per title, so the library override that applies is the one
+        // on the title being renamed rather than the facet default.
+        let library_id = match preview.title_id.as_deref() {
+            Some(title_id) => self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .map(|title| title.library_id),
+            None => first_library_id_in_plan(self, &preview).await,
+        };
+        let permissions = self
+            .resolve_import_file_permissions(library_id.as_deref(), &preview.facet)
+            .await?;
+
         let mut item_results = self
             .services
             .library
             .library_renamer
-            .apply_plan(&preview)
+            .apply_plan(&preview, &permissions)
             .await?;
         let mut applied = 0usize;
         let mut skipped = 0usize;
@@ -513,9 +659,13 @@ impl AppUseCase {
             let Some(title) = self.resolve_title_for_rename_item(&probe).await? else {
                 continue;
             };
-            let Some(folder_path) =
-                infer_title_folder_path_after_rename(&title, &item.current_path, proposed_path)
-            else {
+            let use_season_folders = self.resolve_use_season_folders(&title).await?;
+            let Some(folder_path) = infer_title_folder_path_after_rename(
+                &title,
+                use_season_folders,
+                &item.current_path,
+                proposed_path,
+            ) else {
                 continue;
             };
             crate::folder_ownership::ensure_folder_move_available_to_title(
@@ -526,6 +676,14 @@ impl AppUseCase {
             .await?;
         }
         Ok(())
+    }
+
+    async fn library_id_for_rename_item(&self, item: &RenameApplyItemResult) -> Option<String> {
+        self.resolve_title_for_rename_item(item)
+            .await
+            .ok()
+            .flatten()
+            .map(|title| title.library_id)
     }
 
     async fn emit_rename_notifications(&self, actor: &User, items: &[RenameApplyItemResult]) {
@@ -698,17 +856,25 @@ impl AppUseCase {
             Ok(title) => title,
             Err(error) => return Err(RenamePersistenceFailure { error, state }),
         };
-        if let Some(title) = title
-            && let Some(folder_path) =
-                infer_title_folder_path_after_rename(&title, &item.current_path, final_path)
-            && let Err(error) = self
+        if let Some(title) = title {
+            let use_season_folders = match self.resolve_use_season_folders(&title).await {
+                Ok(value) => value,
+                Err(error) => return Err(RenamePersistenceFailure { error, state }),
+            };
+            if let Some(folder_path) = infer_title_folder_path_after_rename(
+                &title,
+                use_season_folders,
+                &item.current_path,
+                final_path,
+            ) && let Err(error) = self
                 .services
                 .catalog
                 .titles
                 .set_folder_path(&title.id, &folder_path)
                 .await
-        {
-            return Err(RenamePersistenceFailure { error, state });
+            {
+                return Err(RenamePersistenceFailure { error, state });
+            }
         }
 
         Ok(())
@@ -779,18 +945,11 @@ impl AppUseCase {
         title_id: Option<String>,
         settings: RenamePlanSettings,
     ) -> AppResult<RenamePlan> {
-        let mut planned_targets = HashSet::new();
+        let mut planning = RenamePlanningState::default();
         let mut items = Vec::new();
         for title in titles {
             let mut title_items = self
-                .build_rename_plan_items_for_title(
-                    title,
-                    &settings.template,
-                    &settings.folder_template,
-                    &settings.collision_policy,
-                    &settings.missing_metadata_policy,
-                    &mut planned_targets,
-                )
+                .build_rename_plan_items_for_title(title, &settings, &mut planning)
                 .await?;
             items.append(&mut title_items);
         }
@@ -808,13 +967,13 @@ impl AppUseCase {
     async fn build_rename_plan_items_for_title(
         &self,
         title: &Title,
-        template: &str,
-        folder_template: &str,
-        collision_policy: &RenameCollisionPolicy,
-        missing_metadata_policy: &RenameMissingMetadataPolicy,
-        planned_targets: &mut HashSet<String>,
+        settings: &RenamePlanSettings,
+        planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
-        let import_paths = crate::resolve_import_paths(self, title).await?;
+        // Only the media root varies per title; every template and policy came
+        // from `settings`, which was resolved once for the whole plan.
+        let media_root = self.title_root_folder_path_override(title).await?;
+        let use_season_folders = self.resolve_use_season_folders(title).await?;
         let collections = self
             .services
             .catalog
@@ -830,42 +989,66 @@ impl AppUseCase {
             .into_iter()
             .filter(|file| file.role.is_primary())
             .collect::<Vec<_>>();
-
-        let items = match title.facet.clone() {
-            MediaFacet::Movie => {
-                let mut options = MovieRenamePlanOptions {
-                    media_root: &import_paths.media_root,
-                    folder_template,
-                    template,
-                    collision_policy,
-                    missing_metadata_policy,
-                    planned_targets,
-                };
-                build_movie_rename_plan_items(title, collections, media_files, &mut options)
-            }
+        let episodes = match title.facet {
+            MediaFacet::Movie => Vec::new(),
             MediaFacet::Series | MediaFacet::Anime => {
-                let episodes = self
-                    .services
+                self.services
                     .catalog
                     .shows
                     .list_episodes_for_title(&title.id)
-                    .await?;
-
-                build_series_rename_plan_items_from_media_files(
-                    title,
-                    collections,
-                    episodes,
-                    media_files,
-                    &import_paths.media_root,
-                    folder_template,
-                    &import_paths.season_folder_template,
-                    &import_paths.specials_folder_template,
-                    template,
-                    collision_policy,
-                    missing_metadata_policy,
-                    planned_targets,
-                )
+                    .await?
             }
+        };
+
+        // Item building stats every source file and probes every destination,
+        // so it runs on the blocking pool instead of stalling a runtime worker
+        // for the whole title.
+        let items = {
+            let title = title.clone();
+            let settings = settings.clone();
+            let mut owned_planning = std::mem::take(planning);
+            let (built, returned_planning) = tokio::task::spawn_blocking(move || {
+                let items = match title.facet.clone() {
+                    MediaFacet::Movie => {
+                        let mut options = MovieRenamePlanOptions {
+                            media_root: &media_root,
+                            folder_template: &settings.folder_template,
+                            template: &settings.template,
+                            missing_metadata_policy: &settings.missing_metadata_policy,
+                            planning: &mut owned_planning,
+                        };
+                        build_movie_rename_plan_items(
+                            &title,
+                            collections,
+                            media_files,
+                            &mut options,
+                        )
+                    }
+                    MediaFacet::Series | MediaFacet::Anime => {
+                        build_series_rename_plan_items_from_media_files(
+                            &title,
+                            use_season_folders,
+                            collections,
+                            episodes,
+                            media_files,
+                            &media_root,
+                            &settings.folder_template,
+                            &settings.season_folder_template,
+                            &settings.specials_folder_template,
+                            &settings.template,
+                            &settings.missing_metadata_policy,
+                            &mut owned_planning,
+                        )
+                    }
+                };
+                (items, owned_planning)
+            })
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("rename plan build task failed to join: {error}"))
+            })?;
+            *planning = returned_planning;
+            built
         };
 
         self.normalize_existing_rename_collisions(items).await
@@ -875,8 +1058,43 @@ impl AppUseCase {
         &self,
         items: Vec<RenamePlanItem>,
     ) -> AppResult<Vec<RenamePlanItem>> {
-        let mut collection_cache = HashMap::<String, Option<Collection>>::new();
-        let mut media_file_cache = HashMap::<String, Option<TitleMediaFile>>::new();
+        // One lookup per store for the whole title instead of two point queries
+        // per item; the destination probes were already memoized while building.
+        let lookup_paths = items
+            .iter()
+            .filter_map(|item| {
+                let proposed_path = item.proposed_path.as_ref()?;
+                (!crate::stored_paths::paths_match(proposed_path, &item.current_path))
+                    .then(|| proposed_path.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let media_file_cache = self
+            .services
+            .library
+            .media_files
+            .list_media_files_by_paths(&lookup_paths)
+            .await?
+            .into_iter()
+            .collect::<HashMap<String, TitleMediaFile>>();
+        let mut collection_cache = HashMap::<String, Collection>::new();
+        for collection in self
+            .services
+            .catalog
+            .shows
+            .list_collections_by_ordered_paths(&lookup_paths)
+            .await?
+        {
+            // `ordered_path` has no unique constraint, and the per-path query
+            // this replaced resolved duplicates with `ORDER BY id ASC LIMIT 1`.
+            // Rows arrive id-ascending, so keep the first and ignore the rest.
+            if let Some(ordered_path) = collection.ordered_path.clone() {
+                collection_cache.entry(ordered_path).or_insert(collection);
+            }
+        }
+
         let mut out = Vec::with_capacity(items.len());
 
         for mut item in items {
@@ -885,37 +1103,13 @@ impl AppUseCase {
                 continue;
             };
 
-            if proposed_path == item.current_path {
+            if crate::stored_paths::paths_match(&proposed_path, &item.current_path) {
                 out.push(item);
                 continue;
             }
 
-            let destination_exists_on_disk = stored_path_to_path_buf(&proposed_path).exists();
-
-            let tracked_media_file = if let Some(existing) = media_file_cache.get(&proposed_path) {
-                existing.clone()
-            } else {
-                let loaded = self
-                    .services
-                    .library
-                    .media_files
-                    .get_media_file_by_path(&proposed_path)
-                    .await?;
-                media_file_cache.insert(proposed_path.clone(), loaded.clone());
-                loaded
-            };
-            let tracked_collection = if let Some(existing) = collection_cache.get(&proposed_path) {
-                existing.clone()
-            } else {
-                let loaded = self
-                    .services
-                    .catalog
-                    .shows
-                    .get_collection_by_ordered_path(&proposed_path)
-                    .await?;
-                collection_cache.insert(proposed_path.clone(), loaded.clone());
-                loaded
-            };
+            let tracked_media_file = media_file_cache.get(&proposed_path);
+            let tracked_collection = collection_cache.get(&proposed_path);
 
             let tracked_media_conflict = tracked_media_file.as_ref().is_some_and(|media_file| {
                 item.media_file_id.as_deref() != Some(media_file.id.as_str())
@@ -925,16 +1119,13 @@ impl AppUseCase {
                     item.collection_id.as_deref() != Some(collection.id.as_str())
                 });
 
+            // A destination the catalog already owns is a conflict the plan can
+            // report on its own. One the catalog has never seen is only visible
+            // on disk, and apply refuses those in `validate_targets` rather than
+            // making every previewed file pay for a stat.
             if tracked_media_conflict || tracked_collection_conflict {
                 item.collision = true;
                 item.reason_code = "collision_existing_tracked".into();
-                item.write_action = RenameWriteAction::Error;
-            } else if !destination_exists_on_disk {
-                out.push(item);
-                continue;
-            } else if matches!(item.write_action, RenameWriteAction::Replace) {
-                item.collision = true;
-                item.reason_code = "collision_existing".into();
                 item.write_action = RenameWriteAction::Error;
             }
 
@@ -1079,9 +1270,8 @@ struct MovieRenamePlanOptions<'a> {
     media_root: &'a str,
     folder_template: &'a str,
     template: &'a str,
-    collision_policy: &'a RenameCollisionPolicy,
     missing_metadata_policy: &'a RenameMissingMetadataPolicy,
-    planned_targets: &'a mut HashSet<String>,
+    planning: &'a mut RenamePlanningState,
 }
 
 const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
@@ -1222,12 +1412,28 @@ fn validate_folder_component_template(
 
     let chars: Vec<char> = trimmed.chars().collect();
     let mut cursor = 0usize;
+    let mut escaped_literal_open_count = 0usize;
     let mut saw_token = false;
     let mut saw_required_token = required_token.is_none();
 
     while cursor < chars.len() {
         let ch = chars[cursor];
+        if ch == '{' && chars.get(cursor + 1).is_some_and(|next| *next == '{') {
+            escaped_literal_open_count += 1;
+            cursor += 2;
+            continue;
+        }
         if ch == '}' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
+                cursor += 2;
+                continue;
+            }
+            if escaped_literal_open_count > 0 {
+                escaped_literal_open_count -= 1;
+                cursor += 1;
+                continue;
+            }
             return Err(AppError::Validation(format!(
                 "{template_label} template contains an unmatched '}}'"
             )));
@@ -1560,8 +1766,13 @@ pub(crate) fn title_folder_path_for_renamed_file(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "episode rename placement needs its title, resolved layout, and template inputs explicitly"
+)]
 fn episode_parent_path_for_renamed_file(
     title: &Title,
+    use_season_folders: bool,
     current_file: &Path,
     media_root: &str,
     folder_template: &str,
@@ -1570,7 +1781,7 @@ fn episode_parent_path_for_renamed_file(
     specials_folder_template: &str,
 ) -> PathBuf {
     let desired_root = configured_title_folder_path(media_root, title, folder_template, title.year);
-    if !crate::use_season_folders(title) {
+    if !use_season_folders {
         return desired_root;
     }
     let Some(season) = season else {
@@ -1591,6 +1802,7 @@ fn episode_parent_path_for_renamed_file(
 
 fn infer_title_folder_path_after_rename(
     title: &Title,
+    use_season_folders: bool,
     current_path: &str,
     final_path: &str,
 ) -> Option<String> {
@@ -1614,12 +1826,16 @@ fn infer_title_folder_path_after_rename(
         }
     }
 
-    infer_title_folder_path_from_final_path(title, final_parent)
+    infer_title_folder_path_from_final_path(title, use_season_folders, final_parent)
         .map(|path| path_to_stored_string(&path))
 }
 
-fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -> Option<PathBuf> {
-    if use_season_folders(title)
+fn infer_title_folder_path_from_final_path(
+    _title: &Title,
+    use_season_folders: bool,
+    final_parent: &Path,
+) -> Option<PathBuf> {
+    if use_season_folders
         && final_parent
             .file_name()
             .and_then(|value| value.to_str())
@@ -1629,6 +1845,25 @@ fn infer_title_folder_path_from_final_path(title: &Title, final_parent: &Path) -
     }
 
     Some(final_parent.to_path_buf())
+}
+
+/// Plan-wide state shared by every title in one preview.
+///
+/// Planning is deliberately database-only: the catalog already knows every
+/// tracked file's path and size, and libraries commonly sit on network mounts
+/// where a per-file stat costs a round trip. Physical truth is established at
+/// apply time instead, where `validate_targets` stats each source and refuses
+/// a destination that already exists before anything moves.
+#[derive(Debug, Default)]
+pub(crate) struct RenamePlanningState {
+    planned_targets: HashSet<String>,
+}
+
+impl RenamePlanningState {
+    /// Claims `key` as a plan target, returning false when it is already taken.
+    fn claim_target(&mut self, key: String) -> bool {
+        self.planned_targets.insert(key)
+    }
 }
 
 pub fn build_rename_plan_fingerprint(
@@ -1751,6 +1986,7 @@ fn rename_plan_item(
 fn prepare_rename_plan_source(
     item_ids: RenamePlanItemIds,
     current_path: Option<String>,
+    known_size_bytes: Option<u64>,
 ) -> Result<RenamePlanSource, Box<RenamePlanItem>> {
     let current_path = current_path.unwrap_or_default();
     if current_path.trim().is_empty() {
@@ -1768,13 +2004,9 @@ fn prepare_rename_plan_source(
     }
 
     let current_file = stored_path_to_path_buf(&current_path);
-    let source_metadata = std::fs::metadata(&current_file).ok();
-    let source_size_bytes = source_metadata.as_ref().map(|meta| meta.len());
-    let source_mtime_unix_ms = source_metadata
-        .as_ref()
-        .and_then(|meta| meta.modified().ok())
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+    // Size comes from the catalog row; planning never stats the library.
+    let source_size_bytes = known_size_bytes;
+    let source_mtime_unix_ms = None;
     let source = RenamePlanSource {
         extension: current_file
             .extension()
@@ -1787,17 +2019,6 @@ fn prepare_rename_plan_source(
         source_size_bytes,
         source_mtime_unix_ms,
     };
-
-    if source_metadata.as_ref().is_none_or(|meta| !meta.is_file()) {
-        return Err(Box::new(source.build_item(
-            item_ids,
-            None,
-            None,
-            false,
-            "source_not_file",
-            RenameWriteAction::Error,
-        )));
-    }
 
     Ok(source)
 }
@@ -2037,17 +2258,23 @@ fn resolve_rendered_rename_filename(
 
 fn rename_planning_path_key(stored_path: &str) -> String {
     let normalized = lexically_normalize_rename_path(&stored_path_to_path_buf(stored_path));
-    #[cfg(windows)]
-    {
-        normalized
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_lowercase()
-    }
-    #[cfg(not(windows))]
-    {
-        normalized.to_string_lossy().into_owned()
-    }
+    let key = {
+        #[cfg(windows)]
+        {
+            normalized
+                .to_string_lossy()
+                .replace('/', "\\")
+                .to_lowercase()
+        }
+        #[cfg(not(windows))]
+        {
+            normalized.to_string_lossy().into_owned()
+        }
+    };
+    // SMB hands back decomposed names for files written precomposed, so the two
+    // spellings have to key the same or every accented title plans a rename
+    // that changes nothing.
+    crate::stored_paths::path_identity_key(&key).unwrap_or(key)
 }
 
 fn lexically_normalize_rename_path(path: &Path) -> PathBuf {
@@ -2071,14 +2298,12 @@ fn finalize_rename_plan_item(
     item_ids: RenamePlanItemIds,
     target_parent: PathBuf,
     rendered: String,
-    collision_policy: &RenameCollisionPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
     let proposed_path_str = path_to_stored_string(target_parent.join(&rendered));
     let proposed_path_key = rename_planning_path_key(&proposed_path_str);
-    let current_path_key = rename_planning_path_key(&source.current_path);
 
-    if proposed_path_str == source.current_path {
+    if crate::stored_paths::paths_match(&proposed_path_str, &source.current_path) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -2089,7 +2314,7 @@ fn finalize_rename_plan_item(
         );
     }
 
-    if !planned_targets.insert(proposed_path_key.clone()) {
+    if !planning.claim_target(proposed_path_key.clone()) {
         return source.build_item(
             item_ids,
             Some(proposed_path_str),
@@ -2097,18 +2322,6 @@ fn finalize_rename_plan_item(
             true,
             "collision_within_plan",
             RenameWriteAction::Skip,
-        );
-    }
-
-    if proposed_path_key != current_path_key && stored_path_to_path_buf(&proposed_path_str).exists()
-    {
-        return source.build_item(
-            item_ids,
-            Some(proposed_path_str),
-            Some(rendered),
-            true,
-            "collision_existing",
-            existing_collision_write_action(collision_policy),
         );
     }
 
@@ -2122,21 +2335,13 @@ fn finalize_rename_plan_item(
     )
 }
 
-fn existing_collision_write_action(collision_policy: &RenameCollisionPolicy) -> RenameWriteAction {
-    match collision_policy {
-        RenameCollisionPolicy::Skip => RenameWriteAction::Skip,
-        RenameCollisionPolicy::Error | RenameCollisionPolicy::ReplaceIfBetter => {
-            RenameWriteAction::Error
-        }
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "series rename planning needs the full title, template, and collision context together"
 )]
 pub(crate) fn build_series_rename_plan_items_from_media_files(
     title: &Title,
+    use_season_folders: bool,
     mut collections: Vec<Collection>,
     episodes: Vec<Episode>,
     media_files: Vec<TitleMediaFile>,
@@ -2145,9 +2350,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
     season_folder_template: &str,
     specials_folder_template: &str,
     template: &str,
-    collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> Vec<RenamePlanItem> {
     collections.sort_by(|left, right| left.id.cmp(&right.id));
 
@@ -2174,6 +2378,7 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
         .map(|source| {
             build_series_media_file_rename_plan_item(
                 title,
+                use_season_folders,
                 &collections,
                 &collections_by_id,
                 &episodes_by_id,
@@ -2183,9 +2388,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
                 season_folder_template,
                 specials_folder_template,
                 template,
-                collision_policy,
                 missing_metadata_policy,
-                planned_targets,
+                planning,
             )
         })
         .collect()
@@ -2229,6 +2433,7 @@ fn group_title_media_files(media_files: Vec<TitleMediaFile>) -> Vec<GroupedTitle
 )]
 fn build_series_media_file_rename_plan_item(
     title: &Title,
+    use_season_folders: bool,
     collections: &[Collection],
     collections_by_id: &HashMap<String, Collection>,
     episodes_by_id: &HashMap<String, Episode>,
@@ -2238,9 +2443,8 @@ fn build_series_media_file_rename_plan_item(
     season_folder_template: &str,
     specials_folder_template: &str,
     template: &str,
-    collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
-    planned_targets: &mut HashSet<String>,
+    planning: &mut RenamePlanningState,
 ) -> RenamePlanItem {
     let source_item_ids = RenamePlanItemIds {
         collection_id: None,
@@ -2250,6 +2454,7 @@ fn build_series_media_file_rename_plan_item(
     let source_file = match prepare_rename_plan_source(
         source_item_ids.clone(),
         Some(source.file.file_path.clone()),
+        u64::try_from(source.file.size_bytes).ok(),
     ) {
         Ok(source_file) => source_file,
         Err(item) => return *item,
@@ -2315,6 +2520,7 @@ fn build_series_media_file_rename_plan_item(
     };
     let target_parent = episode_parent_path_for_renamed_file(
         title,
+        use_season_folders,
         &source_file.current_file,
         media_root,
         folder_template,
@@ -2323,14 +2529,7 @@ fn build_series_media_file_rename_plan_item(
         specials_folder_template,
     );
 
-    finalize_rename_plan_item(
-        &source_file,
-        item_ids,
-        target_parent,
-        rendered,
-        collision_policy,
-        planned_targets,
-    )
+    finalize_rename_plan_item(&source_file, item_ids, target_parent, rendered, planning)
 }
 
 fn resolve_series_rename_metadata(
@@ -2617,11 +2816,14 @@ fn build_movie_rename_plan_item(
         media_file_id: media_file.map(|media_file| media_file.id.clone()),
         series_movie_link_ids: Vec::new(),
     };
-    let source_file =
-        match prepare_rename_plan_source(item_ids.clone(), collection.ordered_path.clone()) {
-            Ok(source_file) => source_file,
-            Err(item) => return *item,
-        };
+    let source_file = match prepare_rename_plan_source(
+        item_ids.clone(),
+        collection.ordered_path.clone(),
+        media_file.and_then(|media_file| u64::try_from(media_file.size_bytes).ok()),
+    ) {
+        Ok(source_file) => source_file,
+        Err(item) => return *item,
+    };
     let current_stem = source_file
         .current_file
         .file_stem()
@@ -2674,8 +2876,7 @@ fn build_movie_rename_plan_item(
         item_ids,
         target_parent,
         rendered,
-        options.collision_policy,
-        options.planned_targets,
+        options.planning,
     )
 }
 
@@ -2752,7 +2953,7 @@ fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTo
                 return None;
             }
             let pad_width = fmt.parse::<usize>().ok()?;
-            if pad_width > GENERATED_COMPONENT_MAX_BYTES {
+            if pad_width > MAX_RENAME_TEMPLATE_PADDING_WIDTH {
                 return None;
             }
             (n.trim().to_lowercase(), Some(pad_width))
@@ -2831,6 +3032,7 @@ fn truncate_generated_folder_component(component: &str) -> String {
     truncate_generated_component(component, false)
 }
 
+#[cfg(windows)]
 fn truncate_generated_component(component: &str, preserve_extension: bool) -> String {
     let budget =
         GENERATED_COMPONENT_MAX_BYTES.saturating_sub(GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES);
@@ -2868,6 +3070,12 @@ fn truncate_generated_component(component: &str, preserve_extension: bool) -> St
     }
 }
 
+#[cfg(not(windows))]
+fn truncate_generated_component(component: &str, _preserve_extension: bool) -> String {
+    component.to_string()
+}
+
+#[cfg(windows)]
 fn truncate_utf8_bytes(value: &str, budget: usize) -> String {
     if value.len() <= budget {
         return value.to_string();
@@ -2884,6 +3092,7 @@ fn truncate_utf8_bytes(value: &str, budget: usize) -> String {
     value[..end].to_string()
 }
 
+#[cfg(windows)]
 fn trim_truncated_component_end(value: &str) -> String {
     value
         .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '.' | '-' | '_'))
@@ -2955,3 +3164,365 @@ fn collapse_separators(raw: &str) -> String {
 #[cfg(test)]
 #[path = "library_rename_tests.rs"]
 mod library_rename_tests;
+
+/// The library a plan's files belong to, for plans that do not name a title.
+///
+/// Every plan the API can produce today is scoped to one title, so this only
+/// keeps the permission lookup honest if that ever changes.
+async fn first_library_id_in_plan(app: &AppUseCase, preview: &RenamePlan) -> Option<String> {
+    for item in &preview.items {
+        let probe = RenameApplyItemResult {
+            collection_id: item.collection_id.clone(),
+            media_file_id: item.media_file_id.clone(),
+            series_movie_link_ids: item.series_movie_link_ids.clone(),
+            current_path: item.current_path.clone(),
+            proposed_path: item.proposed_path.clone(),
+            final_path: None,
+            write_action: item.write_action.clone(),
+            status: RenameApplyStatus::Skipped,
+            reason_code: String::new(),
+            error_message: None,
+        };
+        if let Some(library_id) = app.library_id_for_rename_item(&probe).await {
+            return Some(library_id);
+        }
+    }
+    None
+}
+
+// ── Rename as a background job ───────────────────────────────────────────────
+//
+// Renaming walks every file of every selected title and moves them on disk, so
+// it does not belong on a request. It runs as a job, and each title it touches
+// is locked for the duration so a second rename cannot start moving the same
+// files underneath the first.
+
+#[derive(Clone, Debug)]
+pub struct RenameTitlesJobAccepted {
+    pub job_run: crate::JobRun,
+    pub accepted_title_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameProgress {
+    status: String,
+    phase: String,
+    total: usize,
+    processed: usize,
+    succeeded: usize,
+    failed: usize,
+    files_renamed: usize,
+    current_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameSummary {
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+    files_renamed: usize,
+    failures: Vec<TitleRenameFailure>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleRenameFailure {
+    title_id: String,
+    message: String,
+}
+
+/// The guard key reserving one title against concurrent renames.
+fn title_rename_guard_key(title_id: &str) -> String {
+    format!("title-rename:{title_id}")
+}
+
+impl AppUseCase {
+    /// Accepts a rename for the given titles and returns immediately.
+    ///
+    /// Every title is authorized and locked before the job starts, so a caller
+    /// either gets the whole set reserved or a clear failure naming the title
+    /// that is already being renamed.
+    pub async fn start_rename_titles_job(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+        facet: MediaFacet,
+    ) -> AppResult<RenameTitlesJobAccepted> {
+        if title_ids.is_empty() {
+            return Err(AppError::Validation(
+                "at least one title is required for renaming".into(),
+            ));
+        }
+        if !self.resolve_rename_enabled(&facet).await? {
+            return Err(AppError::Validation("renamer_disabled".into()));
+        }
+
+        let mut seen = HashSet::new();
+        let mut titles = Vec::with_capacity(title_ids.len());
+        for title_id in title_ids {
+            if !seen.insert(title_id.clone()) {
+                return Err(AppError::Validation(format!(
+                    "duplicate title id in rename request: {title_id}"
+                )));
+            }
+            let title = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(title_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await?;
+            if title.facet != facet {
+                return Err(AppError::Validation(
+                    "requested facet does not match title facet".into(),
+                ));
+            }
+            titles.push(title);
+        }
+
+        // Hold a guard per title for the life of the job. Acquiring them all up
+        // front means a partially reserved set never starts moving files.
+        let mut guards = Vec::with_capacity(titles.len());
+        for title in &titles {
+            let guard = self
+                .runtime
+                .jobs
+                .interactive_operation_guards
+                .try_acquire(&title_rename_guard_key(&title.id))
+                .await
+                .ok_or_else(|| {
+                    AppError::Validation(format!("a rename is already running for {}", title.name))
+                })?;
+            guards.push(guard);
+        }
+
+        let accepted_title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let now = chrono::Utc::now();
+        let mut run = crate::JobRunRecord {
+            id: scryer_domain::Id::new().0,
+            job_key: crate::JobKey::TitleRename,
+            operation_type: format!("title_rename:{}", accepted_title_ids.len()),
+            status: crate::JobRunStatus::Running,
+            trigger_source: crate::JobTriggerSource::Manual,
+            actor_user_id: Some(actor.id.clone()),
+            progress_json: serde_json::to_string(&TitleRenameProgress {
+                status: crate::JobRunStatus::Running.as_str().to_string(),
+                phase: "queued".to_string(),
+                total: accepted_title_ids.len(),
+                processed: 0,
+                succeeded: 0,
+                failed: 0,
+                files_renamed: 0,
+                current_title: None,
+            })
+            .ok(),
+            summary_json: None,
+            summary_text: None,
+            error_text: None,
+            started_at: now,
+            completed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        run = self.services.events.job_runs.create_job_run(&run).await?;
+        let run_payload = crate::JobRun::from_record(&run, None);
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(run_payload.clone())
+            .await;
+        let actor_event = crate::domain_events::DomainEventActor::from(actor);
+        let _ = self
+            .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                actor_event.clone(),
+                run.id.clone(),
+                DomainEventPayload::JobRunStarted(scryer_domain::JobRunStartedEventData {
+                    run_id: run.id.clone(),
+                    job_key: run.job_key.as_str().to_string(),
+                    operation_type: run.operation_type.clone(),
+                    trigger_source: run.trigger_source.as_str().to_string(),
+                }),
+            ))
+            .await;
+
+        let app = self.clone();
+        let job_actor = actor.clone();
+        tokio::spawn(async move {
+            app.run_rename_titles_job(run, job_actor, actor_event, titles, guards)
+                .await;
+        });
+
+        Ok(RenameTitlesJobAccepted {
+            job_run: run_payload,
+            accepted_title_ids,
+        })
+    }
+
+    async fn run_rename_titles_job(
+        &self,
+        mut run: crate::JobRunRecord,
+        actor: User,
+        actor_event: crate::domain_events::DomainEventActor,
+        titles: Vec<Title>,
+        _guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+    ) {
+        let total = titles.len();
+        let mut succeeded = 0usize;
+        let mut files_renamed = 0usize;
+        let mut failures = Vec::new();
+
+        for (index, title) in titles.iter().enumerate() {
+            let _ = self
+                .update_title_rename_progress(
+                    &mut run,
+                    TitleRenameProgress {
+                        status: crate::JobRunStatus::Running.as_str().to_string(),
+                        phase: "renaming".to_string(),
+                        total,
+                        processed: index,
+                        succeeded,
+                        failed: failures.len(),
+                        files_renamed,
+                        current_title: Some(title.name.clone()),
+                    },
+                )
+                .await;
+
+            // Each title is previewed and applied inside the job so the plan is
+            // built against what is on disk now, not what the caller saw.
+            let outcome = async {
+                let preview = self
+                    .preview_rename_for_title(&actor, &title.id, title.facet.clone())
+                    .await?;
+                let fingerprint = preview.fingerprint.clone();
+                self.apply_rename_for_title(&actor, &title.id, title.facet.clone(), &fingerprint)
+                    .await
+            }
+            .await;
+
+            match outcome {
+                Ok(result) => {
+                    succeeded += 1;
+                    files_renamed += result.applied;
+                }
+                Err(error) => failures.push(TitleRenameFailure {
+                    title_id: title.id.clone(),
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        let failed = failures.len();
+        let status = if succeeded == 0 && failed > 0 {
+            crate::JobRunStatus::Failed
+        } else if failed > 0 {
+            crate::JobRunStatus::Warning
+        } else {
+            crate::JobRunStatus::Completed
+        };
+        let summary_text = format!(
+            "Renamed {files_renamed} file(s) across {succeeded} title(s); {failed} failed."
+        );
+        let _ = self
+            .finish_title_rename_job(
+                run,
+                actor_event,
+                status,
+                summary_text,
+                TitleRenameSummary {
+                    total,
+                    succeeded,
+                    failed,
+                    files_renamed,
+                    failures,
+                },
+            )
+            .await;
+    }
+
+    async fn update_title_rename_progress(
+        &self,
+        run: &mut crate::JobRunRecord,
+        progress: TitleRenameProgress,
+    ) -> AppResult<()> {
+        run.progress_json = serde_json::to_string(&progress).ok();
+        run.updated_at = chrono::Utc::now();
+        let updated = self.services.events.job_runs.update_job_run(run).await?;
+        *run = updated.clone();
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(crate::JobRun::from_record(&updated, None))
+            .await;
+        Ok(())
+    }
+
+    async fn finish_title_rename_job(
+        &self,
+        mut run: crate::JobRunRecord,
+        actor: crate::domain_events::DomainEventActor,
+        status: crate::JobRunStatus,
+        summary_text: String,
+        summary: TitleRenameSummary,
+    ) -> AppResult<()> {
+        let completed_at = chrono::Utc::now();
+        run.status = status;
+        run.progress_json = Some(
+            serde_json::json!({
+                "status": status.as_str(),
+                "phase": "completed",
+                "total": summary.total,
+                "processed": summary.total,
+                "succeeded": summary.succeeded,
+                "failed": summary.failed,
+                "filesRenamed": summary.files_renamed,
+                "currentTitle": null,
+            })
+            .to_string(),
+        );
+        run.summary_text = Some(summary_text);
+        run.summary_json = serde_json::to_string(&summary).ok();
+        run.error_text =
+            (status == crate::JobRunStatus::Failed).then(|| "all title renames failed".to_string());
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+        let updated = self.services.events.job_runs.update_job_run(&run).await?;
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(crate::JobRun::from_record(&updated, None))
+            .await;
+        let payload = if status == crate::JobRunStatus::Failed {
+            DomainEventPayload::JobRunFailed(scryer_domain::JobRunFailedEventData {
+                run_id: updated.id.clone(),
+                job_key: updated.job_key.as_str().to_string(),
+                error_text: updated.error_text.clone(),
+            })
+        } else {
+            DomainEventPayload::JobRunCompleted(scryer_domain::JobRunCompletedEventData {
+                run_id: updated.id.clone(),
+                job_key: updated.job_key.as_str().to_string(),
+                summary_text: updated.summary_text.clone(),
+            })
+        };
+        let _ = self
+            .append_domain_event(crate::domain_events::new_job_run_domain_event(
+                actor,
+                updated.id.clone(),
+                payload,
+            ))
+            .await;
+        Ok(())
+    }
+}

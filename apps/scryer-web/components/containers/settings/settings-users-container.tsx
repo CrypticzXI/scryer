@@ -15,7 +15,11 @@ import {
   setUserLoginEnabledMutation,
   setUserPasswordMutation,
 } from "@/lib/graphql/mutations";
-import { librariesQuery, usersQuery } from "@/lib/graphql/queries";
+import {
+  librariesQuery,
+  securitySettingsQuery,
+  usersQuery,
+} from "@/lib/graphql/queries";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useClient } from "urql";
 import type { LibraryRecord, UserRecord } from "@/lib/types";
@@ -142,6 +146,18 @@ export function SettingsUsersContainer() {
     void refreshLibraries();
   }, [refreshLibraries, refreshUsers]);
 
+  const loadPasswordMinLength = useCallback(async () => {
+    try {
+      const result = await client.query(securitySettingsQuery, {}).toPromise();
+      if (result.error) throw result.error;
+      const minLength = result.data?.securitySettings?.passwordMinLength;
+      return typeof minLength === "number" && minLength > 0 ? minLength : null;
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+      return null;
+    }
+  }, [client, setGlobalStatus, t]);
+
   const createUser = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const createdUsername = newUsername.trim();
@@ -178,11 +194,18 @@ export function SettingsUsersContainer() {
     }
   };
 
-  const setUserPassword = async (userId: string) => {
+  const setUserPassword = async (
+    userId: string,
+    passwordMinLength: number | null,
+  ) => {
     const password = userPasswordDrafts[userId]?.trim();
     if (!password) {
       setGlobalStatus(t("status.passwordRequired"));
-      return;
+      return false;
+    }
+    if (passwordMinLength !== null && password.length < passwordMinLength) {
+      setGlobalStatus(t("settings.passwordMinLengthError", { min: passwordMinLength }));
+      return false;
     }
     setMutatingUserId(userId);
     try {
@@ -199,8 +222,10 @@ export function SettingsUsersContainer() {
       }));
       setGlobalStatus(t("user.passwordUpdated"));
       await refreshUsers();
+      return true;
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+      return false;
     } finally {
       setMutatingUserId(null);
     }
@@ -381,6 +406,7 @@ export function SettingsUsersContainer() {
         setNewUsername={setNewUsername}
         newPassword={newPassword}
         setNewPassword={setNewPassword}
+        loadPasswordMinLength={loadPasswordMinLength}
         appPermissions={Object.values(APP_PERMISSIONS)}
         libraryPermissions={Object.values(LIBRARY_PERMISSIONS)}
         newAppPermissions={newAppPermissions}

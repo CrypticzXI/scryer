@@ -357,3 +357,280 @@ async fn enrichment_size_summary_is_batched_across_titles_with_loaders() {
         "loader-absent fallback must issue one media-size summary call per title"
     );
 }
+
+/// Tiered metadata-language and season-folder fields must use the request
+/// loaders rather than resolving each catalog row through direct settings
+/// reads. The loader-backed result must still match the direct resolver path.
+#[tokio::test]
+async fn catalog_tiered_overrides_batch_settings_reads_with_loader_parity() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let series_title_override = create_catalog_title(
+        &ctx,
+        "Batch title metadata override",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let series_library_override = create_catalog_title(
+        &ctx,
+        "Batch library metadata override",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let anime_facet_override = create_catalog_title(
+        &ctx,
+        "Batch facet season override",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "metadata_language.title_override",
+            Some(series_title_override.id.clone()),
+            "\"fra\"".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set title metadata override");
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "metadata_language",
+            Some(series_library_override.library_id.clone()),
+            "\"jpn\"".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set series library metadata override");
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "rename.use_season_folders",
+            Some(series_library_override.library_id.clone()),
+            "false".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set series library season-folder override");
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "rename.use_season_folders",
+            Some("anime".to_string()),
+            "false".to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set anime facet season-folder override");
+
+    let direct_explicit_reads = Arc::new(AtomicUsize::new(0));
+    let batch_explicit_reads = Arc::new(AtomicUsize::new(0));
+    let global_reads = Arc::new(AtomicUsize::new(0));
+    let counting_app = ctx.app.with_test_overrides({
+        let settings = Arc::new(CountingSettingsRepo {
+            inner: ctx.settings_store.clone(),
+            direct_explicit_reads: direct_explicit_reads.clone(),
+            batch_explicit_reads: batch_explicit_reads.clone(),
+            global_reads: global_reads.clone(),
+        });
+        move |builder| builder.with_settings(settings)
+    });
+    let schema = scryer_interface::build_schema(counting_app.clone(), ctx.auth_runtime.clone());
+    let user = authorized_default_user(&ctx).await;
+    let query = r#"{
+        titles {
+            items {
+                id
+                effectiveMetadataLanguage
+                effectiveUseSeasonFolders
+            }
+        }
+    }"#;
+
+    let direct = schema
+        .execute(async_graphql::Request::new(query).data(user.clone()))
+        .await;
+    let direct = serde_json::to_value(&direct).expect("serialize direct response");
+    assert_ok(&direct);
+    assert_eq!(batch_explicit_reads.load(Ordering::SeqCst), 0);
+    assert!(
+        direct_explicit_reads.load(Ordering::SeqCst) > 3,
+        "direct fields should resolve each tier separately"
+    );
+
+    direct_explicit_reads.store(0, Ordering::SeqCst);
+    batch_explicit_reads.store(0, Ordering::SeqCst);
+    global_reads.store(0, Ordering::SeqCst);
+    let loaders = scryer_interface::RequestLoaders::new(counting_app, user.clone());
+    let batched = schema
+        .execute(async_graphql::Request::new(query).data(user).data(loaders))
+        .await;
+    let batched = serde_json::to_value(&batched).expect("serialize batched response");
+    assert_ok(&batched);
+    assert_eq!(
+        batched["data"]["titles"]["items"], direct["data"]["titles"]["items"],
+        "request loaders must preserve direct title resolution"
+    );
+    assert_eq!(
+        batch_explicit_reads.load(Ordering::SeqCst),
+        4,
+        "three tiered settings loaders plus the facet fallback should each issue one batched read"
+    );
+    assert_eq!(direct_explicit_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        global_reads.load(Ordering::SeqCst),
+        1,
+        "the global metadata language should be read once per request"
+    );
+
+    let items = batched["data"]["titles"]["items"]
+        .as_array()
+        .expect("catalog items");
+    let item = |title_id: &str| {
+        items
+            .iter()
+            .find(|item| item["id"] == title_id)
+            .unwrap_or_else(|| panic!("missing title {title_id}: {batched}"))
+    };
+    assert_eq!(
+        item(&series_title_override.id)["effectiveMetadataLanguage"],
+        "fra"
+    );
+    assert_eq!(
+        item(&series_library_override.id)["effectiveMetadataLanguage"],
+        "jpn"
+    );
+    assert_eq!(
+        item(&anime_facet_override.id)["effectiveMetadataLanguage"],
+        "eng"
+    );
+    assert_eq!(
+        item(&series_library_override.id)["effectiveUseSeasonFolders"],
+        false
+    );
+    assert_eq!(
+        item(&anime_facet_override.id)["effectiveUseSeasonFolders"],
+        false
+    );
+}
+
+/// The countable trio (`episodesOwned`/`episodesMonitored`/`episodesTotal`)
+/// excludes placeholder episodes (unnamed/TBA/undated) while
+/// `episodeRecordsTotal` counts every stored row, so the season-scoped panel
+/// can tell "no episodes at all" apart from "only placeholder episodes"
+/// without hydrating the rows. Both resolution paths must agree.
+#[tokio::test]
+async fn collection_counts_split_countable_and_record_totals() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Record Count Show",
+        MediaFacet::Series,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let season = ctx
+        .shows
+        .create_collection(Collection {
+            id: Id::new().0,
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("3".to_string()),
+            monitored: true,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("create season collection");
+
+    // Three episode rows: two countable (named + dated, first one owned) and a
+    // third left undated so it stays a placeholder record.
+    for index in 1..=3usize {
+        let episode = create_series_scan_episode(
+            &ctx,
+            &title,
+            &season,
+            "1",
+            &index.to_string(),
+            &format!("S01E0{index}"),
+        )
+        .await;
+        if index <= 2 {
+            ctx.shows
+                .update_episode(
+                    &episode.id,
+                    EpisodeUpdate {
+                        air_date: Some(format!("2024-02-0{index}")),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("set episode air date");
+        }
+        if index == 1 {
+            let file_id = ctx
+                .media_files
+                .insert_media_file(&InsertMediaFileInput {
+                    title_id: title.id.clone(),
+                    file_path: "/record-count-fixtures/S01E01.mkv".to_string(),
+                    size_bytes: 4_096,
+                    ..Default::default()
+                })
+                .await
+                .expect("insert media file");
+            ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
+                .await
+                .expect("link media file to episode");
+        }
+    }
+
+    let query = format!(
+        "{{ title(id: \"{}\") {{ collections {{ id episodesOwned episodesMonitored episodesTotal episodeRecordsTotal }} }} }}",
+        title.id
+    );
+
+    // HTTP path: no request loaders, so this exercises the fallback resolvers.
+    let body = gql(&ctx, &query, json!({})).await;
+    assert_ok(&body);
+    let collection = body["data"]["title"]["collections"][0].clone();
+    assert_eq!(collection["episodesOwned"].as_i64(), Some(1), "{body}");
+    assert_eq!(collection["episodesMonitored"].as_i64(), Some(2), "{body}");
+    assert_eq!(collection["episodesTotal"].as_i64(), Some(2), "{body}");
+    assert_eq!(
+        collection["episodeRecordsTotal"].as_i64(),
+        Some(3),
+        "{body}"
+    );
+
+    // Loader-backed path must produce the identical counts.
+    let user = authorized_default_user(&ctx).await;
+    let loaded_body = exec_with_request_loaders(&ctx, &query, user).await;
+    assert_ok(&loaded_body);
+    assert_eq!(
+        loaded_body["data"]["title"]["collections"][0], collection,
+        "loader-backed collection counts diverged from fallback"
+    );
+}

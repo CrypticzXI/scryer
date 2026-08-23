@@ -18,17 +18,44 @@ use scryer_application::{
     SaveQualityProfileSettings, SeriesFacetHandler,
 };
 use scryer_domain::{ExternalId, IndexerConfig, MediaFacet, NewTitle, User};
-use scryer_infrastructure::SettingDefinitionSeed;
-use scryer_infrastructure::sqlite::{
-    PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore, SettingsStore,
-    ShowStore, TitleStore, UserStore,
+use scryer_infrastructure_acquisition::{
+    downloads::config_store::DownloadClientConfigStore,
+    indexers::{
+        config_store::IndexerConfigStore, search_client::MultiIndexerSearchClient,
+        stats::InMemoryIndexerStatsTracker,
+    },
 };
-use scryer_infrastructure::{
-    AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadSubmissionStore,
-    FileSystemLibraryScanner, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, LibraryStore, MediaFileStore,
-    MultiIndexerSearchClient, PendingReleaseStore, ReleaseStore, SqliteServices,
-    SubtitleDownloadStore, TitleImageStore, WantedStore, WorkflowOperationStore,
+use scryer_infrastructure_configuration::{
+    customization::{
+        plugin_store::PluginStore, post_processing_script_store::PostProcessingScriptStore,
+        rule_set_store::RuleSetStore,
+    },
+    settings::{quality_profile_store::QualityProfileStore, settings_store::SettingsStore},
+};
+use scryer_infrastructure_datastore::SqliteServices;
+use scryer_infrastructure_identity::users::store::UserStore;
+use scryer_infrastructure_library::media::{
+    images::title_image_store::TitleImageStore,
+    libraries::{
+        scan_unmatched_store::LibraryScanUnmatchedStore,
+        scanner::FileSystemLibraryScanner,
+        state_store::{
+            HousekeepingStore, LibraryProbeStore, PendingReleaseStore, SubtitleDownloadStore,
+            WantedStore,
+        },
+        store::LibraryStore,
+    },
+    search::media_file_store::MediaFileStore,
+    shows::store::ShowStore,
+    titles::store::TitleStore,
+};
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::{
+    release_store::ReleaseStore,
+    stores::{
+        AcquisitionStore, DomainEventStore, DownloadSubmissionStore, ImportStore,
+        WorkflowOperationStore,
+    },
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -196,11 +223,11 @@ where
     // Build a minimal download client so AppServices doesn't panic
     let staged_nzb_dir = tempfile::TempDir::new().expect("failed to create staged nzb tempdir");
     let staged_nzb_store = Arc::new(
-        scryer_infrastructure::FileSystemStagedNzbStore::new(staged_nzb_dir.path())
+        scryer_infrastructure_acquisition::downloads::staged_nzb_store::FileSystemStagedNzbStore::new(staged_nzb_dir.path())
             .await
             .expect("staged nzb store"),
     );
-    let nzbget = scryer_infrastructure::NzbgetDownloadClient::with_staged_nzb_store(
+    let nzbget = scryer_infrastructure_acquisition::downloads::clients::NzbgetDownloadClient::with_staged_nzb_store(
         "http://localhost:1".to_string(),
         None,
         None,
@@ -209,10 +236,10 @@ where
         Arc::new(tokio::sync::Semaphore::new(4)),
     );
 
-    let smg = scryer_infrastructure::MetadataGatewayClient::new(
+    let smg = scryer_infrastructure_metadata::metadata::gateway::client::MetadataGatewayClient::new_with_enrollment_store(
         "http://localhost:2/graphql".to_string(),
-        db.clone(),
-        scryer_infrastructure::SmgEnrollmentConfig {
+        settings_store.clone(),
+        scryer_infrastructure_metadata::metadata::gateway::client::SmgEnrollmentConfig {
             registration_secret: None,
         },
     );
@@ -258,9 +285,11 @@ where
         datastore.clone(),
         encryption_key_state.clone(),
     ));
-    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
-        datastore.clone(),
-    ));
+    let blocklist_store = Arc::new(
+        scryer_infrastructure_library::media::libraries::state_store::BlocklistStore::new(
+            datastore.clone(),
+        ),
+    );
     let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
     let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
     let library_scan_unmatched_store = Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
@@ -334,6 +363,7 @@ where
         id: "test-user".into(),
         username: "tester".into(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: Default::default(),
     };
@@ -396,6 +426,7 @@ fn indexer_config(
         enable_auto_search: true,
         indexer_proxy_config_id: None,
         download_client_id: None,
+        seeding_profile_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,

@@ -523,6 +523,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "title_credits",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "discovery_title_metadata_tags",
         classification: BackupTableClassification::ResetOnRestore,
     },
@@ -714,6 +718,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "library_scan_unmatched_items",
         classification: BackupTableClassification::Export,
     },
+    BackupTableCatalogEntry {
+        table: "login_verification_challenges",
+        classification: BackupTableClassification::Ignore,
+    },
     // A manual-import selection is deliberate user intent — the files a user
     // picked and the targets they mapped them to — held until the import
     // executes, so it is backed up like every other download/import lifecycle
@@ -872,6 +880,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "rule_sets",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "seeding_profiles",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -1888,6 +1900,7 @@ mod tests {
             "title_metadata_rating_summaries",
             "title_metadata_rating_sources",
             "title_metadata_external_ratings",
+            "title_credits",
         ] {
             let classification = BACKUP_TABLE_CATALOG
                 .iter()

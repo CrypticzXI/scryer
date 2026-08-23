@@ -11,7 +11,8 @@ use scryer_interface_media::mappers::{
     from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_routing_entry,
     from_jellyfin_server_user, from_library_paths_settings, from_media_server_connection,
     from_media_server_user_group, from_media_settings, from_quality_profile_settings,
-    from_service_settings, from_subtitle_provider_config, from_user_with_auth_factor_status,
+    from_seeding_profile, from_service_settings, from_subtitle_provider_config,
+    from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -61,6 +62,14 @@ fn from_recycle_bin_settings(
     settings: scryer_application::RecycleBinSettings,
 ) -> RecycleBinSettingsPayload {
     RecycleBinSettingsPayload {
+        enabled: settings.enabled,
+    }
+}
+
+fn from_plugin_auto_update_settings(
+    settings: scryer_application::PluginAutoUpdateSettings,
+) -> PluginAutoUpdateSettingsPayload {
+    PluginAutoUpdateSettingsPayload {
         enabled: settings.enabled,
     }
 }
@@ -224,6 +233,8 @@ fn from_security_settings(
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
+        mfa_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        mfa_require_emby_login: settings.totp_require_emby_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
         totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
@@ -463,6 +474,10 @@ fn from_auth_runtime_state(
             && security_settings.mfa_require_password_login,
         mfa_require_config_step_up: auth_runtime.effective_form_login_enabled
             && security_settings.mfa_require_config_step_up,
+        mfa_require_jellyfin_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_jellyfin_login,
+        mfa_require_emby_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_emby_login,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_jellyfin_login,
         totp_require_emby_login: auth_runtime.effective_form_login_enabled
@@ -561,6 +576,20 @@ impl SettingsQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_recycle_bin_settings(settings))
+    }
+
+    /// Returns whether the scheduled plugin catalog refresh installs official patch updates automatically.
+    async fn plugin_auto_update_settings(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<PluginAutoUpdateSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app
+            .get_plugin_auto_update_settings(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_plugin_auto_update_settings(settings))
     }
 
     /// Returns auto-backup scheduling metadata without exposing the backup key.
@@ -857,6 +886,39 @@ impl SettingsQueries {
             }
         }
         Ok(payloads)
+    }
+
+    /// Lists configured torrent seeding profiles.
+    async fn seeding_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<SeedingProfilePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        Ok(app
+            .list_seeding_profiles(&actor)
+            .await
+            .map_err(to_gql_error)?
+            .into_iter()
+            .map(from_seeding_profile)
+            .collect())
+    }
+
+    /// Returns the seeding profile applied when nothing more specific matches.
+    async fn default_seeding_profile(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<DefaultSeedingProfilePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        Ok(DefaultSeedingProfilePayload {
+            seeding_profile_id: app
+                .get_default_seeding_profile_id(&actor)
+                .await
+                .map_err(to_gql_error)?
+                .map(Into::into),
+            minimum_seeders_floor: app
+                .get_minimum_seeders_floor(&actor)
+                .await
+                .map_err(to_gql_error)?,
+        })
     }
 
     /// Returns compatible download clients and indexers for routing configuration.

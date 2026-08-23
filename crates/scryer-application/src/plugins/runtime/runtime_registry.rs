@@ -125,26 +125,21 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn build_available_plugins(
-        &self,
-        actor: Option<&User>,
-    ) -> AppResult<Vec<RegistryPlugin>> {
+    async fn build_available_plugins(&self) -> AppResult<Vec<RegistryPlugin>> {
         let installations = self
             .services
             .customization
             .plugin_installations
             .list_plugin_installations()
             .await?;
-        let install_in_progress_ids = match actor {
-            Some(actor) => {
-                self.runtime
-                    .plugins
-                    .plugin_install_orchestrator
-                    .active_plugin_ids_for_actor(&actor.id)
-                    .await
-            }
-            None => HashSet::new(),
-        };
+        // Any holder of the slot counts as busy, including the system actor
+        // running a scheduled automatic update.
+        let install_in_progress_ids = self
+            .runtime
+            .plugins
+            .plugin_install_orchestrator
+            .active_plugin_ids()
+            .await;
 
         let sources = self
             .services
@@ -364,7 +359,7 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
-        self.build_available_plugins(Some(actor)).await
+        self.build_available_plugins().await
     }
 }
 impl AppUseCase {

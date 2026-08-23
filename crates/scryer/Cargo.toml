@@ -1,6 +1,6 @@
 [package]
 name = "scryer"
-version = "0.18.16"
+version = "0.18.19"
 edition.workspace = true
 
 [features]
@@ -10,19 +10,29 @@ default = []
 scryer-application = { path = "../scryer-application", features = ["runtime"] }
 scryer-domain = { path = "../scryer-domain" }
 scryer-interface = { path = "../scryer-interface" }
-scryer-infrastructure = { path = "../scryer-infrastructure" }
+scryer-infrastructure-acquisition = { path = "../scryer-infrastructure-acquisition" }
+scryer-infrastructure-configuration = { path = "../scryer-infrastructure-configuration" }
+scryer-infrastructure-crypto = { path = "../scryer-infrastructure-crypto" }
+scryer-infrastructure-datastore = { path = "../scryer-infrastructure-datastore" }
+scryer-infrastructure-identity = { path = "../scryer-infrastructure-identity" }
+scryer-infrastructure-library = { path = "../scryer-infrastructure-library" }
+scryer-infrastructure-metadata = { path = "../scryer-infrastructure-metadata" }
+scryer-infrastructure-notifications = { path = "../scryer-infrastructure-notifications" }
+scryer-infrastructure-runtime = { path = "../scryer-infrastructure-runtime" }
+scryer-infrastructure-sql = { path = "../scryer-infrastructure-sql" }
+scryer-infrastructure-workflow = { path = "../scryer-infrastructure-workflow" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-plugins = { path = "../scryer-plugins" }
 scryer-runtime-info = { path = "../scryer-runtime-info" }
 async-graphql = { workspace = true }
-async-graphql-axum = { version = "7.0" }
+async-graphql-axum = { version = "7.2" }
 axum = { version = "0.8", features = ["macros", "http1", "http2", "json", "multipart", "ws"] }
 futures-util = "0.3"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["compression-br", "compression-gzip", "compression-zstd"] }
-http = "1.1"
+http = "1.5"
 dotenvy = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -52,7 +62,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 tempfile = "3"
 
 [build-dependencies]
-embed-resource = "3.0.9"
+embed-resource = "3.0.11"
 scryer-runtime-info = { path = "../scryer-runtime-info" }
 
 [[bin]]

@@ -24,6 +24,7 @@ struct AccessTokenOptions {
     auth_scope: JwtSessionScope,
     ttl_seconds: i64,
     persist_session: bool,
+    password_change_required_after_enrollment: bool,
     oauth: Option<(String, String, OAuthAuthorizationSource)>,
 }
 
@@ -445,19 +446,28 @@ impl AppUseCase {
         user_id: &str,
         authorization_fingerprint: String,
     ) -> AppResult<String> {
-        let Some(auth_session_version) = self
+        let auth_session_version = self
             .services
             .identity
             .users
             .auth_session_version(user_id)
-            .await?
-        else {
-            return Ok(authorization_fingerprint);
-        };
-
-        Ok(format!(
-            "{authorization_fingerprint}\nauth_session:{auth_session_version}"
+            .await?;
+        Ok(Self::auth_session_fingerprint_for_version(
+            authorization_fingerprint,
+            auth_session_version.as_deref(),
         ))
+    }
+
+    fn auth_session_fingerprint_for_version(
+        authorization_fingerprint: String,
+        auth_session_version: Option<&str>,
+    ) -> String {
+        match auth_session_version {
+            Some(auth_session_version) => {
+                format!("{authorization_fingerprint}\nauth_session:{auth_session_version}")
+            }
+            None => authorization_fingerprint,
+        }
     }
 
     /// Derive a per-user JWT signing key:
@@ -623,18 +633,75 @@ impl AppUseCase {
         .await
     }
 
+    /// Issues a full session only while the version observed during factor
+    /// verification remains current. If it changes immediately afterwards,
+    /// this token is deliberately signed with the old version and is rejected.
+    pub async fn issue_access_token_with_mfa_and_persistence_at_auth_session_version(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        persist_session: bool,
+        expected_auth_session_version: &Option<String>,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            AccessTokenOptions {
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                auth_scope: JwtSessionScope::Full,
+                ttl_seconds: self.token_lifetime(),
+                persist_session,
+                password_change_required_after_enrollment: false,
+                oauth: None,
+            },
+            Some(expected_auth_session_version),
+        )
+        .await
+    }
+
     pub async fn issue_mfa_enrollment_token(
         &self,
         actor: &User,
         persist_session: bool,
+        password_change_required_after_enrollment: bool,
+        expected_auth_session_version: Option<&Option<String>>,
     ) -> AppResult<String> {
-        self.issue_access_token_with_mfa_and_scope(
+        self.issue_access_token_with_mfa_scope_and_oauth(
             actor,
-            None,
-            None,
-            JwtSessionScope::MfaEnrollment,
-            self.mfa_enrollment_token_lifetime(),
-            persist_session,
+            AccessTokenOptions {
+                mfa_verified_until: None,
+                mfa_step_up_verified_until: None,
+                auth_scope: JwtSessionScope::MfaEnrollment,
+                ttl_seconds: self.mfa_enrollment_token_lifetime(),
+                persist_session,
+                password_change_required_after_enrollment,
+                oauth: None,
+            },
+            expected_auth_session_version,
+        )
+        .await
+    }
+
+    pub async fn issue_password_change_required_token(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        persist_session: bool,
+        expected_auth_session_version: Option<&Option<String>>,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_scope_and_oauth(
+            actor,
+            AccessTokenOptions {
+                mfa_verified_until,
+                mfa_step_up_verified_until: None,
+                auth_scope: JwtSessionScope::PasswordChangeRequired,
+                ttl_seconds: self.mfa_enrollment_token_lifetime(),
+                persist_session,
+                password_change_required_after_enrollment: false,
+                oauth: None,
+            },
+            expected_auth_session_version,
         )
         .await
     }
@@ -669,12 +736,14 @@ impl AppUseCase {
                 auth_scope: JwtSessionScope::Full,
                 ttl_seconds: Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
                 persist_session: false,
+                password_change_required_after_enrollment: false,
                 oauth: Some((
                     client_id.to_string(),
                     grant_id.to_string(),
                     authorization_source,
                 )),
             },
+            None,
         )
         .await
     }
@@ -696,8 +765,10 @@ impl AppUseCase {
                 auth_scope,
                 ttl_seconds,
                 persist_session,
+                password_change_required_after_enrollment: false,
                 oauth: None,
             },
+            None,
         )
         .await
     }
@@ -706,6 +777,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         options: AccessTokenOptions,
+        expected_auth_session_version: Option<&Option<String>>,
     ) -> AppResult<String> {
         let AccessTokenOptions {
             mfa_verified_until,
@@ -713,6 +785,7 @@ impl AppUseCase {
             auth_scope,
             ttl_seconds,
             persist_session,
+            password_change_required_after_enrollment,
             oauth,
         } = options;
         let actor = self.load_user_for_auth_payload(actor).await?;
@@ -727,19 +800,44 @@ impl AppUseCase {
             .password_hash
             .clone()
             .unwrap_or_else(|| format!("federated:{}", actor.id));
+        let auth_session_version = self
+            .services
+            .identity
+            .users
+            .auth_session_version(&actor.id)
+            .await?;
+        if let Some(expected_auth_session_version) = expected_auth_session_version
+            && auth_session_version != *expected_auth_session_version
+        {
+            return Err(AppError::Unauthorized(
+                "authentication session was invalidated".into(),
+            ));
+        }
+        let authorization_fingerprint = Self::auth_session_fingerprint_for_version(
+            Self::authorization_fingerprint(&actor),
+            auth_session_version.as_deref(),
+        );
 
         let now = Utc::now();
         let iat = now.timestamp();
         let exp = (now + Duration::seconds(ttl_seconds)).timestamp();
 
         let is_oauth = oauth.is_some();
-        let app_permissions = if is_oauth {
+        let app_permissions = if is_oauth || auth_scope != JwtSessionScope::Full {
             Vec::new()
         } else {
             Self::canonical_app_permission_claims(&actor)
         };
-        let library_permissions = Self::canonical_library_permission_claims(&actor);
-        let actor_capabilities = if is_oauth || auth_scope == JwtSessionScope::MfaEnrollment {
+        let library_permissions = if auth_scope == JwtSessionScope::Full {
+            Self::canonical_library_permission_claims(&actor)
+        } else {
+            Vec::new()
+        };
+        let actor_capabilities = if is_oauth
+            || matches!(
+                auth_scope,
+                JwtSessionScope::MfaEnrollment | JwtSessionScope::PasswordChangeRequired
+            ) {
             Vec::new()
         } else {
             Self::canonical_actor_capability_claims(&actor)
@@ -762,6 +860,8 @@ impl AppUseCase {
             mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
             auth_scope,
             persist_session,
+            auth_session_version,
+            password_change_required_after_enrollment,
             oauth_client_id,
             oauth_grant_id,
             oauth_authorization_source,
@@ -769,9 +869,6 @@ impl AppUseCase {
         };
 
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
-        let authorization_fingerprint = self
-            .auth_session_fingerprint(&actor.id, Self::authorization_fingerprint(&actor))
-            .await?;
         let signing_key = self.derive_jwt_key(&signing_seed, &authorization_fingerprint);
         let key = jsonwebtoken::EncodingKey::from_secret(&signing_key);
 
@@ -956,6 +1053,9 @@ impl AppUseCase {
             source_kind: selection.source_kind,
             source_title: source_title.to_string(),
             password_ref,
+            info_hash_hint: selection.info_hash_hint.clone(),
+            size_bytes: selection.size_bytes,
+            seeders: selection.seeders,
         };
         let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         let key = jsonwebtoken::EncodingKey::from_secret(signing_key);
@@ -1142,6 +1242,30 @@ impl AppUseCase {
 
         let claimed_scope =
             Self::submission_scope_from_claims(&claims.scope_kind, claims.scope_id.clone())?;
+        // Re-judge admission here rather than trusting the verdict made when the
+        // candidate was offered. This path exists so the API cannot be used to
+        // queue something the UI refused, and the threshold may have changed
+        // inside the token's lifetime. A token minted before this field existed
+        // carries no count, which reads as unknown and stays eligible for the
+        // rest of its short TTL — a bounded migration grace, not the same thing
+        // as an indexer that genuinely reports nothing.
+        let minimum_seeders = self
+            .minimum_seeders_for_indexer(claims.indexer_id.as_deref())
+            .await;
+        if !crate::acquisition::seed_goals::meets_minimum_seeders(
+            claims.source_kind,
+            claims.indexer_id.as_deref(),
+            claims.seeders,
+            minimum_seeders,
+        ) {
+            return Err(AppError::Validation(format!(
+                "release reports {} seeders, below the minimum of {minimum_seeders} for this indexer",
+                claims
+                    .seeders
+                    .map_or_else(|| "unknown".to_string(), |count| count.to_string())
+            )));
+        }
+
         let source_password = self.resolve_release_candidate_password_ticket(
             actor,
             title_id,
@@ -1156,6 +1280,9 @@ impl AppUseCase {
                 source_kind: claims.source_kind,
                 source_title: Some(claims.source_title),
                 source_password,
+                info_hash_hint: claims.info_hash_hint,
+                size_bytes: claims.size_bytes,
+                seeders: claims.seeders,
             },
             claimed_scope,
         ))
@@ -1211,8 +1338,20 @@ impl AppUseCase {
                 "OAuth tokens cannot carry app permissions".into(),
             ));
         }
+        if claims.password_change_required_after_enrollment
+            && claims.auth_scope != JwtSessionScope::MfaEnrollment
+        {
+            return Err(AppError::Unauthorized(
+                "invalid password-change enrollment token claims".into(),
+            ));
+        }
         let actor_capabilities = if claims.actor_capabilities.is_empty() {
-            if is_oauth || claims.auth_scope == JwtSessionScope::MfaEnrollment {
+            if is_oauth
+                || matches!(
+                    claims.auth_scope,
+                    JwtSessionScope::MfaEnrollment | JwtSessionScope::PasswordChangeRequired
+                )
+            {
                 scryer_domain::ActorCapabilityMask::NONE
             } else {
                 scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT
@@ -1224,9 +1363,13 @@ impl AppUseCase {
                     "OAuth tokens cannot carry actor capabilities".into(),
                 ));
             }
-            if claims.auth_scope == JwtSessionScope::MfaEnrollment && !mask.is_empty() {
+            if matches!(
+                claims.auth_scope,
+                JwtSessionScope::MfaEnrollment | JwtSessionScope::PasswordChangeRequired
+            ) && !mask.is_empty()
+            {
                 return Err(AppError::Unauthorized(
-                    "MFA enrollment tokens cannot carry actor capabilities".into(),
+                    "restricted authentication tokens cannot carry actor capabilities".into(),
                 ));
             }
             mask
@@ -1237,6 +1380,9 @@ impl AppUseCase {
             mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.auth_scope,
             persist_session: claims.persist_session,
+            auth_session_version: claims.auth_session_version,
+            password_change_required_after_enrollment: claims
+                .password_change_required_after_enrollment,
             oauth_client_id: claims.oauth_client_id,
             oauth_grant_id: claims.oauth_grant_id,
             oauth_authorization_source: claims.oauth_authorization_source,
@@ -1333,7 +1479,7 @@ impl AppUseCase {
                 .services
                 .identity
                 .users
-                .update_password_hash(&user.id, new_hash)
+                .update_password_hash(&user.id, new_hash, user.password_change_required)
                 .await
             {
                 Ok(updated) => {

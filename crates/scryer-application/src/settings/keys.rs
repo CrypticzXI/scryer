@@ -13,6 +13,20 @@ pub const AUDIO_PERSONA_MIGRATION_SENTINEL_KEY: &str = "audio_persona_settings_m
 pub const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 pub const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 pub const DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY: &str = "download_client.default_category";
+pub const DEFAULT_SEEDING_PROFILE_SETTING_KEY: &str = "download_client.default_seeding_profile";
+/// Fewest seeders a torrent candidate may report when no seeding profile
+/// resolves. Sonarr defaults every torrent indexer to 1; this is the same
+/// guarantee expressed once instead of per indexer.
+pub const MINIMUM_SEEDERS_FLOOR_SETTING_KEY: &str = "download_client.minimum_seeders_floor";
+/// Value [`MINIMUM_SEEDERS_FLOOR_SETTING_KEY`] falls back to. Bootstrap seeds
+/// the row with it and the resolver reads it when the row is missing or
+/// unparseable, so losing the setting cannot silently turn the protection off.
+pub const MINIMUM_SEEDERS_FLOOR_DEFAULT: i32 = 1;
+/// The same number in the JSON encoding a settings row stores. Rust cannot
+/// stringify a constant at compile time without a dependency, so the pair lives
+/// here — one place, side by side — and `the_floor_default_json_is_the_floor_default`
+/// keeps the two encodings from drifting.
+pub const MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON: &str = "1";
 pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
@@ -21,6 +35,8 @@ pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
 pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
 pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
+pub const TITLE_METADATA_LANGUAGE_OVERRIDE_KEY: &str = "metadata_language.title_override";
+pub const USE_SEASON_FOLDERS_KEY: &str = "rename.use_season_folders";
 // Discovery region seam. Read like metadata_language; a future
 // preferences UI only has to write this key (defaults to "US" -> unchanged).
 pub const DISCOVERY_REGION_KEY: &str = "discovery.region";
@@ -30,6 +46,7 @@ pub const IMAGE_CACHE_MAX_SIZE_MB_KEY: &str = "images.cache.max_size_mb";
 pub const DEFAULT_IMAGE_CACHE_MAX_SIZE_MB: i32 = 256;
 pub const IMAGE_CACHE_MAX_BYTES_ENV: &str = "SCRYER_IMAGE_CACHE_MAX_BYTES";
 pub const PLUGIN_HTTP_CA_BUNDLE_PEM_KEY: &str = "plugins.http.ca_bundle_pem";
+pub const PLUGIN_AUTO_UPDATE_ENABLED_KEY: &str = "plugins.auto_update.enabled";
 pub const AUTO_BACKUP_ENABLED_KEY: &str = "backup.auto.enabled";
 pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local";
 pub const AUTO_BACKUP_KEY_KEY: &str = "backup.auto.key";
@@ -139,3 +156,19 @@ pub const DEFAULT_RENAME_MISSING_METADATA_POLICY: &str = "fallback_title";
 pub const DEFAULT_FILLER_POLICY: &str = "download_all";
 pub const DEFAULT_RECAP_POLICY: &str = "download_all";
 pub const DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL: &str = "03:00";
+
+#[cfg(test)]
+mod tests {
+    use super::{MINIMUM_SEEDERS_FLOOR_DEFAULT, MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON};
+
+    #[test]
+    fn the_floor_default_json_is_the_floor_default() {
+        // The bootstrap seed stores the JSON form and the resolver falls back to
+        // the number; if these ever disagree, a fresh install and a lost
+        // settings row would enforce different floors.
+        assert_eq!(
+            serde_json::from_str::<i32>(MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON).unwrap(),
+            MINIMUM_SEEDERS_FLOOR_DEFAULT
+        );
+    }
+}

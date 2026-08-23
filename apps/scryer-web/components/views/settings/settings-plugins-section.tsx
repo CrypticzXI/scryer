@@ -9,6 +9,8 @@ import { IconButton } from "@/components/ui/icon-button";
 import { TextActionButton } from "@/components/ui/text-action-button";
 import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Progress } from "@/components/ui/progress";
 import { SingleSelectField } from "@/components/ui/select";
 import {
@@ -111,6 +113,9 @@ type SettingsPluginsSectionProps = {
   manualBusy: boolean;
   showManualInstall: boolean;
   headerActionsTarget?: HTMLElement | null;
+  autoUpdateEnabled: boolean;
+  autoUpdateLoading: boolean;
+  autoUpdateSaving: boolean;
   remoteActionsBlocked: {
     refresh: boolean;
     install: boolean;
@@ -118,6 +123,7 @@ type SettingsPluginsSectionProps = {
     upgrade: boolean;
     inspectManual: boolean;
   };
+  onAutoUpdateEnabledChange: (enabled: boolean) => void;
   onManualRepoUrlChange: (value: string) => void;
   onToggleManualInstall: () => void;
   onManualPluginFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -627,7 +633,11 @@ export function SettingsPluginsSection({
   manualBusy,
   showManualInstall,
   headerActionsTarget,
+  autoUpdateEnabled,
+  autoUpdateLoading,
+  autoUpdateSaving,
   remoteActionsBlocked,
+  onAutoUpdateEnabledChange,
   onManualRepoUrlChange,
   onToggleManualInstall,
   onManualPluginFileChange,
@@ -741,6 +751,31 @@ export function SettingsPluginsSection({
           </ul>
         </div>
       )}
+
+      <section className={PLUGIN_PANEL_CLASS} id="settings-plugins-auto-update">
+        <div className={`${PLUGIN_PANEL_BODY_CLASS} flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}>
+          <div className="space-y-1">
+            <Label htmlFor="settings-plugins-auto-update-toggle">
+              {t("settings.pluginAutoUpdateEnabled")}
+            </Label>
+            <p className={`text-xs ${PLUGIN_MUTED_TEXT_CLASS}`}>
+              {t("settings.pluginAutoUpdateEnabledHelp")}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {autoUpdateSaving ? (
+              <Loader2 className={`h-4 w-4 animate-spin ${PLUGIN_MUTED_TEXT_CLASS}`} />
+            ) : null}
+            <SettingsToggleSwitch
+              id="settings-plugins-auto-update-toggle"
+              checked={autoUpdateEnabled}
+              disabled={autoUpdateLoading || autoUpdateSaving}
+              ariaLabel={t("settings.pluginAutoUpdateEnabled")}
+              onChange={onAutoUpdateEnabledChange}
+            />
+          </div>
+        </div>
+      </section>
 
       {initialLoading ? (
         <div className={`${PLUGIN_PANEL_CLASS} flex min-h-48 items-center justify-center`}>

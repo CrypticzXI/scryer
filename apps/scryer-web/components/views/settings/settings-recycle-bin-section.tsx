@@ -324,7 +324,7 @@ export function SettingsRecycleBinSection({
                     ...group.items.map((item) => {
                       const rowBusy = pendingItemIds.has(item.id) || mutatingId === "__empty__";
                       return (
-                        <TableRow key={item.id} id={selectorId("settings-recycle-bin-row", item.id)}>
+                        <TableRow key={item.id} id={selectorId("settings-recycle-bin-row", item.id)} data-ui="settings-table-row">
                           <TableCheckboxCell>
                             <Checkbox
                               id={selectorId("settings-recycle-bin-select", item.id)}

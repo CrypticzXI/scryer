@@ -47,7 +47,18 @@ const SCRYER_PROD_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
-    "scryer-infrastructure",
+    "scryer-infrastructure-acquisition",
+    "scryer-infrastructure-configuration",
+    "scryer-infrastructure-crypto",
+    "scryer-infrastructure-datastore",
+    "scryer-infrastructure-identity",
+    "scryer-infrastructure-library",
+    "scryer-infrastructure-library-search",
+    "scryer-infrastructure-metadata",
+    "scryer-infrastructure-notifications",
+    "scryer-infrastructure-runtime",
+    "scryer-infrastructure-sql",
+    "scryer-infrastructure-workflow",
     "scryer-interface",
     "scryer-mediainfo",
     "scryer-plugins",
@@ -58,7 +69,18 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer",
     "scryer-application",
     "scryer-domain",
-    "scryer-infrastructure",
+    "scryer-infrastructure-acquisition",
+    "scryer-infrastructure-configuration",
+    "scryer-infrastructure-crypto",
+    "scryer-infrastructure-datastore",
+    "scryer-infrastructure-identity",
+    "scryer-infrastructure-library",
+    "scryer-infrastructure-library-search",
+    "scryer-infrastructure-metadata",
+    "scryer-infrastructure-notifications",
+    "scryer-infrastructure-runtime",
+    "scryer-infrastructure-sql",
+    "scryer-infrastructure-workflow",
     "scryer-interface",
     "scryer-interface-acquisition",
     "scryer-interface-core",
@@ -97,7 +119,7 @@ const OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW: &str = ".github/workflows/release-plu
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
-const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["~/", "/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
 const RELEASE_MACOS_HOME_PATH_COMPONENTS: &[&str] = &[
     "Applications",
     "Desktop",
@@ -663,6 +685,18 @@ fn require_app_release_branch(branch: &str, version: &Version) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn require_main_merged(ctx: &TaskContext) -> Result<()> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(["merge-base", "--is-ancestor", "main", "HEAD"]);
+    let status = command.status()?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!(
+        "release branch does not contain main; merge main into the release branch before running a release dry run"
+    );
 }
 
 fn current_head_commit(ctx: &TaskContext) -> Result<String> {
@@ -2898,6 +2932,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     let git_commit = current_head_commit(ctx)?;
     println!("   Branch : {branch}");
     require_app_release_branch(&branch, &next_version)?;
+    require_main_merged(ctx)?;
     let worktree_clean_at_start = git_status_porcelain(ctx)?.trim().is_empty();
     if !worktree_clean_at_start {
         prompt_continue_if_dirty(ctx)?;
@@ -3816,6 +3851,33 @@ mod tests {
             assert!(
                 members.contains(expected),
                 "release workspace members must include {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_validation_targets_include_split_infrastructure_crates() {
+        for expected in [
+            "scryer-infrastructure-acquisition",
+            "scryer-infrastructure-configuration",
+            "scryer-infrastructure-crypto",
+            "scryer-infrastructure-datastore",
+            "scryer-infrastructure-identity",
+            "scryer-infrastructure-library",
+            "scryer-infrastructure-library-search",
+            "scryer-infrastructure-metadata",
+            "scryer-infrastructure-notifications",
+            "scryer-infrastructure-runtime",
+            "scryer-infrastructure-sql",
+            "scryer-infrastructure-workflow",
+        ] {
+            assert!(
+                SCRYER_PROD_PACKAGES.contains(&expected),
+                "release Nextest packages must include {expected}"
+            );
+            assert!(
+                SCRYER_CI_CLIPPY_PACKAGES.contains(&expected),
+                "release Clippy packages must include {expected}"
             );
         }
     }
@@ -4799,9 +4861,25 @@ mod tests {
     }
 
     #[test]
+    fn release_hygiene_flags_home_relative_paths() {
+        let violations = scan_release_hygiene_content(
+            Path::new("crates/scryer-application/src/lib.rs"),
+            "const DESIGN: &str = \"~/private/design.md\";",
+        );
+
+        assert_eq!(
+            violations,
+            vec![
+                "crates/scryer-application/src/lib.rs:1: local absolute path reference: const DESIGN: &str = \"~/private/design.md\";"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn release_hygiene_allows_users_api_routes() {
         let violations = scan_release_hygiene_content(
-            Path::new("crates/scryer-infrastructure/src/security/external_identity.rs"),
+            Path::new("crates/scryer-infrastructure-identity/src/external_identity.rs"),
             r#"
                 .and(path("/Users/AuthenticateByName"))
                 let avatar = format!("{}/Users/jf-user/Images/Primary?tag=tag", server.uri());

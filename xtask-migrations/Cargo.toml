@@ -8,6 +8,6 @@ publish = false
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 sqlx = { workspace = true }
-scryer-infrastructure = { path = "../crates/scryer-infrastructure" }
+scryer-infrastructure-datastore = { path = "../crates/scryer-infrastructure-datastore" }
 tokio = { workspace = true }
 xtask-support = { path = "../xtask-support" }

@@ -16,6 +16,10 @@ pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,
     AdditionalFile,
+    /// A release an operator chose directly (interactive Queue or a redeemed
+    /// download token). It still runs import guards, but a guard failure is
+    /// held for manual import instead of burning the release.
+    OperatorQueued,
     /// A manually-queued release chosen by the operator to replace the existing
     /// primary file. On import it bypasses the required-audio gate (like a manual
     /// file-pick) and forces the upgrade/replace path regardless of score, so a
@@ -28,6 +32,7 @@ impl DownloadSubmissionPurpose {
         match self {
             Self::Standard => "standard",
             Self::AdditionalFile => "additional_file",
+            Self::OperatorQueued => "operator_queued",
             Self::ManualReplacement => "manual_replacement",
         }
     }
@@ -35,6 +40,7 @@ impl DownloadSubmissionPurpose {
     pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
+            "operator_queued" => Self::OperatorQueued,
             "manual_replacement" => Self::ManualReplacement,
             _ => Self::Standard,
         }
@@ -47,6 +53,11 @@ impl DownloadSubmissionPurpose {
     /// A manual operator-chosen replacement for the primary file.
     pub fn is_manual_replacement(self) -> bool {
         self == Self::ManualReplacement
+    }
+
+    /// A release selected by an operator rather than a convergence lane.
+    pub fn is_operator_queued(self) -> bool {
+        self == Self::OperatorQueued
     }
 }
 
@@ -175,6 +186,15 @@ pub struct DownloadSubmission {
     pub source_provider_name: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+    /// The size the indexer announced for this release, when it announced one.
+    ///
+    /// D18 scores an in-flight submission as a pseudo-incumbent, and size is a
+    /// term in that score. Without it the queued release carries no size term
+    /// while the candidate beside it does, so any candidate in a larger size
+    /// band reads as an upgrade over an identical release already downloading.
+    /// `None` on rows written before the column existed; a size-less queued
+    /// release is then compared size-less, which is the honest reading.
+    pub release_size_bytes: Option<i64>,
     pub request_signature: Option<String>,
     pub purpose: DownloadSubmissionPurpose,
     pub scope: SubmissionScope,
@@ -190,6 +210,47 @@ pub struct DownloadSubmissionActorSnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DownloadSubmissionIdentity {
     pub download_id: Option<String>,
+}
+
+/// Seeding goals as resolved at grab time and frozen onto the download
+/// submission row. Persisting the resolution (rather than re-deriving it from
+/// history at poll time, the way Sonarr does) means a torrent keeps the goals
+/// it was grabbed under even if the profile is later edited or unassigned.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PersistedSeedGoals {
+    pub seeding_profile_id: Option<String>,
+    pub seed_goal_ratio: Option<f64>,
+    pub seed_goal_seconds: Option<i64>,
+    pub never_remove: bool,
+    pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
+    /// Whether Scryer keeps managing this torrent after import. Defaults to
+    /// `Park`, so a grab with no profile — and any row written before the
+    /// column existed — keeps the fail-closed behaviour.
+    pub post_import_tracking: scryer_domain::PostImportTracking,
+    pub resolution_source: SeedGoalResolutionSource,
+    /// Info hash the client accepted, lowercased. Lets the Tier-B evaluator
+    /// look a goal up straight off an observed torrent.
+    pub info_hash: Option<String>,
+}
+
+impl PersistedSeedGoals {
+    pub fn has_goals(&self) -> bool {
+        self.seed_goal_ratio.is_some() || self.seed_goal_seconds.is_some()
+    }
+}
+
+/// One torrent grab's resolution, plus the submission identity and the minimal
+/// row context needed to seed the `download_submissions` row when the goals
+/// land before the acquisition layer records the submission itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeedGoalGrabRecord {
+    pub client_id: Option<String>,
+    pub client_type: String,
+    pub client_item_id: String,
+    pub title_id: String,
+    pub facet: String,
+    pub purpose: DownloadSubmissionPurpose,
+    pub goals: PersistedSeedGoals,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -237,7 +298,6 @@ impl DownloadSourceIdentity {
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,
     pub covered_wanted_item_ids: Vec<String>,
-    pub current_score: Option<i32>,
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
     pub download_submission: DownloadSubmission,
@@ -304,6 +364,7 @@ pub struct IndexerConfigUpdate {
     pub enable_auto_search: Option<bool>,
     pub indexer_proxy_config_id: Option<Option<String>>,
     pub download_client_id: Option<Option<String>>,
+    pub seeding_profile_id: Option<Option<String>>,
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
@@ -358,11 +419,61 @@ impl IndexerConfigUpdate {
             || self.enable_auto_search.is_some()
             || self.indexer_proxy_config_id.is_some()
             || self.download_client_id.is_some()
+            || self.seeding_profile_id.is_some()
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
             || self.caps_snapshot_json.is_some()
             || self.config_json.is_some()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NewSeedingProfile {
+    pub name: String,
+    pub ratio: Option<f64>,
+    pub seed_time_minutes: Option<i64>,
+    pub season_pack_mode: scryer_domain::SeasonPackSeedMode,
+    pub season_pack_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
+    pub honor_tracker_minimums: bool,
+    pub goal_met_action: scryer_domain::SeedGoalMetAction,
+    pub never_remove: bool,
+    pub minimum_seeders: Option<i32>,
+    pub post_import_tracking: scryer_domain::PostImportTracking,
+}
+
+/// Patch for a stored seeding profile. Nullable goals use the
+/// `Option<Option<_>>` convention: `None` preserves, `Some(None)` clears.
+#[derive(Clone, Debug, Default)]
+pub struct SeedingProfileUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub ratio: Option<Option<f64>>,
+    pub seed_time_minutes: Option<Option<i64>>,
+    pub season_pack_mode: Option<scryer_domain::SeasonPackSeedMode>,
+    pub season_pack_ratio: Option<Option<f64>>,
+    pub season_pack_seed_time_minutes: Option<Option<i64>>,
+    pub honor_tracker_minimums: Option<bool>,
+    pub goal_met_action: Option<scryer_domain::SeedGoalMetAction>,
+    pub never_remove: Option<bool>,
+    pub minimum_seeders: Option<Option<i32>>,
+    pub post_import_tracking: Option<scryer_domain::PostImportTracking>,
+}
+
+impl SeedingProfileUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.ratio.is_some()
+            || self.seed_time_minutes.is_some()
+            || self.season_pack_mode.is_some()
+            || self.season_pack_ratio.is_some()
+            || self.season_pack_seed_time_minutes.is_some()
+            || self.honor_tracker_minimums.is_some()
+            || self.goal_met_action.is_some()
+            || self.never_remove.is_some()
+            || self.minimum_seeders.is_some()
+            || self.post_import_tracking.is_some()
     }
 }
 
@@ -478,6 +589,16 @@ pub struct QueuedReleaseSelection {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
+    /// BitTorrent v1 info hash supplied by the indexer, when available.
+    pub info_hash_hint: Option<String>,
+    /// Indexer-announced release size, preserved for queued pseudo-incumbent scoring.
+    pub size_bytes: Option<i64>,
+    /// Indexer-reported seeder count at the moment the candidate was offered.
+    ///
+    /// Carried so redemption can re-judge admission without trusting the
+    /// caller: the client never supplies this, it only round-trips inside the
+    /// signed token.
+    pub seeders: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -713,6 +834,13 @@ pub struct MediaFileAnalysis {
     pub video_bitrate_kbps: Option<i32>,
     pub video_bit_depth: Option<i32>,
     pub video_hdr_format: Option<String>,
+    /// Dolby Vision profile and BL-compatibility id. Serialized with the rest of
+    /// the analysis, so rows written before these existed simply read as `None`
+    /// rather than needing a migration.
+    #[serde(default)]
+    pub dovi_profile: Option<u8>,
+    #[serde(default)]
+    pub dovi_bl_compat_id: Option<u8>,
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
@@ -742,6 +870,9 @@ pub struct InsertMediaFileInput {
     pub title_id: String,
     pub file_path: String,
     pub size_bytes: i64,
+    /// The announced size the import scored this file on, when it did
+    /// (`canonical_scoring::persisted_announced_size_bytes`); `None` otherwise.
+    pub announced_size_bytes: Option<i64>,
     pub role: MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,
@@ -780,6 +911,36 @@ pub struct TitleHistoryFilter {
 pub struct TitleHistoryPage {
     pub records: Vec<TitleHistoryRecord>,
     pub total_count: i64,
+}
+
+/// Title-history event counts for one trailing time window, aggregated in SQL.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActivityWindowCounts {
+    pub grabbed: i64,
+    pub upgraded: i64,
+    pub imported: i64,
+    pub import_failed: i64,
+    pub download_failed: i64,
+}
+
+/// A trailing activity window paired with the window immediately before it, so
+/// callers can render a count and its period-over-period delta.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DashboardActivityStats {
+    pub current: ActivityWindowCounts,
+    pub previous: ActivityWindowCounts,
+}
+
+/// One library root folder together with the filesystem usage of the volume
+/// backing it. Usage is `None` when the filesystem could not be inspected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageRootUsage {
+    pub path: String,
+    pub library_id: String,
+    pub library_name: String,
+    pub facet: MediaFacet,
+    pub used_bytes: Option<i64>,
+    pub total_bytes: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -840,6 +1001,15 @@ pub struct DownloadClientAddRequest {
     pub info_hash_hint: Option<String>,
     pub seed_goal_ratio: Option<f64>,
     pub seed_goal_seconds: Option<i64>,
+    /// Tracker-declared minimums carried by the release (`minimum_seed_ratio` /
+    /// `minimum_seed_time_minutes` and the season-pack twins in the indexer
+    /// `extra` map). The grab-time resolver clamps profile goals up to these
+    /// when the profile honors tracker minimums; `None` means the release
+    /// carried none, or the construction site has no release object.
+    pub tracker_min_seed_ratio: Option<f64>,
+    pub tracker_min_seed_time_minutes: Option<i64>,
+    pub season_pack_seed_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
     pub is_recent: Option<bool>,
     pub season_pack: Option<bool>,
 }
@@ -873,6 +1043,10 @@ impl DownloadClientAddRequest {
             info_hash_hint: None,
             seed_goal_ratio: None,
             seed_goal_seconds: None,
+            tracker_min_seed_ratio: None,
+            tracker_min_seed_time_minutes: None,
+            season_pack_seed_ratio: None,
+            season_pack_seed_time_minutes: None,
             is_recent: None,
             season_pack: None,
         }

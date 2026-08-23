@@ -535,13 +535,26 @@ impl AppUseCase {
         targets: Vec<HydrationTarget>,
         cancel_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> AppResult<HydrationBatchOutcome> {
-        let language = self.metadata_language().await;
+        let mut targets_by_language = HashMap::<String, Vec<HydrationTarget>>::new();
+        let titles = targets
+            .iter()
+            .map(|target| target.title.clone())
+            .collect::<Vec<_>>();
+        let effective_languages = self.resolve_metadata_languages_for_titles(&titles).await;
+        for target in targets {
+            let language = effective_languages
+                .get(&target.title.id)
+                .cloned()
+                .unwrap_or_else(|| "eng".to_string());
+            targets_by_language.entry(language).or_default().push(target);
+        }
         let mut outcome = HydrationBatchOutcome::default();
         let hydration_started_at = Instant::now();
 
-        'chunks: for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
+        'languages: for (language, targets) in targets_by_language {
+            for chunk in targets.chunks(HYDRATION_BULK_BATCH_SIZE) {
             if crate::library::library::library_scan_cancel_requested(cancel_token) {
-                break;
+                break 'languages;
             }
             let chunk_started_at = Instant::now();
             let chunk_len = chunk.len();
@@ -614,7 +627,7 @@ impl AppUseCase {
             .await;
 
             let Some(bulk_result) = bulk_result else {
-                break;
+                break 'languages;
             };
 
             let bulk_result = match bulk_result {
@@ -657,7 +670,7 @@ impl AppUseCase {
 
             for (target, tvdb_id) in movie_targets {
                 if crate::library::library::library_scan_cancel_requested(cancel_token) {
-                    break 'chunks;
+                    break 'languages;
                 }
                 let title_id = target.title.id.clone();
                 let title_facet = target.title.facet.clone();
@@ -716,7 +729,7 @@ impl AppUseCase {
 
             for (target, tvdb_id) in series_targets {
                 if crate::library::library::library_scan_cancel_requested(cancel_token) {
-                    break 'chunks;
+                    break 'languages;
                 }
                 let title_id = target.title.id.clone();
                 let title_facet = target.title.facet.clone();
@@ -783,6 +796,7 @@ impl AppUseCase {
                 total_elapsed_ms = hydration_started_at.elapsed().as_millis(),
                 "metadata hydration chunk complete"
             );
+            }
         }
 
         Ok(outcome)
@@ -793,7 +807,7 @@ impl AppUseCase {
         &self,
         target: HydrationTarget,
     ) -> AppResult<Title> {
-        let language = self.metadata_language().await;
+        let language = self.resolve_metadata_language_for_title(&target.title).await;
         self.emit_hydration_started(&target.title).await;
         let tvdb_id = target
             .requested_tvdb_id
@@ -1325,10 +1339,12 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
 
-        let language = language.trim().to_ascii_lowercase();
-        if language.is_empty() {
-            return Err(AppError::Validation("language is required".to_string()));
-        }
+        let language = crate::normalize_metadata_language_code(language).ok_or_else(|| {
+            AppError::Validation(
+                "metadata language must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn"
+                    .to_string(),
+            )
+        })?;
 
         self.services
             .config

@@ -14,6 +14,7 @@ import { Fragment, memo, type ReactNode, useLayoutEffect, useRef } from "react";
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
   ActivityQueueDetailsPanel,
+  ActivityQueueSeedingProgress,
   ActivityQueueStatusBadge,
   ActivityQueueTitleContent,
 } from "@/components/views/activity/queue-row-presentation";
@@ -181,7 +182,7 @@ export const QueueTableRow = memo(function QueueTableRow({
         </TableCell>
         <TableCell className="w-[15%] align-middle">
           <ActivityQueueStatusBadge
-            stateKey={row.displayStateKey}
+            stateKey={row.statusBadgeKey}
             statusLabel={row.statusLabel}
             isExpandable={row.hasExpandableDetails}
             isExpanded={isExpanded}
@@ -190,6 +191,11 @@ export const QueueTableRow = memo(function QueueTableRow({
               isExpanded ? "queue.hideDetails" : "queue.showDetails",
             )}
             onToggle={onToggleExpanded}
+          />
+          <ActivityQueueSeedingProgress
+            queueItem={queueItem}
+            className="mt-1"
+            t={t}
           />
           {(queueItem.deleteErrorMessage || queueItem.importErrorMessage) &&
             !row.hasStatusDetails && (

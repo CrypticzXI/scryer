@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::File,
     sync::{Arc, Mutex},
 };
@@ -11,18 +12,21 @@ use scryer_application::{
     DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadGrabResult,
     DownloadSourceKind, ResolvedDownloadArtifact, StagedNzbRef,
 };
-use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
+use scryer_domain::{
+    CompletedDownload, DownloadQueueItem, DownloadQueueState, DownloadSeedingSnapshot,
+};
 use scryer_plugin_sdk::command::{
     PluginCommand, PluginCommandRequest, PluginCommandResult, PluginDownloadClientCommand,
     PluginDownloadClientCommandResult, PluginDownloadGetCompletedRequest,
 };
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
-use scryer_plugin_sdk::{PluginError, PluginResult};
+use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use tracing::debug;
 
 use crate::blocking::run_blocking_plugin_call;
 use crate::legacy_runtime::LegacyPlugin;
 use crate::runtime_backing::PluginInstanceSpec;
+use crate::seeding_trust::apply_seeding_trust_floor;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
@@ -45,6 +49,71 @@ pub struct WasmDownloadClient {
     descriptor: PluginDescriptor,
     client_name: String,
     client_id: String,
+    /// Last torrent seeding observation seen for each client item, from the
+    /// most recent successful queue listing.
+    ///
+    /// A torrent client reports every torrent it holds from `list_queue`,
+    /// including the finished ones, and the finished ones are exactly the
+    /// rows the seeding gate has to reason about. `retain_queue_item` drops
+    /// them from the *queue* (they belong to history, otherwise the live queue
+    /// would carry every torrent the client has ever kept), and the history
+    /// listing is framed as `PluginCompletedDownload`, which has no seeding
+    /// fields at all. Recording the observation on the way past is what keeps
+    /// it reachable without a second plugin call per poll.
+    ///
+    /// The map is *replaced* on every successful listing rather than merged,
+    /// so an entry can never outlive the poll that produced it: a torrent that
+    /// left the client loses its observation, and the gate then holds instead
+    /// of acting on a stale one.
+    seeding_observations: SeedingObservationCache,
+}
+
+/// See `WasmDownloadClient::seeding_observations`.
+#[derive(Default)]
+struct SeedingObservationCache(Mutex<HashMap<String, DownloadSeedingSnapshot>>);
+
+impl SeedingObservationCache {
+    /// Replace the cache from a full plugin queue listing, before the
+    /// completed/seeding rows are filtered out of the queue itself.
+    fn record(&self, items: &[PluginDownloadItem]) {
+        let mut observations = HashMap::new();
+        for item in items {
+            let Some(snapshot) = seeding_snapshot_for_item(item) else {
+                continue;
+            };
+            for key in seeding_observation_keys(item) {
+                observations.insert(key, snapshot.clone());
+            }
+        }
+        if let Ok(mut cache) = self.0.lock() {
+            *cache = observations;
+        }
+    }
+
+    /// Stamp the last observation onto rows that arrived without one — history
+    /// rows framed as completed downloads, which carry no seeding fields.
+    fn apply(&self, items: &mut [DownloadQueueItem]) {
+        let Ok(cache) = self.0.lock() else {
+            return;
+        };
+        if cache.is_empty() {
+            return;
+        }
+        for item in items.iter_mut() {
+            if item.seeding.is_some() {
+                continue;
+            }
+            let candidates = [
+                normalized_plugin_info_hash(Some(item.download_client_item_id.as_str())),
+                Some(item.download_client_item_id.clone()),
+                item.download_id.clone(),
+            ];
+            item.seeding = candidates
+                .into_iter()
+                .flatten()
+                .find_map(|key| cache.get(&key).cloned());
+        }
+    }
 }
 
 struct CommandDownloadClient {
@@ -66,6 +135,7 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
+            seeding_observations: SeedingObservationCache::default(),
         }
     }
 
@@ -86,6 +156,7 @@ impl WasmDownloadClient {
             descriptor,
             client_name,
             client_id,
+            seeding_observations: SeedingObservationCache::default(),
         }
     }
 
@@ -134,13 +205,50 @@ impl WasmDownloadClient {
 fn decode_command_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
     match result {
         PluginResult::Ok(value) => Ok(value),
-        PluginResult::Err(PluginError {
-            code,
-            public_message,
-            ..
-        }) => Err(AppError::Repository(format!(
-            "{context}: plugin error {code:?}: {public_message}"
-        ))),
+        PluginResult::Err(error) => Err(plugin_error_as_repository(error, context)),
+    }
+}
+
+fn decode_download_add_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
+    match result {
+        PluginResult::Ok(value) => Ok(value),
+        PluginResult::Err(error) => Err(map_download_add_plugin_error(error, context)),
+    }
+}
+
+fn decode_legacy_download_add_result<T>(output: &str, context: &str) -> AppResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let envelope: PluginResult<T> = serde_json::from_str(output).map_err(|error| {
+        AppError::Repository(format!(
+            "{context}: plugin returned invalid result envelope: {error}"
+        ))
+    })?;
+    decode_download_add_result(envelope, context)
+}
+
+fn plugin_error_message(error: &PluginError, context: &str) -> String {
+    format!(
+        "{context}: plugin error {:?}: {}",
+        error.code, error.public_message
+    )
+}
+
+fn plugin_error_as_repository(error: PluginError, context: &str) -> AppError {
+    AppError::Repository(plugin_error_message(&error, context))
+}
+
+fn map_download_add_plugin_error(error: PluginError, context: &str) -> AppError {
+    let message = plugin_error_message(&error, context);
+    match error.code {
+        PluginErrorCode::RateLimited
+        | PluginErrorCode::UpstreamUnavailable
+        | PluginErrorCode::Temporary => AppError::DownloadSubmitUnavailable(message),
+        PluginErrorCode::InvalidConfig
+        | PluginErrorCode::AuthFailed
+        | PluginErrorCode::Unsupported
+        | PluginErrorCode::Permanent => AppError::DownloadSubmitRejected(message),
     }
 }
 
@@ -181,9 +289,12 @@ fn map_state(state: DownloadItemState) -> DownloadQueueState {
         DownloadItemState::Paused => DownloadQueueState::Paused,
         DownloadItemState::Completed | DownloadItemState::Seeding => DownloadQueueState::Completed,
         DownloadItemState::ImportPending => DownloadQueueState::ImportPending,
-        DownloadItemState::Failed | DownloadItemState::Error | DownloadItemState::Warning => {
-            DownloadQueueState::Failed
-        }
+        // A plugin reports `Warning` for a condition the operator can still
+        // fix, and says so explicitly to keep failed-download handling off the
+        // download. Flattening it into `Failed` here would blocklist and remove
+        // a grab that is only stuck.
+        DownloadItemState::Warning => DownloadQueueState::Warning,
+        DownloadItemState::Failed | DownloadItemState::Error => DownloadQueueState::Failed,
     }
 }
 
@@ -196,6 +307,97 @@ fn attention_required(item: &PluginDownloadItem) -> bool {
 
 fn normalized_plugin_info_hash(raw: Option<&str>) -> Option<String> {
     scryer_application::normalize_torrent_info_hash(raw)
+}
+
+/// Carry the plugin's seeding observation through to the domain queue item.
+///
+/// Every field is copied verbatim, tri-state and all: `None` means the client
+/// cannot answer and must never be flattened into `false` (which asserts a
+/// limit nobody can see) or `true` (which invites a hit and run on a private
+/// tracker). `None` is returned only when the plugin said nothing at all, so
+/// "no observation" and "an observation full of unknowns" stay distinguishable
+/// downstream.
+fn seeding_snapshot_for_item(item: &PluginDownloadItem) -> Option<DownloadSeedingSnapshot> {
+    let torrent = item.torrent.as_ref();
+    let snapshot = DownloadSeedingSnapshot {
+        can_remove: item.can_remove,
+        can_move_files: item.can_move_files,
+        seed_ratio: torrent.and_then(|torrent| torrent.seed_ratio),
+        seed_time_seconds: torrent.and_then(|torrent| torrent.seed_time_seconds),
+        is_private: torrent.and_then(|torrent| torrent.is_private),
+        uploaded_bytes: torrent.and_then(|torrent| torrent.uploaded_bytes),
+        completed_at: item
+            .completed_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        // Goals are policy, not client state: the queue projection joins them
+        // from the resolution that was frozen on the submission row at grab.
+        seed_goal_ratio: None,
+        seed_goal_seconds: None,
+        never_remove: false,
+    };
+    (!snapshot.is_empty()).then_some(snapshot)
+}
+
+/// The removal request to send for one item, with `remove_data` clamped to what
+/// the plugin says it can do.
+///
+/// This is the first reader of `DownloadClientCapabilities::remove_with_data`.
+/// Three published clients declare it `false` and mean it: rTorrent and
+/// DownloadStation answer a data-removal request with `Unsupported` (Scryer
+/// deletes their files through host filesystem access, not through the client
+/// ABI) and aria2 ignores it. Forwarding the flag verbatim would turn every
+/// terminal cleanup on those two into an error, and the queue entry would never
+/// be removed at all — strictly worse than leaving the payload behind. Sonarr
+/// has the same division of labour and still removes the entry
+/// (`RTorrent.cs:217-225`, `TorrentDownloadStation.cs:144-153`), so dropping the
+/// data half is the right half to lose.
+///
+/// The caller's `remove_data` is a *policy* decision (see
+/// `import::workflow::results::reconcile_terminal_download_cleanup`); this is
+/// purely "can this client carry it out".
+fn remove_control_request(
+    descriptor: &PluginDescriptor,
+    id: &str,
+    is_history: bool,
+    remove_data: bool,
+) -> PluginDownloadClientControlRequest {
+    let can_remove_with_data = descriptor
+        .download_client()
+        .is_some_and(|provider| provider.capabilities.remove_with_data);
+    PluginDownloadClientControlRequest {
+        action: DownloadControlAction::Remove,
+        client_item_id: id.to_string(),
+        remove_data: remove_data && can_remove_with_data,
+        is_history,
+    }
+}
+
+/// Every identifier a later listing might use to find this item again.
+fn seeding_observation_keys(item: &PluginDownloadItem) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |value: Option<String>| {
+        if let Some(value) = value.map(|value| value.trim().to_string())
+            && !value.is_empty()
+            && !keys.contains(&value)
+        {
+            keys.push(value);
+        }
+    };
+    push(normalized_plugin_info_hash(item.info_hash.as_deref()));
+    push(
+        item.torrent
+            .as_ref()
+            .and_then(|torrent| normalized_plugin_info_hash(torrent.info_hash_v1.as_deref())),
+    );
+    push(normalized_plugin_info_hash(Some(
+        item.client_item_id.as_str(),
+    )));
+    push(Some(item.client_item_id.clone()));
+    push(item.download_id.clone());
+    keys
 }
 
 fn map_add_response_to_grab_result(
@@ -245,6 +447,7 @@ fn map_queue_item(
             info_hash_hint: info_hash.as_deref(),
         },
     );
+    let seeding = seeding_snapshot_for_item(&item);
     DownloadQueueItem {
         id: format!(
             "{client_type}:{}",
@@ -292,6 +495,7 @@ fn map_queue_item(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        seeding,
     }
 }
 
@@ -400,6 +604,9 @@ fn map_history_item_from_completed(
         tracked_status: None,
         tracked_status_messages: Vec::new(),
         tracked_match_type: None,
+        // A completed-download envelope carries no seeding fields; the
+        // adapter stamps the last queue observation on afterwards.
+        seeding: None,
     }
 }
 
@@ -761,8 +968,7 @@ impl DownloadClient for WasmDownloadClient {
                     "download-client command returned the wrong result for add".to_string(),
                 ));
             };
-            let response = decode_command_result(result, "download add")
-                .map_err(AppError::into_download_submit_unavailable)?;
+            let response = decode_download_add_result(result, "download add")?;
             return Ok(map_add_response_to_grab_result(
                 response,
                 request,
@@ -791,7 +997,7 @@ impl DownloadClient for WasmDownloadClient {
         .map_err(AppError::into_download_submit_unavailable)?;
 
         let response: PluginDownloadClientAddResponse =
-            decode_plugin_result(&output, EXPORT_DOWNLOAD_ADD)
+            decode_legacy_download_add_result(&output, EXPORT_DOWNLOAD_ADD)
                 .map_err(AppError::into_download_submit_unavailable)?;
         Ok(map_add_response_to_grab_result(
             response,
@@ -810,7 +1016,10 @@ impl DownloadClient for WasmDownloadClient {
                     "download-client command returned the wrong result for list_queue".to_string(),
                 ));
             };
-            let items = decode_command_result(result, "download list_queue")?;
+            let mut items: Vec<PluginDownloadItem> =
+                decode_command_result(result, "download list_queue")?;
+            apply_seeding_trust_floor(&self.descriptor, &mut items);
+            self.seeding_observations.record(&items);
             return Ok(items
                 .into_iter()
                 .filter(retain_queue_item)
@@ -839,8 +1048,10 @@ impl DownloadClient for WasmDownloadClient {
         )
         .await?;
 
-        let items: Vec<PluginDownloadItem> =
+        let mut items: Vec<PluginDownloadItem> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_QUEUE)?;
+        apply_seeding_trust_floor(&self.descriptor, &mut items);
+        self.seeding_observations.record(&items);
 
         Ok(items
             .into_iter()
@@ -867,7 +1078,7 @@ impl DownloadClient for WasmDownloadClient {
                         .to_string(),
                 ));
             };
-            return Ok(decode_command_result(result, "download list_history")?
+            let mut items = decode_command_result(result, "download list_history")?
                 .into_iter()
                 .map(|item| {
                     map_history_item_from_completed(
@@ -877,7 +1088,9 @@ impl DownloadClient for WasmDownloadClient {
                         self.descriptor.provider_type(),
                     )
                 })
-                .collect());
+                .collect::<Vec<_>>();
+            self.seeding_observations.apply(&mut items);
+            return Ok(items);
         }
         let plugin = self.legacy_plugin()?;
         let output = run_blocking_plugin_call(
@@ -896,26 +1109,29 @@ impl DownloadClient for WasmDownloadClient {
 
         match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY)
         {
-            Ok(items) => Ok(items
-                .into_iter()
-                .filter(|item| {
-                    matches!(
-                        item.state,
-                        DownloadItemState::Completed
-                            | DownloadItemState::Seeding
-                            | DownloadItemState::Failed
-                            | DownloadItemState::Error
-                    )
-                })
-                .map(|item| {
-                    map_queue_item(
-                        item,
-                        &self.client_id,
-                        &self.client_name,
-                        self.descriptor.provider_type(),
-                    )
-                })
-                .collect()),
+            Ok(mut items) => {
+                apply_seeding_trust_floor(&self.descriptor, &mut items);
+                Ok(items
+                    .into_iter()
+                    .filter(|item| {
+                        matches!(
+                            item.state,
+                            DownloadItemState::Completed
+                                | DownloadItemState::Seeding
+                                | DownloadItemState::Failed
+                                | DownloadItemState::Error
+                        )
+                    })
+                    .map(|item| {
+                        map_queue_item(
+                            item,
+                            &self.client_id,
+                            &self.client_name,
+                            self.descriptor.provider_type(),
+                        )
+                    })
+                    .collect())
+            }
             Err(primary_error) => {
                 let items: Vec<PluginCompletedDownload> =
                     decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_HISTORY).map_err(
@@ -931,7 +1147,7 @@ impl DownloadClient for WasmDownloadClient {
                     provider_type = self.descriptor.provider_type(),
                     "download history used legacy completed-download envelope fallback"
                 );
-                Ok(items
+                let mut items = items
                     .into_iter()
                     .map(|item| {
                         map_history_item_from_completed(
@@ -941,7 +1157,9 @@ impl DownloadClient for WasmDownloadClient {
                             self.descriptor.provider_type(),
                         )
                     })
-                    .collect())
+                    .collect::<Vec<_>>();
+                self.seeding_observations.apply(&mut items);
+                Ok(items)
             }
         }
     }
@@ -1220,13 +1438,27 @@ impl DownloadClient for WasmDownloadClient {
         .await
     }
 
-    async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
-        let request = PluginDownloadClientControlRequest {
-            action: DownloadControlAction::Remove,
-            client_item_id: id.to_string(),
-            remove_data: false,
-            is_history,
-        };
+    /// Remove the item, asking for its data only if the client can actually
+    /// delete it.
+    ///
+    /// See `remove_control_request`: a plugin that declares
+    /// `remove_with_data: false` is sent an entry-only removal rather than a
+    /// request it would refuse.
+    async fn delete_queue_item(
+        &self,
+        id: &str,
+        is_history: bool,
+        remove_data: bool,
+    ) -> AppResult<()> {
+        let request = remove_control_request(&self.descriptor, id, is_history, remove_data);
+        if remove_data && !request.remove_data {
+            debug!(
+                provider = %self.descriptor.id,
+                client_id = %self.client_id,
+                client_item_id = id,
+                "download client cannot delete downloaded data; removing the entry only and leaving the payload in place"
+            );
+        }
         if let Some(result) = self
             .invoke_command(
                 PluginDownloadClientCommand::Control(request.clone()),
@@ -1444,6 +1676,178 @@ mod tests {
             DownloadItemState::Seeding
         )));
     }
+
+    #[test]
+    fn a_warning_keeps_its_own_state_and_its_message() {
+        // The plugins report `Warning` for recoverable client conditions
+        // (qBittorrent `error` / `missingFiles`) precisely so the host does not
+        // run failed-download handling on them.
+        let mut item = queue_filter_item(DownloadItemState::Warning);
+        item.message = Some("files are missing from the save path".to_string());
+
+        assert!(retain_queue_item(&item));
+        assert!(attention_required(&item));
+
+        let queue_item = map_queue_item(item, "client-1", "qBittorrent", "qbittorrent");
+
+        assert_eq!(queue_item.state, DownloadQueueState::Warning);
+        assert!(queue_item.attention_required);
+        assert_eq!(
+            queue_item.attention_reason.as_deref(),
+            Some("files are missing from the save path")
+        );
+    }
+
+    #[test]
+    fn a_reported_failure_still_maps_to_failed() {
+        for state in [DownloadItemState::Failed, DownloadItemState::Error] {
+            assert_eq!(map_state(state), DownloadQueueState::Failed, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_client_that_reports_nothing_produces_no_observation() {
+        // "No observation" and "an observation full of unknowns" are different
+        // answers; a usenet item that says nothing must not manufacture one.
+        assert_eq!(
+            seeding_snapshot_for_item(&queue_filter_item(DownloadItemState::Downloading)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_client_verdict_is_never_flattened_into_a_bool() {
+        let mut item = queue_filter_item(DownloadItemState::Completed);
+        item.torrent = Some(PluginTorrentItem {
+            seed_ratio: Some(1.5),
+            ..PluginTorrentItem::default()
+        });
+        item.can_remove = None;
+        item.can_move_files = None;
+
+        let snapshot =
+            seeding_snapshot_for_item(&item).expect("a reported ratio is an observation");
+        assert_eq!(snapshot.can_remove, None);
+        assert_eq!(snapshot.can_move_files, None);
+        assert_eq!(snapshot.seed_ratio, Some(1.5));
+
+        // And each explicit state survives untouched.
+        for verdict in [Some(true), Some(false), None] {
+            let mut item = item.clone();
+            item.can_remove = verdict;
+            assert_eq!(
+                seeding_snapshot_for_item(&item)
+                    .expect("observation")
+                    .can_remove,
+                verdict
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_private_flag_is_never_reported_as_public() {
+        let mut item = queue_filter_item(DownloadItemState::Completed);
+        item.can_remove = Some(true);
+        item.torrent = Some(PluginTorrentItem::default());
+
+        let snapshot = seeding_snapshot_for_item(&item).expect("observation");
+        assert_eq!(snapshot.is_private, None);
+    }
+
+    #[test]
+    fn a_history_row_inherits_the_last_queue_observation_for_its_torrent() {
+        // The finished torrents the seeding gate cares about are filtered out of
+        // the queue and come back framed as completed downloads, which carry no
+        // seeding fields at all. The observation recorded on the way past is the
+        // only thing that keeps them answerable.
+        let client = SeedingObservationCache::default();
+
+        let info_hash = "abcdef0123456789abcdef0123456789abcdef01";
+        let mut seeding_torrent = queue_filter_item(DownloadItemState::Seeding);
+        seeding_torrent.client_item_id = info_hash.to_ascii_uppercase();
+        seeding_torrent.can_remove = Some(false);
+        seeding_torrent.can_move_files = Some(true);
+        seeding_torrent.torrent = Some(PluginTorrentItem {
+            seed_ratio: Some(0.9),
+            seed_time_seconds: Some(4_200),
+            is_private: Some(true),
+            ..PluginTorrentItem::default()
+        });
+        client.record(&[seeding_torrent]);
+
+        let mut history = vec![map_history_item_from_completed(
+            PluginCompletedDownload {
+                client_item_id: info_hash.to_string(),
+                download_id: None,
+                info_hash: Some(info_hash.to_string()),
+                name: "Finished Torrent".to_string(),
+                release_name: None,
+                dest_dir: "/downloads".to_string(),
+                category: None,
+                output_kind: None,
+                content_paths: Vec::new(),
+                size_bytes: Some(1),
+                completed_at: None,
+                parameters: Vec::new(),
+            },
+            "client-1",
+            "qBittorrent",
+            "qbittorrent",
+        )];
+        assert_eq!(history[0].seeding, None);
+
+        client.apply(&mut history);
+        let seeding = history[0]
+            .seeding
+            .clone()
+            .expect("the history row should inherit the queue observation");
+        assert_eq!(seeding.can_remove, Some(false));
+        assert_eq!(seeding.seed_ratio, Some(0.9));
+        assert_eq!(seeding.seed_time_seconds, Some(4_200));
+        assert_eq!(seeding.is_private, Some(true));
+    }
+
+    #[test]
+    fn an_observation_never_outlives_the_listing_that_produced_it() {
+        let client = SeedingObservationCache::default();
+
+        let mut torrent = queue_filter_item(DownloadItemState::Seeding);
+        torrent.client_item_id = "abcdef0123456789abcdef0123456789abcdef01".to_string();
+        torrent.can_remove = Some(true);
+        torrent.torrent = Some(PluginTorrentItem {
+            seed_ratio: Some(3.0),
+            ..PluginTorrentItem::default()
+        });
+        client.record(std::slice::from_ref(&torrent));
+
+        // The torrent is gone from the next listing: its observation goes with
+        // it, so the gate holds rather than acting on last cycle's answer.
+        let other = queue_filter_item(DownloadItemState::Downloading);
+        client.record(&[other]);
+
+        let mut history = vec![map_history_item_from_completed(
+            PluginCompletedDownload {
+                client_item_id: torrent.client_item_id.clone(),
+                download_id: None,
+                info_hash: Some(torrent.client_item_id.clone()),
+                name: "Removed Torrent".to_string(),
+                release_name: None,
+                dest_dir: "/downloads".to_string(),
+                category: None,
+                output_kind: None,
+                content_paths: Vec::new(),
+                size_bytes: Some(1),
+                completed_at: None,
+                parameters: Vec::new(),
+            },
+            "client-1",
+            "qBittorrent",
+            "qbittorrent",
+        )];
+        client.apply(&mut history);
+        assert_eq!(history[0].seeding, None);
+    }
+
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
             search_facet: None,
@@ -1504,6 +1908,10 @@ mod tests {
             info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
             seed_goal_ratio: Some(1.5),
             seed_goal_seconds: Some(3661),
+            tracker_min_seed_ratio: None,
+            tracker_min_seed_time_minutes: None,
+            season_pack_seed_ratio: None,
+            season_pack_seed_time_minutes: None,
             is_recent: Some(true),
             season_pack: Some(false),
         }
@@ -1574,6 +1982,10 @@ mod tests {
             plugin_request.release.info_hash_v1.as_deref(),
             Some("abcdef0123456789abcdef0123456789abcdef01")
         );
+        assert_eq!(
+            plugin_request.release.info_hash_hint.as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef01")
+        );
         assert_eq!(plugin_request.routing.isolation.len(), 4);
         assert_eq!(
             plugin_request
@@ -1593,6 +2005,71 @@ mod tests {
                 DownloadInputKind::TorrentFile,
             ])
         );
+    }
+
+    #[test]
+    fn command_add_permanent_plugin_error_is_rejected_without_losing_its_message() {
+        let error = decode_download_add_result::<()>(
+            PluginResult::Err(PluginError {
+                code: PluginErrorCode::Permanent,
+                public_message: "rTorrent add requires an info hash from the release".to_string(),
+                debug_message: None,
+                retry_after_seconds: None,
+            }),
+            "download add",
+        )
+        .expect_err("permanent plugin error should reject the submission");
+
+        assert!(!error.is_retryable_download_submit_failure());
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitRejected(message)
+                if message.contains("rTorrent add requires an info hash from the release")
+        ));
+    }
+
+    #[test]
+    fn command_add_transient_plugin_errors_remain_retryable() {
+        for code in [
+            PluginErrorCode::RateLimited,
+            PluginErrorCode::UpstreamUnavailable,
+            PluginErrorCode::Temporary,
+        ] {
+            let error = decode_download_add_result::<()>(
+                PluginResult::Err(PluginError {
+                    code,
+                    public_message: "client is temporarily unavailable".to_string(),
+                    debug_message: None,
+                    retry_after_seconds: None,
+                }),
+                "download add",
+            )
+            .expect_err("transient plugin error should fail the submission");
+
+            assert!(error.is_retryable_download_submit_failure());
+        }
+    }
+
+    #[test]
+    fn legacy_add_permanent_plugin_error_is_rejected() {
+        let output = serde_json::to_string(&PluginResult::<PluginDownloadClientAddResponse>::Err(
+            PluginError {
+                code: PluginErrorCode::Permanent,
+                public_message: "download source is invalid".to_string(),
+                debug_message: None,
+                retry_after_seconds: None,
+            },
+        ))
+        .unwrap();
+
+        let error = decode_legacy_download_add_result::<PluginDownloadClientAddResponse>(
+            &output,
+            EXPORT_DOWNLOAD_ADD,
+        )
+        .expect_err("permanent legacy plugin error should reject the submission");
+
+        assert!(!error.is_retryable_download_submit_failure());
+        assert!(matches!(error, AppError::DownloadSubmitRejected(_)));
     }
 
     #[test]
@@ -1777,14 +2254,20 @@ mod tests {
                 remote_output_path: Some("/downloads/series".to_string()),
                 torrent: Some(PluginTorrentItem {
                     info_hash_v1: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+                    seed_ratio: Some(0.4),
+                    seed_time_seconds: Some(900),
+                    is_private: Some(true),
+                    uploaded_bytes: Some(819),
                     ..PluginTorrentItem::default()
                 }),
                 total_size_bytes: Some(2048),
                 remaining_size_bytes: Some(0),
                 eta_seconds: Some(0),
                 progress_percent: Some(100),
+                // Data is complete, the seeding obligation is not discharged.
+                // These two answer different questions and must not be equal.
                 can_move_files: Some(true),
-                can_remove: Some(true),
+                can_remove: Some(false),
                 removed: Some(false),
                 raw_state: Some("uploading".to_string()),
                 completed_at: Some("2026-05-02T00:00:00Z".to_string()),
@@ -1804,6 +2287,139 @@ mod tests {
         );
         assert_eq!(queue_item.state, DownloadQueueState::Completed);
         assert_eq!(queue_item.category.as_deref(), Some("series"));
+
+        let seeding = queue_item
+            .seeding
+            .expect("a torrent item should carry its seeding observation");
+        assert_eq!(seeding.can_remove, Some(false));
+        assert_eq!(seeding.can_move_files, Some(true));
+        assert_eq!(seeding.seed_ratio, Some(0.4));
+        assert_eq!(seeding.seed_time_seconds, Some(900));
+        assert_eq!(seeding.is_private, Some(true));
+        assert_eq!(seeding.uploaded_bytes, Some(819));
+        assert_eq!(
+            seeding.completed_at.as_deref(),
+            Some("2026-05-02T00:00:00Z")
+        );
+        // Goals are joined later from the persisted resolution, never invented
+        // here.
+        assert_eq!(seeding.seed_goal_ratio, None);
+        assert_eq!(seeding.seed_goal_seconds, None);
+        assert!(!seeding.never_remove);
+    }
+
+    fn client_descriptor(id: &str, remove_with_data: bool) -> PluginDescriptor {
+        let mut descriptor = crate::seeding_trust::descriptor(id, "1.1.0");
+        if let scryer_plugin_sdk::ProviderDescriptor::DownloadClient(provider) =
+            &mut descriptor.provider
+        {
+            provider.capabilities.remove_with_data = remove_with_data;
+        }
+        descriptor
+    }
+
+    /// rTorrent and DownloadStation answer a data-removal request with
+    /// `Unsupported` — they expect Scryer to delete their files itself — so a
+    /// verbatim `remove_data: true` would fail the whole control call and leave
+    /// the queue entry in the client forever. Downgrading to an entry-only
+    /// removal is what Sonarr ends up doing for the same clients, and it is the
+    /// request shape their `Unsupported` guard lets through.
+    #[test]
+    fn a_client_that_cannot_delete_data_is_asked_for_an_entry_only_removal() {
+        let request = remove_control_request(
+            &client_descriptor("rtorrent", false),
+            "torrent-1",
+            true,
+            true,
+        );
+
+        assert!(
+            !request.remove_data,
+            "a plugin that declares it cannot delete data must never be asked to"
+        );
+        assert!(matches!(request.action, DownloadControlAction::Remove));
+        assert_eq!(request.client_item_id, "torrent-1");
+        assert!(request.is_history);
+    }
+
+    #[test]
+    fn a_client_that_can_delete_data_still_obeys_the_callers_policy() {
+        let descriptor = client_descriptor("qbittorrent", true);
+
+        let asked = remove_control_request(&descriptor, "torrent-2", true, true);
+        assert!(asked.remove_data, "the capability alone does not force it");
+
+        // The caller decides *whether* to delete data; the capability only
+        // decides whether the client can be asked.
+        let not_asked = remove_control_request(&descriptor, "torrent-2", true, false);
+        assert!(!not_asked.remove_data);
+    }
+
+    /// The whole point of the floor: what the gate reads for a stale plugin.
+    ///
+    /// A pre-audit qBittorrent reports `can_remove: Some(true)` on every item;
+    /// the observation that reaches the domain queue row — and from there the
+    /// seeding gate — must carry `None` instead, which is the gate's
+    /// `no_resolved_goals_and_client_verdict_unknown` hold. Everything the
+    /// client actually measured (ratio, seed time, private flag) still comes
+    /// through: the floor distrusts the *verdicts*, not the observations.
+    #[test]
+    fn a_below_floor_plugins_verdicts_never_reach_the_domain_observation() {
+        let descriptor = crate::seeding_trust::descriptor("qbittorrent", "1.0.5");
+        let mut items = vec![PluginDownloadItem {
+            torrent: Some(PluginTorrentItem {
+                seed_ratio: Some(0.1),
+                seed_time_seconds: Some(30),
+                is_private: Some(false),
+                ..PluginTorrentItem::default()
+            }),
+            can_move_files: Some(true),
+            can_remove: Some(true),
+            ..queue_filter_item(DownloadItemState::Seeding)
+        }];
+
+        apply_seeding_trust_floor(&descriptor, &mut items);
+        let queue_item = map_queue_item(
+            items.remove(0),
+            "client-1",
+            "Stale qBit",
+            descriptor.provider_type(),
+        );
+
+        let seeding = queue_item
+            .seeding
+            .expect("the measured observation still stands");
+        assert_eq!(seeding.can_remove, None);
+        assert_eq!(seeding.can_move_files, None);
+        assert_eq!(seeding.seed_ratio, Some(0.1));
+        assert_eq!(seeding.seed_time_seconds, Some(30));
+        assert_eq!(seeding.is_private, Some(false));
+    }
+
+    /// The same item from the audited build keeps its verdicts, so the floor
+    /// cannot be read as "never trust a plugin".
+    #[test]
+    fn an_at_floor_plugins_verdicts_reach_the_domain_observation_intact() {
+        let descriptor = crate::seeding_trust::descriptor("qbittorrent", "1.1.0");
+        let mut items = vec![PluginDownloadItem {
+            can_move_files: Some(true),
+            can_remove: Some(true),
+            ..queue_filter_item(DownloadItemState::Seeding)
+        }];
+
+        apply_seeding_trust_floor(&descriptor, &mut items);
+        let queue_item = map_queue_item(
+            items.remove(0),
+            "client-1",
+            "Current qBit",
+            descriptor.provider_type(),
+        );
+
+        let seeding = queue_item
+            .seeding
+            .expect("client verdicts are an observation");
+        assert_eq!(seeding.can_remove, Some(true));
+        assert_eq!(seeding.can_move_files, Some(true));
     }
 
     #[test]
@@ -1823,8 +2439,10 @@ mod tests {
                 remaining_size_bytes: Some(1024),
                 eta_seconds: Some(60),
                 progress_percent: Some(50),
-                can_move_files: Some(true),
-                can_remove: Some(true),
+                // Still downloading: nothing is complete and the client has no
+                // verdict to give.
+                can_move_files: Some(false),
+                can_remove: None,
                 removed: Some(false),
                 raw_state: None,
                 completed_at: None,
@@ -1838,6 +2456,13 @@ mod tests {
             queue_item.download_id.as_deref(),
             Some("scryer-download:plugin-1")
         );
+        let seeding = queue_item
+            .seeding
+            .expect("an item with a client verdict should carry an observation");
+        assert_eq!(seeding.can_remove, None);
+        assert_eq!(seeding.can_move_files, Some(false));
+        assert_eq!(seeding.seed_ratio, None);
+        assert_eq!(seeding.is_private, None);
     }
 
     #[test]

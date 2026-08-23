@@ -117,6 +117,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         old_file_media_root.as_deref().or(media_root),
         recycle_config,
         import_mode,
+        None,
     )
     .await
 }

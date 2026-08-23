@@ -59,6 +59,7 @@ const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
   "QUEUED",
   "PAUSED",
   "POST_PROCESSING",
+  "WARNING",
 ];
 const HISTORY_STATUS_OPTIONS: DownloadHistoryStatus[] = ["SUCCESS", "FAILED"];
 const DEFAULT_SORT_CONFIG_BY_TAB: SortConfigByTab = {

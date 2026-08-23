@@ -191,8 +191,8 @@ export function SettingsSecuritySection({
                   className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
                 />
                 <CheckboxField
-                  id="security-totp-jellyfin-login"
-                  checked={settings.totpRequireJellyfinLogin}
+                  id="security-mfa-jellyfin-login"
+                  checked={settings.mfaRequireJellyfinLogin}
                   disabled={busy}
                   onCheckedChange={(checked) =>
                     onTotpJellyfinLoginChange(checked === true)
@@ -207,15 +207,15 @@ export function SettingsSecuritySection({
                   className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
                 />
                 <CheckboxField
-                  id="security-totp-emby-login"
-                  checked={settings.totpRequireEmbyLogin}
+                  id="security-mfa-emby-login"
+                  checked={settings.mfaRequireEmbyLogin}
                   disabled={busy}
                   onCheckedChange={(checked) => onTotpEmbyLoginChange(checked === true)}
-                  label="Require TOTP for Emby login"
+                  label="Require MFA for Emby login"
                   labelAccessory={
                     <InfoHelp
-                      ariaLabel="Require TOTP for Emby login"
-                      text="Require a Scryer TOTP code after either Local or Connect Emby authentication."
+                      ariaLabel="Require MFA for Emby login"
+                      text="Require an enrolled Scryer passkey or authenticator factor after either Local or Connect Emby authentication."
                     />
                   }
                   className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}

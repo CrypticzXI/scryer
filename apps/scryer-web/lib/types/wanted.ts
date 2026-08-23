@@ -36,6 +36,7 @@ export type WantedItem = {
     decisionCode: string;
     createdAt: string;
   } | null;
+  standbyCount: number;
   mismatchRecoveryEligible?: boolean;
   convergenceState: ConvergenceState;
   indexersCovered: number;
@@ -69,6 +70,8 @@ export type PendingReleaseItem = {
   releaseScore: number;
   scoringLogJson: unknown;
   indexerSource: string | null;
+  publishedAt: string | null;
+  seeders: number | null;
   addedAt: string;
   delayUntil: string;
   status: PendingReleaseStatus;

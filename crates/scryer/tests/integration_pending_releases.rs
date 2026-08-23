@@ -14,7 +14,7 @@ use scryer_application::{
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
 };
-use scryer_infrastructure::{AcquisitionStore, DownloadSubmissionStore};
+use scryer_infrastructure_workflow::workflow::stores::{AcquisitionStore, DownloadSubmissionStore};
 use sqlx::{Row, query};
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ async fn seed_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -143,8 +143,10 @@ async fn seed_pending_release(
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -208,6 +210,7 @@ async fn direct_wanted_item_lookup_requires_access_to_item_library() {
             id: user_id.clone(),
             username: "default-viewer".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: Default::default(),
             authorization: Default::default(),
         },
@@ -320,8 +323,10 @@ async fn pending_release_roundtrips_indexer_provenance() {
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
     };
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -379,6 +384,83 @@ async fn standby_listing_returns_only_standby_rows() {
 }
 
 #[tokio::test]
+async fn pending_release_page_uses_explicit_standby_status_or_the_open_review_default() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-page-statuses").await;
+    let wanted =
+        seed_wanted_item(&ctx, "title-page-statuses", AcquisitionScopeStatus::Wanted).await;
+    let standby = seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        500,
+        0,
+        PendingReleaseStatus::Standby,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        400,
+        5,
+        PendingReleaseStatus::Waiting,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        300,
+        5,
+        PendingReleaseStatus::NeedsReview,
+    )
+    .await;
+
+    let (standby_page, standby_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id.clone()),
+            statuses: vec![PendingReleaseStatus::Standby.as_str().to_string()],
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::ReleaseScoreDesc,
+        })
+        .await
+        .expect("standby page");
+    assert_eq!(standby_total, 1);
+    assert_eq!(
+        standby_page
+            .iter()
+            .map(|release| &release.id)
+            .collect::<Vec<_>>(),
+        vec![&standby.id]
+    );
+
+    let (default_page, default_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id),
+            statuses: Vec::new(),
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::DelayUntilAsc,
+        })
+        .await
+        .expect("default page");
+    assert_eq!(default_total, 2);
+    assert!(
+        default_page
+            .iter()
+            .all(|release| release.status != PendingReleaseStatus::Standby)
+    );
+}
+
+#[tokio::test]
 async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     let ctx = TestContext::new().await;
 
@@ -408,7 +490,7 @@ async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     )
     .await;
 
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -490,7 +572,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
 }
 
 #[tokio::test]
-async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab() {
+async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_results() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
@@ -532,7 +614,6 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            current_score: None,
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
@@ -546,6 +627,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Best.Release.1080p.WEB-DL".to_string()),
+                release_size_bytes: None,
                 request_signature: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Title,
@@ -600,7 +682,9 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
             .unwrap()
             .unwrap()
             .status,
-        PendingReleaseStatus::Superseded
+        // A saved search result survives a sibling grab: it is the fallback if
+        // that grab fails, so only the waiting sibling is superseded.
+        PendingReleaseStatus::Standby
     );
 }
 
@@ -640,7 +724,6 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .commit_successful_grab(&SuccessfulGrabCommit {
             wanted_item_id: wi.id.clone(),
             covered_wanted_item_ids: Vec::new(),
-            current_score: None,
             grabbed_release: serde_json::json!({
                 "title": claimed.release_title,
                 "score": claimed.release_score,
@@ -660,6 +743,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(claimed.release_title.clone()),
+                release_size_bytes: None,
                 request_signature: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Title,
@@ -689,7 +773,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(sibling_release.status, PendingReleaseStatus::Superseded);
+    assert_eq!(sibling_release.status, PendingReleaseStatus::Standby);
 }
 
 #[tokio::test]
@@ -710,6 +794,7 @@ async fn download_submission_roundtrips_episode_scope() {
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
             request_signature: Some("episode-scope-signature".to_string()),
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Episode {
@@ -814,7 +899,6 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         .transition_acquisition_scope_to_completed(&AcquisitionScopeCompleteTransition {
             id: wanted.id.clone(),
             last_search_at: Some(Utc::now().to_rfc3339()),
-            current_score: Some(120),
             grabbed_release: Some(
                 serde_json::json!({
                     "title": "Completed.Release.1080p.WEB-DL",
@@ -846,7 +930,7 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         last_search_at: None,
         status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: Utc::now().to_rfc3339(),
@@ -903,7 +987,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
             last_search_at: None,
             status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: Utc::now().to_rfc3339(),

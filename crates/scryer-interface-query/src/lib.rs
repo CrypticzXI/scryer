@@ -7,9 +7,10 @@ use scryer_application::{
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, ImageProxyKind, JwtSessionScope, MediaRequestCounts,
-    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
-    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
-    TitleHistoryFilter, is_supported_title_history_event_type, supported_title_history_event_types,
+    OAuthAuthorizationSource, PendingImportCounts, RenamePlan, RenameWriteAction, RuntimePathStyle,
+    SCRYER_VERSION, SortDirection, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort,
+    TitleCatalogSortKey, TitleHistoryFilter, is_supported_title_history_event_type,
+    supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -27,16 +28,16 @@ use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
     discovery_items_query_from_input, from_activity_event, from_backup_info,
-    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
-    from_discovery_home, from_discovery_home_cards, from_discovery_home_filter_options,
-    from_discovery_item, from_discovery_items_result, from_domain_event, from_download_queue_item,
-    from_episode, from_external_import_monitor_warmup_progress, from_job_definition, from_job_run,
-    from_library, from_library_scan_session, from_library_settings, from_linked_account,
-    from_media_rename_plan, from_media_request, from_media_request_counts,
-    from_pending_import_connection, from_pending_import_counts, from_pending_release,
-    from_provider_type, from_runtime_path_style, from_smg_scryer_update_notice,
-    from_smg_version_compatibility_notice, from_system_health, from_title,
-    from_title_acquisition_diagnostics, from_title_history_page,
+    from_catalog_discovery, from_collection, from_dashboard_activity_stats, from_delete_preview,
+    from_delete_titles_preview, from_discovery_home, from_discovery_home_cards,
+    from_discovery_home_filter_options, from_discovery_item, from_discovery_items_result,
+    from_domain_event, from_download_queue_item, from_episode,
+    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
+    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
+    from_media_request, from_media_request_counts, from_pending_import_connection,
+    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
+    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_storage_root_usage,
+    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
@@ -814,6 +815,14 @@ impl CatalogQueries {
         Ok(libraries.into_iter().map(from_library).collect())
     }
 
+    /// List root folders of libraries the caller can view, with the disk usage of each backing filesystem.
+    async fn storage_roots(&self, ctx: &Context<'_>) -> GqlResult<Vec<StorageRootUsagePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let roots = app.storage_root_usage(&actor).await.map_err(to_gql_error)?;
+        Ok(roots.into_iter().map(from_storage_root_usage).collect())
+    }
+
     /// List media requests visible to the caller, optionally filtered by facet, libraries, and status.
     async fn media_requests(
         &self,
@@ -1017,7 +1026,7 @@ impl CatalogQueries {
         let actor = actor_from_ctx(ctx)?;
         let _ = input.dry_run;
         let facet = input.facet.into_domain();
-        let plan = if let Some(title_id) = input.title_id {
+        let mut plan = if let Some(title_id) = input.title_id {
             let title_id = title_id.to_string();
             app.preview_rename_for_title(&actor, &title_id, facet)
                 .await
@@ -1028,7 +1037,53 @@ impl CatalogQueries {
                 .map_err(to_gql_error)?
         };
 
+        let mut budget = input.max_items;
+        scope_rename_plan_items(
+            &mut plan,
+            input.renamable_only.unwrap_or(false),
+            &mut budget,
+        );
+
         Ok(from_media_rename_plan(plan))
+    }
+
+    /// Preview rename plans for several titles of one facet without changing files.
+    async fn media_rename_preview_bulk(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Titles whose rename plans are returned, in the order supplied; no files are changed."
+        )]
+        input: MediaRenamePreviewBulkInput,
+    ) -> GqlResult<Vec<MediaRenamePlanPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let facet = input.facet.into_domain();
+        let title_ids = input
+            .title_ids
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let plans = app
+            .preview_rename_for_titles(&actor, &title_ids, facet)
+            .await
+            .map_err(to_gql_error)?;
+
+        // One sampling budget spans the whole batch, so a caller asking for 50
+        // items gets 50 across every plan rather than 50 per title.
+        let renamable_only = input.renamable_only.unwrap_or(false);
+        let mut budget = input.max_items;
+        Ok(plans
+            .into_iter()
+            .map(|mut plan| {
+                scope_rename_plan_items(&mut plan, renamable_only, &mut budget);
+                from_media_rename_plan(plan)
+            })
+            .collect())
     }
 
     /// Preview deleting all media files for one title without changing files.
@@ -1277,6 +1332,25 @@ impl CatalogQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl ActivityQueries {
+    /// Return grab, upgrade, import, and failure counts for a trailing window and the window before it.
+    async fn dashboard_activity_stats(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            default = 24,
+            desc = "Length of each window in hours; defaults to 24 and is clamped to 1 through 168."
+        )]
+        window_hours: i64,
+    ) -> GqlResult<DashboardActivityStatsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let stats = app
+            .dashboard_activity_stats(&actor, window_hours)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_dashboard_activity_stats(stats))
+    }
+
     /// List recent activity events with zero-based offset pagination.
     async fn activity_events(
         &self,
@@ -1586,7 +1660,7 @@ impl ActivityQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_pending_import_connection(connection, offset))
+        Ok(from_pending_import_connection(connection, offset).map_err(to_gql_error)?)
     }
 
     /// Search metadata candidates for one pending import.
@@ -2269,12 +2343,17 @@ impl SystemQueries {
             .collect())
     }
 
-    /// Return the authenticated user payload, or null for an anonymous session; MFA enrollment sessions are rejected.
+    /// Return the authenticated user payload, or null for an anonymous session; restricted enrollment and password-replacement sessions are rejected.
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
         let auth_context = mfa_verification_from_ctx(ctx);
         if auth_context.session_scope == JwtSessionScope::MfaEnrollment {
             return Err(to_gql_error(AppError::MfaEnrollmentRequired(
                 "MFA enrollment must be completed before accessing Scryer".into(),
+            )));
+        }
+        if auth_context.session_scope == JwtSessionScope::PasswordChangeRequired {
+            return Err(to_gql_error(AppError::PasswordChangeRequired(
+                "password replacement must be completed before accessing Scryer".into(),
             )));
         }
 
@@ -2922,5 +3001,22 @@ impl UtilityQueries {
             })
             .collect::<Result<Vec<_>, AppError>>()
             .map_err(to_gql_error)
+    }
+}
+
+/// Narrows the items a rename plan returns without touching what it reports.
+///
+/// `total`, `renamable`, `noop`, `conflicts`, `errors`, and the fingerprint
+/// keep describing every file in the plan, so apply still validates the whole
+/// plan against the fingerprint the caller previewed. `budget`, when set, is
+/// consumed across successive calls so one sample can span several plans.
+fn scope_rename_plan_items(plan: &mut RenamePlan, renamable_only: bool, budget: &mut Option<i32>) {
+    if renamable_only {
+        plan.items
+            .retain(|item| matches!(item.write_action, RenameWriteAction::Move));
+    }
+    if let Some(remaining) = budget.as_mut() {
+        plan.items.truncate((*remaining).max(0) as usize);
+        *remaining = remaining.saturating_sub(i32::try_from(plan.items.len()).unwrap_or(i32::MAX));
     }
 }

@@ -1,6 +1,6 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { useClient } from "urql";
 import {
   Archive,
@@ -15,20 +15,27 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  Network,
   SlidersHorizontal,
   Timer,
+  UploadCloud,
   User,
   Users,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
-import type { SettingsSection } from "@/components/root/types";
+import type { IndexerSettingsTab, SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import { buildViewPath } from "@/lib/utils/routing";
+import {
+  buildIndexerSettingsPath,
+  buildViewPath,
+  indexerSettingsTabFromPath,
+} from "@/lib/utils/routing";
 import {
   type ProviderCatalogFamily,
   useProviderCatalogSubscription,
@@ -69,6 +76,9 @@ const SettingsAcquisitionContainer = lazy(async () => ({
 }));
 const SettingsDelayProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-delay-profiles-container")).SettingsDelayProfilesContainer,
+}));
+const SettingsSeedingProfilesContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-seeding-profiles-container")).SettingsSeedingProfilesContainer,
 }));
 const SettingsQualityProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-quality-profiles-container")).SettingsQualityProfilesContainer,
@@ -126,6 +136,64 @@ const SUBTITLES_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
   railClass: "sticky top-[26px] z-auto min-w-[320px] max-w-[560px] flex-[1_1_560px]",
 };
 
+const INDEXER_SETTINGS_TABS: {
+  tab: IndexerSettingsTab;
+  labelKey: string;
+  icon: LucideIcon;
+}[] = [
+  { tab: "indexers", labelKey: "settings.indexers", icon: Database },
+  { tab: "proxies", labelKey: "settings.indexerProxies", icon: Network },
+  { tab: "seedingProfiles", labelKey: "settings.seedingProfiles", icon: UploadCloud },
+];
+
+/// Pane switcher for the Indexers page. Indexers, their proxies, and the
+/// seeding profiles they apply are three views of the same subject, so they
+/// share a page instead of scattering across the settings nav. Same shape as
+/// the Wanted view's section rail.
+function IndexerSettingsSubnav({
+  activeTab,
+  t,
+}: {
+  activeTab: IndexerSettingsTab;
+  t: ReturnType<typeof useTranslate>;
+}) {
+  return (
+    <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
+      <nav
+        id="settings-indexers-subnav"
+        className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0"
+        aria-label={t("settings.indexers")}
+      >
+        {INDEXER_SETTINGS_TABS.map((item) => {
+          const Icon = item.icon;
+          const active = activeTab === item.tab;
+          return (
+            <Link
+              key={item.tab}
+              id={selectorId("settings-indexers-subnav", item.tab)}
+              to={buildIndexerSettingsPath(item.tab)}
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
+                active &&
+                  "bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.26),rgba(var(--scry-accent-rgb),0.08))] text-[var(--scry-ink2)] shadow-[inset_2px_0_0_var(--scry-accent-ring)]",
+              )}
+            >
+              <Icon
+                className={cn(
+                  "h-[17px] w-[17px] text-[var(--scry-muted2)]",
+                  active && "text-[var(--scry-accent-text)]",
+                )}
+              />
+              <span className="whitespace-nowrap">{t(item.labelKey)}</span>
+            </Link>
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}
+
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
   userId?: string;
@@ -136,6 +204,7 @@ type SettingsContainerProps = {
   selectedLanguage: LanguageOption | null;
   uiLanguage: LocaleCode;
   onSelectLanguage: (code: string) => void;
+  pluginUpdateCount: number;
 };
 
 export const SettingsContainer = memo(function SettingsContainer({
@@ -148,9 +217,13 @@ export const SettingsContainer = memo(function SettingsContainer({
   selectedLanguage,
   uiLanguage,
   onSelectLanguage,
+  pluginUpdateCount,
 }: SettingsContainerProps) {
   const t = useTranslate();
   const client = useClient();
+  // The Indexers page's pane lives in the path rather than in state so a pane
+  // can be linked to and reloaded into.
+  const indexerSettingsTab = indexerSettingsTabFromPath(useLocation().pathname);
   const [indexerDownloadClientMappingCatalogResource, setIndexerDownloadClientMappingCatalogResource] =
     useState<IndexerDownloadClientMappingCatalogResource>({
       catalog: null,
@@ -413,6 +486,16 @@ export const SettingsContainer = memo(function SettingsContainer({
         );
     }
   })();
+  // The Indexers page's panes are pages in their own right, so the header and
+  // the breadcrumb name the pane rather than the section that hosts it.
+  const activeIndexerTab =
+    settingsSection === "indexers" && indexerSettingsTab !== "indexers"
+      ? INDEXER_SETTINGS_TABS.find((item) => item.tab === indexerSettingsTab)
+      : undefined;
+  const pageLabel = activeIndexerTab
+    ? t(activeIndexerTab.labelKey)
+    : settingsSectionLabel;
+  const PageIcon = activeIndexerTab ? activeIndexerTab.icon : SettingsSectionIcon;
   const breadcrumbRootLabel =
     usesAutomationHeader
       ? t("nav.group.automation")
@@ -469,11 +552,19 @@ export const SettingsContainer = memo(function SettingsContainer({
                     )}
                   />
                   <span className="whitespace-nowrap">{item.label}</span>
+                  {item.section === "plugins" && pluginUpdateCount > 0 ? (
+                    <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-[var(--scry-warning-solid)] px-1 text-xs font-medium tabular-nums text-[var(--scry-warning-on-solid)]">
+                      {pluginUpdateCount}
+                    </span>
+                  ) : null}
                 </Link>
               );
             })}
           </nav>
         </aside>
+      ) : null}
+      {settingsSection === "indexers" ? (
+        <IndexerSettingsSubnav activeTab={indexerSettingsTab} t={t} />
       ) : null}
       <main
         ref={settingsContentRef}
@@ -514,7 +605,18 @@ export const SettingsContainer = memo(function SettingsContainer({
           <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
             <span>{breadcrumbRootLabel}</span>
             <ChevronRight className="h-3.5 w-3.5" />
-            <span className="font-semibold text-[var(--scry-accent-text)]">{settingsSectionLabel}</span>
+            {activeIndexerTab ? (
+              <>
+                <Link
+                  to={buildIndexerSettingsPath("indexers")}
+                  className="transition hover:text-[var(--scry-ink2)]"
+                >
+                  {settingsSectionLabel}
+                </Link>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </>
+            ) : null}
+            <span className="font-semibold text-[var(--scry-accent-text)]">{pageLabel}</span>
           </div>
           <div
             className={cn(
@@ -526,11 +628,11 @@ export const SettingsContainer = memo(function SettingsContainer({
           >
             <div className="flex min-w-0 items-center gap-4">
               <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
-                <SettingsSectionIcon className="h-[23px] w-[23px]" />
+                <PageIcon className="h-[23px] w-[23px]" />
               </div>
               <div className="min-w-0">
                 <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
-                  {settingsSectionLabel}
+                  {pageLabel}
                 </h1>
                 {!usesAutomationHeader &&
                 !usesIntegrationsHeader &&
@@ -591,18 +693,25 @@ export const SettingsContainer = memo(function SettingsContainer({
           ) : settingsSection === "mediaServers" ? (
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
-            <SettingsIndexersContainer
-              providerCatalogVersion={providerCatalogVersions.INDEXER}
-              indexerDownloadClientMappingCatalogResource={
-                indexerDownloadClientMappingCatalogResource
-              }
-              updateIndexerDownloadClientMappingCatalog={
-                updateIndexerDownloadClientMappingCatalog
-              }
-              refreshIndexerDownloadClientMappingCatalog={
-                refreshIndexerDownloadClientMappingCatalog
-              }
-            />
+            <>
+              {indexerSettingsTab === "seedingProfiles" ? (
+                <SettingsSeedingProfilesContainer />
+              ) : (
+                <SettingsIndexersContainer
+                  indexerSettingsTab={indexerSettingsTab}
+                  providerCatalogVersion={providerCatalogVersions.INDEXER}
+                  indexerDownloadClientMappingCatalogResource={
+                    indexerDownloadClientMappingCatalogResource
+                  }
+                  updateIndexerDownloadClientMappingCatalog={
+                    updateIndexerDownloadClientMappingCatalog
+                  }
+                  refreshIndexerDownloadClientMappingCatalog={
+                    refreshIndexerDownloadClientMappingCatalog
+                  }
+                />
+              )}
+            </>
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
               providerCatalogVersion={

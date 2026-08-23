@@ -738,6 +738,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             enable_auto_search,
             indexer_proxy_config_id,
             download_client_id,
+            seeding_profile_id,
             managed_parent_config_id,
             managed_child_key,
             managed_metadata_json,
@@ -780,6 +781,9 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         if let Some(download_client_id) = download_client_id {
             item.download_client_id = download_client_id;
         }
+        if let Some(seeding_profile_id) = seeding_profile_id {
+            item.seeding_profile_id = seeding_profile_id;
+        }
         if let Some(managed_parent_config_id) = managed_parent_config_id {
             item.managed_parent_config_id = managed_parent_config_id;
         }
@@ -807,6 +811,69 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             .position(|entry| entry.id == id)
             .ok_or_else(|| AppError::NotFound(format!("indexer config {}", id)))?;
         entries.remove(position);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub(super) struct MockSeedingProfileRepo {
+    pub(super) store: Arc<Mutex<Vec<scryer_domain::SeedingProfile>>>,
+}
+
+#[async_trait]
+impl crate::SeedingProfileRepository for MockSeedingProfileRepo {
+    async fn list(&self) -> AppResult<Vec<scryer_domain::SeedingProfile>> {
+        Ok(self.store.lock().await.clone())
+    }
+
+    async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::SeedingProfile>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned())
+    }
+
+    async fn create(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        let mut entries = self.store.lock().await;
+        if entries
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(&profile.name))
+        {
+            return Err(AppError::Validation(format!(
+                "seeding profile name '{}' is already in use",
+                profile.name
+            )));
+        }
+        entries.push(profile.clone());
+        Ok(profile)
+    }
+
+    async fn update(
+        &self,
+        profile: scryer_domain::SeedingProfile,
+    ) -> AppResult<scryer_domain::SeedingProfile> {
+        let mut entries = self.store.lock().await;
+        let item = entries
+            .iter_mut()
+            .find(|entry| entry.id == profile.id)
+            .ok_or_else(|| AppError::NotFound(format!("seeding profile {}", profile.id)))?;
+        *item = profile.clone();
+        Ok(profile)
+    }
+
+    async fn delete(&self, id: &str) -> AppResult<()> {
+        let mut entries = self.store.lock().await;
+        let before = entries.len();
+        entries.retain(|entry| entry.id != id);
+        if entries.len() == before {
+            return Err(AppError::NotFound(format!("seeding profile {id}")));
+        }
         Ok(())
     }
 }

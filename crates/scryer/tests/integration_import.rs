@@ -20,9 +20,11 @@ use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
     ImportDecision, ImportSkipReason, MediaFacet, Title,
 };
-use scryer_infrastructure::{
-    DownloadClientConfigStore, DownloadSubmissionStore, FsFileImporter, ImportStore,
-    SettingDefinitionSeed,
+use scryer_infrastructure_acquisition::downloads::config_store::DownloadClientConfigStore;
+use scryer_infrastructure_sql::types::SettingDefinitionSeed;
+use scryer_infrastructure_workflow::workflow::{
+    file_importer::FsFileImporter,
+    stores::{DownloadSubmissionStore, ImportStore},
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,7 @@ async fn record_movie_grab_submission(
             source_provider_name: None,
             source_kind: None,
             source_title: Some(source_title.to_string()),
+            release_size_bytes: None,
             request_signature: None,
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Title,
@@ -314,6 +317,7 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 folder_template: Some(template.to_string()),
                 season_folder_template: None,
                 specials_folder_template: None,
+                use_season_folders: None,
                 rename_enabled: None,
                 rename_template: None,
                 rename_collision_policy: None,
@@ -355,7 +359,6 @@ async fn seed_movie_wanted_item(
     ctx: &TestContext,
     title_id: &str,
     status: scryer_application::AcquisitionScopeStatus,
-    current_score: Option<i32>,
 ) -> scryer_application::AcquisitionScopeState {
     let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
@@ -375,7 +378,7 @@ async fn seed_movie_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -472,7 +475,7 @@ async fn seed_episode_wanted_item(
         last_search_at: None,
         status,
         grabbed_release: None,
-        current_score: None,
+        landed_bar: None,
         latest_release_decision: None,
         mismatch_recovery_eligible: false,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -1335,7 +1338,6 @@ async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_
         &ctx,
         &title.id,
         scryer_application::AcquisitionScopeStatus::Grabbed,
-        None,
     )
     .await;
 
@@ -1407,11 +1409,13 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         scryer_application::AcquisitionScopeStatus::Wanted
     );
 
-    let failures =
-        scryer_infrastructure::ReleaseStore::new(ctx.db.datastore(), ctx.db.encryption_key_state())
-            .list_failed_release_signatures_for_title(&title.id, 10)
-            .await
-            .expect("failed signatures");
+    let failures = scryer_infrastructure_workflow::workflow::release_store::ReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .list_failed_release_signatures_for_title(&title.id, 10)
+    .await
+    .expect("failed signatures");
     assert!(
         failures.iter().any(|failure| {
             failure.source_title.as_deref() == Some(blocklisted_title.as_str())
@@ -2160,7 +2164,6 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
         &ctx,
         &title.id,
         scryer_application::AcquisitionScopeStatus::Grabbed,
-        Some(100),
     )
     .await;
 
@@ -2318,6 +2321,7 @@ fn tracked_movie_download(
             tracked_status: None,
             tracked_status_messages: vec![],
             tracked_match_type: None,
+            seeding: None,
         },
         completed_source: Some(completed.clone()),
         state: scryer_domain::TrackedDownloadState::ImportBlocked,
@@ -2338,6 +2342,7 @@ fn tracked_movie_download(
         import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
         snapshot_missing_since: None,
     }
 }

@@ -85,6 +85,7 @@ fn catalog_view_actor(library_id: &str) -> User {
         id: Id::new().0,
         username: "catalog-filter-viewer".to_string(),
         password_hash: None,
+        password_change_required: false,
         account_kind: Default::default(),
         authorization: UserAuthorization {
             app: AppPermissionMask::NONE,
@@ -964,6 +965,233 @@ async fn graphql_add_title_with_structured_options() {
 }
 
 #[tokio::test]
+async fn graphql_title_effective_anime_policies_inherit_defaults() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Inherited Anime Policies",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+
+    let body = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                fillerPolicy
+                recapPolicy
+                effectiveFillerPolicy
+                effectiveRecapPolicy
+            }
+        }"#,
+        json!({ "id": title.id }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    let title = &body["data"]["title"];
+    assert!(title["fillerPolicy"].is_null());
+    assert!(title["recapPolicy"].is_null());
+    assert_eq!(title["effectiveFillerPolicy"], "DOWNLOAD_ALL");
+    assert_eq!(title["effectiveRecapPolicy"], "DOWNLOAD_ALL");
+}
+
+#[tokio::test]
+async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_default() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let title_id = add_test_title(&ctx, "Movie Audio Override", "MOVIE").await;
+
+    let default_audio = gql(
+        &ctx,
+        r#"mutation($input: UpdateMediaSettingsInput!) {
+            updateMediaSettings(input: $input) { requiredAudioLanguages }
+        }"#,
+        json!({
+            "input": {
+                "scope": "MOVIE",
+                "requiredAudioLanguages": ["eng"]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&default_audio);
+    assert_eq!(
+        default_audio["data"]["updateMediaSettings"]["requiredAudioLanguages"],
+        json!(["eng"])
+    );
+
+    let set_override = gql(
+        &ctx,
+        r#"mutation($input: SetTitleRequiredAudioInput!) {
+            setTitleRequiredAudio(input: $input) {
+                titleId
+                facet
+                languages
+                updated
+            }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "facet": "MOVIE",
+                "languages": ["jpn"]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&set_override);
+    assert_eq!(
+        set_override["data"]["setTitleRequiredAudio"]["facet"],
+        "MOVIE"
+    );
+    assert_eq!(
+        set_override["data"]["setTitleRequiredAudio"]["languages"],
+        json!(["jpn"])
+    );
+
+    let title = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                requiredAudioLanguagesOverride
+                effectiveRequiredAudioLanguages
+                inheritsRequiredAudioLanguages
+            }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&title);
+    assert_eq!(
+        title["data"]["title"]["requiredAudioLanguagesOverride"],
+        json!(["jpn"])
+    );
+    assert_eq!(
+        title["data"]["title"]["effectiveRequiredAudioLanguages"],
+        json!(["jpn"])
+    );
+    assert_eq!(
+        title["data"]["title"]["inheritsRequiredAudioLanguages"],
+        false
+    );
+
+    let clear_override = gql(
+        &ctx,
+        r#"mutation($input: SetTitleRequiredAudioInput!) {
+            setTitleRequiredAudio(input: $input) { updated }
+        }"#,
+        json!({
+            "input": {
+                "titleId": title_id,
+                "facet": "MOVIE",
+                "languages": null
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&clear_override);
+
+    let inherited_title = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                requiredAudioLanguagesOverride
+                effectiveRequiredAudioLanguages
+                inheritsRequiredAudioLanguages
+            }
+        }"#,
+        json!({ "id": title_id }),
+    )
+    .await;
+    assert_no_errors(&inherited_title);
+    assert!(inherited_title["data"]["title"]["requiredAudioLanguagesOverride"].is_null());
+    assert_eq!(
+        inherited_title["data"]["title"]["effectiveRequiredAudioLanguages"],
+        json!(["eng"])
+    );
+    assert_eq!(
+        inherited_title["data"]["title"]["inheritsRequiredAudioLanguages"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn graphql_movie_rejects_season_folder_options_and_ignores_legacy_tags() {
+    let ctx = TestContext::new().await;
+    let rejected_add = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) { addTitle(input: $input) { title { id } } }"#,
+        json!({
+            "input": {
+                "name": "Movie season folders must fail",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "options": { "useSeasonFolders": false }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        rejected_add
+            .to_string()
+            .contains("useSeasonFolders is only valid for series and anime titles"),
+        "Movie season-folder option should be rejected: {rejected_add}"
+    );
+
+    let legacy = create_catalog_title(
+        &ctx,
+        "Legacy Movie season folders",
+        MediaFacet::Movie,
+        vec![],
+        vec!["scryer:season-folder:disabled".to_string()],
+        true,
+    )
+    .await;
+    let body = gql(
+        &ctx,
+        r#"query($id: ID!) {
+            title(id: $id) {
+                useSeasonFolders
+                useSeasonFoldersOverride
+                effectiveUseSeasonFolders
+                inheritsUseSeasonFolders
+            }
+        }"#,
+        json!({ "id": legacy.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title = &body["data"]["title"];
+    assert!(title["useSeasonFolders"].is_null());
+    assert!(title["useSeasonFoldersOverride"].is_null());
+    assert_eq!(title["effectiveUseSeasonFolders"], true);
+    assert_eq!(title["inheritsUseSeasonFolders"], true);
+
+    let rejected_update = gql(
+        &ctx,
+        r#"mutation($input: UpdateTitleInput!) { updateTitle(input: $input) { id } }"#,
+        json!({
+            "input": {
+                "titleId": legacy.id,
+                "options": { "useSeasonFolders": false }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        rejected_update
+            .to_string()
+            .contains("useSeasonFolders is only valid for series and anime titles"),
+        "Movie season-folder update should be rejected: {rejected_update}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_add_title_root_folder_id_validates_library_and_infers_library() {
     let ctx = TestContext::new().await;
     let movie_library_a = create_title_catalog_library(
@@ -1208,6 +1436,82 @@ async fn graphql_reused_add_applies_explicit_options_and_preserves_omitted_ones(
     assert_eq!(
         cleared["data"]["addTitle"]["title"]["monitorType"],
         "ALL_EPISODES"
+    );
+}
+
+#[tokio::test]
+async fn graphql_reused_add_preserves_metadata_language_tri_state() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let query = r#"mutation($input: AddTitleInput!) {
+        addTitle(input: $input) {
+            reusedExistingTitle
+            title {
+                id
+                metadataLanguageOverride
+                effectiveMetadataLanguage
+                inheritsMetadataLanguage
+            }
+        }
+    }"#;
+    let input = |options: Value| {
+        json!({
+            "input": {
+                "name": "Reusable metadata language series",
+                "facet": "SERIES",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "metadata-language-reuse" }],
+                "options": options,
+            }
+        })
+    };
+
+    let set = gql(&ctx, query, input(json!({ "metadataLanguage": " FRA " }))).await;
+    assert_no_errors(&set);
+    assert_eq!(set["data"]["addTitle"]["reusedExistingTitle"], false);
+    assert_eq!(
+        set["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "fra"
+    );
+
+    let cleared = gql(&ctx, query, input(json!({ "metadataLanguage": null }))).await;
+    assert_no_errors(&cleared);
+    assert_eq!(cleared["data"]["addTitle"]["reusedExistingTitle"], true);
+    assert!(cleared["data"]["addTitle"]["title"]["metadataLanguageOverride"].is_null());
+    assert_eq!(
+        cleared["data"]["addTitle"]["title"]["effectiveMetadataLanguage"],
+        "eng"
+    );
+    assert_eq!(
+        cleared["data"]["addTitle"]["title"]["inheritsMetadataLanguage"],
+        true
+    );
+
+    let omitted = gql(&ctx, query, input(json!({}))).await;
+    assert_no_errors(&omitted);
+    assert!(omitted["data"]["addTitle"]["title"]["metadataLanguageOverride"].is_null());
+
+    let reset = gql(&ctx, query, input(json!({ "metadataLanguage": "JPN" }))).await;
+    assert_no_errors(&reset);
+    assert_eq!(
+        reset["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "jpn"
+    );
+
+    let preserved = gql(&ctx, query, input(json!({}))).await;
+    assert_no_errors(&preserved);
+    assert_eq!(
+        preserved["data"]["addTitle"]["title"]["metadataLanguageOverride"],
+        "jpn"
+    );
+
+    let rejected = gql(&ctx, query, input(json!({ "metadataLanguage": "rus" }))).await;
+    assert!(
+        rejected.to_string().contains(
+            "metadataLanguage must be one of eng, spa, fra, deu, ita, por, kor, zho, or jpn"
+        ),
+        "invalid metadata language should be rejected: {rejected}"
     );
 }
 
@@ -3017,6 +3321,89 @@ async fn graphql_wanted_items_missing_view_exposes_fileless_monitored_movie() {
 }
 
 #[tokio::test]
+async fn graphql_wanted_items_reports_standby_count_for_the_scope_anchor() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Standby Count Test", "MOVIE").await;
+    let wanted_item_id = Id::new().0;
+    let now = Utc::now();
+    ctx.library_state
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: wanted_item_id.clone(),
+            title_id: title_id.clone(),
+            title_name: Some("Standby Count Test".to_string()),
+            title_slug: None,
+            title_facet: Some("movie".to_string()),
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            series_movie_link_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            last_search_at: None,
+            status: scryer_application::AcquisitionScopeStatus::Wanted,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        })
+        .await
+        .expect("seed wanted scope");
+    let pending_store =
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        );
+    for score in [500, 400] {
+        pending_store
+            .insert_pending_release(&PendingRelease {
+                id: Id::new().0,
+                wanted_item_id: wanted_item_id.clone(),
+                title_id: title_id.clone(),
+                release_title: format!("Standby.Count.Test.{score}.1080p.WEB-DL"),
+                release_url: Some(format!("https://example.invalid/{score}.nzb")),
+                source_kind: None,
+                release_size_bytes: Some(1_024),
+                release_score: score,
+                scoring_log_json: None,
+                indexer_source: Some("test-indexer".to_string()),
+                indexer_id: None,
+                release_guid: Some(format!("guid-{score}")),
+                added_at: now.to_rfc3339(),
+                delay_until: now.to_rfc3339(),
+                status: scryer_application::PendingReleaseStatus::Standby,
+                grabbed_at: None,
+                source_password: None,
+                published_at: None,
+                info_hash: None,
+                seed_minimums: Default::default(),
+                seeders: None,
+            })
+            .await
+            .expect("seed standby release");
+    }
+
+    let body = gql(
+        &ctx,
+        r#"query($wantedKind: WantedKindValue!, $titleSearch: String) {
+            wantedItems(wantedKind: $wantedKind, titleSearch: $titleSearch) {
+                items { id standbyCount }
+            }
+        }"#,
+        json!({ "wantedKind": "MISSING", "titleSearch": "Standby Count Test" }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let item = &body["data"]["wantedItems"]["items"][0];
+    assert_eq!(item["id"], wanted_item_id);
+    assert_eq!(item["standbyCount"], 2);
+}
+
+#[tokio::test]
 async fn graphql_delete_title() {
     let ctx = TestContext::new().await;
     let id = add_test_title(&ctx, "To Delete", "MOVIE").await;
@@ -3064,7 +3451,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             last_search_at: None,
             status: scryer_application::AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
-            current_score: None,
+            landed_bar: None,
             latest_release_decision: None,
             mismatch_recovery_eligible: false,
             created_at: "2026-03-12T00:00:00Z".to_string(),
@@ -3072,7 +3459,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         })
         .await
         .expect("seed wanted item");
-    scryer_infrastructure::PendingReleaseStore::new(
+    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
         ctx.db.encryption_key_state(),
     )
@@ -3096,6 +3483,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         source_password: None,
         published_at: None,
         info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
     })
     .await
     .expect("seed pending release");
@@ -3112,6 +3501,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
+            release_size_bytes: None,
             request_signature: None,
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             scope: scryer_application::SubmissionScope::Title,
@@ -3129,18 +3519,20 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     assert_eq!(body["data"]["deleteTitle"]["id"], id);
 
     assert!(
-        scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-            .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
-                title_id: Some(id.clone()),
-                limit: 10,
-                ..scryer_application::AcquisitionScopeStatesQuery::default()
-            })
-            .await
-            .expect("wanted items")
-            .is_empty()
+        scryer_infrastructure_library::media::libraries::state_store::WantedStore::new(
+            ctx.db.datastore()
+        )
+        .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
+            title_id: Some(id.clone()),
+            limit: 10,
+            ..scryer_application::AcquisitionScopeStatesQuery::default()
+        })
+        .await
+        .expect("wanted items")
+        .is_empty()
     );
     assert!(
-        scryer_infrastructure::PendingReleaseStore::new(
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
             ctx.db.datastore(),
             ctx.db.encryption_key_state(),
         )

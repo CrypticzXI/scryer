@@ -112,6 +112,29 @@ pub struct TitleRatingPayload {
     pub external_ratings: Vec<TitleExternalRatingPayload>,
 }
 
+#[derive(SimpleObject, Clone)]
+/// One cast or crew credit cached from the title's last metadata hydration.
+pub struct TitleCreditPayload {
+    /// Credit kind exactly as the metadata provider spelled it, e.g. `actor`,
+    /// `voice_actor`, `director`, `writer`, `creator`, `composer`. Kept as a
+    /// string so a new provider kind reaches clients without a schema break.
+    pub kind: String,
+    /// Person's display name in the hydration language.
+    pub person_name: String,
+    /// Person's name in their original language, or empty when the provider has none.
+    pub person_original_name: String,
+    /// Proxied portrait for this person, or null when the provider has no image.
+    pub person_image_url: Option<String>,
+    /// Character played, or empty for crew credits.
+    pub character: String,
+    /// Language tag this credit was hydrated in, or empty when the provider has none.
+    pub language: String,
+    /// Provider billing rank; lower sorts closer to top billing.
+    pub billing_order: i32,
+    /// Episodes this person appears in, or null for titles the provider does not count.
+    pub episode_count: Option<i32>,
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 /// Fields supported when sorting the title catalog.
@@ -588,6 +611,18 @@ pub struct DownloadQueueItemPayload {
     pub tracked_status_messages: Vec<String>,
     /// Match classification for the tracked download, or null when unmatched.
     pub tracked_match_type: Option<TitleMatchTypeValue>,
+    /// Seeding obligation state, or null when the item carries no torrent seeding information.
+    pub seeding_state: Option<DownloadSeedingStateValue>,
+    /// Share ratio observed by the download client, or null when it reports none.
+    pub seed_ratio: Option<f64>,
+    /// Share ratio this download was grabbed under, or null when no profile applied.
+    pub seed_ratio_goal: Option<f64>,
+    /// Seconds spent seeding as reported by the client, or null when it has no counter.
+    pub seed_time_seconds: Option<Long>,
+    /// Seeding time in seconds this download was grabbed under, or null when no profile applied.
+    pub seed_time_goal_seconds: Option<Long>,
+    /// Whether the torrent's metainfo carries the private flag; null when the client cannot say.
+    pub is_private: Option<bool>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -781,10 +816,27 @@ pub struct WantedItemPayload {
     pub grabbed_release: Option<String>,
     /// Safe provider label extracted from grabbed-release metadata, with sensitive release details omitted.
     pub source_provider: Option<String>,
-    /// Current acquisition score, or null before a candidate is scored.
+    /// The bar this scope's landed file sets, or null when nothing occupies it.
+    ///
+    /// The re-derived canonical score of the primary media file occupying the
+    /// scope: computed on read from the row, never read back from the persisted
+    /// `acquisition_score`, which is display history and is only valid while the
+    /// profile, persona, rule packs and scoring algorithm that wrote it are all
+    /// unchanged. This is the same number the admission gate compares a
+    /// candidate against, so the value shown here and the value a grab or import
+    /// decision used cannot disagree.
+    ///
+    /// It used to be a per-scope ledger column that only held a landed score in
+    /// one of its five lifecycle states; after a rejected import it held the
+    /// score of a release that never landed, which read lower than the
+    /// incumbent.
     pub current_score: Option<i32>,
     /// Latest release decision, or null before a candidate decision exists.
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
+    /// Number of saved fallback candidates keyed to this scope. Season-pack
+    /// candidates are keyed to their season's anchor episode, so sibling
+    /// episodes can report zero while the anchor reports the saved candidates.
+    pub standby_count: i64,
     /// Whether a changed title match permits a recovery search.
     pub mismatch_recovery_eligible: bool,
     /// Convergence state showing whether indexer coverage is queued, searching, complete, or deferred.
@@ -858,7 +910,11 @@ pub struct ReleaseDecisionPayload {
     pub decision_code: String,
     /// Candidate score assigned by the scoring rules.
     pub candidate_score: i32,
-    /// Existing scope score used for comparison, or null when no current score exists.
+    /// The bar this decision was measured against: the re-derived canonical
+    /// score of the primary media file occupying the scope at decision time,
+    /// never the persisted `acquisition_score`. Null when the decision was
+    /// recorded before any comparison ran (a parse or identity refusal), or when
+    /// nothing occupied the scope.
     pub current_score: Option<i32>,
     /// Candidate minus current score, or null when no current score exists.
     pub score_delta: Option<i32>,
@@ -903,6 +959,10 @@ pub struct PendingReleasePayload {
     pub indexer_source: Option<String>,
     /// Provider identifier, or null when the source is not linked.
     pub indexer_id: Option<ID>,
+    /// RFC3339 publication time reported by the indexer, or null when unavailable.
+    pub published_at: Option<DateTime<Utc>>,
+    /// Number of torrent seeders reported when this release was saved, or null when unknown.
+    pub seeders: Option<i64>,
     /// Time when the release entered the pending set, in UTC.
     pub added_at: DateTime<Utc>,
     /// Time before which the release is held, in UTC.

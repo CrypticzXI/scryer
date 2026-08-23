@@ -79,9 +79,12 @@ type AcquisitionSettingsPayload {
 	"""
 	sameTierMinDelta: Int!
 	"""
-	Minimum score delta for cross-tier upgrades.
+	Deprecated and inert. Quality tier is compared before score, so no
+	score delta ever sees a cross-tier comparison; the stored value is
+	returned unchanged and ignored by acquisition. Scheduled for removal in
+	a later minor.
 	"""
-	crossTierMinDelta: Int!
+	crossTierMinDelta: Int! @deprecated(reason: "Inert since 0.18.17: quality tier is compared before score, so no cross-tier delta is consulted. The value is stored and ignored; the field will be removed in a later minor.")
 	"""
 	Score delta that bypasses normal forced-upgrade thresholds.
 	"""
@@ -270,6 +273,32 @@ enum ActivitySeverityValue {
 	Operation failed.
 	"""
 	ERROR
+}
+
+"""
+Title-history event counts for one dashboard activity window.
+"""
+type ActivityWindowCountsPayload {
+	"""
+	Releases grabbed during the window.
+	"""
+	grabbed: Int!
+	"""
+	Existing files replaced by a better release during the window.
+	"""
+	upgraded: Int!
+	"""
+	Imports that completed during the window.
+	"""
+	imported: Int!
+	"""
+	Imports rejected as failed during the window; skipped imports are excluded.
+	"""
+	importFailed: Int!
+	"""
+	Downloads that failed during the window.
+	"""
+	downloadFailed: Int!
 }
 
 """
@@ -555,13 +584,21 @@ type AuthRuntimeStatePayload {
 	"""
 	mfaRequireConfigStepUp: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean!
 	"""
-	Whether Emby login requires TOTP.
+	Whether Emby login requires an enrolled authentication factor.
 	"""
-	totpRequireEmbyLogin: Boolean!
+	mfaRequireEmbyLogin: Boolean!
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean! @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`.
+	"""
+	totpRequireEmbyLogin: Boolean! @deprecated(reason: "Use mfaRequireEmbyLogin.")
 }
 
 """
@@ -1181,6 +1218,10 @@ type CollectionPayload {
 	"""
 	episodesTotal: Int
 	"""
+	Total episode records in this collection including uncountable placeholders (TBA/undated), populated when requested.
+	"""
+	episodeRecordsTotal: Int
+	"""
 	Parent title for this collection, or null if the title is no longer available to the caller.
 	"""
 	title: TitlePayload
@@ -1220,6 +1261,16 @@ enum CollectionTypeValue {
 	A specials grouping.
 	"""
 	SPECIALS
+}
+
+"""
+New password selected after signing in with an administrator-provided temporary password.
+"""
+input CompleteRequiredPasswordChangeInput {
+	"""
+	New password; stored securely and never returned.
+	"""
+	password: String!
 }
 
 """
@@ -1669,6 +1720,56 @@ input CreateRuleSetInput {
 }
 
 """
+Goals and removal behavior for a new seeding profile.
+"""
+input CreateSeedingProfileInput {
+	"""
+	Seeding profile name; must be unique.
+	"""
+	name: String!
+	"""
+	Share ratio goal, or null to defer to the download client's own limits.
+	"""
+	ratio: Float
+	"""
+	Seed time goal in minutes, or null to defer to the download client's own limits.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Whether season packs inherit or override the profile's goals; defaults to inherit.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue
+	"""
+	Season-pack share ratio goal; only applied in override mode.
+	"""
+	seasonPackRatio: Float
+	"""
+	Season-pack seed time goal in minutes; only applied in override mode.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Whether resolved goals are raised to tracker-declared minimums; defaults to true.
+	"""
+	honorTrackerMinimums: Boolean
+	"""
+	Action taken once the goal is met; defaults to removing the entry.
+	"""
+	goalMetAction: SeedGoalMetActionValue
+	"""
+	Whether torrents grabbed under this profile are never auto-removed; defaults to false.
+	"""
+	neverRemove: Boolean
+	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
+	Whether Scryer keeps managing torrents after import; defaults to parking them.
+	"""
+	postImportTracking: PostImportTrackingValue
+}
+
+"""
 Configuration for a new subtitle provider.
 """
 input CreateSubtitleProviderConfigInput {
@@ -1703,7 +1804,7 @@ input CreateUserInput {
 	"""
 	username: String!
 	"""
-	Initial password; stored securely and never returned.
+	Temporary password; the user must replace it after local-password sign-in.
 	"""
 	password: String!
 	"""
@@ -1801,6 +1902,21 @@ type CutoffUnmetTitlesPagePayload {
 }
 
 """
+A trailing activity window together with the window immediately before it,
+so callers can render each count with its period-over-period delta.
+"""
+type DashboardActivityStatsPayload {
+	"""
+	Counts for the trailing window ending at the time of the request.
+	"""
+	current: ActivityWindowCountsPayload!
+	"""
+	Counts for the equally long window immediately before the current one.
+	"""
+	previous: ActivityWindowCountsPayload!
+}
+
+"""
 Calendar date scalar serialized as an ISO-8601 `YYYY-MM-DD` string without a time zone.
 """
 scalar Date
@@ -1824,6 +1940,20 @@ type DecisionCodeCountPayload {
 	Number of wanted items with this code.
 	"""
 	count: Int!
+}
+
+"""
+Global default seeding profile after an assignment change.
+"""
+type DefaultSeedingProfilePayload {
+	"""
+	Seeding profile identity used as the default, or null when unset.
+	"""
+	seedingProfileId: ID
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -2252,6 +2382,16 @@ Identifier returned after deleting a rule set.
 type DeleteRuleSetPayload {
 	"""
 	Deleted rule-set ID.
+	"""
+	id: ID!
+}
+
+"""
+Identity returned after deleting a seeding profile.
+"""
+type DeleteSeedingProfilePayload {
+	"""
+	Deleted seeding profile identity.
 	"""
 	id: ID!
 }
@@ -3468,6 +3608,14 @@ enum DomainEventTypeValue {
 	A download queue item was removed.
 	"""
 	DOWNLOAD_QUEUE_ITEM_REMOVED
+	"""
+	A torrent was imported and its client entry retained while it seeds.
+	"""
+	SEEDING_STARTED
+	"""
+	A torrent's seeding obligation was discharged.
+	"""
+	SEEDING_COMPLETED
 }
 
 """
@@ -3494,6 +3642,10 @@ enum DownloadActivityFilterValue {
 	Include post-processing items.
 	"""
 	POST_PROCESSING
+	"""
+	Include items the client reported a recoverable problem for.
+	"""
+	WARNING
 }
 
 """
@@ -3628,6 +3780,10 @@ input DownloadClientRoutingEntryInput {
 	Whether failed items are removed from the client.
 	"""
 	removeFailed: Boolean!
+	"""
+	Optional seeding profile ID applied to torrents routed to this client.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -3662,6 +3818,10 @@ type DownloadClientRoutingEntryPayload {
 	Whether failed items are removed from the client.
 	"""
 	removeFailed: Boolean!
+	"""
+	Optional seeding profile ID applied to torrents routed to this client.
+	"""
+	seedingProfileId: ID
 }
 
 """
@@ -3692,6 +3852,11 @@ enum DownloadDisplayStateValue {
 	Download or processing failed.
 	"""
 	FAILED
+	"""
+	The client reports a recoverable problem on a download that is still
+	live.
+	"""
+	WARNING
 	"""
 	Import is running.
 	"""
@@ -4079,6 +4244,30 @@ type DownloadQueueItemPayload {
 	"""
 	trackedMatchType: TitleMatchTypeValue
 	"""
+	Seeding obligation state, or null when the item carries no torrent seeding information.
+	"""
+	seedingState: DownloadSeedingStateValue
+	"""
+	Share ratio observed by the download client, or null when it reports none.
+	"""
+	seedRatio: Float
+	"""
+	Share ratio this download was grabbed under, or null when no profile applied.
+	"""
+	seedRatioGoal: Float
+	"""
+	Seconds spent seeding as reported by the client, or null when it has no counter.
+	"""
+	seedTimeSeconds: Long
+	"""
+	Seeding time in seconds this download was grabbed under, or null when no profile applied.
+	"""
+	seedTimeGoalSeconds: Long
+	"""
+	Whether the torrent's metainfo carries the private flag; null when the client cannot say.
+	"""
+	isPrivate: Boolean
+	"""
 	Acquisition scope for this queue item, or its episode scope when no more specific scope is available.
 	"""
 	queueScope: QueueDownloadScopePayload
@@ -4189,6 +4378,11 @@ enum DownloadQueueStateValue {
 	"""
 	IMPORT_PENDING
 	"""
+	The client reports a recoverable problem; the download is untouched by
+	failed-download handling.
+	"""
+	WARNING
+	"""
 	Download failed.
 	"""
 	FAILED
@@ -4206,6 +4400,32 @@ type DownloadQueueSyncPayload {
 	Time the queue data was updated, in UTC, or null when no update exists.
 	"""
 	updatedAt: DateTime
+}
+
+"""
+Seeding obligation state for a torrent download.
+"""
+enum DownloadSeedingStateValue {
+	"""
+	Nothing to report yet: still downloading, or the client exposes no seeding state.
+	"""
+	NONE
+	"""
+	Seeding towards an obligation that is not yet discharged.
+	"""
+	SEEDING
+	"""
+	The seeding obligation is discharged.
+	"""
+	GOAL_MET
+	"""
+	Observed as a private torrent with no resolved goals, so it is never removed automatically.
+	"""
+	HELD_PRIVATE
+	"""
+	The seeding profile keeps this entry forever.
+	"""
+	NEVER_REMOVE
 }
 
 """
@@ -6107,6 +6327,22 @@ type IndexerConfigPayload {
 	"""
 	downloadClientId: ID
 	"""
+	Optional seeding profile ID applied to torrents grabbed from this indexer.
+	"""
+	seedingProfileId: ID
+	"""
+	Whether Prowlarr supplied seed criteria for this managed child. When it
+	did and no seeding profile is assigned, those criteria apply; assigning
+	a profile overrides them.
+	"""
+	hasProwlarrSeedCriteria: Boolean!
+	"""
+	Minimum seeders Prowlarr imported for this managed child, or null when it
+	supplied none. Zero means Prowlarr turned the seeder check off. Read-only:
+	it is edited in Prowlarr, and an assigned seeding profile overrides it.
+	"""
+	prowlarrMinimumSeeders: Int
+	"""
 	Whether an API key is configured without exposing it.
 	"""
 	hasApiKey: Boolean!
@@ -6398,6 +6634,10 @@ type IndexerQueryStatsPayload {
 	Failed queries during the trailing 24 hours.
 	"""
 	failedLast24H: Int!
+	"""
+	Releases grabbed through this indexer during the trailing 24 hours, counted by Scryer rather than reported by the provider.
+	"""
+	grabsLast24H: Int!
 	"""
 	UTC time of the most recent query, or null when never queried.
 	"""
@@ -6831,6 +7071,10 @@ enum JobKeyValue {
 	Title deletion.
 	"""
 	TITLE_DELETION
+	"""
+	Title rename.
+	"""
+	TITLE_RENAME
 	"""
 	Media-file deletion.
 	"""
@@ -7322,6 +7566,14 @@ input LibrarySettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
+	Metadata language override; null inherits the global default.
+	"""
+	metadataLanguage: String
+	"""
+	Whether episodic titles use season folders; null inherits the facet setting.
+	"""
+	useSeasonFolders: Boolean
+	"""
 	Default quality profile identity.
 	"""
 	qualityProfileId: ID
@@ -7403,6 +7655,22 @@ type LibrarySettingsPayload {
 	Effective required audio language codes after inheritance.
 	"""
 	requiredAudioLanguages: [String!]!
+	"""
+	Library metadata-language override; null means inherit the global default.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Effective metadata language after inheritance.
+	"""
+	metadataLanguage: String!
+	"""
+	Library override for season folders; null means inherit the facet setting.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Effective season-folder setting after inheritance.
+	"""
+	useSeasonFolders: Boolean!
 	"""
 	Library override quality-profile ID; null means inherit.
 	"""
@@ -7690,7 +7958,21 @@ type LoginMfaEnrollmentCompletePayload {
 }
 
 """
-Session or MFA-enrollment result returned after authentication.
+Result of completing passkey enrollment during a restricted login enrollment session.
+"""
+type LoginPasskeyEnrollmentCompletePayload {
+	"""
+	Registered passkey summary.
+	"""
+	passkey: PasskeySummaryPayload!
+	"""
+	Authenticated login payload issued after enrollment completes.
+	"""
+	login: LoginPayload!
+}
+
+"""
+Session or restricted authentication result returned after authentication.
 """
 type LoginPayload {
 	"""
@@ -7714,9 +7996,45 @@ type LoginPayload {
 	"""
 	mfaEnrollmentRequired: Boolean!
 	"""
+	True when the token can only replace an administrator-provided temporary password.
+	"""
+	passwordChangeRequired: Boolean!
+	"""
 	Whether the session was requested to persist.
 	"""
 	persistSession: Boolean!
+}
+
+"""
+Passkey completion for a previously verified primary login.
+"""
+input LoginVerificationPasskeyCompleteInput {
+	"""
+	Opaque ID returned in the MFA step-up error after primary authentication.
+	"""
+	loginChallengeId: ID!
+	"""
+	ID returned by `loginVerificationPasskeyStart`.
+	"""
+	webauthnChallengeId: ID!
+	"""
+	Browser assertion JSON; credential material is consumed for verification and not echoed.
+	"""
+	responseJson: JSON!
+}
+
+"""
+TOTP or recovery-code completion for a previously verified primary login.
+"""
+input LoginVerificationTotpCompleteInput {
+	"""
+	Opaque ID returned in the MFA step-up error after primary authentication.
+	"""
+	loginChallengeId: ID!
+	"""
+	Current authenticator or recovery code; never returned in a payload.
+	"""
+	code: String!
 }
 
 """
@@ -8197,6 +8515,28 @@ type MediaRenamePlanPayload {
 }
 
 """
+Scope and mode for previewing renames across several titles at once.
+"""
+input MediaRenamePreviewBulkInput {
+	"""
+	Facet shared by every requested title.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Titles whose rename plans are returned, in the order supplied.
+	"""
+	titleIds: [ID!]!
+	"""
+	Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+	"""
+	renamableOnly: Boolean
+	"""
+	Maximum number of `items` returned across all plans; counts and fingerprints still describe the whole plan.
+	"""
+	maxItems: Int
+}
+
+"""
 Scope and mode for previewing media file renames.
 """
 input MediaRenamePreviewInput {
@@ -8212,6 +8552,14 @@ input MediaRenamePreviewInput {
 	Whether to calculate changes without applying them; omission uses the resolver default.
 	"""
 	dryRun: Boolean
+	"""
+	Whether to return only the items counted by `renamable`; counts and fingerprint still describe the whole plan.
+	"""
+	renamableOnly: Boolean
+	"""
+	Maximum number of `items` returned; counts and fingerprint still describe the whole plan.
+	"""
+	maxItems: Int
 }
 
 """
@@ -8674,6 +9022,10 @@ type MediaSettingsPayload {
 	Effective required audio language codes.
 	"""
 	requiredAudioLanguages: [String!]!
+	"""
+	Whether episodic titles use season folders.
+	"""
+	useSeasonFolders: Boolean!
 	"""
 	Folder naming template.
 	"""
@@ -9389,6 +9741,60 @@ type MutationRoot {
 		input: SetIndexerDownloadClientMappingInput!
 	): IndexerConfigPayload!
 	"""
+	Set or clear the seeding profile applied to torrents from an indexer.
+	"""
+	setIndexerSeedingProfile(
+		"""
+		Indexer identity and optional seeding profile identity; null clears the assignment.
+		"""
+		input: SetIndexerSeedingProfileInput!
+	): IndexerConfigPayload!
+	"""
+	Create a torrent seeding profile.
+	"""
+	createSeedingProfile(
+		"""
+		Seeding profile name, goals, and removal behavior.
+		"""
+		input: CreateSeedingProfileInput!
+	): SeedingProfilePayload!
+	"""
+	Patch a torrent seeding profile.
+	"""
+	updateSeedingProfile(
+		"""
+		Seeding profile identity and optional replacement fields; explicit nulls clear goals.
+		"""
+		input: UpdateSeedingProfileInput!
+	): SeedingProfilePayload!
+	"""
+	Delete a seeding profile that nothing references.
+	"""
+	deleteSeedingProfile(
+		"""
+		Seeding profile identity to delete.
+		"""
+		id: ID!
+	): DeleteSeedingProfilePayload!
+	"""
+	Set or clear the seeding profile applied when nothing more specific matches.
+	"""
+	setDefaultSeedingProfile(
+		"""
+		Seeding profile identity to use as the default, or null to clear it.
+		"""
+		input: SetDefaultSeedingProfileInput!
+	): DefaultSeedingProfilePayload!
+	"""
+	Set the minimum-seeder floor applied when no seeding profile resolves.
+	"""
+	setMinimumSeedersFloor(
+		"""
+		Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+		"""
+		input: SetMinimumSeedersFloorInput!
+	): DefaultSeedingProfilePayload!
+	"""
 	Create an indexer proxy configuration.
 	"""
 	createIndexerProxyConfig(
@@ -9586,6 +9992,15 @@ type MutationRoot {
 		input: UpdateRecycleBinSettingsInput!
 	): RecycleBinSettingsPayload!
 	"""
+	Saves the automatic official-plugin patch update setting after checking the system-settings permission.
+	"""
+	updatePluginAutoUpdateSettings(
+		"""
+		Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+		"""
+		input: UpdatePluginAutoUpdateSettingsInput!
+	): PluginAutoUpdateSettingsPayload!
+	"""
 	Saves auto-backup scheduling and key changes after checking the system-settings permission.
 	"""
 	updateAutoBackupSettings(
@@ -9774,6 +10189,19 @@ type MutationRoot {
 		input: WebauthnRegisterCompleteInput!
 	): PasskeySummaryPayload!
 	"""
+	Starts passkey enrollment for a restricted post-primary MFA-enrollment session.
+	"""
+	webauthnLoginEnrollmentStart: WebauthnChallengePayload!
+	"""
+	Completes passkey enrollment for a restricted post-primary MFA-enrollment session and issues a full session.
+	"""
+	webauthnLoginEnrollmentComplete(
+		"""
+		Passkey registration challenge and browser response for login enrollment.
+		"""
+		input: WebauthnRegisterCompleteInput!
+	): LoginPasskeyEnrollmentCompletePayload!
+	"""
 	Starts TOTP enrollment for the authenticated session or MFA-enrollment session.
 	"""
 	totpEnrollmentStart: TotpEnrollmentStartPayload!
@@ -9841,6 +10269,33 @@ type MutationRoot {
 		input: WebauthnCompleteInput!
 	): LoginPayload!
 	"""
+	Starts the user-bound passkey assertion required after primary credentials succeed.
+	"""
+	loginVerificationPasskeyStart(
+		"""
+		Opaque login verification challenge ID returned after primary authentication.
+		"""
+		challengeId: ID!
+	): WebauthnChallengePayload!
+	"""
+	Completes the passkey assertion required after primary credentials succeed.
+	"""
+	loginVerificationPasskeyComplete(
+		"""
+		Pending login verification and browser assertion response.
+		"""
+		input: LoginVerificationPasskeyCompleteInput!
+	): LoginPayload!
+	"""
+	Completes the TOTP or recovery-code fallback required after primary credentials succeed.
+	"""
+	loginVerificationTotpComplete(
+		"""
+		Pending login verification challenge and current authenticator or recovery code.
+		"""
+		input: LoginVerificationTotpCompleteInput!
+	): LoginPayload!
+	"""
 	Deletes the authenticated actor's passkey identified by `id`.
 	"""
 	deleteMyPasskey(
@@ -9866,6 +10321,15 @@ type MutationRoot {
 		Username, password, and optional TOTP code for local authentication.
 		"""
 		input: LoginInput!
+	): LoginPayload!
+	"""
+	Replaces an administrator-provided temporary password and issues the full session.
+	"""
+	completeRequiredPasswordChange(
+		"""
+		New password selected by the authenticated user.
+		"""
+		input: CompleteRequiredPasswordChangeInput!
 	): LoginPayload!
 	"""
 	Mark the setup wizard as complete.
@@ -9926,11 +10390,11 @@ type MutationRoot {
 		id: ID!
 	): DeleteUserPayload!
 	"""
-	Resets MFA enrollment for the user identified by `id` after checking the manage-users permission.
+	Resets all authentication factors for the user identified by `id` after checking the manage-users permission.
 	"""
 	resetUserMfa(
 		"""
-		ID of the user whose MFA enrollment should be reset.
+		ID of the user whose authentication factors should be reset.
 		"""
 		id: ID!
 	): UserPayload!
@@ -10095,7 +10559,7 @@ type MutationRoot {
 		Facet, title identity, preview fingerprint, and optional idempotency key.
 		"""
 		input: MediaRenameApplyInput!
-	): MediaRenameApplyPayload!
+	): MediaRenameApplyPayload! @deprecated(reason: "use renameTitles, which runs the work as a job")
 	"""
 	Accept a background job to delete a media file, optionally removing it from disk.
 	"""
@@ -10106,6 +10570,15 @@ type MutationRoot {
 		input: DeleteMediaFileInput!
 	): DeleteMediaFilePayload!
 	"""
+	Start a background job renaming the files of the given titles.
+	"""
+	renameTitles(
+		"""
+		Facet and titles whose files are renamed; the work runs in the background.
+		"""
+		input: RenameTitlesInput!
+	): RenameTitlesPayload!
+	"""
 	Apply a facet-wide rename plan after validating its preview fingerprint and optional idempotency key.
 	"""
 	applyMediaRenameBulk(
@@ -10113,7 +10586,7 @@ type MutationRoot {
 		Facet, preview fingerprint, and optional idempotency key.
 		"""
 		input: MediaRenameBulkApplyInput!
-	): MediaRenameApplyPayload!
+	): MediaRenameApplyPayload! @deprecated(reason: "use renameTitles, which runs the work as a job")
 	"""
 	Rehydrate accessible title metadata for one language and report cleared title counts.
 	"""
@@ -11179,9 +11652,47 @@ type PendingImportItemPayload {
 	"""
 	reason: String!
 	"""
+	Coarse bucket for `reason`, stable across scanner reason-code changes.
+	"""
+	reasonClass: PendingImportReasonClassValue!
+	"""
 	Metadata search attempts made for this item.
 	"""
 	searchAttempts: [PendingImportSearchAttemptPayload!]!
+	"""
+	Size of the pending file; null for folder items and unreadable files.
+	"""
+	sizeBytes: Long
+	"""
+	When the scanner first recorded this item.
+	"""
+	createdAt: DateTime!
+}
+
+"""
+Coarse bucket for why a pending import is awaiting resolution.
+
+The free-text `reason` field remains the authoritative scanner code; this
+enum is the stable grouping the dashboard filters on, so a new scanner code
+surfaces as `OTHER` instead of breaking clients.
+"""
+enum PendingImportReasonClassValue {
+	"""
+	Metadata lookup returned no candidates to choose from.
+	"""
+	UNMATCHED
+	"""
+	Metadata lookup returned candidates but none could be accepted automatically.
+	"""
+	AMBIGUOUS
+	"""
+	The file's media metadata could not be read, so its quality is unknown.
+	"""
+	QUALITY_UNKNOWN
+	"""
+	Any other scanner reason, including parse and folder-ownership problems.
+	"""
+	OTHER
 }
 
 """
@@ -11282,6 +11793,14 @@ type PendingReleasePayload {
 	Provider identifier, or null when the source is not linked.
 	"""
 	indexerId: ID
+	"""
+	RFC3339 publication time reported by the indexer, or null when unavailable.
+	"""
+	publishedAt: DateTime
+	"""
+	Number of torrent seeders reported when this release was saved, or null when unknown.
+	"""
+	seeders: Int
 	"""
 	Time when the release entered the pending set, in UTC.
 	"""
@@ -11386,6 +11905,16 @@ type PlexServerDiscoveryPayload {
 	Discovered server name.
 	"""
 	name: String!
+}
+
+"""
+Automatic official-plugin patch update setting.
+"""
+type PluginAutoUpdateSettingsPayload {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
 }
 
 """
@@ -11728,6 +12257,20 @@ type PluginInstallationPayload {
 	UTC last-update time.
 	"""
 	updatedAt: DateTime!
+}
+
+"""
+Whether Scryer keeps managing a torrent after it has been imported.
+"""
+enum PostImportTrackingValue {
+	"""
+	Keep managing the torrent: hold the entry while it seeds, then apply the goal-met action.
+	"""
+	PARK
+	"""
+	Stop managing the torrent after import; the entry stays untouched and leaves the queue.
+	"""
+	HAND_OFF
 }
 
 """
@@ -12121,6 +12664,12 @@ input QualityProfileCriteriaInput {
 	Optional minimum score required to grab a release.
 	"""
 	minScoreToGrab: Int
+	"""
+	Optional score past which same-tier upgrades stop. Omitting it keeps the
+	stored value rather than clearing it, so a UI save cannot wipe a value
+	set through the API before the editor exposes the field.
+	"""
+	cutoffScore: Int
 }
 
 """
@@ -12192,9 +12741,15 @@ type QualityProfileCriteriaPayload {
 	"""
 	cutoffTier: String
 	"""
-	Minimum score required to grab, or null when no threshold is configured.
+	Minimum score required to grab, or null when no threshold is configured
+	(Sonarr's `MinFormatScore`).
 	"""
 	minScoreToGrab: Int
+	"""
+	Score past which a file is good enough and same-tier upgrades stop, or
+	null when upgrades never stop (Sonarr's `CutoffFormatScore`).
+	"""
+	cutoffScore: Int
 }
 
 """
@@ -12393,6 +12948,10 @@ type QueryRoot {
 		permission: LibraryPermissionValue
 	): [LibraryPayload!]!
 	"""
+	List root folders of libraries the caller can view, with the disk usage of each backing filesystem.
+	"""
+	storageRoots: [StorageRootUsagePayload!]!
+	"""
 	List media requests visible to the caller, optionally filtered by facet, libraries, and status.
 	"""
 	mediaRequests(
@@ -12515,6 +13074,15 @@ type QueryRoot {
 		input: MediaRenamePreviewInput!
 	): MediaRenamePlanPayload!
 	"""
+	Preview rename plans for several titles of one facet without changing files.
+	"""
+	mediaRenamePreviewBulk(
+		"""
+		Titles whose rename plans are returned, in the order supplied; no files are changed.
+		"""
+		input: MediaRenamePreviewBulkInput!
+	): [MediaRenamePlanPayload!]!
+	"""
 	Preview deleting all media files for one title without changing files.
 	"""
 	deleteTitlePreview(
@@ -12599,6 +13167,15 @@ type QueryRoot {
 		"""
 		limit: Int
 	): [TitleReleaseBlocklistEntryPayload!]!
+	"""
+	Return grab, upgrade, import, and failure counts for a trailing window and the window before it.
+	"""
+	dashboardActivityStats(
+		"""
+		Length of each window in hours; defaults to 24 and is clamped to 1 through 168.
+		"""
+		windowHours: Int! = 24
+	): DashboardActivityStatsPayload!
 	"""
 	List recent activity events with zero-based offset pagination.
 	"""
@@ -12952,6 +13529,10 @@ type QueryRoot {
 	"""
 	recycleBinSettings: RecycleBinSettingsPayload!
 	"""
+	Returns whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	pluginAutoUpdateSettings: PluginAutoUpdateSettingsPayload!
+	"""
 	Returns auto-backup scheduling metadata without exposing the backup key.
 	"""
 	autoBackupSettings: AutoBackupSettingsPayload!
@@ -13071,6 +13652,14 @@ type QueryRoot {
 		providerType: String
 	): [IndexerConfigPayload!]!
 	"""
+	Lists configured torrent seeding profiles.
+	"""
+	seedingProfiles: [SeedingProfilePayload!]!
+	"""
+	Returns the seeding profile applied when nothing more specific matches.
+	"""
+	defaultSeedingProfile: DefaultSeedingProfilePayload!
+	"""
 	Returns compatible download clients and indexers for routing configuration.
 	"""
 	indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalogPayload!
@@ -13181,7 +13770,7 @@ type QueryRoot {
 		limit: Int
 	): [ImportRecordPayload!]!
 	"""
-	Return the authenticated user payload, or null for an anonymous session; MFA enrollment sessions are rejected.
+	Return the authenticated user payload, or null for an anonymous session; restricted enrollment and password-replacement sessions are rejected.
 	"""
 	me: UserPayload
 	"""
@@ -13546,6 +14135,10 @@ input QueueDownloadInput {
 	Signed token identifying and authorizing the candidate release.
 	"""
 	candidateToken: String!
+	"""
+	Indexer-announced release size, checked against the signed candidate when present.
+	"""
+	sizeBytes: Long
 	"""
 	Acquisition scope targeted by the submission.
 	"""
@@ -13982,7 +14575,11 @@ type ReleaseDecisionPayload {
 	"""
 	candidateScore: Int!
 	"""
-	Existing scope score used for comparison, or null when no current score exists.
+	The bar this decision was measured against: the re-derived canonical
+	score of the primary media file occupying the scope at decision time,
+	never the persisted `acquisition_score`. Null when the decision was
+	recorded before any comparison ran (a parse or identity refusal), or when
+	nothing occupied the scope.
 	"""
 	currentScore: Int
 	"""
@@ -14055,6 +14652,34 @@ enum RenameMissingMetadataPolicyValue {
 	Use the title as fallback metadata.
 	"""
 	FALLBACK_TITLE
+}
+
+"""
+Titles whose files should be renamed in the background.
+"""
+input RenameTitlesInput {
+	"""
+	Facet shared by every requested title.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Titles to rename; each is locked until the job finishes with it.
+	"""
+	titleIds: [ID!]!
+}
+
+"""
+Accepted rename work and the job run tracking it.
+"""
+type RenameTitlesPayload {
+	"""
+	Background job run tracking the rename work.
+	"""
+	jobRun: JobRunPayload!
+	"""
+	Title IDs accepted for processing.
+	"""
+	acceptedTitleIds: [ID!]!
 }
 
 """
@@ -14689,6 +15314,20 @@ input SearchSubtitlesInput {
 }
 
 """
+How a seeding profile treats season packs relative to its own goals.
+"""
+enum SeasonPackSeedModeValue {
+	"""
+	Season packs use the profile's own ratio and seed-time goals.
+	"""
+	INHERIT
+	"""
+	Season packs use the profile's season-pack goals instead.
+	"""
+	OVERRIDE
+}
+
+"""
 Secret provider configuration value represented without plaintext.
 """
 type SecretConfigValuePayload {
@@ -14723,13 +15362,21 @@ type SecuritySettingsPayload {
 	"""
 	mfaRequirePasswordLogin: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean!
 	"""
-	Whether Emby login requires TOTP.
+	Whether Emby login requires an enrolled authentication factor.
 	"""
-	totpRequireEmbyLogin: Boolean!
+	mfaRequireEmbyLogin: Boolean!
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean! @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`.
+	"""
+	totpRequireEmbyLogin: Boolean! @deprecated(reason: "Use mfaRequireEmbyLogin.")
 	"""
 	Effective form-login state after environment overrides.
 	"""
@@ -14742,6 +15389,86 @@ type SecuritySettingsPayload {
 	Description of the active override, or null when none is active.
 	"""
 	envOverrideDescription: String
+}
+
+"""
+What happens to a torrent once its seeding goal is met.
+"""
+enum SeedGoalMetActionValue {
+	"""
+	Remove the entry from the download client.
+	"""
+	REMOVE_ENTRY
+	"""
+	Stop seeding but keep the entry in the download client.
+	"""
+	STOP_SEEDING
+	"""
+	Leave the torrent alone.
+	"""
+	KEEP
+}
+
+"""
+Named torrent seeding policy assignable to indexers, routing entries, or the global default.
+"""
+type SeedingProfilePayload {
+	"""
+	Seeding profile ID.
+	"""
+	id: ID!
+	"""
+	Seeding profile name.
+	"""
+	name: String!
+	"""
+	Share ratio goal, or null to defer to the download client's own limits.
+	"""
+	ratio: Float
+	"""
+	Seed time goal in minutes, or null to defer to the download client's own limits.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Whether season packs inherit or override the profile's goals.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue!
+	"""
+	Season-pack share ratio goal, or null when unset.
+	"""
+	seasonPackRatio: Float
+	"""
+	Season-pack seed time goal in minutes, or null when unset.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Whether resolved goals are raised to tracker-declared minimums.
+	"""
+	honorTrackerMinimums: Boolean!
+	"""
+	Action taken once the seeding goal is met.
+	"""
+	goalMetAction: SeedGoalMetActionValue!
+	"""
+	Whether torrents grabbed under this profile are never auto-removed.
+	"""
+	neverRemove: Boolean!
+	"""
+	Fewest seeders a candidate may report and still be grabbed. Null inherits the system floor; 0 disables the check.
+	"""
+	minimumSeeders: Int
+	"""
+	Whether Scryer keeps managing torrents grabbed under this profile after import.
+	"""
+	postImportTracking: PostImportTrackingValue!
+	"""
+	UTC creation time.
+	"""
+	createdAt: DateTime!
+	"""
+	UTC last-update time.
+	"""
+	updatedAt: DateTime!
 }
 
 """
@@ -14865,6 +15592,16 @@ type SetCollectionMonitoredPayload {
 }
 
 """
+Global default seeding profile assignment.
+"""
+input SetDefaultSeedingProfileInput {
+	"""
+	Seeding profile identity to use as the default, or null to clear it.
+	"""
+	seedingProfileId: ID
+}
+
+"""
 Monitoring state change for an episode.
 """
 input SetEpisodeMonitoredInput {
@@ -14890,6 +15627,30 @@ input SetIndexerDownloadClientMappingInput {
 	Download-client identity to assign, or null to clear the mapping.
 	"""
 	downloadClientId: ID
+}
+
+"""
+Seeding profile assignment for one indexer.
+"""
+input SetIndexerSeedingProfileInput {
+	"""
+	Indexer identity to update.
+	"""
+	indexerId: ID!
+	"""
+	Seeding profile identity to assign, or null to clear the assignment.
+	"""
+	seedingProfileId: ID
+}
+
+"""
+Replacement system-wide minimum-seeder floor.
+"""
+input SetMinimumSeedersFloorInput {
+	"""
+	Fewest seeders a torrent candidate may report when no seeding profile resolves; 0 disables the check.
+	"""
+	minimumSeedersFloor: Int!
 }
 
 """
@@ -15068,7 +15829,7 @@ input SetUserLoginEnabledInput {
 }
 
 """
-Password replacement for a user account.
+Password replacement for a user account. Administrator-provided passwords are temporary.
 """
 input SetUserPasswordInput {
 	"""
@@ -15199,6 +15960,36 @@ input StartExternalImportProwlarrWarmupInput {
 	Connection URL and API key.
 	"""
 	connection: ExternalImportConnectionInput!
+}
+
+"""
+Filesystem usage of the volume backing one library root folder.
+"""
+type StorageRootUsagePayload {
+	"""
+	Configured root-folder path as stored on the library.
+	"""
+	path: String!
+	"""
+	ID of the library that owns this root folder.
+	"""
+	libraryId: ID!
+	"""
+	Name of the library that owns this root folder.
+	"""
+	libraryName: String!
+	"""
+	Media facet of the library that owns this root folder.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Bytes in use on the backing filesystem; null when it cannot be inspected.
+	"""
+	usedBytes: Long
+	"""
+	Total bytes on the backing filesystem; null when it cannot be inspected.
+	"""
+	totalBytes: Long
 }
 
 """
@@ -16011,6 +16802,46 @@ enum TitleCatalogSortKeyValue {
 }
 
 """
+One cast or crew credit cached from the title's last metadata hydration.
+"""
+type TitleCreditPayload {
+	"""
+	Credit kind exactly as the metadata provider spelled it, e.g. `actor`,
+	`voice_actor`, `director`, `writer`, `creator`, `composer`. Kept as a
+	string so a new provider kind reaches clients without a schema break.
+	"""
+	kind: String!
+	"""
+	Person's display name in the hydration language.
+	"""
+	personName: String!
+	"""
+	Person's name in their original language, or empty when the provider has none.
+	"""
+	personOriginalName: String!
+	"""
+	Proxied portrait for this person, or null when the provider has no image.
+	"""
+	personImageUrl: String
+	"""
+	Character played, or empty for crew credits.
+	"""
+	character: String!
+	"""
+	Language tag this credit was hydrated in, or empty when the provider has none.
+	"""
+	language: String!
+	"""
+	Provider billing rank; lower sorts closer to top billing.
+	"""
+	billingOrder: Int!
+	"""
+	Episodes this person appears in, or null for titles the provider does not count.
+	"""
+	episodeCount: Int
+}
+
+"""
 One external rating source and its normalized score.
 """
 type TitleExternalRatingPayload {
@@ -16057,9 +16888,21 @@ type TitleHistoryEventPayload {
 	"""
 	titleName: String
 	"""
+	Poster URL of the title, or null when the title is gone or has no poster.
+	"""
+	posterUrl: String
+	"""
+	Library owning the title, or null when the event cannot be attributed.
+	"""
+	libraryId: ID
+	"""
 	Media facet, or null when the event is not facet-specific.
 	"""
 	facet: MediaFacetValue
+	"""
+	Bytes imported or upgraded; null for other event types and for events recorded before sizes were captured.
+	"""
+	sizeBytes: Long
 	"""
 	Episode ID, or null when not episode-specific.
 	"""
@@ -16230,6 +17073,14 @@ enum TitleHistoryEventTypeValue {
 	Title or file was rematched.
 	"""
 	REMATCHED
+	"""
+	Torrent was imported and its client entry retained while it seeds.
+	"""
+	SEEDING_STARTED
+	"""
+	Torrent's seeding obligation was discharged.
+	"""
+	SEEDING_COMPLETED
 }
 
 """
@@ -16525,9 +17376,13 @@ input TitleOptionsInput {
 	"""
 	monitorType: MonitorTypeValue
 	"""
-	Whether season folders are used; omission preserves the current value, null clears it, and a value replaces it.
+	Whether season folders are used for Series or Anime; omission preserves the current value, null clears it, and a value replaces it. Movies reject this field.
 	"""
 	useSeasonFolders: Boolean
+	"""
+	Metadata language; omission preserves the current value, null clears it, and a value replaces it.
+	"""
+	metadataLanguage: String
 	"""
 	Whether specials are monitored; omission preserves the current value, null clears it, and a value replaces it.
 	"""
@@ -16747,6 +17602,20 @@ type TitlePayload {
 	"""
 	ratings: TitleRatingPayload!
 	"""
+	Cast and crew cached from this title's last metadata hydration, ordered
+	by billing rank. Reads the local cache only; hydration refills it.
+	"""
+	credits(
+		"""
+		Credit kinds to include, e.g. ["actor", "voice_actor"] for cast. Omit or leave empty for every cached kind.
+		"""
+		kinds: [String!],
+		"""
+		Maximum credits to return; defaults to 15 and clamps to 0 through 50.
+		"""
+		limit: Int! = 15
+	): [TitleCreditPayload!]!
+	"""
 	Discovery items related to this title, limited to the requested count.
 	"""
 	moreLikeThis(
@@ -16759,6 +17628,38 @@ type TitlePayload {
 	Absolute root-folder path for this title; requires view permission on its library.
 	"""
 	rootFolderPath: String!
+	"""
+	Explicit metadata-language override, or null when the global default is inherited.
+	"""
+	metadataLanguageOverride: String
+	"""
+	Metadata language after applying title and library overrides.
+	"""
+	effectiveMetadataLanguage: String!
+	"""
+	Whether this title inherits metadata language from its library or the global default.
+	"""
+	inheritsMetadataLanguage: Boolean!
+	"""
+	Explicit season-folder override, or null when library/facet settings are inherited.
+	"""
+	useSeasonFoldersOverride: Boolean
+	"""
+	Whether this title uses season folders after applying inheritance.
+	"""
+	effectiveUseSeasonFolders: Boolean!
+	"""
+	Whether this title inherits the season-folder setting from its library or facet.
+	"""
+	inheritsUseSeasonFolders: Boolean!
+	"""
+	Filler policy after applying the title override or library/facet default.
+	"""
+	effectiveFillerPolicy: FillerPolicyValue
+	"""
+	Recap policy after applying the title override or library/facet default.
+	"""
+	effectiveRecapPolicy: RecapPolicyValue
 	"""
 	Title-specific required audio-language override, or null when the facet setting is inherited.
 	"""
@@ -17024,6 +17925,11 @@ enum TrackedDownloadStateValue {
 	Import completed successfully.
 	"""
 	IMPORTED
+	"""
+	Import completed, but the torrent is still seeding toward its goal and
+	cannot be removed from the client yet.
+	"""
+	IMPORTED_SEEDING
 	"""
 	Import is blocked.
 	"""
@@ -17381,7 +18287,9 @@ input UpdateAcquisitionSettingsInput {
 	"""
 	sameTierMinDelta: Int!
 	"""
-	Minimum score improvement for a cross-tier upgrade.
+	Deprecated and inert: accepted and stored for compatibility, ignored by
+	acquisition (quality tier is compared before score, so no cross-tier
+	delta is ever consulted). Will be removed in a later minor.
 	"""
 	crossTierMinDelta: Int!
 	"""
@@ -17785,6 +18693,10 @@ input UpdateMediaSettingsInput {
 	"""
 	requiredAudioLanguages: [String!]
 	"""
+	Whether episodic titles use season folders.
+	"""
+	useSeasonFolders: Boolean
+	"""
 	Optional title folder template.
 	"""
 	folderTemplate: String
@@ -17923,6 +18835,16 @@ input UpdateNotificationSubscriptionInput {
 }
 
 """
+Automatic official-plugin patch update setting.
+"""
+input UpdatePluginAutoUpdateSettingsInput {
+	"""
+	Whether the scheduled plugin catalog refresh installs official patch updates automatically.
+	"""
+	enabled: Boolean!
+}
+
+"""
 Values that may be changed on an existing post-processing script.
 """
 input UpdatePostProcessingScriptInput {
@@ -18047,13 +18969,75 @@ input UpdateSecuritySettingsInput {
 	"""
 	mfaRequirePasswordLogin: Boolean!
 	"""
-	Whether Jellyfin login requires TOTP.
+	Whether Jellyfin login requires an enrolled authentication factor.
 	"""
-	totpRequireJellyfinLogin: Boolean!
+	mfaRequireJellyfinLogin: Boolean
 	"""
-	Whether Emby login requires TOTP. Omission preserves the saved setting.
+	Whether Emby login requires an enrolled authentication factor. Omission preserves the saved setting.
 	"""
-	totpRequireEmbyLogin: Boolean
+	mfaRequireEmbyLogin: Boolean
+	"""
+	Deprecated alias for `mfaRequireJellyfinLogin`.
+	"""
+	totpRequireJellyfinLogin: Boolean @deprecated(reason: "Use mfaRequireJellyfinLogin.")
+	"""
+	Deprecated alias for `mfaRequireEmbyLogin`. Omission preserves the saved setting.
+	"""
+	totpRequireEmbyLogin: Boolean @deprecated(reason: "Use mfaRequireEmbyLogin.")
+}
+
+"""
+Patch for a stored seeding profile; omitted fields are preserved and explicit nulls clear goals.
+"""
+input UpdateSeedingProfileInput {
+	"""
+	Seeding profile identity to patch.
+	"""
+	id: ID!
+	"""
+	Replacement name; omission preserves it.
+	"""
+	name: String
+	"""
+	Replacement share ratio goal; null clears it and omission preserves it.
+	"""
+	ratio: Float
+	"""
+	Replacement seed time goal in minutes; null clears it and omission preserves it.
+	"""
+	seedTimeMinutes: Int
+	"""
+	Replacement season-pack mode; omission preserves it.
+	"""
+	seasonPackMode: SeasonPackSeedModeValue
+	"""
+	Replacement season-pack ratio goal; null clears it and omission preserves it.
+	"""
+	seasonPackRatio: Float
+	"""
+	Replacement season-pack seed time goal in minutes; null clears it and omission preserves it.
+	"""
+	seasonPackSeedTimeMinutes: Int
+	"""
+	Replacement tracker-minimum handling; omission preserves it.
+	"""
+	honorTrackerMinimums: Boolean
+	"""
+	Replacement goal-met action; omission preserves it.
+	"""
+	goalMetAction: SeedGoalMetActionValue
+	"""
+	Replacement never-remove flag; omission preserves it.
+	"""
+	neverRemove: Boolean
+	"""
+	Replacement minimum seeders; null restores the system floor and omission preserves it.
+	"""
+	minimumSeeders: Int
+	"""
+	Replacement post-import tracking mode; omission preserves it.
+	"""
+	postImportTracking: PostImportTrackingValue
 }
 
 """
@@ -18242,6 +19226,10 @@ type UserPayload {
 	"""
 	hasPassword: Boolean!
 	"""
+	Whether a local password must be replaced before the next local-password session is full.
+	"""
+	passwordChangeRequired: Boolean!
+	"""
 	Whether MFA is configured, without revealing its secret.
 	"""
 	hasMfa: Boolean!
@@ -18364,13 +19352,32 @@ type WantedItemPayload {
 	"""
 	sourceProvider: String
 	"""
-	Current acquisition score, or null before a candidate is scored.
+	The bar this scope's landed file sets, or null when nothing occupies it.
+	
+	The re-derived canonical score of the primary media file occupying the
+	scope: computed on read from the row, never read back from the persisted
+	`acquisition_score`, which is display history and is only valid while the
+	profile, persona, rule packs and scoring algorithm that wrote it are all
+	unchanged. This is the same number the admission gate compares a
+	candidate against, so the value shown here and the value a grab or import
+	decision used cannot disagree.
+	
+	It used to be a per-scope ledger column that only held a landed score in
+	one of its five lifecycle states; after a rejected import it held the
+	score of a release that never landed, which read lower than the
+	incumbent.
 	"""
 	currentScore: Int
 	"""
 	Latest release decision, or null before a candidate decision exists.
 	"""
 	latestReleaseDecision: ReleaseDecisionPayload
+	"""
+	Number of saved fallback candidates keyed to this scope. Season-pack
+	candidates are keyed to their season's anchor episode, so sibling
+	episodes can report zero while the anchor reports the saved candidates.
+	"""
+	standbyCount: Int!
 	"""
 	Whether a changed title match permits a recovery search.
 	"""
@@ -18561,6 +19568,10 @@ type WebauthnChallengePayload {
 	Browser options JSON; it contains challenge data and should not be persisted as a credential.
 	"""
 	optionsJson: JSON!
+	"""
+	UTC time when the challenge expires.
+	"""
+	expiresAt: DateTime!
 }
 
 """

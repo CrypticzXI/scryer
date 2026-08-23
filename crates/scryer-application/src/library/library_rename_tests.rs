@@ -357,6 +357,8 @@ fn season_folder_template_requires_season_and_rejects_episode_tokens() {
         .expect("zero-width padding should be accepted");
     validate_season_folder_template("{title} S{season:2}")
         .expect("season templates should accept title tokens and numeric padding");
+    validate_season_folder_template("{{S{season}}}")
+        .expect("season templates should accept escaped literal braces");
 
     assert!(validate_season_folder_template("Season").is_err());
     assert!(validate_season_folder_template("Season {episode}").is_err());
@@ -409,6 +411,10 @@ fn render_episode_folder_name_selects_regular_and_specials_templates() {
     assert_eq!(
         render_episode_folder_name(&title, 12, "{title|space:.}.S{season:3}", "Specials"),
         "Neon.Cipher.S012"
+    );
+    assert_eq!(
+        render_episode_folder_name(&title, 3, "{{S{season}}}", "Specials"),
+        "{S3}"
     );
     assert_eq!(
         render_episode_folder_name(&title, 0, "Season {season}", "{title} Specials"),
@@ -516,6 +522,7 @@ fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn truncate_generated_filename_preserves_extension_and_byte_budget() {
     let long_stem = "長".repeat(120);
@@ -531,6 +538,15 @@ fn truncate_generated_filename_preserves_extension_and_byte_budget() {
     assert!(std::str::from_utf8(result.as_bytes()).is_ok());
 }
 
+#[cfg(not(windows))]
+#[test]
+fn truncate_generated_filename_preserves_long_utf8_component() {
+    let long_stem = "長".repeat(120);
+    let filename = format!("{long_stem}.mkv");
+
+    assert_eq!(truncate_generated_filename_component(&filename), filename);
+}
+
 #[test]
 fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
     let result = finalize_generated_filename_component("../Unsafe\\Title:Name.mkv");
@@ -541,6 +557,7 @@ fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
     assert_eq!(result, "Unsafe Title Name.mkv");
 }
 
+#[cfg(windows)]
 #[test]
 fn configured_title_folder_path_truncates_generated_folder_component() {
     let title = test_movie_title(&"Long ".repeat(100));
@@ -551,6 +568,19 @@ fn configured_title_folder_path_truncates_generated_folder_component() {
         folder.len() <= GENERATED_COMPONENT_MAX_BYTES - GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES,
         "truncated folder exceeded budget: {} bytes",
         folder.len()
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn configured_title_folder_path_preserves_long_component() {
+    let title_name = format!("{}Long", "Long ".repeat(99));
+    let title = test_movie_title(&title_name);
+    let path = configured_title_folder_path("/library", &title, "{title}", None);
+
+    assert_eq!(
+        path.file_name().and_then(|folder| folder.to_str()),
+        Some(title_name.as_str())
     );
 }
 
@@ -569,6 +599,7 @@ fn infer_title_folder_path_after_rename_decodes_stored_paths() {
 
     let inferred = infer_title_folder_path_after_rename(
         &title,
+        true,
         &path_to_stored_string(&current_path),
         &path_to_stored_string(&final_path),
     )
@@ -589,6 +620,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
 
     let regular = episode_parent_path_for_renamed_file(
         &title,
+        true,
         current_file,
         "/library/series",
         "{title}",
@@ -603,6 +635,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
 
     let specials = episode_parent_path_for_renamed_file(
         &title,
+        true,
         current_file,
         "/library/series",
         "{title}",
@@ -615,6 +648,7 @@ fn episode_rename_parent_uses_configured_season_folder_template() {
     title.tags = vec!["scryer:season-folder:disabled".to_string()];
     let flat = episode_parent_path_for_renamed_file(
         &title,
+        false,
         current_file,
         "/library/series",
         "{title}",
@@ -861,6 +895,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         role: crate::MediaFileRole::Primary,
         file_path: path.to_string(),
         size_bytes: 1_000,
+        announced_size_bytes: None,
         source_signature_scheme: None,
         source_signature_value: None,
         quality_label: Some("720p".to_string()),
@@ -872,6 +907,8 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         video_bitrate_kbps: Some(15_000),
         video_bit_depth: Some(10),
         video_hdr_format: Some("HDR10".to_string()),
+        dovi_profile: None,
+        dovi_bl_compat_id: None,
         video_frame_rate: Some("23.976".to_string()),
         video_profile: Some("Main 10".to_string()),
         audio_codec: Some("dts".to_string()),
@@ -970,14 +1007,13 @@ fn movie_rename_items_use_matched_media_file_analysis_instead_of_path_parse() {
     let title = test_movie_title("Movie (2024)");
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title} ({year}) [{quality} {video_codec} {audio_codec} {audio_channels}].{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items = build_movie_rename_plan_items(
@@ -1031,14 +1067,13 @@ fn movie_rename_items_render_external_id_tokens() {
     ];
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year}) [{tmdb_id}]",
         template: "{title} ({year}) [{imdb_id} {tmdb_id} {tvdb_id} {anidb_id} {mal_id} {anilist_id}].{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items =
@@ -1064,14 +1099,13 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
     title.metadata_language = Some("jpn".to_string());
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
-    let mut planned_targets = std::collections::HashSet::new();
+    let mut planning = RenamePlanningState::default();
     let mut options = MovieRenamePlanOptions {
         media_root: dir.path().to_str().expect("tempdir path"),
         folder_template: "{title} ({year})",
         template: "{title}.{ext}",
-        collision_policy: &RenameCollisionPolicy::Skip,
         missing_metadata_policy: &RenameMissingMetadataPolicy::FallbackTitle,
-        planned_targets: &mut planned_targets,
+        planning: &mut planning,
     };
 
     let items =
@@ -1106,5 +1140,27 @@ fn missing_metadata_policy_as_str() {
     assert_eq!(
         RenameMissingMetadataPolicy::FallbackTitle.as_str(),
         "fallback_title"
+    );
+}
+
+/// An SMB share hands back decomposed names for files written precomposed, so
+/// without normalization every accented title plans a rename forever, and each
+/// pass does real work over the network.
+#[test]
+fn rename_planning_key_ignores_unicode_form() {
+    let precomposed = "/media/TV/Pok\u{e9}mon/Pok\u{e9}mon - S20E01.mkv";
+    let decomposed = "/media/TV/Poke\u{301}mon/Poke\u{301}mon - S20E01.mkv";
+    assert_ne!(precomposed, decomposed, "the spellings differ as bytes");
+    assert_eq!(
+        rename_planning_path_key(precomposed),
+        rename_planning_path_key(decomposed)
+    );
+}
+
+#[test]
+fn rename_planning_key_still_separates_different_paths() {
+    assert_ne!(
+        rename_planning_path_key("/media/TV/Show/one.mkv"),
+        rename_planning_path_key("/media/TV/Show/two.mkv")
     );
 }

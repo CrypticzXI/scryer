@@ -348,6 +348,7 @@ impl AppUseCase {
                     disabled_until: None,
                     indexer_proxy_config_id: None,
                     download_client_id: None,
+                    seeding_profile_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -393,7 +394,7 @@ impl AppUseCase {
             .await?;
 
         Ok(self
-            .build_available_plugins(None)
+            .build_available_plugins()
             .await?
             .into_iter()
             .filter(|plugin| plugin.update_available)

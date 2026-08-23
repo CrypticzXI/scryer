@@ -941,6 +941,7 @@ pub struct IndexerConfig {
     pub enable_auto_search: bool,
     pub indexer_proxy_config_id: Option<String>,
     pub download_client_id: Option<String>,
+    pub seeding_profile_id: Option<String>,
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,
@@ -1166,6 +1167,202 @@ pub struct NewDownloadClientConfig {
     pub is_enabled: bool,
 }
 
+/// How a seeding profile treats season packs relative to its own goals.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SeasonPackSeedMode {
+    #[default]
+    Inherit,
+    Override,
+}
+
+impl SeasonPackSeedMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Override => "override",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "inherit" => Some(Self::Inherit),
+            "override" => Some(Self::Override),
+            _ => None,
+        }
+    }
+}
+
+/// What happens to a torrent once its resolved seeding goal is met.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SeedGoalMetAction {
+    #[default]
+    RemoveEntry,
+    StopSeeding,
+    Keep,
+}
+
+impl SeedGoalMetAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RemoveEntry => "remove_entry",
+            Self::StopSeeding => "stop_seeding",
+            Self::Keep => "keep",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "remove_entry" => Some(Self::RemoveEntry),
+            "stop_seeding" => Some(Self::StopSeeding),
+            "keep" => Some(Self::Keep),
+            _ => None,
+        }
+    }
+}
+
+/// Whether Scryer keeps managing a torrent after it has been imported.
+///
+/// Sonarr's equivalent is the post-import category: recategorizing drops the
+/// torrent out of Sonarr's category-filtered listing, so tracking ends and
+/// Sonarr forfeits all further management of it. Scryer lists every torrent and
+/// classifies core-side, so the same intent has to be an explicit flag rather
+/// than a category trick.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PostImportTracking {
+    /// Keep managing the torrent after import: park it while it seeds and act
+    /// on the profile's goal-met action once the obligation is discharged.
+    #[default]
+    Park,
+    /// Stop managing the torrent after import. The client entry stays exactly
+    /// as it is, is never auto-removed, and leaves Scryer's queue.
+    HandOff,
+}
+
+impl PostImportTracking {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Park => "park",
+            Self::HandOff => "hand_off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "park" => Some(Self::Park),
+            "hand_off" => Some(Self::HandOff),
+            _ => None,
+        }
+    }
+
+    pub fn is_hand_off(self) -> bool {
+        self == Self::HandOff
+    }
+}
+
+/// Named torrent seeding policy assignable to indexers, download-client
+/// routing entries, or the global default.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingProfile {
+    pub id: String,
+    pub name: String,
+    /// Share ratio goal, or null to defer to the client's own limits.
+    pub ratio: Option<f64>,
+    /// Seed time goal in minutes, or null to defer to the client's own limits.
+    pub seed_time_minutes: Option<i64>,
+    pub season_pack_mode: SeasonPackSeedMode,
+    pub season_pack_ratio: Option<f64>,
+    pub season_pack_seed_time_minutes: Option<i64>,
+    /// Clamp resolved goals up to tracker-declared minimums when the release
+    /// carries them.
+    pub honor_tracker_minimums: bool,
+    pub goal_met_action: SeedGoalMetAction,
+    /// Never auto-remove torrents grabbed under this profile.
+    pub never_remove: bool,
+    /// Fewest seeders a candidate may report and still be grabbed.
+    ///
+    /// The odd one out on this profile: every other field is retention policy
+    /// applied after the grab, while this is an admission filter applied
+    /// before it. It lives here because the tracker that dictates seeding
+    /// terms is the same tracker whose swarm health decides whether a grab can
+    /// finish at all, so operators reason about both together.
+    ///
+    /// `None` inherits the system floor, `Some(0)` disables the check, and
+    /// `Some(n)` requires at least `n`. A candidate whose seeder count is
+    /// unknown is always eligible, whatever this says.
+    pub minimum_seeders: Option<i32>,
+    /// Whether Scryer keeps managing torrents grabbed under this profile once
+    /// they have been imported.
+    pub post_import_tracking: PostImportTracking,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl SeedingProfile {
+    /// Season-pack goals only apply in `Override` mode; drop stray values so
+    /// stored and in-memory profiles agree.
+    pub fn normalized(mut self) -> Self {
+        self.name = self.name.trim().to_string();
+        if self.season_pack_mode == SeasonPackSeedMode::Inherit {
+            self.season_pack_ratio = None;
+            self.season_pack_seed_time_minutes = None;
+        }
+        self
+    }
+
+    /// Ratio goal for a release, honoring the season-pack override.
+    pub fn effective_ratio(&self, season_pack: bool) -> Option<f64> {
+        match (season_pack, self.season_pack_mode) {
+            (true, SeasonPackSeedMode::Override) => self.season_pack_ratio,
+            _ => self.ratio,
+        }
+    }
+
+    /// Seed-time goal in minutes for a release, honoring the season-pack override.
+    pub fn effective_seed_time_minutes(&self, season_pack: bool) -> Option<i64> {
+        match (season_pack, self.season_pack_mode) {
+            (true, SeasonPackSeedMode::Override) => self.season_pack_seed_time_minutes,
+            _ => self.seed_time_minutes,
+        }
+    }
+
+    /// Field-level validation shared by create and update paths. Name
+    /// uniqueness is enforced by the store.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("seeding profile name is required".to_string());
+        }
+        validate_seed_ratio("ratio", self.ratio)?;
+        validate_seed_time_minutes("seed time", self.seed_time_minutes)?;
+        validate_seed_ratio("season pack ratio", self.season_pack_ratio)?;
+        validate_seed_time_minutes("season pack seed time", self.season_pack_seed_time_minutes)?;
+        // Zero is legal here and means "do not check", unlike the goal fields
+        // above where zero would be indistinguishable from unset.
+        if self.minimum_seeders.is_some_and(|value| value < 0) {
+            return Err("seeding profile minimum seeders cannot be negative".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn validate_seed_ratio(label: &str, value: Option<f64>) -> Result<(), String> {
+    match value {
+        Some(value) if !value.is_finite() || value <= 0.0 => {
+            Err(format!("seeding profile {label} must be greater than 0"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_seed_time_minutes(label: &str, value: Option<i64>) -> Result<(), String> {
+    match value {
+        Some(value) if value <= 0 => Err(format!("seeding profile {label} must be greater than 0")),
+        _ => Ok(()),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubtitleProviderConfig {
     pub id: String,
@@ -1204,6 +1401,15 @@ pub enum DownloadQueueState {
     Paused,
     Completed,
     ImportPending,
+    /// The client reports a problem the operator can still fix — a disk that
+    /// filled up, a permission error, files moved out from under the torrent,
+    /// a tracker that stopped answering.
+    ///
+    /// Deliberately distinct from [`DownloadQueueState::Failed`]: the entry
+    /// stays visible with its message and must never enter failed-download
+    /// handling (no blocklist, no removal, no re-search). Only `Failed` means
+    /// "this grab is over".
+    Warning,
     Failed,
 }
 
@@ -1222,6 +1428,9 @@ pub enum TrackedDownloadState {
     Importing,
     /// All expected files imported; download can be removed from client.
     Imported,
+    /// All expected files imported; torrent still seeding toward its goal; not
+    /// removable yet.
+    ImportedSeeding,
     /// Completed but can't auto-import (title mismatch, bad path, ID-only match).
     ImportBlocked,
     /// Client reports failure or encryption detected; queued for failure processing.
@@ -1239,6 +1448,7 @@ impl TrackedDownloadState {
             Self::ImportPending => "import_pending",
             Self::Importing => "importing",
             Self::Imported => "imported",
+            Self::ImportedSeeding => "imported_seeding",
             Self::ImportBlocked => "import_blocked",
             Self::FailedPending => "failed_pending",
             Self::Failed => "failed",
@@ -1252,6 +1462,7 @@ impl TrackedDownloadState {
             "import_pending" => Some(Self::ImportPending),
             "importing" => Some(Self::Importing),
             "imported" => Some(Self::Imported),
+            "imported_seeding" => Some(Self::ImportedSeeding),
             "import_blocked" => Some(Self::ImportBlocked),
             "failed_pending" => Some(Self::FailedPending),
             "failed" => Some(Self::Failed),
@@ -1261,8 +1472,26 @@ impl TrackedDownloadState {
     }
 
     /// Terminal states survive restart; non-terminal states are re-derived.
+    ///
+    /// `ImportedSeeding` is deliberately **not** terminal: the download is
+    /// still live in the client and has to be re-evaluated against its seeding
+    /// goal on every poll until the goal is met.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Imported | Self::Failed | Self::Ignored)
+    }
+
+    /// Import work is finished for this download and must not be dispatched
+    /// again. `ImportedSeeding` is settled even though it is not terminal: the
+    /// files are already in the library and only the seeding obligation is
+    /// outstanding, so re-import or re-observation must not reopen it.
+    pub fn is_import_settled(self) -> bool {
+        self.is_terminal() || matches!(self, Self::ImportedSeeding)
+    }
+
+    /// The download's payload reached the library, whether or not the client
+    /// entry has been released yet.
+    pub fn counts_as_imported(self) -> bool {
+        matches!(self, Self::Imported | Self::ImportedSeeding)
     }
 }
 
@@ -1338,7 +1567,82 @@ impl ImportArtifactResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Torrent seeding state for one download-queue row.
+///
+/// The first block is **observed**: the download-client plugin reports it on
+/// every poll (`PluginDownloadItem::{can_remove, can_move_files, completed_at}`
+/// plus `PluginTorrentItem::{seed_ratio, seed_time_seconds, is_private,
+/// uploaded_bytes}`), and the download-client adapter copies it verbatim onto
+/// the queue item. Every field is `Option` because the clients differ wildly in
+/// what they expose, and each `None` is load-bearing: it means *unknown*, never
+/// `false` and never `true`.
+///
+/// The second block is **policy**: the seeding goals the grab was resolved
+/// under, frozen on the download-submission row at grab time and joined back
+/// onto the queue item during enrichment. They are not client state and are
+/// absent for downloads Scryer did not grab under a seeding profile.
+///
+/// `Eq` is deliberately not derived (and is dropped from `DownloadQueueItem`
+/// along with it): a seed ratio is a real number and only `PartialEq` is
+/// meaningful for it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct DownloadSeedingSnapshot {
+    /// The client's own verdict on whether the seeding obligation is
+    /// discharged. Tri-state: `None` means this client cannot answer.
+    #[serde(default)]
+    pub can_remove: Option<bool>,
+    /// Whether the payload is complete and stable on disk. **Not** permission
+    /// to move it — that additionally requires seeding to be done.
+    #[serde(default)]
+    pub can_move_files: Option<bool>,
+    #[serde(default)]
+    pub seed_ratio: Option<f64>,
+    #[serde(default)]
+    pub seed_time_seconds: Option<i64>,
+    /// `Some(true)` arms the private-tracker rail. `None` is unknown, never
+    /// "public".
+    #[serde(default)]
+    pub is_private: Option<bool>,
+    #[serde(default)]
+    pub uploaded_bytes: Option<i64>,
+    /// When the payload finished downloading, RFC3339. The wall-clock fallback
+    /// for the time axis on clients with no seed-time counter.
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    /// Resolved ratio goal from the seeding profile this grab used.
+    #[serde(default)]
+    pub seed_goal_ratio: Option<f64>,
+    /// Resolved seed-time goal, in seconds.
+    #[serde(default)]
+    pub seed_goal_seconds: Option<i64>,
+    /// The profile said "seed forever"; this entry is never auto-removed.
+    #[serde(default)]
+    pub never_remove: bool,
+}
+
+impl DownloadSeedingSnapshot {
+    /// Whether anything here could only have come from a torrent.
+    ///
+    /// `can_remove` / `can_move_files` are reported by usenet clients too, so
+    /// they do not count; the torrent sub-object fields and the resolved goals
+    /// do.
+    pub fn has_torrent_signal(&self) -> bool {
+        self.seed_ratio.is_some()
+            || self.seed_time_seconds.is_some()
+            || self.is_private.is_some()
+            || self.uploaded_bytes.is_some()
+            || self.seed_goal_ratio.is_some()
+            || self.seed_goal_seconds.is_some()
+            || self.never_remove
+    }
+
+    /// Whether the client reported anything at all worth carrying.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DownloadQueueItem {
     pub id: String,
     pub title_id: Option<String>,
@@ -1394,6 +1698,11 @@ pub struct DownloadQueueItem {
     /// How the title was resolved for tracking.
     #[serde(default)]
     pub tracked_match_type: Option<TitleMatchType>,
+    /// Torrent seeding observation from the latest client poll, plus the goals
+    /// the grab resolved to. `None` for usenet and for clients that report
+    /// nothing.
+    #[serde(default)]
+    pub seeding: Option<DownloadSeedingSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1819,6 +2128,8 @@ pub struct ImportResult {
     pub file_size_bytes: Option<i64>,
     pub link_type: Option<ImportStrategy>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub release_burned: bool,
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
 }
@@ -1922,6 +2233,12 @@ pub enum TitleHistoryEventType {
     FileRenamed,
     DownloadIgnored,
     Rematched,
+    /// A torrent was imported and its client entry is being retained while it
+    /// seeds. Opens the seeding-retention window; recorded once per torrent.
+    SeedingStarted,
+    /// The seeding obligation was discharged and the gate acted on the client
+    /// entry. Closes the window opened by `SeedingStarted`.
+    SeedingCompleted,
 }
 
 impl TitleHistoryEventType {
@@ -1942,6 +2259,8 @@ impl TitleHistoryEventType {
             Self::FileRenamed => "file_renamed",
             Self::DownloadIgnored => "download_ignored",
             Self::Rematched => "rematched",
+            Self::SeedingStarted => "seeding_started",
+            Self::SeedingCompleted => "seeding_completed",
         }
     }
 
@@ -1962,6 +2281,8 @@ impl TitleHistoryEventType {
             "file_renamed" => Some(Self::FileRenamed),
             "download_ignored" => Some(Self::DownloadIgnored),
             "rematched" => Some(Self::Rematched),
+            "seeding_started" => Some(Self::SeedingStarted),
+            "seeding_completed" => Some(Self::SeedingCompleted),
             _ => None,
         }
     }
@@ -1982,6 +2303,8 @@ impl TitleHistoryEventType {
         Self::FileRenamed,
         Self::DownloadIgnored,
         Self::Rematched,
+        Self::SeedingStarted,
+        Self::SeedingCompleted,
     ];
 }
 
@@ -2024,6 +2347,14 @@ pub struct TitleHistoryRecord {
     pub title_id: String,
     #[serde(default)]
     pub title_name: Option<String>,
+    /// Poster of the title, resolved during projection hydration like
+    /// `library_id`. `None` when the title row is gone or has no poster.
+    #[serde(default)]
+    pub poster_url: Option<String>,
+    /// Library owning the title, resolved during projection hydration. `None`
+    /// when the title row is gone and the event cannot be attributed.
+    #[serde(default)]
+    pub library_id: Option<String>,
     #[serde(default)]
     pub facet: Option<MediaFacet>,
     pub episode_id: Option<String>,
@@ -2062,6 +2393,11 @@ pub struct TitleHistoryRecord {
     pub source_path: Option<String>,
     #[serde(default)]
     pub dest_path: Option<String>,
+    /// Bytes involved in the event: the imported total for `Imported` rows and
+    /// the new file's size for `FileUpgraded` rows. `None` for other event
+    /// types and for events persisted before the payload carried a size.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
     pub data_json: Option<String>,
     pub occurred_at: String,
     pub created_at: String,
@@ -2203,6 +2539,8 @@ pub enum DomainEventType {
     DownloadQueueItemUpserted,
     DownloadQueueItemRemoved,
     DownloadIgnored,
+    SeedingStarted,
+    SeedingCompleted,
 }
 
 impl DomainEventType {
@@ -2252,6 +2590,8 @@ impl DomainEventType {
             Self::DownloadQueueItemUpserted => "download_queue_item_upserted",
             Self::DownloadQueueItemRemoved => "download_queue_item_removed",
             Self::DownloadIgnored => "download_ignored",
+            Self::SeedingStarted => "seeding_started",
+            Self::SeedingCompleted => "seeding_completed",
         }
     }
 
@@ -2301,6 +2641,8 @@ impl DomainEventType {
             "download_queue_item_upserted" => Some(Self::DownloadQueueItemUpserted),
             "download_queue_item_removed" => Some(Self::DownloadQueueItemRemoved),
             "download_ignored" => Some(Self::DownloadIgnored),
+            "seeding_started" => Some(Self::SeedingStarted),
+            "seeding_completed" => Some(Self::SeedingCompleted),
             _ => None,
         }
     }
@@ -2527,6 +2869,11 @@ pub struct ImportCompletedEventData {
     pub quality: Option<String>,
     #[serde(default)]
     pub episode_ids: Vec<String>,
+    /// Total bytes imported by this event. `#[serde(default)]` keeps events
+    /// persisted before this field existed deserializable; they read back as
+    /// `None`.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2618,6 +2965,11 @@ pub struct MediaFileUpgradedEventData {
     pub current_file_id: Option<String>,
     pub old_score: Option<i32>,
     pub new_score: Option<i32>,
+    /// Size of the NEW (current) file. `#[serde(default)]` keeps events
+    /// persisted before this field existed deserializable; they read back as
+    /// `None`.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -2861,7 +3213,9 @@ pub struct JobNextRunUpdatedEventData {
     pub next_run_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable here: the queue item carries an observed seed ratio,
+/// which is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DownloadQueueItemUpsertedEventData {
     pub item: DownloadQueueItem,
 }
@@ -2886,7 +3240,52 @@ pub struct DownloadIgnoredEventData {
     pub source_title: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// A torrent was imported and its client entry retained while it seeds.
+///
+/// Recorded once, on the first transition into `TrackedDownloadState::
+/// ImportedSeeding` — never once per held poll tick. `Eq` is not derivable:
+/// the resolved ratio goal is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingStartedEventData {
+    pub title: Option<TitleContextSnapshot>,
+    pub download_client_item_id: String,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub source_provider: Option<String>,
+    /// Release title the download was grabbed under.
+    pub source_title: Option<String>,
+    /// The seeding gate's reason constant for holding this entry, verbatim.
+    pub reason: String,
+    /// Observed at the moment the entry was parked, when the client reports it.
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+}
+
+/// The seeding obligation was discharged and the gate acted on the client
+/// entry. `Eq` is not derivable: the observed ratio is an `f64`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SeedingCompletedEventData {
+    pub title: Option<TitleContextSnapshot>,
+    pub download_client_item_id: String,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub source_provider: Option<String>,
+    /// Release title the download was grabbed under.
+    pub source_title: Option<String>,
+    /// What actually happened to the client entry: `removed`, `paused`,
+    /// `kept`, or `vanished` (the client had already dropped it).
+    pub action: String,
+    /// The seeding gate's reason constant for releasing the entry, verbatim.
+    pub reason: String,
+    /// Observed at release, when the client reports it.
+    pub seed_ratio: Option<f64>,
+    pub seed_time_seconds: Option<i64>,
+}
+
+/// `Eq` is not derivable: the download-queue payload carries an observed seed
+/// ratio (`f64`). Nothing keys a map or set on an event payload, so `PartialEq`
+/// is the whole requirement.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
     MediaRequestSubmitted(MediaRequestSubmittedEventData),
@@ -2930,9 +3329,13 @@ pub enum DomainEventPayload {
     JobRunCompleted(JobRunCompletedEventData),
     JobRunFailed(JobRunFailedEventData),
     JobNextRunUpdated(JobNextRunUpdatedEventData),
-    DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData),
+    /// Boxed: this payload embeds a whole `DownloadQueueItem` and would
+    /// otherwise set the size of every `DomainEventPayload` in the system.
+    DownloadQueueItemUpserted(Box<DownloadQueueItemUpsertedEventData>),
     DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData),
     DownloadIgnored(DownloadIgnoredEventData),
+    SeedingStarted(SeedingStartedEventData),
+    SeedingCompleted(SeedingCompletedEventData),
 }
 
 impl DomainEventPayload {
@@ -2984,6 +3387,8 @@ impl DomainEventPayload {
             Self::DownloadQueueItemUpserted(_) => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved(_) => DomainEventType::DownloadQueueItemRemoved,
             Self::DownloadIgnored(_) => DomainEventType::DownloadIgnored,
+            Self::SeedingStarted(_) => DomainEventType::SeedingStarted,
+            Self::SeedingCompleted(_) => DomainEventType::SeedingCompleted,
         }
     }
 }
@@ -3047,7 +3452,9 @@ impl DomainEventActorKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable: a download-queue payload carries an observed seed
+/// ratio (`f64`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DomainEvent {
     pub sequence: i64,
     pub event_id: String,
@@ -3064,7 +3471,9 @@ pub struct DomainEvent {
     pub payload: DomainEventPayload,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// `Eq` is not derivable: a download-queue payload carries an observed seed
+/// ratio (`f64`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NewDomainEvent {
     pub event_id: String,
     pub occurred_at: DateTime<Utc>,
@@ -3316,6 +3725,8 @@ pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     #[serde(default)]
+    pub password_change_required: bool,
+    #[serde(default)]
     pub account_kind: UserAccountKind,
     #[serde(default)]
     pub authorization: UserAuthorization,
@@ -3542,6 +3953,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: None,
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
@@ -3552,6 +3964,7 @@ impl User {
             id: Self::SYSTEM_EXECUTION_ID.to_string(),
             username: "System".to_string(),
             password_hash: None,
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
@@ -3569,6 +3982,7 @@ impl User {
             id: Id::new().0,
             username: username.into(),
             password_hash: Some(password_hash.into()),
+            password_change_required: false,
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }

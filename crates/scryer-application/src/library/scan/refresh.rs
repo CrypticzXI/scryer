@@ -3,7 +3,7 @@ use crate::library_scan_helpers::require_directory_library_path;
 use crate::stored_paths::path_to_stored_string;
 
 async fn title_ready_for_background_refresh(app: &AppUseCase, title: &Title) -> AppResult<bool> {
-    let metadata_language = app.metadata_language().await;
+    let metadata_language = app.resolve_metadata_language_for_title(title).await;
     if title.metadata_fetched_at.is_none()
         || title.metadata_language.as_deref() != Some(metadata_language.as_str())
     {

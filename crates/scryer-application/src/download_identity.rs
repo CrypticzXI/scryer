@@ -216,7 +216,7 @@ mod tests {
             initial_download_id: Some("scryer-download:1"),
             source_kind: Some(DownloadSourceKind::TorrentFile),
             source_hint: Some("https://indexer.example/release.torrent"),
-            info_hash_hint: None,
+            info_hash_hint: Some("0123456789abcdef0123456789abcdef01234567"),
             client_type: Some("qbittorrent"),
             client_item_id: Some("job-1"),
             accepted_info_hash: Some(accepted_hash),

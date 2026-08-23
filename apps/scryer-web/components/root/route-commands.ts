@@ -1,3 +1,4 @@
+import { canAccessDashboard } from "@/lib/utils/routes";
 import type { LucideIcon } from "lucide-react";
 import {
   ActivitySquare,
@@ -10,6 +11,7 @@ import {
   FileText,
   FolderCog,
   Inbox,
+  LayoutDashboard,
   ListChecks,
   Puzzle,
   Server,
@@ -111,6 +113,7 @@ export function buildRouteCommands({
     canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
   const automationGroupLabel = t("nav.group.automation");
   const catalogsGroupLabel = t("nav.group.catalogs");
+  const overviewGroupLabel = t("nav.group.overview");
   const integrationsGroupLabel = t("nav.group.integrations");
   const requestsGroupLabel = t("nav.group.requests");
   const settingsGroupLabel = t("nav.settings");
@@ -203,6 +206,25 @@ export function buildRouteCommands({
     : [];
 
   return [
+    ...(canAccessDashboard(canManageSystemSettings)
+      ? [{
+          id: "dashboard",
+          label: t("nav.dashboard"),
+          description: t("dashboard.commandDescription"),
+          groupLabel: overviewGroupLabel,
+          keywords: [
+            "dashboard",
+            "home",
+            "overview",
+            "attention",
+            "storage",
+            "queue",
+            "status",
+          ],
+          icon: LayoutDashboard,
+          onSelect: buildNavigate(onNavigate, "dashboard"),
+        } satisfies RouteCommand]
+      : []),
     ...mediaOverviewCommands,
     ...(canManageTitle || canRequestMedia
       ? [{
@@ -413,7 +435,19 @@ export function buildRouteCommands({
           label: `${integrationsGroupLabel} / ${t("settings.indexers")}`,
           description: t("settings.indexers"),
           groupLabel: integrationsGroupLabel,
-          keywords: ["settings", "indexers", "feeds", "search", "sources"],
+          // Seeding profiles and indexer proxies are panes of this page, so the
+          // palette has to find it by their names too.
+          keywords: [
+            "settings",
+            "indexers",
+            "feeds",
+            "search",
+            "sources",
+            "proxies",
+            "seeding",
+            "profiles",
+            "ratio",
+          ],
           icon: Database,
           onSelect: buildNavigate(onNavigate, "settings", "indexers"),
         } satisfies RouteCommand, {

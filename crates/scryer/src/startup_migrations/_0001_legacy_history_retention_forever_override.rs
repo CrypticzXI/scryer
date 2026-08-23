@@ -3,7 +3,7 @@ use std::sync::Arc;
 use scryer_application::{
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::SettingsStore;
+use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
 
 pub(crate) async fn clear_legacy_history_retention_forever_override(
     settings_store: Arc<SettingsStore>,
@@ -24,7 +24,7 @@ pub(crate) async fn clear_legacy_history_retention_forever_override(
             && record.value_json.as_deref() == Some("true")
             && !retention_days
                 .as_ref()
-                .is_some_and(scryer_infrastructure::SettingsValueRecord::has_override)
+                .is_some_and(scryer_infrastructure_sql::types::SettingsValueRecord::has_override)
     });
 
     if !should_clear {
@@ -48,7 +48,7 @@ pub(crate) async fn clear_legacy_history_retention_forever_override(
 mod tests {
     use super::*;
     use crate::settings_bootstrap::seed_service_setting_definitions;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
+    use scryer_infrastructure_datastore::{MigrationMode, SqliteServices};
 
     async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let temp = tempfile::tempdir().expect("tempdir");

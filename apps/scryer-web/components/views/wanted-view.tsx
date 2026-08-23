@@ -100,7 +100,9 @@ type WantedViewState = {
   expandedItemId: string | null;
   decisions: ReleaseDecisionItem[];
   decisionsLoading: boolean;
-  loadDecisions: (id: string) => Promise<void>;
+  standbyReleases: PendingReleaseItem[];
+  standbyLoading: boolean;
+  loadItemDetails: (id: string, standbyCount: number) => Promise<void>;
   triggerSearch: (id: string) => Promise<void>;
   pauseItem: (id: string) => Promise<void>;
   resumeItem: (id: string) => Promise<void>;
@@ -139,6 +141,7 @@ function formatWantedDecisionCode(code: string, t: Translate) {
     category_mismatch: "wanted.decision.categoryMismatch",
     ambiguous_identity: "wanted.decision.ambiguousIdentity",
     quality_blocked: "wanted.decision.qualityBlocked",
+    minimum_seeders: "wanted.decision.minimumSeeders",
     upgrade_rejected: "wanted.decision.upgradeRejected",
     pending_delay: "wanted.decision.pendingDelay",
     already_active: "wanted.decision.alreadyActive",
@@ -266,6 +269,107 @@ function formatBytes(bytes: number | null) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function isSeasonPackRelease(title: string) {
+  return /(?:^|[ ._-])S\d{1,2}(?:$|[ ._-])/i.test(title) && !/S\d{1,2}E\d{1,3}/i.test(title);
+}
+
+function StandbyReleasesList({
+  items,
+  loading,
+}: {
+  items: PendingReleaseItem[];
+  loading: boolean;
+}) {
+  const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
+
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">{t("wanted.loadingStandby")}</p>;
+  }
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="space-y-2" data-ui="wanted-standby-list">
+      <h4 className="text-sm font-medium text-foreground">
+        {t("wanted.standbyCandidates", { count: items.length })}
+      </h4>
+      <div className="space-y-2">
+        {items.map((release, index) => (
+          <div
+            key={release.id}
+            className="rounded-lg border border-border bg-background/40 p-3"
+          >
+            <div className="flex flex-wrap items-start gap-2">
+              <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                {t("wanted.standbyRank", { rank: index + 1 })}
+              </span>
+              {isSeasonPackRelease(release.releaseTitle) ? (
+                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("wanted.seasonPack")}
+                </span>
+              ) : null}
+              <p className="min-w-0 flex-1 break-words text-xs font-medium text-foreground">
+                {release.releaseTitle}
+              </p>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground sm:grid-cols-3">
+              <span>{t("wanted.standbyIndexer")}: {release.indexerSource ?? "—"}</span>
+              <span>{t("wanted.standbySize")}: {formatBytes(release.releaseSizeBytes)}</span>
+              {release.seeders == null ? null : (
+                <span>{t("wanted.standbySeeders")}: {release.seeders}</span>
+              )}
+              <span>{t("wanted.standbyScore")}: {release.releaseScore}</span>
+              <span>{t("wanted.standbyAge")}: {formatDate(release.publishedAt ?? release.addedAt, dateTimeFormat)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StandbyChip({
+  item,
+  expanded,
+  onExpand,
+}: {
+  item: WantedItem;
+  expanded: boolean;
+  onExpand: () => void;
+}) {
+  const t = useTranslate();
+  if (item.standbyCount <= 0) {
+    return null;
+  }
+  const tooltip = `${t("wanted.standbyTooltip", { count: item.standbyCount })} ${t("wanted.standbyScopeNote")}`;
+  return (
+    <button
+      type="button"
+      className="rounded border border-[rgba(var(--scry-accent-rgb),0.35)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2 py-0.5 text-xs font-medium text-[var(--scry-accent-text)] hover:bg-[rgba(var(--scry-accent-rgb),0.2)]"
+      title={tooltip}
+      aria-label={tooltip}
+      aria-expanded={expanded}
+      onClick={onExpand}
+    >
+      {t("wanted.standby", { count: item.standbyCount })}
+    </button>
+  );
+}
+
+function NoStandbyCandidates({ item }: { item: WantedItem }) {
+  const t = useTranslate();
+  if (
+    item.status !== "WANTED" ||
+    item.convergenceState !== "CONVERGED" ||
+    item.standbyCount !== 0
+  ) {
+    return null;
+  }
+  return <span className="text-xs text-muted-foreground">{t("wanted.noStandbyCandidates")}</span>;
 }
 
 function parseDecisionExplanation(
@@ -477,7 +581,9 @@ function WantedItemsCard({
     expandedItemId,
     decisions,
     decisionsLoading,
-    loadDecisions,
+    standbyReleases,
+    standbyLoading,
+    loadItemDetails,
     triggerSearch,
     pauseItem,
     resumeItem,
@@ -611,6 +717,12 @@ function WantedItemsCard({
                           indexersRouted={item.indexersRouted}
                           recencyLane={item.recencyLane}
                         />
+                        <NoStandbyCandidates item={item} />
+                        <StandbyChip
+                          item={item}
+                          expanded={expandedItemId === item.id}
+                          onExpand={() => void loadItemDetails(item.id, item.standbyCount)}
+                        />
                         <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           {formatWantedMediaType(item.mediaType, t)}
                         </span>
@@ -619,7 +731,7 @@ function WantedItemsCard({
                     <button
                       type="button"
                       className="p-0.5 text-muted-foreground hover:text-foreground"
-                      onClick={() => void loadDecisions(item.id)}
+                      onClick={() => void loadItemDetails(item.id, item.standbyCount)}
                     >
                       {expandedItemId === item.id ? (
                         <ChevronDown className="h-4 w-4" />
@@ -687,6 +799,7 @@ function WantedItemsCard({
                   </div>
                   {expandedItemId === item.id ? (
                     <div className="mt-3 border-t border-border pt-3">
+                      <StandbyReleasesList items={standbyReleases} loading={standbyLoading} />
                       {decisionsLoading ? (
                         <p className="text-sm text-muted-foreground">{t("wanted.loadingDecisions")}</p>
                       ) : decisions.length === 0 ? (
@@ -806,7 +919,7 @@ function WantedItemsCard({
                       <TableCell className="text-center">
                         <button
                           className="p-0.5 text-muted-foreground hover:text-foreground"
-                          onClick={() => void loadDecisions(item.id)}
+                          onClick={() => void loadItemDetails(item.id, item.standbyCount)}
                         >
                           {expandedItemId === item.id ? (
                             <ChevronDown className="h-4 w-4" />
@@ -836,6 +949,13 @@ function WantedItemsCard({
                             </div>
                           ) : null}
                         </button>
+                        <div className="mt-1">
+                          <StandbyChip
+                            item={item}
+                            expanded={expandedItemId === item.id}
+                            onExpand={() => void loadItemDetails(item.id, item.standbyCount)}
+                          />
+                        </div>
                       </TableCell>
                       <TableCell className="text-center text-xs text-muted-foreground">
                         <span className="block truncate">
@@ -855,6 +975,7 @@ function WantedItemsCard({
                           indexersRouted={item.indexersRouted}
                           recencyLane={item.recencyLane}
                         />
+                        <NoStandbyCandidates item={item} />
                       </TableCell>
                       <TableCell className="text-center text-xs">
                         {item.latestReleaseDecision ? (
@@ -928,6 +1049,7 @@ function WantedItemsCard({
                     {expandedItemId === item.id && (
                       <TableRow>
                         <TableCell colSpan={11} className="bg-muted/30 p-4">
+                          <StandbyReleasesList items={standbyReleases} loading={standbyLoading} />
                           {decisionsLoading ? (
                             <p className="text-sm text-muted-foreground">
                               {t("wanted.loadingDecisions")}

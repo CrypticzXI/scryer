@@ -1400,6 +1400,10 @@ impl ResolvedActor {
             step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
             persist_session: self.token_claims.persist_session,
+            auth_session_version: self.token_claims.auth_session_version.clone(),
+            password_change_required_after_enrollment: self
+                .token_claims
+                .password_change_required_after_enrollment,
             oauth_authorization_source: self.token_claims.oauth_authorization_source,
         }
     }
@@ -2175,6 +2179,13 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::Validation(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::NoAutoEligibleRelease { .. } => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "no auto-eligible release found".to_string(),
+            )),
+        )
+            .into_response(),
         AppError::PluginInstallInProgress(message) => {
             (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
         }
@@ -2192,7 +2203,8 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitRejected(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }
-        AppError::DownloadSubmitUnavailable(message)
+        AppError::DownloadSourceGone(message)
+        | AppError::DownloadSubmitUnavailable(message)
         | AppError::DownloadSubmitFailoverExhausted(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
@@ -2219,6 +2231,7 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::MfaStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
         | AppError::MfaEnrollmentRequired(message)
+        | AppError::PasswordChangeRequired(message)
         | AppError::TotpInvalidCode(message)
         | AppError::TotpRecoveryCodeUsed(message) => {
             (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
@@ -2363,10 +2376,12 @@ mod tests {
 
         let context = common::TestContext::new().await;
         let fetch_calls = Arc::new(AtomicUsize::new(0));
-        let connection_store = Arc::new(scryer_infrastructure::MediaServerConnectionStore::new(
-            context.db.datastore(),
-            context.db.encryption_key_state(),
-        ));
+        let connection_store = Arc::new(
+            scryer_infrastructure_library::media::servers::MediaServerConnectionStore::new(
+                context.db.datastore(),
+                context.db.encryption_key_state(),
+            ),
+        );
         let app = context.app.with_test_overrides(|builder| {
             builder
                 .with_media_server_connection_store(connection_store.clone())
@@ -2430,7 +2445,7 @@ mod tests {
             .await
             .expect("issue ordinary token");
         let mfa_enrollment_token = app
-            .issue_mfa_enrollment_token(&ordinary, false)
+            .issue_mfa_enrollment_token(&ordinary, false, false, None)
             .await
             .expect("issue MFA enrollment token");
         let manager_token = app
@@ -3463,6 +3478,7 @@ mod tests {
                 id: "authless-ws-user".to_string(),
                 username: "Anonymous".to_string(),
                 password_hash: None,
+                password_change_required: false,
                 account_kind: Default::default(),
                 authorization: Default::default(),
             },

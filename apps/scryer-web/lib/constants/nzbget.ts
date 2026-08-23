@@ -14,7 +14,8 @@ export const DOWNLOAD_CLIENT_ROUTING_EMPTY: DownloadClientRoutingSettings = {
   recentQueuePriority: "",
   olderQueuePriority: "",
   removeCompleted: true,
-  removeFailed: false,
+  removeFailed: true,
+  seedingProfileId: null,
 };
 export const NZBGET_CLIENT_ROUTING_EMPTY = DOWNLOAD_CLIENT_ROUTING_EMPTY;
 export const MEDIA_SETTING_EMPTY_VALUE = "";
