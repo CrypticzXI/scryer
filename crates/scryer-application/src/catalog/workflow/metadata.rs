@@ -104,26 +104,19 @@ impl AppUseCase {
     }
 
     pub(crate) async fn resolve_metadata_language_for_title(&self, title: &Title) -> String {
-        if let Ok(Some(language)) = self
-            .read_setting_string_value_explicit(
+        let (title_override, library_override, global_language) = tokio::join!(
+            self.read_setting_string_value_explicit(
                 TITLE_METADATA_LANGUAGE_OVERRIDE_KEY,
                 Some(&title.id),
-            )
-            .await
-            && let Some(language) = crate::normalize_metadata_language_code(&language)
-        {
-            return language;
-        }
-
-        if let Ok(Some(language)) = self
-            .read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&title.library_id))
-            .await
-            && let Some(language) = crate::normalize_metadata_language_code(&language)
-        {
-            return language;
-        }
-
-        self.metadata_language().await
+            ),
+            self.read_setting_string_value_explicit(METADATA_LANGUAGE_KEY, Some(&title.library_id)),
+            self.metadata_language(),
+        );
+        resolve_metadata_language_overrides(
+            title_override.ok().flatten().as_deref(),
+            library_override.ok().flatten().as_deref(),
+            &global_language,
+        )
     }
 
     /// Resolve a collection of titles with one read per override tier.
@@ -160,11 +153,11 @@ impl AppUseCase {
         titles
             .iter()
             .map(|title| {
-                let language = title_overrides
-                    .get(&title.id)
-                    .or_else(|| library_overrides.get(&title.library_id))
-                    .cloned()
-                    .unwrap_or_else(|| global_language.clone());
+                let language = resolve_metadata_language_overrides(
+                    title_overrides.get(&title.id).map(String::as_str),
+                    library_overrides.get(&title.library_id).map(String::as_str),
+                    &global_language,
+                );
                 (title.id.clone(), language)
             })
             .collect()
@@ -181,7 +174,21 @@ impl AppUseCase {
         .await
         .map(|value| value.and_then(|language| crate::normalize_metadata_language_code(&language)))
     }
+}
 
+fn resolve_metadata_language_overrides(
+    title_override: Option<&str>,
+    library_override: Option<&str>,
+    global_language: &str,
+) -> String {
+    title_override
+        .and_then(crate::normalize_metadata_language_code)
+        .or_else(|| library_override.and_then(crate::normalize_metadata_language_code))
+        .or_else(|| crate::normalize_metadata_language_code(global_language))
+        .unwrap_or_else(|| "eng".to_string())
+}
+
+impl AppUseCase {
     pub async fn effective_metadata_language_for_title(&self, title_id: &str) -> AppResult<String> {
         let title = self
             .services
@@ -910,4 +917,37 @@ pub(crate) fn extract_tvdb_id(title: &scryer_domain::Title) -> Option<i64> {
         .iter()
         .find(|eid| eid.source == "tvdb")
         .and_then(|eid| eid.value.parse::<i64>().ok())
+}
+
+#[cfg(test)]
+mod metadata_language_tests {
+    use super::resolve_metadata_language_overrides;
+
+    #[test]
+    fn metadata_language_overrides_prefer_title_then_library_then_global() {
+        assert_eq!(
+            resolve_metadata_language_overrides(Some("jpn"), Some("deu"), "eng"),
+            "jpn"
+        );
+        assert_eq!(
+            resolve_metadata_language_overrides(None, Some("deu"), "eng"),
+            "deu"
+        );
+        assert_eq!(
+            resolve_metadata_language_overrides(None, None, "spa"),
+            "spa"
+        );
+    }
+
+    #[test]
+    fn metadata_language_overrides_ignore_invalid_values() {
+        assert_eq!(
+            resolve_metadata_language_overrides(Some("not-a-language"), Some("jpn"), "eng"),
+            "jpn"
+        );
+        assert_eq!(
+            resolve_metadata_language_overrides(Some("not-a-language"), None, "also-invalid"),
+            "eng"
+        );
+    }
 }

@@ -808,6 +808,15 @@ impl AppUseCase {
         target: HydrationTarget,
     ) -> AppResult<Title> {
         let language = self.resolve_metadata_language_for_title(&target.title).await;
+        self.hydrate_title_single_apq_with_language(target, &language)
+            .await
+    }
+
+    pub(crate) async fn hydrate_title_single_apq_with_language(
+        &self,
+        target: HydrationTarget,
+        language: &str,
+    ) -> AppResult<Title> {
         self.emit_hydration_started(&target.title).await;
         let tvdb_id = target
             .requested_tvdb_id

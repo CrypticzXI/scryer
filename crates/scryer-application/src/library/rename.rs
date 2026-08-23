@@ -13,6 +13,7 @@ use tracing::warn;
 use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::activity::NotificationMediaUpdate;
+use crate::catalog_workflow::{HydrationSource, HydrationTarget};
 use crate::domain_events::{
     created_media_update, deleted_media_update, new_title_domain_event, title_context_snapshot,
 };
@@ -288,11 +289,15 @@ impl AppUseCase {
         }
 
         let settings = self.read_rename_plan_settings(&facet).await?;
+        let effective_languages = self
+            .resolve_metadata_languages_for_titles(std::slice::from_ref(&title))
+            .await;
         self.build_rename_plan_for_titles(
             title.facet.clone(),
             std::slice::from_ref(&title),
             Some(title.id.clone()),
             settings,
+            &effective_languages,
         )
         .await
     }
@@ -339,6 +344,7 @@ impl AppUseCase {
             return Err(AppError::Validation("renamer_disabled".into()));
         }
         let settings = self.read_rename_plan_settings(&facet).await?;
+        let effective_languages = self.resolve_metadata_languages_for_titles(&titles).await;
 
         // Each title plans against its own state, so they are independent and
         // run concurrently. Planning one title at a time would serialize work
@@ -346,12 +352,14 @@ impl AppUseCase {
         // the fan-out it replaced however little per-title work it saves.
         futures_util::stream::iter(titles.into_iter().map(|title| {
             let settings = settings.clone();
+            let effective_languages = effective_languages.clone();
             async move {
                 self.build_rename_plan_for_titles(
                     title.facet.clone(),
                     std::slice::from_ref(&title),
                     Some(title.id.clone()),
                     settings,
+                    &effective_languages,
                 )
                 .await
             }
@@ -398,7 +406,8 @@ impl AppUseCase {
         }
         let mut titles = manageable;
         titles.sort_by(|left, right| left.id.cmp(&right.id));
-        self.build_rename_plan_for_titles(facet, &titles, None, settings)
+        let effective_languages = self.resolve_metadata_languages_for_titles(&titles).await;
+        self.build_rename_plan_for_titles(facet, &titles, None, settings, &effective_languages)
             .await
     }
 
@@ -944,12 +953,22 @@ impl AppUseCase {
         titles: &[Title],
         title_id: Option<String>,
         settings: RenamePlanSettings,
+        effective_languages: &HashMap<String, String>,
     ) -> AppResult<RenamePlan> {
         let mut planning = RenamePlanningState::default();
         let mut items = Vec::new();
         for title in titles {
+            let effective_language = effective_languages
+                .get(&title.id)
+                .map(String::as_str)
+                .unwrap_or("eng");
             let mut title_items = self
-                .build_rename_plan_items_for_title(title, &settings, &mut planning)
+                .build_rename_plan_items_for_title(
+                    title,
+                    effective_language,
+                    &settings,
+                    &mut planning,
+                )
                 .await?;
             items.append(&mut title_items);
         }
@@ -967,13 +986,17 @@ impl AppUseCase {
     async fn build_rename_plan_items_for_title(
         &self,
         title: &Title,
+        effective_language: &str,
         settings: &RenamePlanSettings,
         planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
+        let title = self
+            .refresh_rename_title_metadata_if_stale(title, effective_language)
+            .await;
         // Only the media root varies per title; every template and policy came
         // from `settings`, which was resolved once for the whole plan.
-        let media_root = self.title_root_folder_path_override(title).await?;
-        let use_season_folders = self.resolve_use_season_folders(title).await?;
+        let media_root = self.title_root_folder_path_override(&title).await?;
+        let use_season_folders = self.resolve_use_season_folders(&title).await?;
         let collections = self
             .services
             .catalog
@@ -1052,6 +1075,46 @@ impl AppUseCase {
         };
 
         self.normalize_existing_rename_collisions(items).await
+    }
+
+    async fn refresh_rename_title_metadata_if_stale(
+        &self,
+        title: &Title,
+        effective_language: &str,
+    ) -> Title {
+        let metadata_language = title
+            .metadata_language
+            .as_deref()
+            .and_then(crate::normalize_metadata_language_code);
+        if metadata_language.as_deref() == Some(effective_language) {
+            return title.clone();
+        }
+
+        match self
+            .hydrate_title_single_apq_with_language(
+                HydrationTarget {
+                    title: title.clone(),
+                    requested_tvdb_id: None,
+                    sync_wanted_after_completion: false,
+                    source: HydrationSource::Interactive,
+                },
+                effective_language,
+            )
+            .await
+        {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                warn!(
+                    title_id = %title.id,
+                    title_name = %title.name,
+                    effective_language,
+                    persisted_metadata_language = ?metadata_language,
+                    error = %error,
+                    "rename metadata refresh failed; using persisted title metadata"
+                );
+                title.clone()
+            }
+        }
     }
 
     async fn normalize_existing_rename_collisions(
