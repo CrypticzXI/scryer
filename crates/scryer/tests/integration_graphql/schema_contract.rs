@@ -533,19 +533,24 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // OBJECT 300->301, and INPUT_OBJECT 166->168.
     // Temporary-password replacement adds one mutation and its input object:
     // mutation 186->187, INPUT_OBJECT 168->169, public types 585->586.
+    // Durable indexer HTTP error history adds the indexerErrors and indexerError
+    // query roots: query 127->129. The title-id work changes existing metadata
+    // query inputs and payload fields only, so it adds no roots or named types.
+    // OAuth client registrations add their create, update, and delete mutation
+    // roots and six named types: mutation 187->190, public types 593->599.
     assert_eq!(
-        query_field_count, 127,
+        query_field_count, 129,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 187,
+        mutation_field_count, 190,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 593);
-    assert_eq!(kind_count("OBJECT"), 306);
-    assert_eq!(kind_count("INPUT_OBJECT"), 169);
-    assert_eq!(kind_count("ENUM"), 106);
+    assert_eq!(public_types.len(), 599);
+    assert_eq!(kind_count("OBJECT"), 309);
+    assert_eq!(kind_count("INPUT_OBJECT"), 171);
+    assert_eq!(kind_count("ENUM"), 107);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -553,6 +558,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"indexerDownloadClientMappingCatalog"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
+    assert!(query_field_names.contains(&"indexerErrors"));
+    assert!(query_field_names.contains(&"indexerError"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     assert!(!query_field_names.contains(&"catalogHasValidRoot"));
@@ -1452,10 +1459,17 @@ async fn graphql_introspection_search_metadata_uses_media_facet_enum() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect::<Vec<_>>(),
-        vec!["tvdbId", "language"]
+        vec!["tvdbId", "smgId", "tmdbId", "imdbId", "language"]
     );
-    assert_eq!(movie_input_fields[0]["type"]["kind"], "NON_NULL");
-    assert_eq!(movie_input_fields[0]["type"]["ofType"]["name"], "String");
+    for (field, scalar) in [
+        (&movie_input_fields[0], "String"),
+        (&movie_input_fields[1], "Int"),
+        (&movie_input_fields[2], "Int"),
+        (&movie_input_fields[3], "String"),
+    ] {
+        assert_eq!(field["type"]["kind"], "SCALAR");
+        assert_eq!(field["type"]["name"], scalar);
+    }
 
     let series_input_fields = body["data"]["metadataSeriesInput"]["inputFields"]
         .as_array()

@@ -702,6 +702,14 @@ pub struct AddTitleInput {
     pub options: Option<TitleOptionsInput>,
     /// External provider identifiers for the title.
     pub external_ids: Option<Vec<ExternalIdInput>>,
+    /// SMG canonical movie title ID, when supplied by metadata search.
+    pub smg_id: Option<i64>,
+    /// TVDB title ID, when supplied by metadata search.
+    pub tvdb_id: Option<String>,
+    /// TMDB title ID, when supplied by metadata search.
+    pub tmdb_id: Option<i64>,
+    /// IMDb title ID, when supplied by metadata search.
+    pub imdb_id: Option<String>,
     /// Download source locator, such as an NZB URL or magnet URI, used when queuing the title.
     pub source_hint: Option<String>,
     /// Optional source category for the title.
@@ -914,8 +922,10 @@ pub struct SetPrimaryMovieFileInput {
 pub struct FixTitleMatchInput {
     /// Title identity to rematch.
     pub title_id: ID,
-    /// TVDB identity to associate with the title.
-    pub tvdb_id: String,
+    /// TVDB identity to associate with the title. Required for Series and Anime.
+    pub tvdb_id: Option<String>,
+    /// SMG canonical movie title ID to associate with a Movie title.
+    pub smg_id: Option<i64>,
 }
 
 #[derive(InputObject, Clone)]

@@ -1310,9 +1310,9 @@ const en: LocaleDictionary = {
   "pendingImports.bindSelectedEpisodes": "Bind Selected Episodes",
   "pendingImports.episodeNumberLabel": "Episode {{number}}",
 
-  "tvdb.searchResults": "TVDB Search Results",
-  "tvdb.searchPrompt": "Search TVDB by entering a title above.",
-  "tvdb.searchByTvdb": "Search TVDB",
+  "tvdb.searchResults": "Metadata Search Results",
+  "tvdb.searchPrompt": "Search metadata by entering a title above.",
+  "tvdb.searchByTvdb": "Search metadata",
 
   "nzb.searchResultsFor": "NZB results for {{name}}",
   "nzb.noResultsYet": "No release matches yet.",

@@ -1911,6 +1911,19 @@ async fn graphql_media_rename_preview_refreshes_stale_title_metadata_language() 
         .with_priority(1)
         .mount(&ctx.smg_server)
         .await;
+    // This fixture models an older gateway: title-id lookup is rejected, so a
+    // TVDB-backed movie must fall back to the legacy GetMovie operation.
+    Mock::given(method("GET"))
+        .and(path("/graphql"))
+        .and(query_param("operationName", "ResolveTitles"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "errors": [{
+                "message": "Cannot query field \"resolveTitles\" on type \"Query\"."
+            }]
+        })))
+        .with_priority(2)
+        .mount(&ctx.smg_server)
+        .await;
 
     let title = create_catalog_title(
         &ctx,

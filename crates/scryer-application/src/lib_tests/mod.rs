@@ -21,6 +21,7 @@ mod indexer_download_client_mappings;
 mod libraries;
 mod library_scan;
 mod media_requests;
+mod metadata_search;
 mod queueing;
 mod routing_settings;
 mod search_cutoff;

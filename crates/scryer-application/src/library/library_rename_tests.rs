@@ -563,14 +563,15 @@ fn configured_title_folder_path_truncates_generated_folder_component() {
 
 #[cfg(not(windows))]
 #[test]
-fn configured_title_folder_path_preserves_long_component() {
+fn configured_title_folder_path_caps_long_component() {
     let title_name = format!("{}Long", "Long ".repeat(99));
     let title = test_movie_title(&title_name);
     let path = configured_title_folder_path("/library", &title, "{title}", None);
+    let expected = truncate_generated_folder_component(&title_name);
 
     assert_eq!(
         path.file_name().and_then(|folder| folder.to_str()),
-        Some(title_name.as_str())
+        Some(expected.as_str())
     );
 }
 

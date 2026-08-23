@@ -25,11 +25,14 @@ pub(super) async fn title_requires_scan_hydration(
     title: &Title,
     metadata_language: &str,
 ) -> AppResult<bool> {
-    if !title
-        .external_ids
-        .iter()
-        .any(|external_id| external_id.source.eq_ignore_ascii_case("tvdb"))
-    {
+    let hydratable = match title.facet {
+        MediaFacet::Movie => crate::catalog_workflow::movie_title_ref(title).is_some(),
+        MediaFacet::Series | MediaFacet::Anime => title
+            .external_ids
+            .iter()
+            .any(|external_id| external_id.source.eq_ignore_ascii_case("tvdb")),
+    };
+    if !hydratable {
         return Ok(false);
     }
 
@@ -1509,6 +1512,7 @@ async fn hydrate_enumerate_and_walk_title_work(
             let target = crate::catalog_workflow::HydrationTarget {
                 title: work.title.clone(),
                 requested_tvdb_id: None,
+                requested_movie_ref: None,
                 sync_wanted_after_completion: false,
                 source: ctx.hydration_source,
             };

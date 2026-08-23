@@ -803,6 +803,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "oauth_client_redirect_uris",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "oauth_client_registrations",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "oauth_authorization_codes",
         classification: BackupTableClassification::Ignore,
     },

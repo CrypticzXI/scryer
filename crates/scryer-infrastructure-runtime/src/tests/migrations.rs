@@ -2788,3 +2788,56 @@ async fn migration_0171_clears_only_the_configured_score_floor() {
     .await
     .expect("migration 0171 should be re-runnable");
 }
+
+#[tokio::test]
+async fn migration_0173_requeues_only_unhydrated_movie_titles_without_tvdb_ids() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("migration test database should open");
+    sqlx::raw_sql(
+        r#"CREATE TABLE titles (
+               id TEXT PRIMARY KEY,
+               facet TEXT NOT NULL,
+               external_ids TEXT NOT NULL,
+               metadata_fetched_at TEXT,
+               metadata_hydration_next_attempt_at TEXT,
+               metadata_hydration_attempt_count INTEGER NOT NULL DEFAULT 0
+           );
+           INSERT INTO titles VALUES
+             ('tmdb-only', 'movie', '[{"source":"tmdb","value":"101"}]', NULL, NULL, 7),
+             ('imdb-only', 'movie', '[{"source":"imdb","value":"tt0000102"}]', NULL, NULL, 6),
+             ('tvdb-backed', 'movie', '[{"source":"tmdb","value":"103"},{"source":"tvdb","value":"203"}]', NULL, 'preserve', 5),
+             ('series-only', 'series', '[{"source":"tmdb","value":"104"}]', NULL, NULL, 4),
+             ('already-hydrated', 'movie', '[{"source":"tmdb","value":"105"}]', '2026-01-01T00:00:00Z', NULL, 3);"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("title fixture should initialize");
+
+    sqlx::raw_sql(include_str!(
+        "../../../scryer/src/db/migrations/0177_movie_smg_identity_backfill.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("migration 0177 should apply");
+
+    let states: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, metadata_hydration_next_attempt_at, metadata_hydration_attempt_count
+           FROM titles ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("hydration states should load");
+    assert!(states[1].1.is_some(), "IMDb-only movie should be requeued");
+    assert_eq!(states[1].2, 0);
+    assert!(states[3].1.is_some(), "TMDB-only movie should be requeued");
+    assert_eq!(states[3].2, 0);
+    assert_eq!(states[0], ("already-hydrated".to_string(), None, 3));
+    assert_eq!(states[2], ("series-only".to_string(), None, 4));
+    assert_eq!(
+        states[4],
+        ("tvdb-backed".to_string(), Some("preserve".to_string()), 5)
+    );
+}

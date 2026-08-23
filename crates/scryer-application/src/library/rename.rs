@@ -1093,6 +1093,7 @@ impl AppUseCase {
                 HydrationTarget {
                     title: title.clone(),
                     requested_tvdb_id: None,
+                    requested_movie_ref: None,
                     sync_wanted_after_completion: false,
                     source: HydrationSource::Interactive,
                 },

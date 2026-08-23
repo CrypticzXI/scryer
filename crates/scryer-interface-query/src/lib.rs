@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use async_graphql::{Context, Enum, ID, MergedObject, Object, Result as GqlResult, SimpleObject};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
@@ -48,7 +50,10 @@ fn from_metadata_search_item(
     app: &scryer_application::AppUseCase,
     item: scryer_application::RichMetadataSearchItem,
 ) -> MetadataSearchItemPayload {
-    let owner_id = item.tvdb_id.to_string();
+    let owner_id = item
+        .smg_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| item.tvdb_id.to_string());
     let poster_url = app.media_image_url(
         item.poster_url.as_deref(),
         Some("metadata_search"),
@@ -58,6 +63,21 @@ fn from_metadata_search_item(
     );
     MetadataSearchItemPayload {
         tvdb_id: item.tvdb_id,
+        smg_id: item.smg_id,
+        tmdb_id: item
+            .external_ids
+            .iter()
+            .find(|external_id| external_id.source.eq_ignore_ascii_case("tmdb"))
+            .and_then(|external_id| external_id.value.parse().ok()),
+        primary_source: item.primary_source,
+        external_ids: item
+            .external_ids
+            .into_iter()
+            .map(|external_id| ExternalIdPayload {
+                source: external_id.source,
+                value: external_id.value,
+            })
+            .collect(),
         name: item.name,
         imdb_id: item.imdb_id,
         slug: item.slug,

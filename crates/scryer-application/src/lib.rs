@@ -402,9 +402,10 @@ pub use library_scan::{
     DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubjectInput,
     DiscoveryTitle, EpisodeArtworkUrls, EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile,
     LibraryFileBatch, LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
-    SeriesMetadata, TitleArtworkUrls, TitleRecommendationsInput,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MovieTitleBulkResult,
+    MovieTitleRef, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
+    SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls, TitleRecommendationsInput,
+    TitleResolution,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,
