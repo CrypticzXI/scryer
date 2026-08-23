@@ -8,13 +8,14 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use scryer_application::challenge_solver as solver;
 use scryer_application::{
-    AppError, AppResult, DownloadClient, DownloadClientAddRequest, DownloadClientConfigRepository,
-    DownloadClientPluginProvider, DownloadClientRemotePathMapping, DownloadClientStatus,
-    DownloadGrabResult, DownloadSourceKind, DownloadSubmissionRepository, IndexerConfigRepository,
-    IndexerProxyConfigRepository, PersistedSeedGoals, RateLimitCooldownAction,
-    ResolvedDownloadArtifact, ResolvedSeedGoals, SeedGoalGrabRecord, SeedGoalRequest,
-    SeedGoalResolver, SeedingProfileRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
-    accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
+    AppError, AppResult, DownloadClient, DownloadClientAddRequest,
+    DownloadClientCategorySnapshotStore, DownloadClientConfigRepository,
+    DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadClientRemotePathMapping,
+    DownloadClientStatus, DownloadGrabResult, DownloadSourceKind, DownloadSubmissionRepository,
+    IndexerConfigRepository, IndexerProxyConfigRepository, PersistedSeedGoals,
+    RateLimitCooldownAction, ResolvedDownloadArtifact, ResolvedSeedGoals, SeedGoalGrabRecord,
+    SeedGoalRequest, SeedGoalResolver, SeedingProfileRepository, SettingsRepository, StagedNzbRef,
+    StagedNzbStore, accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
     apply_remote_path_mappings_to_status, extract_magnet_info_hash, is_valid_magnet_uri,
     normalize_torrent_info_hash, parse_download_client_remote_path_mappings,
 };
@@ -394,6 +395,7 @@ pub struct PrioritizedDownloadClientRouter {
     download_submissions: Option<Arc<dyn DownloadSubmissionRepository>>,
     outbound_http: OutboundHttpClient,
     feedback_read_timeout: Duration,
+    category_snapshot_store: DownloadClientCategorySnapshotStore,
     feedback_read_backoff:
         Arc<Mutex<HashMap<(String, DownloadFeedbackReadKind), FeedbackReadBackoffState>>>,
 }
@@ -457,13 +459,41 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.run_feedback_read(self.inner.list_queue()).await
     }
 
+    async fn list_queue_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_queue_with_feedback_scope(scope))
+            .await
+    }
+
     async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_queue_for_title(title_id))
             .await
     }
 
+    async fn list_queue_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_queue_for_title_with_feedback_scope(title_id, scope),
+        )
+        .await
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_history()).await
+    }
+
+    async fn list_history_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_history_with_feedback_scope(scope))
+            .await
     }
 
     async fn list_history_page(
@@ -475,9 +505,34 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
             .await
     }
 
+    async fn list_history_page_with_feedback_scope(
+        &self,
+        offset: usize,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_history_page_with_feedback_scope(offset, limit, scope),
+        )
+        .await
+    }
+
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_recent_activity(limit))
             .await
+    }
+
+    async fn list_recent_activity_with_feedback_scope(
+        &self,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_with_feedback_scope(limit, scope),
+        )
+        .await
     }
 
     async fn list_recent_activity_for_title(
@@ -489,9 +544,33 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
             .await
     }
 
+    async fn list_recent_activity_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_for_title_with_feedback_scope(title_id, limit, scope),
+        )
+        .await
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         self.run_feedback_read(self.inner.list_completed_downloads())
             .await
+    }
+
+    async fn list_completed_downloads_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(
+            self.inner
+                .list_completed_downloads_with_feedback_scope(scope),
+        )
+        .await
     }
 
     async fn list_recent_completed_downloads(
@@ -500,6 +579,18 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         self.run_feedback_read(self.inner.list_recent_completed_downloads(limit))
             .await
+    }
+
+    async fn list_recent_completed_downloads_with_feedback_scope(
+        &self,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_completed_downloads_with_feedback_scope(limit, scope),
+        )
+        .await
     }
 
     async fn list_queue_excluding_client_types(
@@ -783,6 +874,7 @@ impl PrioritizedDownloadClientRouter {
             download_submissions: None,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             feedback_read_timeout,
+            category_snapshot_store: DownloadClientCategorySnapshotStore::default(),
             feedback_read_backoff: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -794,6 +886,14 @@ impl PrioritizedDownloadClientRouter {
     ) -> Self {
         self.indexer_configs = Some(indexer_configs);
         self.indexer_proxy_configs = Some(indexer_proxy_configs);
+        self
+    }
+
+    pub fn with_download_client_category_snapshot_store(
+        mut self,
+        store: DownloadClientCategorySnapshotStore,
+    ) -> Self {
+        self.category_snapshot_store = store;
         self
     }
 
@@ -888,9 +988,10 @@ impl PrioritizedDownloadClientRouter {
     ) -> Vec<(DownloadClientConfig, Duration, AppResult<T>)>
     where
         T: Send,
-        F: Fn(Arc<dyn DownloadClient>) -> Fut + Sync,
+        F: Fn(Arc<dyn DownloadClient>, DownloadClientFeedbackScope) -> Fut + Sync,
         Fut: Future<Output = AppResult<T>> + Send,
     {
+        let category_snapshot = self.category_snapshot_store.snapshot().await;
         let reads = clients
             .into_iter()
             .enumerate()
@@ -924,7 +1025,11 @@ impl PrioritizedDownloadClientRouter {
                         return None;
                     }
                 };
-                let read = read(client);
+                let scope = category_snapshot
+                    .as_deref()
+                    .map(|snapshot| snapshot.feedback_scope_for_client(&config.id))
+                    .unwrap_or_default();
+                let read = read(client, scope);
                 Some(async move {
                     let started_at = Instant::now();
                     let result = read.await;
@@ -3320,7 +3425,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::Queue,
                 "queue listing",
-                |client| async move { client.list_queue().await },
+                |client, scope| async move { client.list_queue_with_feedback_scope(&scope).await },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3361,7 +3466,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::TitleQueue,
                 "title-scoped queue listing",
-                |client| async move { client.list_queue_for_title(title_id).await },
+                |client, scope| async move {
+                    client
+                        .list_queue_for_title_with_feedback_scope(title_id, &scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3405,7 +3514,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::History,
                 "history listing",
-                |client| async move { client.list_history().await },
+                |client, scope| async move {
+                    client.list_history_with_feedback_scope(&scope).await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3465,7 +3576,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::RecentActivity,
                 "recent activity listing",
-                |client| async move { client.list_recent_activity(limit).await },
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_with_feedback_scope(limit, &scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3536,7 +3651,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::RecentActivity,
                 "type-scoped recent activity listing",
-                |client| async move { client.list_recent_activity(limit).await },
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_with_feedback_scope(limit, &scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3595,8 +3714,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::TitleRecentActivity,
                 "title-scoped recent activity listing",
-                |client| async move {
-                    client.list_recent_activity_for_title(title_id, limit).await
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_for_title_with_feedback_scope(title_id, limit, &scope)
+                        .await
                 },
             )
             .await;
@@ -3657,7 +3778,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::History,
                 "paged history listing",
-                |client| async move { client.list_history_page(0, fetch_limit).await },
+                |client, scope| async move {
+                    client
+                        .list_history_page_with_feedback_scope(0, fetch_limit, &scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3706,7 +3831,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::RecentCompletedDownloads,
                 "completed downloads listing",
-                |client| async move { client.list_completed_downloads().await },
+                |client, scope| async move {
+                    client
+                        .list_completed_downloads_with_feedback_scope(&scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -3829,7 +3958,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 clients,
                 DownloadFeedbackReadKind::RecentCompletedDownloads,
                 "recent completed downloads listing",
-                |client| async move { client.list_recent_completed_downloads(limit).await },
+                |client, scope| async move {
+                    client
+                        .list_recent_completed_downloads_with_feedback_scope(limit, &scope)
+                        .await
+                },
             )
             .await;
         for (config, elapsed, result) in reads {
@@ -5410,6 +5543,35 @@ mod tests {
     struct DelayedQueueDownloadClient {
         delay: Duration,
         queue_items: Vec<DownloadQueueItem>,
+    }
+
+    struct FeedbackScopeQueueDownloadClient {
+        scopes: Mutex<Vec<Vec<String>>>,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for FeedbackScopeQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            Err(AppError::Repository(
+                "unscoped queue listing should not be used".to_string(),
+            ))
+        }
+
+        async fn list_queue_with_feedback_scope(
+            &self,
+            scope: &DownloadClientFeedbackScope,
+        ) -> AppResult<Vec<DownloadQueueItem>> {
+            self.scopes.lock().unwrap().push(scope.categories.clone());
+            Ok(self.queue_items.clone())
+        }
     }
 
     #[async_trait]
@@ -8925,6 +9087,70 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, client_ids);
         assert_eq!(calls[0].1, client_types);
+    }
+
+    #[tokio::test]
+    async fn list_queue_delivers_only_each_clients_case_preserving_category_scope() {
+        let first = Arc::new(FeedbackScopeQueueDownloadClient {
+            scopes: Mutex::new(Vec::new()),
+            queue_items: vec![test_queue_item("first")],
+        });
+        let second = Arc::new(FeedbackScopeQueueDownloadClient {
+            scopes: Mutex::new(Vec::new()),
+            queue_items: vec![test_queue_item("second")],
+        });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_url".to_string()],
+                clients: vec![
+                    ("first".to_string(), first.clone()),
+                    ("second".to_string(), second.clone()),
+                ],
+            });
+        let store = DownloadClientCategorySnapshotStore::default();
+        store
+            .replace(
+                scryer_application::DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(
+                    HashMap::from([
+                        (
+                            "first".to_string(),
+                            vec!["Movies".to_string(), "TV / Anime".to_string()],
+                        ),
+                        ("second".to_string(), vec!["Series-HD".to_string()]),
+                    ]),
+                ),
+            )
+            .await;
+
+        let router = PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("first", "First", "qbittorrent", 0),
+                    test_config("second", "Second", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_secs(1),
+        )
+        .with_download_client_category_snapshot_store(store);
+
+        let items = router.list_queue().await.expect("scoped queue listing");
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(
+            *first.scopes.lock().unwrap(),
+            vec![vec!["Movies".to_string(), "TV / Anime".to_string()]]
+        );
+        assert_eq!(
+            *second.scopes.lock().unwrap(),
+            vec![vec!["Series-HD".to_string()]]
+        );
     }
 
     #[tokio::test]

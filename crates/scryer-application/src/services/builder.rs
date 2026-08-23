@@ -162,6 +162,14 @@ impl AppServicesBuilder {
         self
     }
 
+    pub fn with_download_client_category_snapshot_store(
+        mut self,
+        store: DownloadClientCategorySnapshotStore,
+    ) -> Self {
+        self.runtime.acquisition.download_client_category_admission = store;
+        self
+    }
+
     pub fn with_supported_plugin_required_features<I, S>(mut self, features: I) -> Self
     where
         I: IntoIterator<Item = S>,

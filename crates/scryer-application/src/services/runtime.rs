@@ -543,8 +543,7 @@ pub struct AppRuntimeAcquisitionState {
     pub(crate) wanted_projection_cache:
         Arc<tokio::sync::RwLock<HashMap<crate::types::WantedKind, CachedWantedProjection>>>,
     pub(crate) wanted_projection_build_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) download_client_category_admission:
-        Arc<tokio::sync::RwLock<Option<Arc<DownloadClientCategoryAdmissionSnapshot>>>>,
+    pub(crate) download_client_category_admission: DownloadClientCategorySnapshotStore,
     /// Cancellation tokens for in-flight interactive acquisition-search jobs
     ///, keyed by job-run id — mirrors the library-scan cancel map.
     pub acquisition_search_cancellation_tokens:
@@ -570,9 +569,46 @@ impl AppRuntimeAcquisitionState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct DownloadClientCategoryAdmissionSnapshot {
+pub struct DownloadClientCategoryAdmissionSnapshot {
     pub(crate) default_categories: HashSet<String>,
     pub(crate) categories_by_client: HashMap<String, HashSet<String>>,
+    pub(crate) feedback_categories_by_client: HashMap<String, Vec<String>>,
+}
+
+impl DownloadClientCategoryAdmissionSnapshot {
+    pub fn from_feedback_categories(
+        feedback_categories_by_client: HashMap<String, Vec<String>>,
+    ) -> Self {
+        Self {
+            feedback_categories_by_client,
+            ..Self::default()
+        }
+    }
+
+    pub fn feedback_scope_for_client(&self, client_id: &str) -> DownloadClientFeedbackScope {
+        DownloadClientFeedbackScope {
+            categories: self
+                .feedback_categories_by_client
+                .get(client_id)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct DownloadClientCategorySnapshotStore {
+    inner: Arc<tokio::sync::RwLock<Option<Arc<DownloadClientCategoryAdmissionSnapshot>>>>,
+}
+
+impl DownloadClientCategorySnapshotStore {
+    pub async fn snapshot(&self) -> Option<Arc<DownloadClientCategoryAdmissionSnapshot>> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn replace(&self, snapshot: DownloadClientCategoryAdmissionSnapshot) {
+        *self.inner.write().await = Some(Arc::new(snapshot));
+    }
 }
 
 pub(crate) fn normalize_download_client_category(category: &str) -> String {
@@ -678,7 +714,57 @@ mod download_client_category_admission_tests {
                 "client-2".to_string(),
                 HashSet::from(["series".to_string()]),
             )]),
+            feedback_categories_by_client: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn feedback_scopes_are_case_preserving_client_specific_and_atomically_replaceable() {
+        let store = DownloadClientCategorySnapshotStore::default();
+        store
+            .replace(
+                DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(HashMap::from([
+                    (
+                        "qbit".to_string(),
+                        vec!["Movies".to_string(), "TV / Anime".to_string()],
+                    ),
+                    ("other".to_string(), vec!["Series-HD".to_string()]),
+                ])),
+            )
+            .await;
+
+        let first = store.snapshot().await.expect("first snapshot");
+        assert_eq!(
+            first.feedback_scope_for_client("qbit").categories,
+            vec!["Movies", "TV / Anime"]
+        );
+        assert_eq!(
+            first.feedback_scope_for_client("other").categories,
+            vec!["Series-HD"]
+        );
+        assert!(
+            first
+                .feedback_scope_for_client("missing")
+                .categories
+                .is_empty()
+        );
+
+        store
+            .replace(
+                DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(HashMap::from([
+                    ("qbit".to_string(), vec!["Movies-4K".to_string()]),
+                ])),
+            )
+            .await;
+        let second = store.snapshot().await.expect("replacement snapshot");
+        assert_eq!(
+            second.feedback_scope_for_client("qbit").categories,
+            vec!["Movies-4K"]
+        );
+        assert_eq!(
+            first.feedback_scope_for_client("qbit").categories,
+            vec!["Movies", "TV / Anime"]
+        );
     }
 
     #[test]
@@ -1044,7 +1130,7 @@ impl AppRuntimeState {
                 wanted_projection_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
                 wanted_projection_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 wanted_projection_build_lock: Arc::new(tokio::sync::Mutex::new(())),
-                download_client_category_admission: Arc::new(tokio::sync::RwLock::new(None)),
+                download_client_category_admission: DownloadClientCategorySnapshotStore::default(),
                 acquisition_search_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
                 interactive_release_searches: Arc::new(Mutex::new(HashMap::new())),
             },

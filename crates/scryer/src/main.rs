@@ -33,11 +33,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, ArchiveExtractorPluginProvider,
-    AutoBackupRunOutcome, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
-    IndexerPluginProvider, JobTriggerSource, MovieFacetHandler, NotificationPluginProvider,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
-    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
-    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AutoBackupRunOutcome, DownloadClientCategorySnapshotStore, DownloadClientPluginProvider,
+    DownloadQueuePollerOptions, FacetRegistry, IndexerPluginProvider, JobTriggerSource,
+    MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
+    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
+    SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
@@ -1057,6 +1058,7 @@ async fn bootstrap_application(
                 &disabled_builtin_plugins,
             ),
         ));
+    let download_client_category_snapshot_store = DownloadClientCategorySnapshotStore::default();
     let download_client = Arc::new(
         PrioritizedDownloadClientRouter::new(
             download_client_configs.clone(),
@@ -1068,6 +1070,9 @@ async fn bootstrap_application(
         .with_indexer_config_repositories(
             indexer_configs.clone(),
             datastore.indexer_proxy_configs(),
+        )
+        .with_download_client_category_snapshot_store(
+            download_client_category_snapshot_store.clone(),
         )
         .with_seed_goal_resolution(
             datastore.seeding_profiles(),
@@ -1229,6 +1234,7 @@ async fn bootstrap_application(
             data_dir.clone(),
             scryer_plugins::detect_supported_plugin_required_features(),
         )
+        .with_download_client_category_snapshot_store(download_client_category_snapshot_store)
         .with_smg_registration_secret(
             SMG_REGISTRATION_SECRET
                 .map(String::from)
@@ -1281,6 +1287,15 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    if let Err(error) = app_use_case
+        .refresh_download_client_category_admission()
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to initialize download-client category feedback scopes; using unfiltered polling until a refresh succeeds"
+        );
+    }
     if let Err(error) = app_use_case.sync_image_cache_runtime_limit().await {
         tracing::warn!(error = %error, "failed to apply configured image cache limit");
     }

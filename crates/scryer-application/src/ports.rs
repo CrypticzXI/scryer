@@ -5357,6 +5357,11 @@ pub trait BuiltinDownloadClientConnectionTester: Send + Sync {
     async fn test_connection(&self, client_type: &str, config_json: &str) -> AppResult<()>;
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DownloadClientFeedbackScope {
+    pub categories: Vec<String>,
+}
+
 #[async_trait]
 pub trait DownloadClient: Send + Sync {
     async fn submit_download(
@@ -5390,6 +5395,13 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn list_queue_with_feedback_scope(
+        &self,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_queue().await
+    }
+
     async fn list_queue_excluding_client_types(
         &self,
         excluded_client_types: &[&str],
@@ -5413,10 +5425,25 @@ pub trait DownloadClient: Send + Sync {
         self.list_queue().await
     }
 
+    async fn list_queue_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_queue_for_title(title_id).await
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         Err(AppError::Repository(
             "download history listing is not supported for this client".to_string(),
         ))
+    }
+
+    async fn list_history_with_feedback_scope(
+        &self,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_history().await
     }
 
     async fn list_history_page(
@@ -5432,8 +5459,25 @@ pub trait DownloadClient: Send + Sync {
         Ok(items.into_iter().skip(offset).take(limit).collect())
     }
 
+    async fn list_history_page_with_feedback_scope(
+        &self,
+        offset: usize,
+        limit: usize,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_history_page(offset, limit).await
+    }
+
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.list_history_page(0, limit).await
+    }
+
+    async fn list_recent_activity_with_feedback_scope(
+        &self,
+        limit: usize,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_recent_activity(limit).await
     }
 
     async fn list_recent_activity_excluding_client_types(
@@ -5464,6 +5508,15 @@ pub trait DownloadClient: Send + Sync {
         self.list_recent_activity(limit).await
     }
 
+    async fn list_recent_activity_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        limit: usize,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.list_recent_activity_for_title(title_id, limit).await
+    }
+
     /// Recent activity restricted to the given client types.
     ///
     /// Used to reconcile clients that are excluded from generic polling
@@ -5492,6 +5545,13 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn list_completed_downloads_with_feedback_scope(
+        &self,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        self.list_completed_downloads().await
+    }
+
     async fn list_recent_completed_downloads(
         &self,
         limit: usize,
@@ -5504,6 +5564,14 @@ pub trait DownloadClient: Send + Sync {
         items.sort_by_key(|item| std::cmp::Reverse(item.completed_at));
         items.truncate(limit);
         Ok(items)
+    }
+
+    async fn list_recent_completed_downloads_with_feedback_scope(
+        &self,
+        limit: usize,
+        _scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<CompletedDownload>> {
+        self.list_recent_completed_downloads(limit).await
     }
 
     async fn list_recent_completed_downloads_for_client_scope(

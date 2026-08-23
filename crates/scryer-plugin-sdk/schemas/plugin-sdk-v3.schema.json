@@ -28,31 +28,31 @@
       "$ref": "#/$defs/SubtitlePluginSearchRequest"
     },
     "subtitle_search_result": {
-      "$ref": "#/$defs/PluginResult12"
+      "$ref": "#/$defs/PluginResult14"
     },
     "subtitle_download_request": {
       "$ref": "#/$defs/SubtitlePluginDownloadRequest"
     },
     "subtitle_download_result": {
-      "$ref": "#/$defs/PluginResult13"
+      "$ref": "#/$defs/PluginResult15"
     },
     "subtitle_validate_config_request": {
       "$ref": "#/$defs/SubtitlePluginValidateConfigRequest"
     },
     "subtitle_validate_config_result": {
-      "$ref": "#/$defs/PluginResult11"
+      "$ref": "#/$defs/PluginResult13"
     },
     "subtitle_generate_request": {
       "$ref": "#/$defs/SubtitlePluginGenerateRequest"
     },
     "subtitle_generate_result": {
-      "$ref": "#/$defs/PluginResult14"
+      "$ref": "#/$defs/PluginResult16"
     },
     "subtitle_sync_align_request": {
       "$ref": "#/$defs/SubtitleSyncAlignRequest"
     },
     "subtitle_sync_align_result": {
-      "$ref": "#/$defs/PluginResult25"
+      "$ref": "#/$defs/PluginResult27"
     },
     "subtitle_sync_process_request": {
       "$ref": "#/$defs/SubtitleSyncPluginProcessRequest"
@@ -70,10 +70,10 @@
       "$ref": "#/$defs/PluginResult4"
     },
     "download_history_result": {
-      "$ref": "#/$defs/PluginResult5"
+      "$ref": "#/$defs/PluginResult6"
     },
     "download_completed_result": {
-      "$ref": "#/$defs/PluginResult5"
+      "$ref": "#/$defs/PluginResult6"
     },
     "download_recent_completed_request": {
       "$ref": "#/$defs/PluginDownloadListRecentCompletedRequest"
@@ -85,28 +85,28 @@
       "$ref": "#/$defs/PluginDownloadClientControlRequest"
     },
     "download_control_result": {
-      "$ref": "#/$defs/PluginResult7"
+      "$ref": "#/$defs/PluginResult9"
     },
     "download_mark_imported_request": {
       "$ref": "#/$defs/PluginDownloadClientMarkImportedRequest"
     },
     "download_mark_imported_result": {
-      "$ref": "#/$defs/PluginResult7"
+      "$ref": "#/$defs/PluginResult9"
     },
     "download_status_result": {
-      "$ref": "#/$defs/PluginResult8"
+      "$ref": "#/$defs/PluginResult10"
     },
     "archive_process_request": {
       "$ref": "#/$defs/ArchivePluginProcessRequest"
     },
     "archive_process_result": {
-      "$ref": "#/$defs/PluginResult26"
+      "$ref": "#/$defs/PluginResult28"
     },
     "notification_request": {
       "$ref": "#/$defs/PluginNotificationRequest"
     },
     "notification_result": {
-      "$ref": "#/$defs/PluginResult10"
+      "$ref": "#/$defs/PluginResult12"
     }
   },
   "required": [
@@ -860,6 +860,10 @@
     "DownloadClientCapabilities": {
       "type": "object",
       "properties": {
+        "category_scoped_feedback": {
+          "type": "boolean",
+          "default": false
+        },
         "pause": {
           "type": "boolean",
           "default": false
@@ -1086,6 +1090,7 @@
         "capabilities": {
           "$ref": "#/$defs/DownloadClientCapabilities",
           "default": {
+            "category_scoped_feedback": false,
             "pause": false,
             "resume": false,
             "remove": false,
@@ -1920,11 +1925,43 @@
           "properties": {
             "operation": {
               "type": "string",
+              "const": "list_queue_scoped"
+            },
+            "request": {
+              "$ref": "#/$defs/PluginDownloadScopedListRequest"
+            }
+          },
+          "required": [
+            "operation",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
               "const": "list_history"
             }
           },
           "required": [
             "operation"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "list_history_scoped"
+            },
+            "request": {
+              "$ref": "#/$defs/PluginDownloadScopedListRequest"
+            }
+          },
+          "required": [
+            "operation",
+            "request"
           ]
         },
         {
@@ -1944,10 +1981,42 @@
           "properties": {
             "operation": {
               "type": "string",
+              "const": "list_completed_scoped"
+            },
+            "request": {
+              "$ref": "#/$defs/PluginDownloadScopedListRequest"
+            }
+          },
+          "required": [
+            "operation",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
               "const": "list_recent_completed"
             },
             "request": {
               "$ref": "#/$defs/PluginDownloadListRecentCompletedRequest"
+            }
+          },
+          "required": [
+            "operation",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "list_recent_completed_scoped"
+            },
+            "request": {
+              "$ref": "#/$defs/PluginDownloadScopedRecentCompletedRequest"
             }
           },
           "required": [
@@ -2453,6 +2522,26 @@
         "no_subfolder"
       ]
     },
+    "PluginDownloadScopedListRequest": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/PluginDownloadFeedbackScope",
+          "default": {}
+        }
+      }
+    },
+    "PluginDownloadFeedbackScope": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "PluginDownloadListRecentCompletedRequest": {
       "type": "object",
       "properties": {
@@ -2460,6 +2549,23 @@
           "type": "integer",
           "format": "uint",
           "minimum": 0
+        }
+      },
+      "required": [
+        "limit"
+      ]
+    },
+    "PluginDownloadScopedRecentCompletedRequest": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "scope": {
+          "$ref": "#/$defs/PluginDownloadFeedbackScope",
+          "default": {}
         }
       },
       "required": [
@@ -4459,55 +4565,23 @@
           "properties": {
             "operation": {
               "type": "string",
+              "const": "list_queue_scoped"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult5"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
               "const": "list_history"
-            },
-            "result": {
-              "$ref": "#/$defs/PluginResult5"
-            }
-          },
-          "required": [
-            "operation",
-            "result"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "operation": {
-              "type": "string",
-              "const": "list_completed"
-            },
-            "result": {
-              "$ref": "#/$defs/PluginResult5"
-            }
-          },
-          "required": [
-            "operation",
-            "result"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "operation": {
-              "type": "string",
-              "const": "list_recent_completed"
-            },
-            "result": {
-              "$ref": "#/$defs/PluginResult5"
-            }
-          },
-          "required": [
-            "operation",
-            "result"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "operation": {
-              "type": "string",
-              "const": "get_completed"
             },
             "result": {
               "$ref": "#/$defs/PluginResult6"
@@ -4523,7 +4597,7 @@
           "properties": {
             "operation": {
               "type": "string",
-              "const": "control"
+              "const": "list_history_scoped"
             },
             "result": {
               "$ref": "#/$defs/PluginResult7"
@@ -4539,7 +4613,23 @@
           "properties": {
             "operation": {
               "type": "string",
-              "const": "mark_imported"
+              "const": "list_completed"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult6"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "list_completed_scoped"
             },
             "result": {
               "$ref": "#/$defs/PluginResult7"
@@ -4555,7 +4645,39 @@
           "properties": {
             "operation": {
               "type": "string",
-              "const": "status"
+              "const": "list_recent_completed"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult6"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "list_recent_completed_scoped"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult7"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "get_completed"
             },
             "result": {
               "$ref": "#/$defs/PluginResult8"
@@ -4571,10 +4693,58 @@
           "properties": {
             "operation": {
               "type": "string",
-              "const": "test_connection"
+              "const": "control"
             },
             "result": {
               "$ref": "#/$defs/PluginResult9"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "mark_imported"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult9"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "status"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult10"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "test_connection"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult11"
             }
           },
           "required": [
@@ -4936,6 +5106,69 @@
           "type": "object",
           "properties": {
             "ok": {
+              "$ref": "#/$defs/PluginDownloadScopedListResponse"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "$ref": "#/$defs/PluginError"
+            }
+          },
+          "required": [
+            "err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginDownloadScopedListResponse": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginDownloadItem"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginDownloadScopeFailure"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "PluginDownloadScopeFailure": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "error": {
+          "$ref": "#/$defs/PluginError"
+        }
+      },
+      "required": [
+        "category",
+        "error"
+      ]
+    },
+    "PluginResult6": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/PluginCompletedDownload"
@@ -5058,7 +5291,55 @@
         "unknown"
       ]
     },
-    "PluginResult6": {
+    "PluginResult7": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "$ref": "#/$defs/PluginDownloadScopedListResponse2"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "$ref": "#/$defs/PluginError"
+            }
+          },
+          "required": [
+            "err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginDownloadScopedListResponse2": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginCompletedDownload"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginDownloadScopeFailure"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "PluginResult8": {
       "oneOf": [
         {
           "type": "object",
@@ -5093,7 +5374,7 @@
         }
       ]
     },
-    "PluginResult7": {
+    "PluginResult9": {
       "oneOf": [
         {
           "type": "object",
@@ -5121,7 +5402,7 @@
         }
       ]
     },
-    "PluginResult8": {
+    "PluginResult10": {
       "oneOf": [
         {
           "type": "object",
@@ -5190,7 +5471,7 @@
         }
       }
     },
-    "PluginResult9": {
+    "PluginResult11": {
       "oneOf": [
         {
           "type": "object",
@@ -5228,7 +5509,7 @@
               "const": "send"
             },
             "result": {
-              "$ref": "#/$defs/PluginResult10"
+              "$ref": "#/$defs/PluginResult12"
             }
           },
           "required": [
@@ -5254,7 +5535,7 @@
         }
       ]
     },
-    "PluginResult10": {
+    "PluginResult12": {
       "oneOf": [
         {
           "type": "object",
@@ -5367,7 +5648,7 @@
               "const": "validate_config"
             },
             "result": {
-              "$ref": "#/$defs/PluginResult11"
+              "$ref": "#/$defs/PluginResult13"
             }
           },
           "required": [
@@ -5383,7 +5664,7 @@
               "const": "search"
             },
             "result": {
-              "$ref": "#/$defs/PluginResult12"
+              "$ref": "#/$defs/PluginResult14"
             }
           },
           "required": [
@@ -5399,7 +5680,7 @@
               "const": "download"
             },
             "result": {
-              "$ref": "#/$defs/PluginResult13"
+              "$ref": "#/$defs/PluginResult15"
             }
           },
           "required": [
@@ -5415,7 +5696,7 @@
               "const": "generate"
             },
             "result": {
-              "$ref": "#/$defs/PluginResult14"
+              "$ref": "#/$defs/PluginResult16"
             }
           },
           "required": [
@@ -5425,7 +5706,7 @@
         }
       ]
     },
-    "PluginResult11": {
+    "PluginResult13": {
       "oneOf": [
         {
           "type": "object",
@@ -5489,7 +5770,7 @@
         "missing_host_binding"
       ]
     },
-    "PluginResult12": {
+    "PluginResult14": {
       "oneOf": [
         {
           "type": "object",
@@ -5615,7 +5896,7 @@
         "language"
       ]
     },
-    "PluginResult13": {
+    "PluginResult15": {
       "oneOf": [
         {
           "type": "object",
@@ -5670,7 +5951,7 @@
         "format"
       ]
     },
-    "PluginResult14": {
+    "PluginResult16": {
       "oneOf": [
         {
           "type": "object",
@@ -6110,7 +6391,7 @@
           "type": "object",
           "properties": {
             "ConfigGet": {
-              "$ref": "#/$defs/PluginResult15"
+              "$ref": "#/$defs/PluginResult17"
             }
           },
           "required": [
@@ -6122,7 +6403,7 @@
           "type": "object",
           "properties": {
             "StateGet": {
-              "$ref": "#/$defs/PluginResult16"
+              "$ref": "#/$defs/PluginResult18"
             }
           },
           "required": [
@@ -6134,7 +6415,7 @@
           "type": "object",
           "properties": {
             "StateSet": {
-              "$ref": "#/$defs/PluginResult17"
+              "$ref": "#/$defs/PluginResult19"
             }
           },
           "required": [
@@ -6146,7 +6427,7 @@
           "type": "object",
           "properties": {
             "StateDelete": {
-              "$ref": "#/$defs/PluginResult17"
+              "$ref": "#/$defs/PluginResult19"
             }
           },
           "required": [
@@ -6158,7 +6439,7 @@
           "type": "object",
           "properties": {
             "Http": {
-              "$ref": "#/$defs/PluginResult18"
+              "$ref": "#/$defs/PluginResult20"
             }
           },
           "required": [
@@ -6170,7 +6451,7 @@
           "type": "object",
           "properties": {
             "SocketOpen": {
-              "$ref": "#/$defs/PluginResult19"
+              "$ref": "#/$defs/PluginResult21"
             }
           },
           "required": [
@@ -6182,7 +6463,7 @@
           "type": "object",
           "properties": {
             "SocketRead": {
-              "$ref": "#/$defs/PluginResult20"
+              "$ref": "#/$defs/PluginResult22"
             }
           },
           "required": [
@@ -6194,7 +6475,7 @@
           "type": "object",
           "properties": {
             "SocketWrite": {
-              "$ref": "#/$defs/PluginResult21"
+              "$ref": "#/$defs/PluginResult23"
             }
           },
           "required": [
@@ -6206,7 +6487,7 @@
           "type": "object",
           "properties": {
             "SocketStartTls": {
-              "$ref": "#/$defs/PluginResult22"
+              "$ref": "#/$defs/PluginResult24"
             }
           },
           "required": [
@@ -6218,7 +6499,7 @@
           "type": "object",
           "properties": {
             "SocketClose": {
-              "$ref": "#/$defs/PluginResult23"
+              "$ref": "#/$defs/PluginResult25"
             }
           },
           "required": [
@@ -6230,7 +6511,7 @@
           "type": "object",
           "properties": {
             "ProcessExec": {
-              "$ref": "#/$defs/PluginResult24"
+              "$ref": "#/$defs/PluginResult26"
             }
           },
           "required": [
@@ -6240,7 +6521,7 @@
         }
       ]
     },
-    "PluginResult15": {
+    "PluginResult17": {
       "oneOf": [
         {
           "type": "object",
@@ -6280,7 +6561,7 @@
         }
       }
     },
-    "PluginResult16": {
+    "PluginResult18": {
       "oneOf": [
         {
           "type": "object",
@@ -6326,7 +6607,7 @@
         }
       }
     },
-    "PluginResult17": {
+    "PluginResult19": {
       "oneOf": [
         {
           "type": "object",
@@ -6365,7 +6646,7 @@
         "changed"
       ]
     },
-    "PluginResult18": {
+    "PluginResult20": {
       "oneOf": [
         {
           "type": "object",
@@ -6424,7 +6705,7 @@
         "status"
       ]
     },
-    "PluginResult19": {
+    "PluginResult21": {
       "oneOf": [
         {
           "type": "object",
@@ -6465,7 +6746,7 @@
         "handle"
       ]
     },
-    "PluginResult20": {
+    "PluginResult22": {
       "oneOf": [
         {
           "type": "object",
@@ -6508,7 +6789,7 @@
         "eof"
       ]
     },
-    "PluginResult21": {
+    "PluginResult23": {
       "oneOf": [
         {
           "type": "object",
@@ -6549,7 +6830,7 @@
         "bytes_written"
       ]
     },
-    "PluginResult22": {
+    "PluginResult24": {
       "oneOf": [
         {
           "type": "object",
@@ -6590,7 +6871,7 @@
         "handle"
       ]
     },
-    "PluginResult23": {
+    "PluginResult25": {
       "oneOf": [
         {
           "type": "object",
@@ -6629,7 +6910,7 @@
         "closed"
       ]
     },
-    "PluginResult24": {
+    "PluginResult26": {
       "oneOf": [
         {
           "type": "object",
@@ -6912,7 +7193,7 @@
         }
       ]
     },
-    "PluginResult25": {
+    "PluginResult27": {
       "oneOf": [
         {
           "type": "object",
@@ -7906,7 +8187,7 @@
         }
       ]
     },
-    "PluginResult26": {
+    "PluginResult28": {
       "oneOf": [
         {
           "type": "object",

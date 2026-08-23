@@ -726,6 +726,8 @@ pub struct NotificationCapabilities {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadClientCapabilities {
     #[serde(default)]
+    pub category_scoped_feedback: bool,
+    #[serde(default)]
     pub pause: bool,
     #[serde(default)]
     pub resume: bool,
@@ -1766,6 +1768,38 @@ pub struct PluginDownloadClientAddRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadListRecentCompletedRequest {
     pub limit: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadFeedbackScope {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadScopedListRequest {
+    #[serde(default)]
+    pub scope: PluginDownloadFeedbackScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadScopedRecentCompletedRequest {
+    pub limit: usize,
+    #[serde(default)]
+    pub scope: PluginDownloadFeedbackScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadScopeFailure {
+    pub category: String,
+    pub error: PluginError,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadScopedListResponse<T> {
+    pub items: Vec<T>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<PluginDownloadScopeFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3405,6 +3439,12 @@ mod tests {
             .join("schemas/plugin-sdk-v3.schema.json");
         let expected = std::fs::read_to_string(schema_path).unwrap();
         assert_eq!(expected, plugin_sdk_schema_json());
+    }
+
+    #[test]
+    fn category_scoped_feedback_capability_defaults_to_disabled() {
+        let capabilities: DownloadClientCapabilities = serde_json::from_str("{}").unwrap();
+        assert!(!capabilities.category_scoped_feedback);
     }
 
     #[test]

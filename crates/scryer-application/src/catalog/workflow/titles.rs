@@ -17,6 +17,165 @@ fn non_empty_scope(value: &str) -> Option<String> {
         Some(value.to_string())
     }
 }
+
+fn record_download_client_feedback_categories(
+    client_id: &str,
+    categories: impl IntoIterator<Item = String>,
+    admission_by_client: &mut std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    >,
+    feedback_by_client: &mut std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    >,
+) {
+    for category in categories {
+        let category = category.trim().to_string();
+        if category.is_empty() {
+            continue;
+        }
+        let normalized = crate::services::normalize_download_client_category(&category);
+        if normalized.is_empty() {
+            continue;
+        }
+        admission_by_client
+            .entry(client_id.to_string())
+            .or_default()
+            .insert(normalized);
+        feedback_by_client
+            .entry(client_id.to_string())
+            .or_default()
+            .insert(category);
+    }
+}
+
+fn record_configured_download_client_category(
+    client_id: &str,
+    enabled: bool,
+    category: Option<String>,
+    admission_by_client: &mut std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    >,
+    feedback_by_client: &mut std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    >,
+) {
+    let Some(category) = category
+        .map(|category| category.trim().to_string())
+        .filter(|category| !category.is_empty())
+    else {
+        return;
+    };
+    let normalized = crate::services::normalize_download_client_category(&category);
+    if normalized.is_empty() {
+        return;
+    }
+    admission_by_client
+        .entry(client_id.to_string())
+        .or_default()
+        .insert(normalized);
+    if enabled {
+        feedback_by_client
+            .entry(client_id.to_string())
+            .or_default()
+            .insert(category);
+    }
+}
+
+#[cfg(test)]
+mod download_client_feedback_category_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_combines_default_facet_and_library_routes_without_losing_spelling() {
+        let mut admission = std::collections::HashMap::new();
+        let mut feedback = std::collections::HashMap::new();
+
+        record_download_client_feedback_categories(
+            "qbit",
+            [" Movies ".to_string()],
+            &mut admission,
+            &mut feedback,
+        );
+        record_download_client_feedback_categories(
+            "qbit",
+            ["TV / Anime".to_string()],
+            &mut admission,
+            &mut feedback,
+        );
+        record_download_client_feedback_categories(
+            "qbit",
+            ["Series-HD".to_string(), "movies".to_string()],
+            &mut admission,
+            &mut feedback,
+        );
+        record_download_client_feedback_categories(
+            "other",
+            ["Other Client".to_string()],
+            &mut admission,
+            &mut feedback,
+        );
+
+        assert_eq!(
+            admission["qbit"],
+            std::collections::HashSet::from([
+                "movies".to_string(),
+                "tv / anime".to_string(),
+                "series-hd".to_string(),
+            ])
+        );
+        assert_eq!(
+            feedback["qbit"],
+            std::collections::HashSet::from([
+                "Movies".to_string(),
+                "movies".to_string(),
+                "TV / Anime".to_string(),
+                "Series-HD".to_string(),
+            ])
+        );
+        assert_eq!(
+            feedback["other"],
+            std::collections::HashSet::from(["Other Client".to_string()])
+        );
+    }
+
+    #[test]
+    fn disabled_configured_routes_remain_admissible_but_are_not_polled() {
+        let mut admission = std::collections::HashMap::new();
+        let mut feedback = std::collections::HashMap::new();
+
+        record_configured_download_client_category(
+            "qbit",
+            false,
+            Some(" Disabled Route ".to_string()),
+            &mut admission,
+            &mut feedback,
+        );
+        record_configured_download_client_category(
+            "qbit",
+            true,
+            Some("Enabled Route".to_string()),
+            &mut admission,
+            &mut feedback,
+        );
+
+        assert_eq!(
+            admission["qbit"],
+            std::collections::HashSet::from([
+                "disabled route".to_string(),
+                "enabled route".to_string(),
+            ])
+        );
+        assert_eq!(
+            feedback["qbit"],
+            std::collections::HashSet::from(["Enabled Route".to_string()])
+        );
+    }
+}
+
 impl AppUseCase {
     async fn read_download_client_routing_value(
         &self,
@@ -1052,9 +1211,8 @@ impl AppUseCase {
             .runtime
             .acquisition
             .download_client_category_admission
-            .read()
+            .snapshot()
             .await
-            .clone()
         {
             return Some(snapshot);
         }
@@ -1067,19 +1225,17 @@ impl AppUseCase {
         self.runtime
             .acquisition
             .download_client_category_admission
-            .read()
+            .snapshot()
             .await
-            .clone()
     }
 
     pub async fn refresh_download_client_category_admission(&self) -> AppResult<()> {
         let snapshot = self.load_download_client_category_admission_snapshot().await?;
-        *self
-            .runtime
+        self.runtime
             .acquisition
             .download_client_category_admission
-            .write()
-            .await = Some(std::sync::Arc::new(snapshot));
+            .replace(snapshot)
+            .await;
         Ok(())
     }
 
@@ -1111,11 +1267,17 @@ impl AppUseCase {
             .list(None)
             .await?;
         let mut categories_by_client = std::collections::HashMap::new();
+        let mut feedback_category_sets_by_client = std::collections::HashMap::new();
         for client in clients {
-            let categories = self
-                .load_download_client_admission_categories(&client.id)
+            let feedback_categories = self
+                .load_download_client_feedback_categories(&client.id)
                 .await?;
-            categories_by_client.insert(client.id, categories);
+            record_download_client_feedback_categories(
+                &client.id,
+                feedback_categories,
+                &mut categories_by_client,
+                &mut feedback_category_sets_by_client,
+            );
         }
 
         let mut routing_scopes = std::collections::HashSet::from([
@@ -1132,13 +1294,24 @@ impl AppUseCase {
             self.collect_configured_download_client_categories(
                 &scope_id,
                 &mut categories_by_client,
+                &mut feedback_category_sets_by_client,
             )
             .await?;
         }
 
+        let feedback_categories_by_client = feedback_category_sets_by_client
+            .into_iter()
+            .map(|(client_id, categories)| {
+                let mut categories = categories.into_iter().collect::<Vec<_>>();
+                categories.sort();
+                (client_id, categories)
+            })
+            .collect();
+
         Ok(crate::services::DownloadClientCategoryAdmissionSnapshot {
             default_categories,
             categories_by_client,
+            feedback_categories_by_client,
         })
     }
 
@@ -1146,6 +1319,10 @@ impl AppUseCase {
         &self,
         scope_id: &str,
         categories_by_client: &mut std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        >,
+        feedback_categories_by_client: &mut std::collections::HashMap<
             String,
             std::collections::HashSet<String>,
         >,
@@ -1164,25 +1341,20 @@ impl AppUseCase {
                 continue;
             };
             for (client_id, config) in routing_map {
-                let Some(category) = parse_download_client_routing_entry(&config)
-                    .category
-                    .map(|category| {
-                        crate::services::normalize_download_client_category(&category)
-                    })
-                    .filter(|category| !category.is_empty())
-                else {
-                    continue;
-                };
-                categories_by_client
-                    .entry(client_id)
-                    .or_default()
-                    .insert(category);
+                let entry = parse_download_client_routing_entry(&config);
+                record_configured_download_client_category(
+                    &client_id,
+                    entry.enabled,
+                    entry.category,
+                    categories_by_client,
+                    feedback_categories_by_client,
+                );
             }
         }
         Ok(())
     }
 
-    async fn load_download_client_admission_categories(
+    async fn load_download_client_feedback_categories(
         &self,
         client_id: &str,
     ) -> AppResult<std::collections::HashSet<String>> {
@@ -1198,9 +1370,7 @@ impl AppUseCase {
                 .effective_download_client_category_for_admission_scope(None, &facet, client_id)
                 .await?
             {
-                categories.insert(crate::services::normalize_download_client_category(
-                    &category,
-                ));
+                categories.insert(category.trim().to_string());
             }
             for library in libraries {
                 if let Some(category) = self
@@ -1211,13 +1381,11 @@ impl AppUseCase {
                     )
                     .await?
                 {
-                    categories.insert(crate::services::normalize_download_client_category(
-                        &category,
-                    ));
+                    categories.insert(category.trim().to_string());
                 }
             }
         }
-        categories.retain(|category| !category.is_empty());
+        categories.retain(|category| !category.trim().is_empty());
         Ok(categories)
     }
 
