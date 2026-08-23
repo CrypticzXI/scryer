@@ -522,9 +522,8 @@ fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
     }
 }
 
-#[cfg(windows)]
 #[test]
-fn truncate_generated_filename_preserves_extension_and_byte_budget() {
+fn truncate_generated_filename_preserves_extension_and_utf8_byte_budget() {
     let long_stem = "長".repeat(120);
     let filename = format!("{long_stem}.mkv");
     let result = truncate_generated_filename_component(&filename);
@@ -536,15 +535,6 @@ fn truncate_generated_filename_preserves_extension_and_byte_budget() {
         result.len()
     );
     assert!(std::str::from_utf8(result.as_bytes()).is_ok());
-}
-
-#[cfg(not(windows))]
-#[test]
-fn truncate_generated_filename_preserves_long_utf8_component() {
-    let long_stem = "長".repeat(120);
-    let filename = format!("{long_stem}.mkv");
-
-    assert_eq!(truncate_generated_filename_component(&filename), filename);
 }
 
 #[test]
