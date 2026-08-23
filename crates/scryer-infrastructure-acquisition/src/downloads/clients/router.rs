@@ -490,14 +490,16 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
     }
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner.list_completed_downloads().await
+        self.run_feedback_read(self.inner.list_completed_downloads())
+            .await
     }
 
     async fn list_recent_completed_downloads(
         &self,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner.list_recent_completed_downloads(limit).await
+        self.run_feedback_read(self.inner.list_recent_completed_downloads(limit))
+            .await
     }
 
     async fn list_queue_excluding_client_types(
@@ -540,9 +542,14 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         limit: usize,
         excluded_client_types: &[&str],
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner
-            .list_recent_completed_downloads_excluding_client_types(limit, excluded_client_types)
-            .await
+        self.run_feedback_read(
+            self.inner
+                .list_recent_completed_downloads_excluding_client_types(
+                    limit,
+                    excluded_client_types,
+                ),
+        )
+        .await
     }
 
     async fn list_recent_completed_downloads_for_client_scope(
@@ -552,14 +559,13 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         client_types: &[String],
         excluded_client_types: &[&str],
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner
-            .list_recent_completed_downloads_for_client_scope(
-                limit,
-                client_ids,
-                client_types,
-                excluded_client_types,
-            )
-            .await
+        self.run_feedback_read(self.inner.list_recent_completed_downloads_for_client_scope(
+            limit,
+            client_ids,
+            client_types,
+            excluded_client_types,
+        ))
+        .await
     }
 
     async fn get_completed_download_for_source(
@@ -812,14 +818,18 @@ impl PrioritizedDownloadClientRouter {
         )
     }
 
-    fn feedback_backoff_duration(consecutive_failures: u32) -> Duration {
-        let mut seconds = DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS;
+    fn feedback_backoff_duration(
+        consecutive_failures: u32,
+        feedback_read_timeout: Duration,
+        failed_read_elapsed: Duration,
+    ) -> Duration {
+        let maximum = Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS)
+            .max(feedback_read_timeout);
+        let mut delay = Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS);
         for _ in 1..consecutive_failures {
-            seconds = seconds
-                .saturating_mul(2)
-                .min(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS);
+            delay = delay.saturating_mul(2).min(maximum);
         }
-        Duration::from_secs(seconds)
+        delay.max(failed_read_elapsed.min(maximum))
     }
 
     fn feedback_backoff_remaining(
@@ -855,50 +865,62 @@ impl PrioritizedDownloadClientRouter {
         read_kind: DownloadFeedbackReadKind,
         operation: &'static str,
         read: F,
-    ) -> Vec<(DownloadClientConfig, AppResult<T>)>
+    ) -> Vec<(DownloadClientConfig, Duration, AppResult<T>)>
     where
         T: Send,
         F: Fn(Arc<dyn DownloadClient>) -> Fut + Sync,
         Fut: Future<Output = AppResult<T>> + Send,
     {
-        let reads = clients.into_iter().filter_map(|config| {
-            if let Some(remaining) = self.feedback_backoff_remaining(&config.id, read_kind) {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(read_kind),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                return None;
-            }
-
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(
+        let reads = clients
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, config)| {
+                if let Some(remaining) = self.feedback_backoff_remaining(&config.id, read_kind) {
+                    debug!(
                         client_id = %config.id,
-                        error = %error,
-                        operation,
-                        "skipping client for feedback read"
+                        client = %config.name,
+                        read_kind = Self::feedback_read_kind_label(read_kind),
+                        remaining_ms = remaining.as_millis(),
+                        "skipping download client feedback read during backoff"
                     );
                     return None;
                 }
-            };
-            let read = read(client);
-            Some(async move { (config, read.await) })
-        });
 
-        futures_util::stream::iter(reads)
-            .buffered(DOWNLOAD_CLIENT_FEEDBACK_POLL_CONCURRENCY)
+                let client = match Self::client_from_config(
+                    &config,
+                    self.staged_nzb_store.clone(),
+                    self.staged_nzb_pipeline_limit.clone(),
+                    self.plugin_provider.as_ref(),
+                    self.feedback_read_timeout,
+                ) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(
+                            client_id = %config.id,
+                            error = %error,
+                            operation,
+                            "skipping client for feedback read"
+                        );
+                        return None;
+                    }
+                };
+                let read = read(client);
+                Some(async move {
+                    let started_at = Instant::now();
+                    let result = read.await;
+                    (index, config, started_at.elapsed(), result)
+                })
+            });
+
+        let mut reads = futures_util::stream::iter(reads)
+            .buffer_unordered(DOWNLOAD_CLIENT_FEEDBACK_POLL_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        reads.sort_unstable_by_key(|(index, ..)| *index);
+        reads
+            .into_iter()
+            .map(|(_, config, elapsed, result)| (config, elapsed, result))
             .collect()
-            .await
     }
 
     fn record_feedback_read_success(&self, client_id: &str, kind: DownloadFeedbackReadKind) {
@@ -909,7 +931,12 @@ impl PrioritizedDownloadClientRouter {
         backoff.remove(&(client_id.to_string(), kind));
     }
 
-    fn record_feedback_read_failure(&self, client_id: &str, kind: DownloadFeedbackReadKind) {
+    fn record_feedback_read_failure(
+        &self,
+        client_id: &str,
+        kind: DownloadFeedbackReadKind,
+        failed_read_elapsed: Duration,
+    ) {
         let mut backoff = self
             .feedback_read_backoff
             .lock()
@@ -919,7 +946,11 @@ impl PrioritizedDownloadClientRouter {
             .get(&key)
             .map(|state| state.consecutive_failures.saturating_add(1))
             .unwrap_or(1);
-        let delay = Self::feedback_backoff_duration(failures);
+        let delay = Self::feedback_backoff_duration(
+            failures,
+            self.feedback_read_timeout,
+            failed_read_elapsed,
+        );
         backoff.insert(
             key,
             FeedbackReadBackoffState {
@@ -3272,7 +3303,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_queue().await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(&config.id, DownloadFeedbackReadKind::Queue);
@@ -3284,7 +3315,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
-                    self.record_feedback_read_failure(&config.id, DownloadFeedbackReadKind::Queue);
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::Queue,
+                        elapsed,
+                    );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list queue");
                 }
@@ -3309,7 +3344,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_queue_for_title(title_id).await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3327,6 +3362,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::TitleQueue,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped queue");
@@ -3352,7 +3388,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_history().await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3370,6 +3406,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::History,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list history");
@@ -3411,7 +3448,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_recent_activity(limit).await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3429,6 +3466,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
@@ -3481,7 +3519,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_recent_activity(limit).await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3499,6 +3537,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list type-scoped recent activity");
@@ -3541,7 +3580,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3559,6 +3598,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::TitleRecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped recent activity");
@@ -3600,7 +3640,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_history_page(0, fetch_limit).await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3618,6 +3658,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::History,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list paged history");
@@ -3648,7 +3689,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_completed_downloads().await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             let mappings = download_client_remote_path_mappings(&config);
             let accepts_torrents = Self::config_accepts_source_kind(
                 &config,
@@ -3661,6 +3702,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             );
             match result {
                 Ok(mut items) => {
+                    self.record_feedback_read_success(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentCompletedDownloads,
+                    );
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
@@ -3681,6 +3726,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(accepted_items);
                 }
                 Err(error) => {
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentCompletedDownloads,
+                        elapsed,
+                    );
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list completed downloads");
                 }
             }
@@ -3762,7 +3812,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 |client| async move { client.list_recent_completed_downloads(limit).await },
             )
             .await;
-        for (config, result) in reads {
+        for (config, elapsed, result) in reads {
             let mappings = download_client_remote_path_mappings(&config);
             let accepts_torrents = Self::config_accepts_source_kind(
                 &config,
@@ -3803,6 +3853,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentCompletedDownloads,
+                        elapsed,
                     );
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list recent completed downloads");
                 }
@@ -3849,6 +3900,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             self.plugin_provider.as_ref(),
             self.feedback_read_timeout,
         )?;
+        let started_at = Instant::now();
         match client
             .get_completed_download_for_source(&config.id, &config.client_type, reference)
             .await
@@ -3883,6 +3935,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 self.record_feedback_read_failure(
                     &config.id,
                     DownloadFeedbackReadKind::RecentCompletedDownloads,
+                    started_at.elapsed(),
                 );
                 Err(error)
             }
@@ -5343,6 +5396,97 @@ mod tests {
             self.barrier.wait().await;
             tokio::time::sleep(self.delay_after_barrier).await;
             Ok(self.queue_items.clone())
+        }
+    }
+
+    struct GatedQueueDownloadClient {
+        started: Option<Arc<tokio::sync::Notify>>,
+        release: Option<Arc<tokio::sync::Notify>>,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for GatedQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            if let Some(started) = &self.started {
+                started.notify_one();
+            }
+            if let Some(release) = &self.release {
+                release.notified().await;
+            }
+            Ok(self.queue_items.clone())
+        }
+    }
+
+    struct DelayedCompletedDownloadClient {
+        delay: Duration,
+    }
+
+    impl DelayedCompletedDownloadClient {
+        async fn delay(&self) {
+            tokio::time::sleep(self.delay).await;
+        }
+    }
+
+    #[async_trait]
+    impl DownloadClient for DelayedCompletedDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_completed_downloads(
+            &self,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads(
+            &self,
+            _limit: usize,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads_excluding_client_types(
+            &self,
+            _limit: usize,
+            _excluded_client_types: &[&str],
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads_for_client_scope(
+            &self,
+            _limit: usize,
+            _client_ids: &[String],
+            _client_types: &[String],
+            _excluded_client_types: &[&str],
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn get_completed_download_for_source(
+            &self,
+            _client_id: &str,
+            _client_type: &str,
+            _download_client_item_id: &str,
+        ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(None)
         }
     }
 
@@ -8541,6 +8685,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn feedback_backoff_retains_exponential_growth_for_fast_failures() {
+        let timeout = Duration::from_secs(90);
+        let elapsed = Duration::from_secs(1);
+
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(1, timeout, elapsed),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(2, timeout, elapsed),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(3, timeout, elapsed),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(4, timeout, elapsed),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn feedback_backoff_accounts_for_expensive_failures() {
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                1,
+                Duration::from_secs(300),
+                Duration::from_secs(240),
+            ),
+            Duration::from_secs(240)
+        );
+    }
+
+    #[test]
+    fn feedback_backoff_uses_dynamic_ceiling() {
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                10,
+                Duration::from_secs(300),
+                Duration::from_secs(1),
+            ),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                10,
+                Duration::from_secs(90),
+                Duration::from_secs(500),
+            ),
+            Duration::from_secs(120)
+        );
+    }
+
     #[tokio::test]
     async fn download_client_timeout_wrapper_times_out_feedback_reads() {
         let wrapped = FeedbackTimeoutDownloadClient::new(
@@ -8561,6 +8760,54 @@ mod tests {
             AppError::DownloadFeedbackTimeout(ref message)
                 if message == "download feedback timed out after 5ms; queue status is temporarily unavailable"
         ));
+    }
+
+    #[tokio::test]
+    async fn download_client_timeout_wrapper_times_out_all_completion_reads() {
+        let wrapped = FeedbackTimeoutDownloadClient::new(
+            Arc::new(DelayedCompletedDownloadClient {
+                delay: Duration::from_millis(25),
+            }),
+            Duration::from_millis(5),
+        );
+        let client_ids = vec!["client-a".to_string()];
+        let client_types = vec!["qbittorrent".to_string()];
+
+        let errors = [
+            wrapped
+                .list_completed_downloads()
+                .await
+                .expect_err("completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads(10)
+                .await
+                .expect_err("recent completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads_excluding_client_types(10, &["sabnzbd"])
+                .await
+                .expect_err("excluded-type completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads_for_client_scope(
+                    10,
+                    &client_ids,
+                    &client_types,
+                    &[],
+                )
+                .await
+                .expect_err("client-scoped completed download reads should time out"),
+            wrapped
+                .get_completed_download_for_source("client-a", "qbittorrent", "item-a")
+                .await
+                .expect_err("targeted completed download reads should time out"),
+        ];
+
+        for error in errors {
+            assert!(matches!(
+                error,
+                AppError::DownloadFeedbackTimeout(ref message)
+                    if message == "download feedback timed out after 5ms; queue status is temporarily unavailable"
+            ));
+        }
     }
 
     #[tokio::test]
@@ -8673,6 +8920,85 @@ mod tests {
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_queue_refills_polling_slots_and_preserves_priority_order() {
+        let first_release = Arc::new(tokio::sync::Notify::new());
+        let fifth_started = Arc::new(tokio::sync::Notify::new());
+        let first: Arc<dyn DownloadClient> = Arc::new(GatedQueueDownloadClient {
+            started: None,
+            release: Some(first_release.clone()),
+            queue_items: vec![test_queue_item("first")],
+        });
+        let immediate = |id| -> Arc<dyn DownloadClient> {
+            Arc::new(GatedQueueDownloadClient {
+                started: None,
+                release: None,
+                queue_items: vec![test_queue_item(id)],
+            })
+        };
+        let fifth: Arc<dyn DownloadClient> = Arc::new(GatedQueueDownloadClient {
+            started: Some(fifth_started.clone()),
+            release: None,
+            queue_items: vec![test_queue_item("fifth")],
+        });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("first".to_string(), first),
+                    ("second".to_string(), immediate("second")),
+                    ("third".to_string(), immediate("third")),
+                    ("fourth".to_string(), immediate("fourth")),
+                    ("fifth".to_string(), fifth),
+                ],
+            });
+        let router = Arc::new(PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("first", "First", "qbittorrent", 0),
+                    test_config("second", "Second", "qbittorrent", 1),
+                    test_config("third", "Third", "qbittorrent", 2),
+                    test_config("fourth", "Fourth", "qbittorrent", 3),
+                    test_config("fifth", "Fifth", "qbittorrent", 4),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_secs(5),
+        ));
+
+        let poll = tokio::spawn({
+            let router = router.clone();
+            async move { router.list_queue().await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), fifth_started.notified())
+            .await
+            .expect("client five should start while client one remains blocked");
+        first_release.notify_one();
+
+        let items = tokio::time::timeout(Duration::from_secs(1), poll)
+            .await
+            .expect("queue polling should finish after client one is released")
+            .expect("queue polling task should not panic")
+            .expect("queue listing should succeed");
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+                "fourth".to_string(),
+                "fifth".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
