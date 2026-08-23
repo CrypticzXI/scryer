@@ -1,4 +1,43 @@
 use super::*;
+use async_trait::async_trait;
+
+#[derive(Default)]
+struct MarkingDownloadClient {
+    marked_client_ids: Mutex<Vec<String>>,
+    marked_imported: Mutex<Vec<crate::DownloadClientMarkImportedRequest>>,
+    mark_imported_error: Option<String>,
+}
+
+#[async_trait]
+impl DownloadClient for MarkingDownloadClient {
+    async fn submit_download(&self, _: &DownloadClientAddRequest) -> AppResult<DownloadGrabResult> {
+        Err(AppError::Repository("not needed in test".to_string()))
+    }
+
+    async fn mark_imported(
+        &self,
+        request: &crate::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.marked_imported.lock().await.push(request.clone());
+        if let Some(error) = &self.mark_imported_error {
+            Err(AppError::Repository(error.clone()))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn mark_imported_for_client_id(
+        &self,
+        client_id: &str,
+        request: &crate::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.marked_client_ids
+            .lock()
+            .await
+            .push(client_id.to_string());
+        self.mark_imported(request).await
+    }
+}
 
 struct TorrentOnlyPluginProvider;
 
@@ -64,6 +103,170 @@ async fn apply_result_marks_verified_already_present_skip_imported() {
     assert_eq!(td.state, TrackedDownloadState::Imported);
     assert_eq!(td.status, TrackedDownloadStatus::Ok);
     assert!(td.status_messages.is_empty());
+}
+
+async fn assert_verified_import_remains_imported_when_callback_errors(callback_error: &str) {
+    let title = build_title("title-1", "Show", MediaFacet::Series);
+    let collection = build_collection("season-1", "title-1", "1");
+    let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+    let hash = "0123456789abcdef0123456789abcdef01234567";
+    let client = Arc::new(MarkingDownloadClient {
+        marked_client_ids: Mutex::new(Vec::new()),
+        marked_imported: Mutex::new(Vec::new()),
+        mark_imported_error: Some(callback_error.to_string()),
+    });
+    let mut artifact =
+        build_artifact_with_result(hash, Some("ep-1"), "Show.S01E01.mkv", "already_present");
+    artifact.source_client_id = Some("rtorrent-primary".to_string());
+    artifact.source_system = "rtorrent".to_string();
+    let app = build_app_with_download_client(
+        vec![title],
+        vec![collection],
+        vec![episode],
+        vec![artifact],
+        client.clone(),
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    td.client_id = "rtorrent-primary".to_string();
+    td.client_type = "rtorrent".to_string();
+    td.client_item.client_id = td.client_id.clone();
+    td.client_item.client_type = td.client_type.clone();
+    td.client_item.download_client_item_id = hash.to_string();
+    td.client_item.download_id = Some(hash.to_ascii_uppercase());
+    let mut completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        "/downloads/Show.S01E01.1080p.WEB-DL",
+        Some("series"),
+    );
+    completed.client_id = td.client_id.clone();
+    completed.client_type = td.client_type.clone();
+    completed.download_client_item_id = hash.to_string();
+    completed.download_id = Some(hash.to_ascii_uppercase());
+    let result = ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: Some(ImportSkipReason::AlreadyImported),
+        title_id: Some("title-1".to_string()),
+        source_system: Some("rtorrent".to_string()),
+        source_ref: Some(hash.to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: Some("/data/series/Show/Season 01/Show.S01E01.mkv".to_string()),
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: None,
+        release_burned: false,
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(
+        apply_import_result_with_completed(&app, &mut td, result, 0, Some(&completed), None).await
+    );
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+
+    let marked = client.marked_imported.lock().await;
+    assert_eq!(marked.len(), 1);
+    assert_eq!(marked[0].client_item_id, hash);
+    assert_eq!(marked[0].info_hash.as_deref(), Some(hash));
+    assert_eq!(marked[0].title_id.as_deref(), Some("title-1"));
+    assert_eq!(marked[0].category.as_deref(), Some("series"));
+    assert_eq!(
+        marked[0].imported_path.as_deref(),
+        Some("/data/series/Show/Season 01/Show.S01E01.mkv")
+    );
+    drop(marked);
+    let marked_client_ids = client.marked_client_ids.lock().await;
+    assert_eq!(marked_client_ids.len(), 1);
+    assert_eq!(marked_client_ids[0], "rtorrent-primary");
+}
+
+#[tokio::test]
+async fn apply_result_keeps_verified_imported_download_when_client_callback_fails() {
+    assert_verified_import_remains_imported_when_callback_errors("client callback failed").await;
+}
+
+#[tokio::test]
+async fn apply_result_keeps_verified_imported_download_when_callback_is_unsupported() {
+    assert_verified_import_remains_imported_when_callback_errors(
+        "download client does not support mark imported",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_result_does_not_mark_client_when_import_is_rejected() {
+    let client = Arc::new(MarkingDownloadClient::default());
+    let app = build_app_with_download_client(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        client.clone(),
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        "/downloads/Show.S01E01.1080p.WEB-DL",
+        Some("series"),
+    );
+    let mut result = failed_execution_result("release language does not match the title");
+    result.decision = ImportDecision::Rejected;
+    result.release_burned = true;
+
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, result, 0, Some(&completed), None).await
+    );
+    assert!(client.marked_imported.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn apply_result_does_not_mark_client_before_import_verification_succeeds() {
+    let client = Arc::new(MarkingDownloadClient::default());
+    let app = build_app_with_download_client(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        client.clone(),
+    );
+    let completed = build_completed_download(
+        "Show.S01E01.1080p.WEB-DL",
+        "/downloads/Show.S01E01.1080p.WEB-DL",
+        Some("series"),
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+
+    let mut partial = failed_execution_result("some import work completed");
+    partial.decision = ImportDecision::Imported;
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, partial, 0, Some(&completed), None)
+            .await
+    );
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+
+    assert!(
+        !apply_import_result_with_completed(
+            &app,
+            &mut td,
+            failed_execution_result("import execution failed"),
+            0,
+            Some(&completed),
+            None,
+        )
+        .await
+    );
+
+    let mut unverified = failed_execution_result("no eligible video files found");
+    unverified.decision = ImportDecision::Skipped;
+    unverified.skip_reason = Some(ImportSkipReason::NoVideoFiles);
+    assert!(
+        !apply_import_result_with_completed(&app, &mut td, unverified, 0, Some(&completed), None)
+            .await
+    );
+    assert!(client.marked_imported.lock().await.is_empty());
 }
 
 #[tokio::test]

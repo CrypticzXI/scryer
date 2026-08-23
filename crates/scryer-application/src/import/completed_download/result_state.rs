@@ -153,6 +153,9 @@ pub(super) async fn apply_import_result_with_completed(
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
+            if let Some(completed) = completed {
+                mark_download_client_item_imported(app, td, completed, &result).await;
+            }
             return true;
         }
 
@@ -308,6 +311,91 @@ pub(super) async fn apply_import_result_with_completed(
             td.status = TrackedDownloadStatus::Warning;
             td.status_messages = vec![import_result_message(&result, ImportStatus::Skipped)];
             false
+        }
+    }
+}
+
+fn download_client_mark_imported_request(
+    td: &TrackedDownload,
+    completed: &CompletedDownload,
+    result: &ImportResult,
+) -> crate::DownloadClientMarkImportedRequest {
+    crate::DownloadClientMarkImportedRequest {
+        client_item_id: completed.download_client_item_id.clone(),
+        info_hash: crate::normalize_torrent_info_hash(completed.download_id.as_deref()).or_else(
+            || crate::normalize_torrent_info_hash(Some(&completed.download_client_item_id)),
+        ),
+        title_id: td.title_id.clone(),
+        title_name: (!td.client_item.title_name.trim().is_empty())
+            .then(|| td.client_item.title_name.clone()),
+        category: completed
+            .category
+            .clone()
+            .or_else(|| td.client_item.category.clone()),
+        imported_path: result
+            .dest_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(str::to_string),
+        download_path: (!completed.dest_dir.trim().is_empty()).then(|| completed.dest_dir.clone()),
+    }
+}
+
+async fn mark_download_client_item_imported(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: &CompletedDownload,
+    result: &ImportResult,
+) {
+    let request = download_client_mark_imported_request(td, completed, result);
+    let client_id = if completed.client_id.trim().is_empty() {
+        &td.client_id
+    } else {
+        &completed.client_id
+    };
+    let client_type = if completed.client_type.trim().is_empty() {
+        &td.client_type
+    } else {
+        &completed.client_type
+    };
+    let callback = if client_id.trim().is_empty() {
+        app.services
+            .integrations
+            .download_client
+            .mark_imported_for_client(client_type, &request)
+            .await
+    } else {
+        app.services
+            .integrations
+            .download_client
+            .mark_imported_for_client_id(client_id, &request)
+            .await
+    };
+
+    if let Err(error) = callback {
+        let error_message = error.to_string();
+        let unsupported = matches!(
+            &error,
+            crate::AppError::Repository(message)
+                if message == "mark_imported is not supported for this download client"
+        ) || error_message.contains("plugin error Unsupported")
+            || error_message.contains("plugin error unsupported");
+        if unsupported {
+            tracing::debug!(
+                client_id = %client_id,
+                client_type = %client_type,
+                download_client_item_id = %request.client_item_id,
+                error = %error,
+                "download client does not support post-import marking"
+            );
+        } else {
+            tracing::warn!(
+                client_id = %client_id,
+                client_type = %client_type,
+                download_client_item_id = %request.client_item_id,
+                error = %error,
+                "failed to mark imported download in client; import remains complete"
+            );
         }
     }
 }

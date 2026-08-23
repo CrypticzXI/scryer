@@ -602,6 +602,26 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.mark_imported(request).await
     }
 
+    async fn mark_imported_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner
+            .mark_imported_for_client_id(client_id, request)
+            .await
+    }
+
+    async fn mark_imported_for_client(
+        &self,
+        client_type: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner
+            .mark_imported_for_client(client_type, request)
+            .await
+    }
+
     async fn get_client_status(&self) -> AppResult<scryer_application::DownloadClientStatus> {
         self.inner.get_client_status().await
     }
@@ -4021,6 +4041,32 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )))
     }
 
+    async fn mark_imported_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.mark_imported(request).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
+    }
+
+    async fn mark_imported_for_client(
+        &self,
+        client_type: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_type(client_type).await? {
+            return client.mark_imported(request).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found for type: {client_type}"
+        )))
+    }
+
     async fn get_client_status_for_client_id(
         &self,
         client_id: &str,
@@ -5140,6 +5186,7 @@ mod tests {
         paused: Mutex<Vec<String>>,
         resumed: Mutex<Vec<String>>,
         deleted: Mutex<Vec<(String, bool, bool)>>,
+        marked_imported: Mutex<Vec<scryer_application::DownloadClientMarkImportedRequest>>,
     }
 
     #[derive(Clone, Copy)]
@@ -5224,6 +5271,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((id.to_string(), is_history, remove_data));
+            Ok(())
+        }
+
+        async fn mark_imported(
+            &self,
+            request: &scryer_application::DownloadClientMarkImportedRequest,
+        ) -> AppResult<()> {
+            self.marked_imported.lock().unwrap().push(request.clone());
             Ok(())
         }
     }
@@ -7894,6 +7949,48 @@ mod tests {
             sab_client.deleted.lock().unwrap().as_slice(),
             [("SABnzbd_nzo_hist01".to_string(), true, false)]
         );
+    }
+
+    #[tokio::test]
+    async fn mark_imported_for_client_id_routes_to_the_exact_configured_client() {
+        let primary = Arc::new(MockDownloadClient::default());
+        let secondary = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["magnet_uri".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+        let request = scryer_application::DownloadClientMarkImportedRequest {
+            client_item_id: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            info_hash: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            ..Default::default()
+        };
+
+        router
+            .mark_imported_for_client_id("secondary", &request)
+            .await
+            .expect("mark imported should route to the selected client");
+
+        assert!(primary.marked_imported.lock().unwrap().is_empty());
+        let marked = secondary.marked_imported.lock().unwrap();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0].client_item_id, request.client_item_id);
+        assert_eq!(marked[0].info_hash, request.info_hash);
     }
 
     /// The data-removal flag is the caller's decision (the terminal-cleanup
