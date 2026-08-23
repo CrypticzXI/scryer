@@ -3,13 +3,13 @@
 AI generated release notes
 
 ## What's New
-- Added Russian language support to the Scryer web interface.
-- Integrated the new Russian locale into the app's internationalization configuration so the translation set is available to users.
 
-## Release Summary
-This release is focused on localization only. The included changes add the initial Russian translation set and follow-up updates to that locale.
+This release adds initial Russian language support for the Scryer web interface.
 
-## Included Commits
-- `d9cba9d78` Update ru.ts
-- `12b95360a` index
-- `6e68175bd` translation ru v.1 Ai
+Users who prefer Russian can now access translated UI text across the web app, expanding localization coverage and improving accessibility for Russian-speaking users.
+
+## Included Changes
+
+- Added a new Russian locale for the web app.
+- Updated the localization index to register and serve the new language.
+- Refined the Russian translation content after the initial import.
