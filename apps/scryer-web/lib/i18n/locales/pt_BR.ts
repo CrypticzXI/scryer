@@ -757,6 +757,7 @@ const pt_BR: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Baixar mais recente",
   "title.requiredAudioLanguages": "Idiomas de áudio obrigatórios",
+  "title.originalAudioLanguagePerTitle": "Idioma original (por título)",
   "title.requiredAudioLanguagesFacetInfo":
     "Essas linguagens são aplicadas durante a seleção de versões e validação de importação para esse aspecto.",
   "title.requiredAudioResetInherit": "Redefinir para herdar",

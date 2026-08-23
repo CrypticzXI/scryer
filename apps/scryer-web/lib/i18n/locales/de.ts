@@ -753,6 +753,7 @@ const de: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Neuestes abrufen",
   "title.requiredAudioLanguages": "Erforderliche Audiosprachen",
+  "title.originalAudioLanguagePerTitle": "Originalsprache (pro Titel)",
   "title.requiredAudioLanguagesFacetInfo":
     "Diese Sprachen werden bei der Releaseauswahl und Importvalidierung für diesen Aspekt erzwungen.",
   "title.requiredAudioResetInherit": "Auf Vererbung zurücksetzen",

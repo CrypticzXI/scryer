@@ -742,6 +742,7 @@ const ja: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "最新をキューに追加",
   "title.requiredAudioLanguages": "必須オーディオ言語",
+  "title.originalAudioLanguagePerTitle": "オリジナル言語（タイトルごと）",
   "title.requiredAudioLanguagesFacetInfo":
     "これらの言語は、このファセットのリリース選択およびインポート検証中に適用されます。",
   "title.requiredAudioResetInherit": "継承にリセット",

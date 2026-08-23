@@ -569,10 +569,24 @@ impl AppUseCase {
                 return None;
             }
         };
+        let required_audio_languages = match self
+            .resolve_required_audio_languages_for_title(title)
+            .await
+        {
+            Ok(languages) => languages,
+            Err(error) => {
+                tracing::warn!(
+                    title_id = subject.title_id.as_str(),
+                    error = %error,
+                    "convergence: failed to resolve required audio languages; leaving scope unresolved"
+                );
+                return None;
+            }
+        };
         let fingerprint = compute_search_fingerprint(
             &context.profile.id,
             &profile_criteria_version(&context.profile.criteria),
-            &context.profile.criteria.required_audio_languages,
+            &required_audio_languages,
             &scope_match_identity(subject),
         );
 
@@ -783,6 +797,14 @@ mod tests {
             compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()], "m1")
         );
         assert_ne!(base, compute_search_fingerprint("p1", "v1", &[], "m1"));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_resolved_original_language_changes() {
+        let japanese = compute_search_fingerprint("p1", "v1", &["jpn".into()], "m1");
+        let korean = compute_search_fingerprint("p1", "v1", &["kor".into()], "m1");
+
+        assert_ne!(japanese, korean);
     }
 
     #[test]

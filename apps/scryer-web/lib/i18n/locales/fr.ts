@@ -762,6 +762,7 @@ const fr: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Récupérer le dernier",
   "title.requiredAudioLanguages": "Langues audio requises",
+  "title.originalAudioLanguagePerTitle": "Langue d’origine (par titre)",
   "title.requiredAudioLanguagesFacetInfo":
     "Ces langues sont appliquées lors de la sélection des versions et de la validation de l'importation pour cette facette.",
   "title.requiredAudioResetInherit": "Réinitialiser pour hériter",

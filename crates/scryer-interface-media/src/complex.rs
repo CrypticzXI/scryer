@@ -624,7 +624,8 @@ impl TitlePayload {
         .await
     }
 
-    /// Required audio languages after applying the title override or facet default.
+    /// Configured audio requirements after title, library, and facet inheritance.
+    /// The `original` token remains unresolved in this configuration field.
     async fn effective_required_audio_languages(
         &self,
         ctx: &Context<'_>,
@@ -645,8 +646,10 @@ impl TitlePayload {
                 return Ok(languages);
             }
             app_from_ctx(ctx)?
-                .load_facet_required_audio_languages(
-                    title_scope_from_facet(self.facet).as_scope_id(),
+                .resolve_required_audio_languages(
+                    None,
+                    Some(self.library_id.as_ref()),
+                    Some(title_scope_from_facet(self.facet).as_scope_id()),
                 )
                 .await
                 .map_err(to_gql_error)

@@ -1271,6 +1271,7 @@ const ru: LocaleDictionary = {
     "title.searchReleasesAction": "Искать релизы",
     "title.queueLatest": "Добавить последний релиз в очередь",
     "title.requiredAudioLanguages": "Требуемые языки аудио",
+    "title.originalAudioLanguagePerTitle": "Язык оригинала (для каждого произведения)",
     "title.requiredAudioLanguagesFacetInfo":
         "Эти языки учитываются при выборе релиза и проверке импортируемых файлов для данной категории.",
     "title.requiredAudioInherited": "Наследуется из настроек категории {{facet}}",

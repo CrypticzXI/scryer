@@ -1013,7 +1013,7 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
         json!({
             "input": {
                 "scope": "MOVIE",
-                "requiredAudioLanguages": ["eng"]
+                "requiredAudioLanguages": ["Original"]
             }
         }),
     )
@@ -1021,7 +1021,7 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
     assert_no_errors(&default_audio);
     assert_eq!(
         default_audio["data"]["updateMediaSettings"]["requiredAudioLanguages"],
-        json!(["eng"])
+        json!(["original"])
     );
 
     let set_override = gql(
@@ -1111,12 +1111,68 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
     assert!(inherited_title["data"]["title"]["requiredAudioLanguagesOverride"].is_null());
     assert_eq!(
         inherited_title["data"]["title"]["effectiveRequiredAudioLanguages"],
-        json!(["eng"])
+        json!(["original"])
     );
     assert_eq!(
         inherited_title["data"]["title"]["inheritsRequiredAudioLanguages"],
         true
     );
+}
+
+#[tokio::test]
+async fn graphql_title_required_audio_inherits_original_from_library() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Original Audio Library",
+        &[("/library/original-audio", true)],
+    )
+    .await;
+    let library_id = library_id(&library).to_string();
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "audio.required_languages",
+            Some(library_id.clone()),
+            json!(["original"]).to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set library required audio languages");
+
+    let title = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title {
+                    effectiveRequiredAudioLanguages
+                    inheritsRequiredAudioLanguages
+                }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Library Original Audio Movie",
+                "facet": "MOVIE",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "923456" }]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&title);
+    let title = &title["data"]["addTitle"]["title"];
+    assert_eq!(
+        title["effectiveRequiredAudioLanguages"],
+        json!(["original"])
+    );
+    assert_eq!(title["inheritsRequiredAudioLanguages"], true);
 }
 
 #[tokio::test]

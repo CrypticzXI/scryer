@@ -314,32 +314,35 @@ pub(crate) fn replace_runtime_band_block(
 /// on both sides of every comparison. This exists only because
 /// `build_rule_input` wants a `QualityProfileDecision` to expose to rules, and
 /// it is built from the same terms the canonical pass uses.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "post-download scoring needs the complete import context to match search-time policy decisions"
-)]
 #[cfg(feature = "runtime-media-analysis")]
-pub(crate) fn build_import_profile_decision(
+fn resolved_import_profile(
     profile: &crate::QualityProfile,
     required_audio_languages: &[String],
     persona: &crate::ScoringPersona,
+) -> crate::QualityProfile {
+    let mut resolved_profile = profile.clone();
+    resolved_profile.criteria.required_audio_languages = required_audio_languages.to_vec();
+    resolved_profile.criteria.scoring_persona = persona.clone();
+    resolved_profile.criteria.facet_persona_overrides.clear();
+    resolved_profile
+}
+
+#[cfg(feature = "runtime-media-analysis")]
+pub(crate) fn build_import_profile_decision(
+    profile: &crate::QualityProfile,
     parsed: &crate::ParsedReleaseMetadata,
     category_hint: &str,
     runtime_minutes: Option<i32>,
     size_bytes: Option<i64>,
     has_existing_file: bool,
 ) -> crate::QualityProfileDecision {
-    let mut resolved_profile = profile.clone();
-    resolved_profile.criteria.required_audio_languages = required_audio_languages.to_vec();
-    resolved_profile.criteria.scoring_persona = persona.clone();
-    resolved_profile.criteria.facet_persona_overrides.clear();
     let weights = crate::scoring_weights::build_weights_for_category(
-        persona,
-        &resolved_profile.criteria.scoring_overrides,
+        &profile.criteria.scoring_persona,
+        &profile.criteria.scoring_overrides,
         Some(category_hint),
     );
     let mut decision = crate::quality_profile::evaluate_against_profile_for_category(
-        &resolved_profile,
+        profile,
         parsed,
         has_existing_file,
         &weights,
@@ -599,13 +602,7 @@ pub(crate) async fn probe_and_validate(
     }
 
     let category_hint = facet_to_category_hint(&title.facet);
-    let required_audio_resolution = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(title.library_id.as_str()),
-            Some(category_hint),
-        )
-        .await;
+    let required_audio_resolution = app.resolve_required_audio_languages_for_title(title).await;
     let required_audio_resolution_failed = required_audio_resolution.is_err();
     let required_audio_languages = required_audio_resolution.unwrap_or_else(|error| {
         warn!(
@@ -645,7 +642,7 @@ pub(crate) async fn probe_and_validate(
             parsed,
             None,
             Some(&title_audio_context),
-            true,
+            false,
         );
         match crate::classify_required_audio(
             &required_audio_languages,
@@ -730,10 +727,10 @@ pub(crate) async fn probe_and_validate(
                 None
             }
         };
+        let resolved_profile =
+            resolved_import_profile(quality_profile, &required_audio_languages, &persona);
         let decision = build_import_profile_decision(
-            quality_profile,
-            &required_audio_languages,
-            &persona,
+            &resolved_profile,
             &rescored_for_rules,
             category_hint,
             title.runtime_minutes,
@@ -742,7 +739,7 @@ pub(crate) async fn probe_and_validate(
         );
         let input = crate::user_rule_input::build_rule_input(
             &rescored_for_rules,
-            quality_profile,
+            &resolved_profile,
             &decision,
             crate::user_rule_input::ReleaseRuntimeInfo {
                 size_bytes: Some(size_bytes),
@@ -1440,7 +1437,7 @@ pub(crate) fn compute_post_download_acquisition_decision(
     let announced_parsed = crate::quality::canonical_context::announced_metadata_for_title(
         title,
         parsed,
-        context.profile(),
+        context.required_audio_languages(),
         None,
     );
 
@@ -1859,6 +1856,54 @@ mod tests {
         ))
         .expect("profile fixture should parse")
         .criteria
+    }
+
+    #[cfg(feature = "runtime-media-analysis")]
+    #[test]
+    fn resolved_import_profile_exposes_concrete_audio_to_post_download_rules() {
+        let profile = crate::QualityProfile::parse(
+            r#"{"id":"p","name":"P","criteria":{"quality_tiers":["1080P"]}}"#,
+        )
+        .expect("profile fixture should parse");
+        let resolved = resolved_import_profile(
+            &profile,
+            &["jpn".to_string()],
+            &crate::ScoringPersona::default(),
+        );
+        let parsed = crate::parse_release_metadata("Example Title 1080p");
+        let decision =
+            build_import_profile_decision(&resolved, &parsed, "movie", None, None, false);
+        let input = crate::user_rule_input::build_rule_input(
+            &parsed,
+            &resolved,
+            &decision,
+            crate::user_rule_input::ReleaseRuntimeInfo {
+                size_bytes: None,
+                published_at: None,
+                thumbs_up: None,
+                thumbs_down: None,
+                is_password_protected: None,
+                extra: None,
+                indexer_languages: None,
+            },
+            crate::user_rule_input::RuleContextInfo {
+                title_id: None,
+                library_name: None,
+                category: Some("movie"),
+                original_language: Some("jpn"),
+                original_country: None,
+                title_tags: &[],
+                has_existing_file: false,
+                existing_score: None,
+                search_mode: "post_download",
+                runtime_minutes: None,
+                is_filler: false,
+            },
+            None,
+        );
+
+        assert_eq!(input.profile.required_audio_languages, vec!["jpn"]);
+        assert_eq!(input.release.languages_audio, vec!["jpn"]);
     }
 
     /// The tier comparison behind a `quality_contradicted:` blocklist. It reads

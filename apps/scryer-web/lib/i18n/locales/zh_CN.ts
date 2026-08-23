@@ -703,6 +703,7 @@ const zh_CN: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "加入最新队列",
   "title.requiredAudioLanguages": "必需音频语言",
+  "title.originalAudioLanguagePerTitle": "原始语言（按标题）",
   "title.requiredAudioLanguagesFacetInfo":
     "这些语言是在该方面的发布选择和导入验证期间强制执行的。",
   "title.requiredAudioResetInherit": "重置为继承",

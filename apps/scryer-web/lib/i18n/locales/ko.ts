@@ -732,6 +732,7 @@ const ko: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "최신 대기열",
   "title.requiredAudioLanguages": "필수 오디오 언어",
+  "title.originalAudioLanguagePerTitle": "원어(제목별)",
   "title.requiredAudioLanguagesFacetInfo":
     "이러한 언어는 이 패싯에 대한 릴리스 선택 및 가져오기 검증 중에 적용됩니다.",
   "title.requiredAudioResetInherit": "상속으로 초기화",

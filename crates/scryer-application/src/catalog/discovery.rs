@@ -600,7 +600,6 @@ impl AppUseCase {
         let canonical_context = self
             .resolve_canonical_scoring_context(&scored_title, quality_profile)
             .await;
-        let resolved_profile = canonical_context.profile().clone();
 
         let catalog_episodes = self
             .services
@@ -645,7 +644,7 @@ impl AppUseCase {
                 crate::quality::canonical_context::announced_metadata_for_title(
                     &scored_title,
                     &parsed_release_metadata,
-                    &resolved_profile,
+                    canonical_context.required_audio_languages(),
                     result.indexer_languages.as_deref(),
                 );
 

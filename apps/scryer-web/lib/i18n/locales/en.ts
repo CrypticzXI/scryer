@@ -1240,6 +1240,7 @@ const en: LocaleDictionary = {
   "title.searchReleasesAction": "Search Releases",
   "title.queueLatest": "Queue Latest",
   "title.requiredAudioLanguages": "Required Audio Languages",
+  "title.originalAudioLanguagePerTitle": "Original language (per title)",
   "title.requiredAudioLanguagesFacetInfo":
     "These languages are enforced during release picking and import validation for this facet.",
   "title.requiredAudioResetInherit": "Reset to inherit",

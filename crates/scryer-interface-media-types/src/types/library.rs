@@ -32,9 +32,9 @@ pub struct LibraryRootPayload {
 #[derive(SimpleObject, Clone)]
 /// Effective library settings together with nullable per-library overrides.
 pub struct LibrarySettingsPayload {
-    /// Library override for required audio language codes; null means inherit.
+    /// Library override for required audio language codes; `original` resolves per title.
     pub required_audio_languages_override: Option<Vec<String>>,
-    /// Effective required audio language codes after inheritance.
+    /// Effective configured requirements after inheritance; `original` remains unchanged.
     pub required_audio_languages: Vec<String>,
     /// Library metadata-language override; null means inherit the global default.
     pub metadata_language_override: Option<String>,
@@ -990,7 +990,7 @@ pub struct UpdateLibraryInput {
 #[derive(InputObject, Clone)]
 /// Acquisition, import, routing, and filesystem settings for a library.
 pub struct LibrarySettingsInput {
-    /// Required audio-language codes.
+    /// Required audio-language codes; use `original` to resolve per title.
     pub required_audio_languages: Option<Vec<String>>,
     /// Metadata language override; null inherits the global default.
     pub metadata_language: Option<String>,

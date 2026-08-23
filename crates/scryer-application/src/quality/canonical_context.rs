@@ -59,6 +59,10 @@ impl ResolvedScoringContext {
         &self.profile
     }
 
+    pub(crate) fn required_audio_languages(&self) -> &[String] {
+        &self.required_audio_languages
+    }
+
     /// The title's own runtime, used as the per-episode fallback when the
     /// catalog has no duration for an episode.
     pub(crate) fn default_runtime_minutes(&self) -> Option<i32> {
@@ -83,7 +87,7 @@ impl ResolvedScoringContext {
 pub(crate) fn announced_metadata_for_title(
     title: &Title,
     parsed: &crate::ParsedReleaseMetadata,
-    profile: &QualityProfile,
+    required_audio_languages: &[String],
     indexer_languages: Option<&[String]>,
 ) -> crate::ParsedReleaseMetadata {
     let language_context = crate::title_audio_language_context(
@@ -97,7 +101,7 @@ pub(crate) fn announced_metadata_for_title(
         parsed,
         indexer_languages,
         Some(&language_context),
-        !profile.criteria.required_audio_languages.is_empty(),
+        !required_audio_languages.is_empty(),
     );
     enriched
 }
@@ -156,7 +160,8 @@ pub(crate) fn score_parked_release_title(
         catalog_collections,
         None,
     );
-    let parsed = announced_metadata_for_title(title, &raw_parsed, context.profile(), None);
+    let parsed =
+        announced_metadata_for_title(title, &raw_parsed, context.required_audio_languages(), None);
     let runtime_minutes = crate::acquisition_coverage::coverage_runtime_minutes(
         &coverage,
         &parsed,
@@ -276,11 +281,7 @@ impl AppUseCase {
         let category = crate::post_download_gate::facet_to_category_hint(&title.facet).to_string();
 
         let required_audio_languages = self
-            .resolve_required_audio_languages(
-                Some(&title.id),
-                Some(title.library_id.as_str()),
-                Some(category.as_str()),
-            )
+            .resolve_required_audio_languages_for_title(title)
             .await
             .unwrap_or_default();
 

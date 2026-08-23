@@ -1587,10 +1587,16 @@ mod tests {
         );
 
         let grab_enriched = crate::quality::canonical_context::announced_metadata_for_title(
-            &title, &at_grab, &profile, None,
+            &title,
+            &at_grab,
+            &profile.criteria.required_audio_languages,
+            None,
         );
         let import_enriched = crate::quality::canonical_context::announced_metadata_for_title(
-            &title, &at_import, &profile, None,
+            &title,
+            &at_import,
+            &profile.criteria.required_audio_languages,
+            None,
         );
 
         assert_eq!(

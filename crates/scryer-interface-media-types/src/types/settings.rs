@@ -565,7 +565,7 @@ pub struct MediaSettingsPayload {
     pub library_path: String,
     /// Configured root folders.
     pub root_folders: Vec<RootFolderPayload>,
-    /// Effective required audio language codes.
+    /// Effective configured requirements; `original` remains unchanged.
     pub required_audio_languages: Vec<String>,
     /// Whether episodic titles use season folders.
     pub use_season_folders: bool,
@@ -685,7 +685,7 @@ pub struct UpdateMediaSettingsInput {
     pub library_path: Option<String>,
     /// Optional replacement list of library roots; null leaves existing roots unchanged.
     pub root_folders: Option<Vec<RootFolderInput>>,
-    /// Optional required audio-language codes.
+    /// Optional required audio-language codes; use `original` to resolve per title.
     pub required_audio_languages: Option<Vec<String>>,
     /// Whether episodic titles use season folders.
     pub use_season_folders: Option<bool>,

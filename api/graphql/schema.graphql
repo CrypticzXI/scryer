@@ -7562,7 +7562,7 @@ Acquisition, import, routing, and filesystem settings for a library.
 """
 input LibrarySettingsInput {
 	"""
-	Required audio-language codes.
+	Required audio-language codes; use `original` to resolve per title.
 	"""
 	requiredAudioLanguages: [String!]
 	"""
@@ -7648,11 +7648,11 @@ Effective library settings together with nullable per-library overrides.
 """
 type LibrarySettingsPayload {
 	"""
-	Library override for required audio language codes; null means inherit.
+	Library override for required audio language codes; `original` resolves per title.
 	"""
 	requiredAudioLanguagesOverride: [String!]
 	"""
-	Effective required audio language codes after inheritance.
+	Effective configured requirements after inheritance; `original` remains unchanged.
 	"""
 	requiredAudioLanguages: [String!]!
 	"""
@@ -9019,7 +9019,7 @@ type MediaSettingsPayload {
 	"""
 	rootFolders: [RootFolderPayload!]!
 	"""
-	Effective required audio language codes.
+	Effective configured requirements; `original` remains unchanged.
 	"""
 	requiredAudioLanguages: [String!]!
 	"""
@@ -15758,7 +15758,7 @@ input SetTitleRequiredAudioInput {
 	"""
 	facet: MediaFacetValue!
 	"""
-	`null` removes the override and inherits from the facet.
+	`null` removes the override and inherits from the library or facet.
 	`[]` stores an explicit "no required languages" override for the title.
 	"""
 	languages: [String!]
@@ -15786,6 +15786,7 @@ type SetTitleRequiredAudioPayload {
 	updated: Boolean!
 }
 
+	Use `original` to resolve the title's original language dynamically.
 """
 Replacement application permissions for a user.
 """
@@ -17665,7 +17666,8 @@ type TitlePayload {
 	"""
 	requiredAudioLanguagesOverride: [String!]
 	"""
-	Required audio languages after applying the title override or facet default.
+	Configured audio requirements after title, library, and facet inheritance.
+	The `original` token remains unresolved in this configuration field.
 	"""
 	effectiveRequiredAudioLanguages: [String!]!
 	"""
@@ -18689,7 +18691,7 @@ input UpdateMediaSettingsInput {
 	"""
 	rootFolders: [RootFolderInput!]
 	"""
-	Optional required audio-language codes.
+	Optional required audio-language codes; use `original` to resolve per title.
 	"""
 	requiredAudioLanguages: [String!]
 	"""
