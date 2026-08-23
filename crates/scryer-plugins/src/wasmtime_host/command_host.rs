@@ -17,7 +17,9 @@ use scryer_plugin_sdk::host::{
 use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use wasmtime::{Caller, Linker, Memory};
 
-use crate::plugin_http_host::{IndexerProxyPolicy, PluginHttpHost, PluginHttpRequest};
+use crate::plugin_http_host::{
+    IndexerErrorCaptureContext, IndexerProxyPolicy, PluginHttpHost, PluginHttpRequest,
+};
 use crate::wasmtime_host::sandbox::HostCtx;
 
 const MAX_RESPONSE_HANDLES: usize = 32;
@@ -127,6 +129,18 @@ impl CommandHost {
             .rate_limit_message(&services.plugin_id)
             .ok()
             .flatten()
+    }
+
+    pub(crate) fn begin_indexer_error_capture(&self, context: IndexerErrorCaptureContext) {
+        if let Some(services) = self.services.as_ref() {
+            services.http.begin_indexer_error_capture(context);
+        }
+    }
+
+    pub(crate) fn finish_indexer_error_capture(&self, operation_failed: bool) {
+        if let Some(services) = self.services.as_ref() {
+            services.http.finish_indexer_error_capture(operation_failed);
+        }
     }
 
     fn call(&self, encoded_request: &[u8]) -> Result<u32, String> {

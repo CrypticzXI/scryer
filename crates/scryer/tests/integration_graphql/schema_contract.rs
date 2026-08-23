@@ -534,7 +534,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Temporary-password replacement adds one mutation and its input object:
     // mutation 186->187, INPUT_OBJECT 168->169, public types 585->586.
     assert_eq!(
-        query_field_count, 125,
+        query_field_count, 127,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
@@ -542,10 +542,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 586);
-    assert_eq!(kind_count("OBJECT"), 301);
+    assert_eq!(public_types.len(), 593);
+    assert_eq!(kind_count("OBJECT"), 306);
     assert_eq!(kind_count("INPUT_OBJECT"), 169);
-    assert_eq!(kind_count("ENUM"), 104);
+    assert_eq!(kind_count("ENUM"), 106);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));

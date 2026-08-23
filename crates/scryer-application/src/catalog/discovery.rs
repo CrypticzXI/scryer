@@ -964,6 +964,10 @@ impl AppUseCase {
         } else {
             None
         };
+        let indexer_error_operation = match mode {
+            SearchMode::Interactive => IndexerErrorOperation::InteractiveSearch,
+            SearchMode::Auto => IndexerErrorOperation::AutomaticSearch,
+        };
 
         for query in effective_queries {
             let indexer_client = self.services.integrations.indexer_client.clone();
@@ -991,6 +995,7 @@ impl AppUseCase {
                         newznab_categories,
                         indexer_routing,
                         mode,
+                        indexer_error_operation,
                         season,
                         episode,
                         absolute_episode,

@@ -4627,6 +4627,7 @@ pub trait IndexerClient: Send + Sync {
         newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,
+        operation: IndexerErrorOperation,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,

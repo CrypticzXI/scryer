@@ -17,10 +17,10 @@ use crate::ports::{
 };
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
-    AcquisitionScopeStatesQuery, AcquisitionStateRepository, InsertMediaFileInput,
-    JellyfinServerUser, MediaRequestResolutionResult, MediaRequestSubmissionResult,
-    MediaRequestUpdateResult, MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser,
-    SuccessfulGrabCommit,
+    AcquisitionScopeStatesQuery, AcquisitionStateRepository, IndexerErrorDetail, IndexerErrorPage,
+    IndexerErrorRepository, InsertMediaFileInput, JellyfinServerUser, MediaRequestResolutionResult,
+    MediaRequestSubmissionResult, MediaRequestUpdateResult, MediaServerConnectionRepository,
+    NewIndexerError, PlexServerDiscovery, PlexServerUser, SuccessfulGrabCommit,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
@@ -102,6 +102,36 @@ impl SeedingProfileRepository for NullSeedingProfileRepository {
 
 #[derive(Default)]
 pub struct NullIndexerProxyConfigRepository;
+
+#[derive(Default)]
+pub struct NullIndexerErrorRepository;
+
+#[async_trait]
+impl IndexerErrorRepository for NullIndexerErrorRepository {
+    async fn record(&self, _error: NewIndexerError) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list(
+        &self,
+        _indexer_id: Option<&str>,
+        _first: usize,
+        _after: Option<&str>,
+    ) -> AppResult<IndexerErrorPage> {
+        Ok(IndexerErrorPage {
+            items: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    async fn get_detail(&self, _id: &str) -> AppResult<Option<IndexerErrorDetail>> {
+        Ok(None)
+    }
+
+    async fn delete_older_than(&self, _cutoff: chrono::DateTime<chrono::Utc>) -> AppResult<u32> {
+        Ok(0)
+    }
+}
 
 #[async_trait]
 impl IndexerProxyConfigRepository for NullIndexerProxyConfigRepository {
@@ -3231,6 +3261,7 @@ pub mod test_nulls {
             _: Option<Vec<String>>,
             _: Option<IndexerRoutingPlan>,
             _: SearchMode,
+            _: crate::IndexerErrorOperation,
             _: Option<u32>,
             _: Option<u32>,
             _: Option<u32>,

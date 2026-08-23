@@ -7,9 +7,10 @@ use std::time::Instant;
 
 use scryer_application::{
     AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider, DownloadClient,
-    DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient, IndexerPluginProvider,
-    NotificationClient, NotificationPluginProvider, PluginDescriptorLoader, RuntimePluginLoad,
-    SubtitlePluginProvider, SubtitleProviderClient, SubtitleSyncClient,
+    DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient, IndexerErrorRecorder,
+    IndexerPluginProvider, NotificationClient, NotificationPluginProvider,
+    NullIndexerErrorRecorder, PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider,
+    SubtitleProviderClient, SubtitleSyncClient,
 };
 use scryer_domain::{
     DownloadClientConfig, IndexerConfig, IndexerProxyConfig, NotificationChannelConfig,
@@ -469,6 +470,7 @@ fn builtin_subtitle_provider_types() -> Vec<String> {
 pub struct WasmIndexerPluginProvider {
     plugins: HashMap<String, LoadedPlugin>,
     aliases: HashMap<String, String>,
+    indexer_error_recorder: Arc<dyn IndexerErrorRecorder>,
 }
 
 impl WasmIndexerPluginProvider {
@@ -477,7 +479,16 @@ impl WasmIndexerPluginProvider {
         Self {
             plugins: HashMap::new(),
             aliases: HashMap::new(),
+            indexer_error_recorder: Arc::new(NullIndexerErrorRecorder),
         }
+    }
+
+    pub fn with_indexer_error_recorder(
+        mut self,
+        indexer_error_recorder: Arc<dyn IndexerErrorRecorder>,
+    ) -> Self {
+        self.indexer_error_recorder = indexer_error_recorder;
+        self
     }
 
     /// Register an externally-installed plugin from WASM bytes.
@@ -820,20 +831,22 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
         };
 
         let built = if backing == PluginRuntimeBacking::WasmtimeCommand {
-            WasmIndexerClient::new_command(
+            WasmIndexerClient::new_command_with_indexer_error_recorder(
                 wasm_bytes,
                 loaded.descriptor.clone(),
                 config.name.clone(),
                 config.clone(),
                 indexer_proxy_config.cloned(),
+                Arc::clone(&self.indexer_error_recorder),
             )
         } else {
-            WasmIndexerClient::new(
+            WasmIndexerClient::new_with_indexer_error_recorder(
                 wasm_bytes,
                 loaded.descriptor.clone(),
                 config.name.clone(),
                 config.clone(),
                 indexer_proxy_config.cloned(),
+                Arc::clone(&self.indexer_error_recorder),
             )
         };
 
@@ -3760,6 +3773,7 @@ mod tests {
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<scryer_application::IndexerRoutingPlan>,
             _mode: scryer_application::SearchMode,
+            _operation: scryer_application::IndexerErrorOperation,
             _season: Option<u32>,
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,

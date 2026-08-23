@@ -12,6 +12,7 @@ use tracing::{info, warn};
 
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
 const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
+pub const INDEXER_ERROR_RETENTION_DAYS: i64 = 30;
 const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
 const DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN: usize = 2;
 const DISCOVERY_DIAGNOSTIC_RETENTION_DAYS: i64 = 30;
@@ -687,6 +688,15 @@ impl AppUseCase {
             .housekeeping
             .delete_release_attempts_older_than(RELEASE_ATTEMPT_RETENTION_DAYS)
             .await?;
+        let stale_indexer_errors = self
+            .services
+            .integrations
+            .indexer_errors
+            .delete_older_than(
+                self.runtime.environment.now()
+                    - chrono::Duration::days(INDEXER_ERROR_RETENTION_DAYS),
+            )
+            .await?;
 
         let (
             stale_history_events,
@@ -845,6 +855,7 @@ impl AppUseCase {
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
+            stale_indexer_errors,
             stale_history_events,
             stale_history_records,
             staged_nzb_artifacts_pruned,
@@ -858,6 +869,7 @@ impl AppUseCase {
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
+            stale_indexer_errors,
             stale_history_events,
             stale_operational_domain_events,
             stale_domain_events,

@@ -7,10 +7,11 @@ use scryer_application::DiscoveryRepository;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, ImageProxyRepository, IndexerClient, IndexerConfigRepository,
-    IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
-    MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    RuleSetRepository, ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
+    IndexerErrorRepository, IndexerSearchLearningRepository, IndexerStatsTracker,
+    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
+    MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
+    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
+    ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
     SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
     TotpRepository, UpstreamScheduler, UserExternalAccountRepository, UserRepository,
     UserUiSettingsRepository, WebauthnRepository,
@@ -31,7 +32,7 @@ use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
     ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
-    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerProxyConfigStore,
+    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerErrorStore, IndexerProxyConfigStore,
     IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
     MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
     NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
@@ -630,6 +631,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_error_store: Arc<IndexerErrorStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         seeding_profile_store: Arc<SeedingProfileStore>,
@@ -674,6 +676,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_error_store: Arc<IndexerErrorStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         seeding_profile_store: Arc<SeedingProfileStore>,
@@ -740,6 +743,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_error_store = Arc::new(IndexerErrorStore::new(datastore.clone()));
         let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
@@ -810,6 +814,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_error_store,
             indexer_proxy_config_store,
             download_client_config_store,
             seeding_profile_store,
@@ -870,6 +875,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_error_store = Arc::new(IndexerErrorStore::new(datastore.clone()));
         let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
@@ -938,6 +944,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_error_store,
             indexer_proxy_config_store,
             download_client_config_store,
             seeding_profile_store,
@@ -1269,6 +1276,19 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn indexer_errors(&self) -> Arc<dyn IndexerErrorRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                indexer_error_store,
+                ..
+            } => indexer_error_store.clone(),
+            DatastoreStores::Postgres {
+                indexer_error_store,
+                ..
+            } => indexer_error_store.clone(),
+        }
+    }
+
     fn scope_indexer_coverage_repository(&self) -> Arc<dyn ScopeIndexerCoverageRepository> {
         match &self.stores {
             DatastoreStores::Sqlite { db, .. } => {
@@ -1384,6 +1404,7 @@ impl DatastoreAssembly {
                     self.quality_profiles(),
                     self.backup_dir(),
                 )
+                .with_indexer_error_repository(self.indexer_errors())
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_user_ui_settings_store(ui_settings)
@@ -1488,6 +1509,7 @@ impl DatastoreAssembly {
                     self.quality_profiles(),
                     self.backup_dir(),
                 )
+                .with_indexer_error_repository(self.indexer_errors())
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_user_ui_settings_store(ui_settings)

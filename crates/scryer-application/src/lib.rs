@@ -37,6 +37,7 @@ mod helpers;
 mod image_proxy;
 mod import;
 mod indexer_category;
+mod indexer_errors;
 pub use indexer_category::{
     CATEGORY_MISMATCH_CODE, IndexerCategoryFamily, NZB_HEAD_PROBE_BYTES, enforce_nzb_category_gate,
     indexer_category_contradicts_facet, indexer_category_family, nzb_head_category,
@@ -379,6 +380,11 @@ pub(crate) use helpers::{
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
+pub use indexer_errors::{
+    ClassifiedIndexerError, IndexerErrorRecorder, IndexerErrorRepository, NullIndexerErrorRecorder,
+    UNKNOWN_INDEXER_ERROR_MESSAGE, classify_indexer_http_response, classify_newznab_error_message,
+    indexer_response_content_type, redact_indexer_response_headers, unknown_indexer_error,
+};
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -407,6 +413,7 @@ pub use library_scan_progress::{
 };
 pub use media::analyzer::NativeMediaAnalyzer;
 pub use notifications::dispatcher::start_notification_dispatcher;
+pub use null_repositories::NullIndexerErrorRepository;
 pub use null_repositories::{
     NullAcquisitionScopeStateRepository, NullAcquisitionStateRepository, NullBlocklistRepository,
     NullDomainEventRepository, NullDownloadQueueCommandRepository,
@@ -586,6 +593,13 @@ pub use types::{
     WebauthnChallengeType, WebauthnCredentialRecord,
 };
 pub use types::{
+    CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, IndexerErrorClassification,
+    IndexerErrorDetail, IndexerErrorOperation, IndexerErrorPage, IndexerErrorSummary,
+    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, NewIndexerError, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
+    ReleaseStrategyKind, extract_magnet_info_hash, is_valid_magnet_uri,
+};
+pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,
     ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
@@ -595,11 +609,6 @@ pub use types::{
     external_import_monitor_apply_session_id_for_library,
     is_external_import_monitor_apply_session_id, library_scan_file_full_path_key,
     library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
-};
-pub use types::{
-    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
-    IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
-    extract_magnet_info_hash, is_valid_magnet_uri,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 

@@ -6174,6 +6174,7 @@ name = "scryer-interface-query"
 version = "0.18.19"
 dependencies = [
  "async-graphql",
+ "base64 0.23.1",
  "chrono",
  "scryer-application",
  "scryer-domain",
@@ -6331,6 +6332,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
  "wasmparser 0.255.0",
  "wasmtime",
  "wasmtime-wasi",

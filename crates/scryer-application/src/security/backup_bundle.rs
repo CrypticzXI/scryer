@@ -687,6 +687,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "indexer_errors",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "indexer_search_learning",
         classification: BackupTableClassification::Export,
     },

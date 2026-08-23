@@ -7,7 +7,8 @@ use wasmtime::{Caller, ExternType, Instance, Linker, Store, ValType};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::plugin_http_host::{
-    HTTP_ENV_NAMESPACE, IndexerProxyPolicy, PluginHttpHost, PluginHttpRequest,
+    HTTP_ENV_NAMESPACE, IndexerErrorCaptureContext, IndexerProxyPolicy, PluginHttpHost,
+    PluginHttpRequest,
 };
 use crate::process_host::{PROCESS_HOST_NAMESPACE, ProcessHost};
 use crate::runtime_backing::PreopenSpec;
@@ -137,6 +138,17 @@ impl LegacyPlugin {
 
     pub(crate) fn function_exists(&mut self, export: &str) -> bool {
         self.instance.get_func(&mut self.store, export).is_some()
+    }
+
+    pub(crate) fn begin_indexer_error_capture(&mut self, context: IndexerErrorCaptureContext) {
+        self.store.data().http.begin_indexer_error_capture(context);
+    }
+
+    pub(crate) fn finish_indexer_error_capture(&mut self, operation_failed: bool) {
+        self.store
+            .data()
+            .http
+            .finish_indexer_error_capture(operation_failed);
     }
 
     pub(crate) fn call_string(&mut self, export: &str, input: &str) -> AppResult<String> {

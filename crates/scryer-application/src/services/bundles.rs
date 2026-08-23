@@ -69,6 +69,7 @@ pub struct AppLibraryServices {
 #[derive(Clone)]
 pub struct AppIntegrationServices {
     pub(crate) indexer_configs: Arc<dyn IndexerConfigRepository>,
+    pub(crate) indexer_errors: Arc<dyn IndexerErrorRepository>,
     pub(crate) indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
     pub(crate) scope_indexer_coverage: Arc<dyn ScopeIndexerCoverageRepository>,
     pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
@@ -300,6 +301,7 @@ impl AppServices {
             },
             integrations: AppIntegrationServices {
                 indexer_configs,
+                indexer_errors: Arc::new(null_repositories::NullIndexerErrorRepository),
                 indexer_proxy_configs: Arc::new(
                     null_repositories::NullIndexerProxyConfigRepository,
                 ),

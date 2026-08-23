@@ -1917,6 +1917,192 @@ pub struct IndexerSearchResponse {
     pub indexer_outcomes: Vec<IndexerQueryOutcome>,
 }
 
+/// Why an indexer HTTP request was issued. This is diagnostic metadata only;
+/// search routing continues to use [`SearchMode`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndexerErrorOperation {
+    ConnectionTest,
+    InteractiveSearch,
+    AutomaticSearch,
+    RssSync,
+    IndexerAction,
+    ManagementSync,
+    CapsRefresh,
+}
+
+impl IndexerErrorOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConnectionTest => "connection_test",
+            Self::InteractiveSearch => "interactive_search",
+            Self::AutomaticSearch => "automatic_search",
+            Self::RssSync => "rss_sync",
+            Self::IndexerAction => "indexer_action",
+            Self::ManagementSync => "management_sync",
+            Self::CapsRefresh => "caps_refresh",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "connection_test" => Some(Self::ConnectionTest),
+            "interactive_search" => Some(Self::InteractiveSearch),
+            "automatic_search" => Some(Self::AutomaticSearch),
+            "rss_sync" => Some(Self::RssSync),
+            "indexer_action" => Some(Self::IndexerAction),
+            "management_sync" => Some(Self::ManagementSync),
+            "caps_refresh" => Some(Self::CapsRefresh),
+            _ => None,
+        }
+    }
+}
+
+/// Stable, operator-facing classification for a persisted indexer HTTP error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndexerErrorClassification {
+    NewznabInvalidApiKey,
+    NewznabAccountSuspended,
+    NewznabInsufficientPrivileges,
+    NewznabRegistrationDenied,
+    NewznabRegistrationsClosed,
+    NewznabInvalidRegistration,
+    NewznabInvalidRegistrationEmail,
+    NewznabRegistrationFailed,
+    NewznabMissingParameter,
+    NewznabIncorrectParameter,
+    NewznabNoSuchFunction,
+    NewznabFunctionNotAvailable,
+    NewznabNoSuchItem,
+    NewznabRequestLimitReached,
+    NewznabDownloadLimitReached,
+    NewznabUnknownError,
+    NewznabApiDisabled,
+    HttpBadRequest,
+    HttpUnauthorized,
+    HttpForbidden,
+    HttpNotFound,
+    HttpRequestTimeout,
+    HttpRateLimited,
+    HttpServerError,
+    Unknown,
+}
+
+impl IndexerErrorClassification {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NewznabInvalidApiKey => "newznab_invalid_api_key",
+            Self::NewznabAccountSuspended => "newznab_account_suspended",
+            Self::NewznabInsufficientPrivileges => "newznab_insufficient_privileges",
+            Self::NewznabRegistrationDenied => "newznab_registration_denied",
+            Self::NewznabRegistrationsClosed => "newznab_registrations_closed",
+            Self::NewznabInvalidRegistration => "newznab_invalid_registration",
+            Self::NewznabInvalidRegistrationEmail => "newznab_invalid_registration_email",
+            Self::NewznabRegistrationFailed => "newznab_registration_failed",
+            Self::NewznabMissingParameter => "newznab_missing_parameter",
+            Self::NewznabIncorrectParameter => "newznab_incorrect_parameter",
+            Self::NewznabNoSuchFunction => "newznab_no_such_function",
+            Self::NewznabFunctionNotAvailable => "newznab_function_not_available",
+            Self::NewznabNoSuchItem => "newznab_no_such_item",
+            Self::NewznabRequestLimitReached => "newznab_request_limit_reached",
+            Self::NewznabDownloadLimitReached => "newznab_download_limit_reached",
+            Self::NewznabUnknownError => "newznab_unknown_error",
+            Self::NewznabApiDisabled => "newznab_api_disabled",
+            Self::HttpBadRequest => "http_bad_request",
+            Self::HttpUnauthorized => "http_unauthorized",
+            Self::HttpForbidden => "http_forbidden",
+            Self::HttpNotFound => "http_not_found",
+            Self::HttpRequestTimeout => "http_request_timeout",
+            Self::HttpRateLimited => "http_rate_limited",
+            Self::HttpServerError => "http_server_error",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "newznab_invalid_api_key" => Self::NewznabInvalidApiKey,
+            "newznab_account_suspended" => Self::NewznabAccountSuspended,
+            "newznab_insufficient_privileges" => Self::NewznabInsufficientPrivileges,
+            "newznab_registration_denied" => Self::NewznabRegistrationDenied,
+            "newznab_registrations_closed" => Self::NewznabRegistrationsClosed,
+            "newznab_invalid_registration" => Self::NewznabInvalidRegistration,
+            "newznab_invalid_registration_email" => Self::NewznabInvalidRegistrationEmail,
+            "newznab_registration_failed" => Self::NewznabRegistrationFailed,
+            "newznab_missing_parameter" => Self::NewznabMissingParameter,
+            "newznab_incorrect_parameter" => Self::NewznabIncorrectParameter,
+            "newznab_no_such_function" => Self::NewznabNoSuchFunction,
+            "newznab_function_not_available" => Self::NewznabFunctionNotAvailable,
+            "newznab_no_such_item" => Self::NewznabNoSuchItem,
+            "newznab_request_limit_reached" => Self::NewznabRequestLimitReached,
+            "newznab_download_limit_reached" => Self::NewznabDownloadLimitReached,
+            "newznab_unknown_error" => Self::NewznabUnknownError,
+            "newznab_api_disabled" => Self::NewznabApiDisabled,
+            "http_bad_request" => Self::HttpBadRequest,
+            "http_unauthorized" => Self::HttpUnauthorized,
+            "http_forbidden" => Self::HttpForbidden,
+            "http_not_found" => Self::HttpNotFound,
+            "http_request_timeout" => Self::HttpRequestTimeout,
+            "http_rate_limited" => Self::HttpRateLimited,
+            "http_server_error" => Self::HttpServerError,
+            "unknown" => Self::Unknown,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedIndexerHttpHeader {
+    pub name: String,
+    pub value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedIndexerHttpResponse {
+    pub status: u16,
+    pub headers: Vec<CapturedIndexerHttpHeader>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewIndexerError {
+    pub id: String,
+    pub indexer_id: String,
+    pub indexer_name: String,
+    pub operation: IndexerErrorOperation,
+    pub classification: IndexerErrorClassification,
+    pub provider_error_code: Option<u16>,
+    pub message: String,
+    pub content_type: Option<String>,
+    pub response: CapturedIndexerHttpResponse,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexerErrorSummary {
+    pub id: String,
+    pub indexer_id: String,
+    pub indexer_name: String,
+    pub operation: IndexerErrorOperation,
+    pub http_status: u16,
+    pub classification: IndexerErrorClassification,
+    pub provider_error_code: Option<u16>,
+    pub message: String,
+    pub content_type: Option<String>,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexerErrorDetail {
+    pub summary: IndexerErrorSummary,
+    pub response: CapturedIndexerHttpResponse,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexerErrorPage {
+    pub items: Vec<IndexerErrorSummary>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct JwtAuthConfig {
     pub issuer: String,
@@ -2767,6 +2953,7 @@ pub struct HousekeepingReport {
     pub orphaned_media_files: u32,
     pub stale_release_decisions: u32,
     pub stale_release_attempts: u32,
+    pub stale_indexer_errors: u32,
     pub stale_history_events: u32,
     pub stale_history_records: u32,
     pub staged_nzb_artifacts_pruned: u32,

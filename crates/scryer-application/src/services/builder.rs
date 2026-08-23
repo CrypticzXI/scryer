@@ -136,6 +136,11 @@ impl AppServicesBuildConfiguration {
 }
 
 impl AppServicesBuilder {
+    app_services_builder_setter!(
+        with_indexer_error_repository,
+        integrations.indexer_errors,
+        Arc<dyn IndexerErrorRepository>
+    );
     app_services_builder_runtime_feature_setter!(
         with_plugin_http_trust_runtime,
         config.plugin_http_trust_runtime,

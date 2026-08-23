@@ -57,7 +57,8 @@ use scryer_infrastructure_acquisition::{
         staged_nzb_store::FileSystemStagedNzbStore,
     },
     indexers::{
-        caps::DirectNabCapsSnapshotRefresher, providers::prowlarr::NativeProwlarrIndexerProvider,
+        caps::DirectNabCapsSnapshotRefresher, error_store::BlockingIndexerErrorRecorder,
+        providers::prowlarr::NativeProwlarrIndexerProvider,
         search_client::MultiIndexerSearchClient,
     },
 };
@@ -1036,6 +1037,9 @@ async fn bootstrap_application(
     );
     let indexer_stats = datastore.indexer_stats_tracker();
     let indexer_learning = datastore.indexer_search_learning_repository();
+    let indexer_errors = datastore.indexer_errors();
+    let indexer_error_recorder =
+        Arc::new(BlockingIndexerErrorRecorder::new(indexer_errors.clone()));
     let upstream_scheduler = datastore
         .upstream_scheduler()
         .await
@@ -1045,10 +1049,15 @@ async fn bootstrap_application(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
             &indexer_runtime_plugins,
             &disabled_builtin_plugins,
-        ),
+        )
+        .with_indexer_error_recorder(indexer_error_recorder),
     ));
-    let plugin_provider: Arc<dyn IndexerPluginProvider> =
-        Arc::new(NativeProwlarrIndexerProvider::new(dynamic_provider));
+    let plugin_provider: Arc<dyn IndexerPluginProvider> = Arc::new(
+        NativeProwlarrIndexerProvider::new_with_indexer_error_repository(
+            dynamic_provider,
+            indexer_errors,
+        ),
+    );
     let subtitle_plugin_provider: Arc<dyn SubtitlePluginProvider> =
         Arc::new(scryer_plugins::DynamicSubtitlePluginProvider::new(
             scryer_plugins::build_subtitle_plugin_provider_from_runtime_plugins(

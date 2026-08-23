@@ -9,11 +9,14 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use reqwest::StatusCode;
 use scryer_application::{
-    AppError, AppResult, ExternalPluginWasm, IndexerClient, IndexerManagementClient,
-    IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchResponse, IndexerSyncPlan,
-    IndexerValidationResult, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
-    RateLimitCooldownAction, RuntimePluginLoad, SearchMode,
+    AppError, AppResult, CapturedIndexerHttpHeader, CapturedIndexerHttpResponse,
+    ExternalPluginWasm, IndexerClient, IndexerErrorOperation, IndexerErrorRepository,
+    IndexerManagementClient, IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchResponse,
+    IndexerSyncPlan, IndexerValidationResult, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
+    NewIndexerError, NullIndexerErrorRepository, RateLimitCooldownAction, RuntimePluginLoad,
+    SearchMode, classify_indexer_http_response,
     external_import::{EXTERNAL_IMPORT_HOST_RPS_LANE, EXTERNAL_IMPORT_HOST_RPS_PROFILE},
+    indexer_response_content_type, unknown_indexer_error,
 };
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
@@ -33,6 +36,8 @@ pub const PROWLARR_PROVIDER_TYPE: &str = "prowlarr";
 
 const USER_AGENT: &str = "scryer-prowlarr/0.1";
 const PROWLARR_CHILD_CAPS_FETCH_CONCURRENCY: usize = 8;
+/// Keep Prowlarr diagnostics aligned with the plugin host's accepted-response limit.
+const PROWLARR_RESPONSE_MAX_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProwlarrApiBucket {
@@ -358,29 +363,175 @@ impl RoutingScope {
 
 pub struct NativeProwlarrIndexerProvider {
     delegate: Arc<dyn IndexerPluginProvider>,
+    indexer_errors: Arc<dyn IndexerErrorRepository>,
 }
 
 impl NativeProwlarrIndexerProvider {
     pub fn new(delegate: Arc<dyn IndexerPluginProvider>) -> Self {
-        Self { delegate }
+        Self::new_with_indexer_error_repository(delegate, Arc::new(NullIndexerErrorRepository))
+    }
+
+    pub fn new_with_indexer_error_repository(
+        delegate: Arc<dyn IndexerPluginProvider>,
+        indexer_errors: Arc<dyn IndexerErrorRepository>,
+    ) -> Self {
+        Self {
+            delegate,
+            indexer_errors,
+        }
     }
 }
 
 pub struct ProwlarrManagementClient {
     parent_config_id: String,
+    parent_indexer_name: String,
     config: Result<ProwlarrConfig, String>,
     outbound_http: OutboundHttpClient,
     api_state: Arc<RwLock<Option<ResolvedProwlarrApi>>>,
+    indexer_errors: Arc<dyn IndexerErrorRepository>,
+}
+
+#[derive(Clone)]
+struct ProwlarrErrorCapture {
+    indexer_id: String,
+    indexer_name: String,
+    indexer_errors: Arc<dyn IndexerErrorRepository>,
+}
+
+impl ProwlarrErrorCapture {
+    async fn record(
+        &self,
+        operation: IndexerErrorOperation,
+        response: CapturedIndexerHttpResponse,
+    ) {
+        let classified =
+            classify_indexer_http_response(&response).unwrap_or_else(unknown_indexer_error);
+        let error = NewIndexerError {
+            id: uuid::Uuid::new_v4().to_string(),
+            indexer_id: self.indexer_id.clone(),
+            indexer_name: self.indexer_name.clone(),
+            operation,
+            classification: classified.classification,
+            provider_error_code: classified.provider_error_code,
+            message: classified.message.to_string(),
+            content_type: indexer_response_content_type(&response),
+            response,
+            occurred_at: chrono::Utc::now(),
+        };
+        if let Err(error) = self.indexer_errors.record(error).await {
+            warn!(
+                indexer_id = self.indexer_id.as_str(),
+                error = %error,
+                "failed to persist Prowlarr HTTP error response"
+            );
+        }
+    }
+
+    async fn observe_rate_limited_response(
+        &self,
+        operation: IndexerErrorOperation,
+        response: reqwest::Response,
+    ) {
+        match captured_response(response).await {
+            Ok(response) => self.record(operation, response).await,
+            Err(error) => warn!(error = %error, "failed to read Prowlarr rate-limit response"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum CapturedProwlarrResponseError {
+    Read(reqwest::Error),
+    TooLarge,
+}
+
+impl std::fmt::Display for CapturedProwlarrResponseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read(error) => write!(formatter, "Prowlarr response read failed: {error}"),
+            Self::TooLarge => write!(
+                formatter,
+                "Prowlarr response exceeded the {} MiB accepted-response limit",
+                PROWLARR_RESPONSE_MAX_BYTES / (1024 * 1024)
+            ),
+        }
+    }
+}
+
+fn captured_response_error(error: CapturedProwlarrResponseError) -> ProwlarrRequestError {
+    match error {
+        CapturedProwlarrResponseError::Read(error) => {
+            ProwlarrRequestError::Unreachable(format!("Prowlarr response read failed: {error}"))
+        }
+        CapturedProwlarrResponseError::TooLarge => ProwlarrRequestError::Unsupported(format!(
+            "Prowlarr response exceeded the {} MiB accepted-response limit",
+            PROWLARR_RESPONSE_MAX_BYTES / (1024 * 1024)
+        )),
+    }
+}
+
+async fn captured_response(
+    mut response: reqwest::Response,
+) -> Result<CapturedIndexerHttpResponse, CapturedProwlarrResponseError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > PROWLARR_RESPONSE_MAX_BYTES as u64)
+    {
+        return Err(CapturedProwlarrResponseError::TooLarge);
+    }
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| CapturedIndexerHttpHeader {
+            name: name.as_str().to_string(),
+            value: value.as_bytes().to_vec(),
+        })
+        .collect();
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(PROWLARR_RESPONSE_MAX_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(CapturedProwlarrResponseError::Read)?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(CapturedProwlarrResponseError::TooLarge)?;
+        if next_len > PROWLARR_RESPONSE_MAX_BYTES {
+            return Err(CapturedProwlarrResponseError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(CapturedIndexerHttpResponse {
+        status,
+        headers,
+        body,
+    })
 }
 
 impl ProwlarrManagementClient {
     fn new(config: &IndexerConfig) -> Self {
+        Self::new_with_indexer_error_repository(config, Arc::new(NullIndexerErrorRepository))
+    }
+
+    pub fn new_with_indexer_error_repository(
+        config: &IndexerConfig,
+        indexer_errors: Arc<dyn IndexerErrorRepository>,
+    ) -> Self {
         let http_client = generic_reqwest_client();
         Self {
             parent_config_id: config.id.clone(),
+            parent_indexer_name: config.name.clone(),
             config: ProwlarrConfig::from_indexer_config(config),
             outbound_http: OutboundHttpClient::new(http_client, RateLimitRegistry::new()),
             api_state: Arc::new(RwLock::new(None)),
+            indexer_errors,
         }
     }
 
@@ -390,21 +541,34 @@ impl ProwlarrManagementClient {
             .map_err(|message| AppError::Validation(message.clone()))
     }
 
-    async fn fetch_system_status(&self) -> Result<ProwlarrSystemStatus, ProwlarrRequestError> {
-        Ok(self.ensure_supported_api_bucket().await?.status)
+    fn error_capture(&self) -> ProwlarrErrorCapture {
+        ProwlarrErrorCapture {
+            indexer_id: self.parent_config_id.clone(),
+            indexer_name: self.parent_indexer_name.clone(),
+            indexer_errors: Arc::clone(&self.indexer_errors),
+        }
     }
 
-    async fn get_json<T>(&self, path: &str) -> AppResult<T>
+    async fn fetch_system_status(&self) -> Result<ProwlarrSystemStatus, ProwlarrRequestError> {
+        Ok(self
+            .ensure_supported_api_bucket(IndexerErrorOperation::ConnectionTest)
+            .await?
+            .status)
+    }
+
+    async fn get_json<T>(&self, path: &str, operation: IndexerErrorOperation) -> AppResult<T>
     where
         T: for<'de> Deserialize<'de>,
     {
-        self.get_json_raw(path)
+        self.get_json_with_response(path, operation)
             .await
+            .map(|(value, _)| value)
             .map_err(ProwlarrRequestError::into_app_error)
     }
 
     async fn ensure_supported_api_bucket(
         &self,
+        operation: IndexerErrorOperation,
     ) -> Result<ResolvedProwlarrApi, ProwlarrRequestError> {
         if let Some(api) = self.api_state.read().await.clone() {
             return Ok(api);
@@ -415,17 +579,26 @@ impl ProwlarrManagementClient {
             return Ok(api);
         }
 
-        let status: ProwlarrSystemStatus = self.get_json_raw(SYSTEM_STATUS_PATH).await?;
+        let (status, response): (ProwlarrSystemStatus, CapturedIndexerHttpResponse) = self
+            .get_json_with_response(SYSTEM_STATUS_PATH, operation)
+            .await?;
         let api = ResolvedProwlarrApi {
             bucket: ProwlarrApiBucket::V2,
             status,
         };
-        api.bucket.validate_status(&api.status)?;
+        if let Err(error) = api.bucket.validate_status(&api.status) {
+            self.error_capture().record(operation, response).await;
+            return Err(error);
+        }
         *guard = Some(api.clone());
         Ok(api)
     }
 
-    async fn get_json_raw<T>(&self, path: &str) -> Result<T, ProwlarrRequestError>
+    async fn get_json_with_response<T>(
+        &self,
+        path: &str,
+        operation: IndexerErrorOperation,
+    ) -> Result<(T, CapturedIndexerHttpResponse), ProwlarrRequestError>
     where
         T: for<'de> Deserialize<'de>,
     {
@@ -436,16 +609,28 @@ impl ProwlarrManagementClient {
         let base_url = config.base_url.clone();
         let api_key = config.api_key.clone();
         let url = api_url(&base_url, path);
+        let error_capture = self.error_capture();
         let response = self
             .outbound_http
-            .send(self.request_policy(path), || {
-                self.outbound_http
-                    .client()
-                    .get(&url)
-                    .header("Accept", "application/json")
-                    .header("User-Agent", USER_AGENT)
-                    .header("X-Api-Key", &api_key)
-            })
+            .send_with_rate_limit_observer(
+                self.request_policy(path),
+                || {
+                    self.outbound_http
+                        .client()
+                        .get(&url)
+                        .header("Accept", "application/json")
+                        .header("User-Agent", USER_AGENT)
+                        .header("X-Api-Key", &api_key)
+                },
+                move |response| {
+                    let error_capture = error_capture.clone();
+                    async move {
+                        error_capture
+                            .observe_rate_limited_response(operation, response)
+                            .await;
+                    }
+                },
+            )
             .await
             .map_err(|error| match error {
                 OutboundHttpError::RateLimited(rate_limited) => ProwlarrRequestError::RateLimited(
@@ -466,21 +651,33 @@ impl ProwlarrManagementClient {
                 }
             })?;
 
-        let status = response.status();
         let retry_after_seconds = retry_after_seconds(response.headers());
-        let body = response.bytes().await.map_err(|error| {
-            ProwlarrRequestError::Unreachable(format!("Prowlarr response read failed: {error}"))
-        })?;
+        let captured = captured_response(response)
+            .await
+            .map_err(captured_response_error)?;
+        let status = StatusCode::from_u16(captured.status).expect("reqwest status is valid");
 
         if status.is_success() {
-            return serde_json::from_slice(&body).map_err(|error| {
-                ProwlarrRequestError::Unsupported(format!(
-                    "Prowlarr returned invalid JSON: {error}"
-                ))
-            });
+            return match serde_json::from_slice(&captured.body) {
+                Ok(value) => Ok((value, captured)),
+                Err(error) => {
+                    self.error_capture().record(operation, captured).await;
+                    Err(ProwlarrRequestError::Unsupported(format!(
+                        "Prowlarr returned invalid JSON: {error}"
+                    )))
+                }
+            };
         }
 
-        Err(map_http_error(path, status, &body, retry_after_seconds))
+        self.error_capture()
+            .record(operation, captured.clone())
+            .await;
+        Err(map_http_error(
+            path,
+            status,
+            &captured.body,
+            retry_after_seconds,
+        ))
     }
 
     async fn fetch_child_caps_snapshot(
@@ -497,15 +694,30 @@ impl ProwlarrManagementClient {
         );
         let request_path = format!("/{indexer_id}/api?t=caps");
         let child_key = indexer_id.to_string();
+        let error_capture = self.error_capture();
         let response = self
             .outbound_http
-            .send(self.child_request_policy(&request_path, &child_key), || {
-                self.outbound_http
-                    .client()
-                    .get(&url)
-                    .header("Accept", "application/xml, text/xml, application/rss+xml")
-                    .header("User-Agent", USER_AGENT)
-            })
+            .send_with_rate_limit_observer(
+                self.child_request_policy(&request_path, &child_key),
+                || {
+                    self.outbound_http
+                        .client()
+                        .get(&url)
+                        .header("Accept", "application/xml, text/xml, application/rss+xml")
+                        .header("User-Agent", USER_AGENT)
+                },
+                move |response| {
+                    let error_capture = error_capture.clone();
+                    async move {
+                        error_capture
+                            .observe_rate_limited_response(
+                                IndexerErrorOperation::CapsRefresh,
+                                response,
+                            )
+                            .await;
+                    }
+                },
+            )
             .await
             .map_err(|error| match error {
                 OutboundHttpError::RateLimited(rate_limited) => ProwlarrRequestError::RateLimited(
@@ -526,20 +738,31 @@ impl ProwlarrManagementClient {
                 }
             })?;
 
-        let status = response.status();
         let retry_after_seconds = retry_after_seconds(response.headers());
-        let body = response.bytes().await.map_err(|error| {
-            ProwlarrRequestError::Unreachable(format!("Prowlarr response read failed: {error}"))
-        })?;
+        let captured = captured_response(response)
+            .await
+            .map_err(captured_response_error)?;
+        let status = StatusCode::from_u16(captured.status).expect("reqwest status is valid");
 
         if status.is_success() {
-            return parse_caps_snapshot(&body);
+            return match parse_caps_snapshot(&captured.body) {
+                Ok(snapshot) => Ok(snapshot),
+                Err(error) => {
+                    self.error_capture()
+                        .record(IndexerErrorOperation::CapsRefresh, captured)
+                        .await;
+                    Err(error)
+                }
+            };
         }
 
+        self.error_capture()
+            .record(IndexerErrorOperation::CapsRefresh, captured.clone())
+            .await;
         Err(map_http_error(
             &request_path,
             status,
-            &body,
+            &captured.body,
             retry_after_seconds,
         ))
     }
@@ -547,13 +770,21 @@ impl ProwlarrManagementClient {
     async fn build_sync_plan(&self, fetch_caps: bool) -> AppResult<IndexerSyncPlan> {
         let config = self.config()?.clone();
         let api = self
-            .ensure_supported_api_bucket()
+            .ensure_supported_api_bucket(IndexerErrorOperation::ManagementSync)
             .await
             .map_err(ProwlarrRequestError::into_app_error)?;
-        let indexers: Vec<ProwlarrIndexerResource> =
-            self.get_json(api.bucket.indexer_path()).await?;
-        let app_profiles: Vec<ProwlarrAppProfile> =
-            self.get_json(api.bucket.app_profile_path()).await?;
+        let indexers: Vec<ProwlarrIndexerResource> = self
+            .get_json(
+                api.bucket.indexer_path(),
+                IndexerErrorOperation::ManagementSync,
+            )
+            .await?;
+        let app_profiles: Vec<ProwlarrAppProfile> = self
+            .get_json(
+                api.bucket.app_profile_path(),
+                IndexerErrorOperation::ManagementSync,
+            )
+            .await?;
         let app_profiles_by_id = app_profiles
             .into_iter()
             .map(|profile| (profile.id, profile))
@@ -675,6 +906,7 @@ impl IndexerClient for ProwlarrSearchStub {
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: scryer_application::IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -761,7 +993,12 @@ impl IndexerPluginProvider for NativeProwlarrIndexerProvider {
         config: &IndexerConfig,
     ) -> Option<Arc<dyn IndexerManagementClient>> {
         if is_prowlarr_provider(&config.provider_type) {
-            return Some(Arc::new(ProwlarrManagementClient::new(config)));
+            return Some(Arc::new(
+                ProwlarrManagementClient::new_with_indexer_error_repository(
+                    config,
+                    Arc::clone(&self.indexer_errors),
+                ),
+            ));
         }
         self.delegate.management_client_for_provider(config)
     }
@@ -1408,6 +1645,42 @@ mod tests {
         observed_proxy_id: Arc<std::sync::Mutex<Option<String>>>,
     }
 
+    #[derive(Default)]
+    struct RecordingIndexerErrorRepository {
+        errors: tokio::sync::Mutex<Vec<NewIndexerError>>,
+    }
+
+    #[async_trait]
+    impl IndexerErrorRepository for RecordingIndexerErrorRepository {
+        async fn record(&self, error: NewIndexerError) -> AppResult<()> {
+            self.errors.lock().await.push(error);
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _indexer_id: Option<&str>,
+            _first: usize,
+            _after: Option<&str>,
+        ) -> AppResult<scryer_application::IndexerErrorPage> {
+            Ok(scryer_application::IndexerErrorPage {
+                items: Vec::new(),
+                next_cursor: None,
+            })
+        }
+
+        async fn get_detail(
+            &self,
+            _id: &str,
+        ) -> AppResult<Option<scryer_application::IndexerErrorDetail>> {
+            Ok(None)
+        }
+
+        async fn delete_older_than(&self, _cutoff: chrono::DateTime<Utc>) -> AppResult<u32> {
+            Ok(0)
+        }
+    }
+
     impl IndexerPluginProvider for ProxyRecordingProvider {
         fn client_for_provider(&self, _config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
             None
@@ -2018,6 +2291,148 @@ mod tests {
             vec!["q", "imdbid", "genre"]
         );
         assert!(!snapshot.book_search.available);
+    }
+
+    #[tokio::test]
+    async fn records_non_success_and_invalid_success_responses() {
+        let server = MockServer::start().await;
+        let repository = Arc::new(RecordingIndexerErrorRepository::default());
+        let config = test_indexer_config(&server.uri());
+        let client = ProwlarrManagementClient::new_with_indexer_error_repository(
+            &config,
+            repository.clone(),
+        );
+
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_bytes(vec![0, 255, 1, 254]),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = client
+            .fetch_system_status()
+            .await
+            .expect_err("500 response");
+        assert!(matches!(error, ProwlarrRequestError::Unreachable(_)));
+        let errors = repository.errors.lock().await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
+        assert_eq!(errors[0].response.status, 500);
+        assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
+        assert_eq!(
+            errors[0].classification,
+            scryer_application::IndexerErrorClassification::HttpServerError
+        );
+        drop(errors);
+
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = client
+            .fetch_system_status()
+            .await
+            .expect_err("invalid JSON response");
+        assert!(matches!(error, ProwlarrRequestError::Unsupported(_)));
+        let errors = repository.errors.lock().await;
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[1].response.status, 200);
+        assert_eq!(errors[1].response.body, b"not-json");
+        assert_eq!(
+            errors[1].classification,
+            scryer_application::IndexerErrorClassification::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn records_rate_limited_attempt_before_retrying_successfully() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let responder_attempts = attempts.clone();
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(move |_request: &wiremock::Request| {
+                if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(429)
+                        .insert_header("retry-after", "0")
+                        .set_body_string("rate limited body")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "appName": "Prowlarr",
+                        "version": "2.0.0"
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let repository = Arc::new(RecordingIndexerErrorRepository::default());
+        let client = ProwlarrManagementClient::new_with_indexer_error_repository(
+            &test_indexer_config(&server.uri()),
+            repository.clone(),
+        );
+
+        let status = client
+            .fetch_system_status()
+            .await
+            .expect("second attempt succeeds");
+        assert_eq!(status.app_name, "Prowlarr");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        let errors = repository.errors.lock().await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].response.status, 429);
+        assert_eq!(errors[0].response.body, b"rate limited body");
+        assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
+        assert_eq!(
+            errors[0].classification,
+            scryer_application::IndexerErrorClassification::HttpRateLimited
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_declared_responses_larger_than_the_capture_limit() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("oversized response listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("request connection");
+            let headers = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                PROWLARR_RESPONSE_MAX_BYTES + 1
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("oversized response headers");
+        });
+
+        let response = generic_reqwest_client()
+            .get(format!("http://{address}/oversized"))
+            .send()
+            .await
+            .expect("oversized response headers");
+        let error = captured_response(response)
+            .await
+            .expect_err("response exceeds capture limit");
+
+        assert!(matches!(error, CapturedProwlarrResponseError::TooLarge));
+        server.await.expect("oversized response server");
     }
 
     #[tokio::test]

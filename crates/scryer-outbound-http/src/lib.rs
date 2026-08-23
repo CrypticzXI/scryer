@@ -1927,6 +1927,49 @@ impl OutboundHttpClient {
         F: Fn() -> Fut,
         Fut: Future<Output = Result<RequestBuilder, E>>,
     {
+        self.send_async_with_rate_limit_observer(policy, build_request, |_| async {})
+            .await
+    }
+
+    /// Sends a request while giving callers ownership of every 429 response
+    /// before cooldown and retry handling discards it.
+    pub async fn send_with_rate_limit_observer<F, O, OFut>(
+        &self,
+        policy: RequestPolicy,
+        build_request: F,
+        observe_rate_limited_response: O,
+    ) -> Result<Response, OutboundHttpError>
+    where
+        F: Fn() -> RequestBuilder,
+        O: Fn(Response) -> OFut,
+        OFut: Future<Output = ()>,
+    {
+        match self
+            .send_async_with_rate_limit_observer(
+                policy,
+                || async { Ok::<RequestBuilder, Infallible>(build_request()) },
+                observe_rate_limited_response,
+            )
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(OutboundRequestError::Build(_)) => unreachable!("infallible builder"),
+            Err(OutboundRequestError::Http(error)) => Err(error),
+        }
+    }
+
+    pub async fn send_async_with_rate_limit_observer<F, Fut, E, O, OFut>(
+        &self,
+        policy: RequestPolicy,
+        build_request: F,
+        observe_rate_limited_response: O,
+    ) -> Result<Response, OutboundRequestError<E>>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<RequestBuilder, E>>,
+        O: Fn(Response) -> OFut,
+        OFut: Future<Output = ()>,
+    {
         let mut attempt = 0u32;
 
         loop {
@@ -2038,14 +2081,15 @@ impl OutboundHttpClient {
                     let (candidate_delay, candidate_source) =
                         retry_after_delay(response.headers(), fallback_backoff);
                     let candidate_delay = candidate_delay.min(policy.max_retry_after);
-                    let (effective_delay, effective_source) = self
-                        .registry
-                        .record_cooldown(&policy.scope, candidate_delay, candidate_source)
-                        .await;
                     let response_destination =
                         policy.destination_cooldown_override.clone().or_else(|| {
                             destination_key_from_url(response.url()).or(request_destination)
                         });
+                    observe_rate_limited_response(response).await;
+                    let (effective_delay, effective_source) = self
+                        .registry
+                        .record_cooldown(&policy.scope, candidate_delay, candidate_source)
+                        .await;
                     if let Some(destination) = response_destination.as_ref() {
                         let _ = self
                             .registry

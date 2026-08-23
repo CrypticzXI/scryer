@@ -468,6 +468,7 @@ impl AppUseCase {
                 rss_categories,
                 None, // no routing filter
                 SearchMode::Auto,
+                IndexerErrorOperation::RssSync,
                 None,
                 None,
                 None,
