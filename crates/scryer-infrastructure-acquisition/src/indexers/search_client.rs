@@ -3438,6 +3438,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let batch_had_rate_limit = batch_health.had_rate_limit;
                 let batch_had_solver_failure = batch_health.had_solver_failure;
                 let batch_retry_after = batch_health.retry_after;
+                let batch_rate_limit_error = batch_health.rate_limit_error.clone();
                 batch_health
                     .apply(
                         &backoff_tracker,
@@ -3459,8 +3460,19 @@ impl IndexerClient for MultiIndexerSearchClient {
                         scheduler_lease_for_task.clone(),
                         Err(if batch_had_rate_limit {
                             AppError::TemporaryUnavailable {
-                                message: "repository: all attempted indexer strategies failed"
-                                    .to_string(),
+                                // Carry the upstream rate-limit text (status and
+                                // Retry-After) with the aggregate: the interactive
+                                // per-indexer status, the logs, and text-based
+                                // rate-limit classification all read this
+                                // message, and "all strategies failed" alone
+                                // hides *why*.
+                                message: match batch_rate_limit_error.as_deref() {
+                                    Some(detail) => format!(
+                                        "repository: all attempted indexer strategies failed: {detail}"
+                                    ),
+                                    None => "repository: all attempted indexer strategies failed"
+                                        .to_string(),
+                                },
                                 retry_after: batch_retry_after,
                                 rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
                             }
@@ -7236,9 +7248,16 @@ mod tests {
             .await
             .expect_err("interactive search should report all-failed attempts");
 
-        assert_eq!(
-            error.to_string(),
-            "repository: repository: all attempted indexer strategies failed"
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("all attempted indexer strategies failed"),
+            "unexpected error: {rendered}"
+        );
+        // The upstream rate-limit text travels with the aggregate so a reader
+        // (the interactive per-indexer status, a log line) sees why it failed.
+        assert!(
+            rendered.contains("upstream returned 429"),
+            "rate-limit detail should be carried: {rendered}"
         );
         let signal = scryer_application::RateLimitSignal::from_error(&error)
             .expect("aggregated failure should preserve rate-limit signal");

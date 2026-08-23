@@ -120,6 +120,15 @@ impl CommandHost {
         }
     }
 
+    pub(crate) fn rate_limit_message(&self) -> Option<String> {
+        let services = self.services.as_ref()?;
+        services
+            .http
+            .rate_limit_message(&services.plugin_id)
+            .ok()
+            .flatten()
+    }
+
     fn call(&self, encoded_request: &[u8]) -> Result<u32, String> {
         let request: PluginHostRequest = postcard::from_bytes(encoded_request)
             .map_err(|error| format!("invalid postcard host request: {error}"))?;
@@ -209,12 +218,6 @@ impl CommandHost {
                     )
                     .and_then(|body| {
                         let status = services.http.status_code(&services.plugin_id)?;
-                        if status == 429 {
-                            return Err(services
-                                .http
-                                .rate_limit_message(&services.plugin_id)?
-                                .unwrap_or_else(|| "HTTP 429: rate limited".to_string()));
-                        }
                         Ok(PluginHttpResponse {
                             status,
                             headers: services

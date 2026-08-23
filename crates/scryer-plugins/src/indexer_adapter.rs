@@ -375,6 +375,18 @@ impl WasmIndexerClient {
                     "indexer command returned the wrong result for indexer_search".to_string(),
                 ));
             };
+            if matches!(
+                &result,
+                PluginResult::Err(error) if error.public_message == "indexer command failed"
+            ) && let Some(message) = self
+                .command
+                .as_ref()
+                .and_then(|indexer| indexer.command_host.rate_limit_message())
+            {
+                return Err(AppError::Repository(format!(
+                    "indexer indexer_search: plugin error RateLimited: {message}"
+                )));
+            }
             return decode_command_result(result, "indexer indexer_search");
         }
 

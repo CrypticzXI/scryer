@@ -119,8 +119,7 @@ const OFFICIAL_PLUGIN_V3_RELEASE_WORKFLOW: &str = ".github/workflows/release-plu
 const SIGSTORE_GITHUB_WORKFLOW_NAME_OID: &str = "1.3.6.1.4.1.57264.1.4";
 const SIGSTORE_GITHUB_WORKFLOW_REPOSITORY_OID: &str = "1.3.6.1.4.1.57264.1.5";
 const SIGSTORE_GITHUB_WORKFLOW_REF_OID: &str = "1.3.6.1.4.1.57264.1.6";
-const RELEASE_LOCAL_PATH_TOKENS: &[&str] =
-    &["~/", "/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
+const RELEASE_LOCAL_PATH_TOKENS: &[&str] = &["~/", "/Users/", "/home/", "C:\\Users\\", "C:/Users/"];
 const RELEASE_MACOS_HOME_PATH_COMPONENTS: &[&str] = &[
     "Applications",
     "Desktop",
