@@ -28,6 +28,10 @@ use super::{
     resolve_staged_nzb_for_request, size_to_bytes,
 };
 
+// NZBGet can take a while to serialize large queue and history responses. Safe reads may make
+// three attempts, so 90 seconds per attempt still fits beneath the default 300-second client gate.
+const NZBGET_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+
 #[derive(Clone)]
 pub struct NzbgetDownloadClient {
     rpc_url: String,
@@ -133,6 +137,7 @@ impl NzbgetDownloadClient {
                     .outbound_http
                     .client()
                     .post(&endpoint)
+                    .timeout(NZBGET_HTTP_REQUEST_TIMEOUT)
                     .header("Content-Type", "application/json")
                     .json(&payload);
 
@@ -198,6 +203,7 @@ impl NzbgetDownloadClient {
                     .outbound_http
                     .client()
                     .post(&endpoint)
+                    .timeout(NZBGET_HTTP_REQUEST_TIMEOUT)
                     .header("Content-Type", "application/json")
                     .json(&payload);
 
@@ -372,6 +378,7 @@ impl NzbgetDownloadClient {
                         .outbound_http
                         .client()
                         .post(&endpoint)
+                        .timeout(NZBGET_HTTP_REQUEST_TIMEOUT)
                         .header("Content-Type", "application/json")
                         .header(reqwest::header::CONTENT_LENGTH, content_length.to_string())
                         .body(reqwest::Body::wrap_stream(
