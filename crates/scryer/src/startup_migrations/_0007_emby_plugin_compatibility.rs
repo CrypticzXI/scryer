@@ -3,7 +3,7 @@ use std::sync::Arc;
 use scryer_application::{AppUseCase, SETTINGS_SCOPE_SYSTEM};
 use scryer_infrastructure_configuration::settings::settings_store::SettingsStore;
 
-const MIGRATION_STATE_KEY: &str = "startup_migration.emby_plugin_compatibility.state";
+pub(crate) const MIGRATION_STATE_KEY: &str = "startup_migration.emby_plugin_compatibility.state";
 const LEGACY_PLUGIN_ID: &str = "mediabrowser";
 const CANONICAL_PLUGIN_ID: &str = "emby";
 const STATE_NONE: &str = "none";

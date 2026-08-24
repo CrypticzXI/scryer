@@ -1794,6 +1794,50 @@ impl DownloadClient for WasmDownloadClient {
         .await
     }
 
+    async fn mark_imported_non_destructive(
+        &self,
+        request: &DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        let supported = self.command.is_some()
+            && self
+                .descriptor
+                .download_client()
+                .is_some_and(|provider| provider.capabilities.mark_imported_non_destructive);
+        if !supported {
+            return Ok(());
+        }
+
+        let command_request = PluginDownloadClientMarkImportedRequest {
+            client_item_id: request.client_item_id.clone(),
+            info_hash: request.info_hash.clone(),
+            title_id: request.title_id.clone(),
+            title_name: request.title_name.clone(),
+            category: request.category.clone(),
+            post_import_isolation: build_isolation_entries(request.category.as_deref()),
+            imported_path: request.imported_path.clone(),
+            download_path: request.download_path.clone(),
+        };
+        let result = self
+            .invoke_command(
+                PluginDownloadClientCommand::MarkImportedNonDestructive(command_request),
+                "mark_imported_non_destructive",
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Repository(
+                    "download-client command interface unavailable for non-destructive import mark"
+                        .to_string(),
+                )
+            })?;
+        let PluginDownloadClientCommandResult::MarkImportedNonDestructive(result) = result else {
+            return Err(AppError::Repository(
+                "download-client command returned the wrong result for non-destructive import mark"
+                    .to_string(),
+            ));
+        };
+        decode_command_result(result, "download mark_imported_non_destructive")
+    }
+
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
         if let Some(result) = self
             .invoke_command(PluginDownloadClientCommand::Status, "status")

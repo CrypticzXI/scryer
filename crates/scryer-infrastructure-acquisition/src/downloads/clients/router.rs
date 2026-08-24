@@ -731,6 +731,23 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.mark_imported(request).await
     }
 
+    async fn mark_imported_non_destructive(
+        &self,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner.mark_imported_non_destructive(request).await
+    }
+
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner
+            .mark_imported_non_destructive_for_client_id(client_id, request)
+            .await
+    }
+
     async fn mark_imported_for_client_id(
         &self,
         client_id: &str,
@@ -3570,6 +3587,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
         let reads = self
             .poll_feedback_clients(
@@ -3584,6 +3602,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             )
             .await;
         for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3591,6 +3610,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         DownloadFeedbackReadKind::RecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3613,8 +3633,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3645,6 +3665,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
         let reads = self
             .poll_feedback_clients(
@@ -3659,6 +3680,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             )
             .await;
         for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3666,6 +3688,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         DownloadFeedbackReadKind::RecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3688,8 +3711,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3708,6 +3731,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
         let reads = self
             .poll_feedback_clients(
@@ -3722,6 +3746,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             )
             .await;
         for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3729,6 +3754,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         DownloadFeedbackReadKind::TitleRecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3751,8 +3777,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3772,6 +3798,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let fetch_limit = offset.saturating_add(limit);
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
         let reads = self
             .poll_feedback_clients(
@@ -3786,6 +3813,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             )
             .await;
         for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
             match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -3815,7 +3843,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
 
         Ok(all_items.into_iter().skip(offset).take(limit).collect())
     }
@@ -3982,11 +4011,16 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         &config.id,
                         DownloadFeedbackReadKind::RecentCompletedDownloads,
                     );
+                    let raw_count = items.len();
+                    items.truncate(limit);
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
                         recent_completed_strategy = recent_completed_strategy_label(&config.client_type),
-                        count = items.len(),
+                        raw_count,
+                        returned_count = items.len(),
+                        limit,
+                        saturated = raw_count >= limit,
                         "recent completed downloads from client"
                     );
                     let mut accepted_items = Vec::with_capacity(items.len());
@@ -4014,7 +4048,6 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         all_items.sort_by(compare_completed_downloads_desc);
-        all_items.truncate(limit);
         Ok(all_items)
     }
 
@@ -4160,6 +4193,19 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )))
     }
 
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.mark_imported_non_destructive(request).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
+    }
+
     async fn delete_queue_item_for_client(
         &self,
         client_type: &str,
@@ -4240,18 +4286,45 @@ fn recent_completed_strategy_label(client_type: &str) -> &'static str {
     }
 }
 
-fn parse_history_timestamp(value: Option<&str>) -> i64 {
-    value
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(0)
+fn parse_history_timestamp(value: Option<&str>) -> Option<i64> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Ok(timestamp) = value.parse::<i64>() {
+        const UNIX_MILLISECONDS_THRESHOLD: u64 = 100_000_000_000;
+        return if timestamp.unsigned_abs() >= UNIX_MILLISECONDS_THRESHOLD {
+            Some(timestamp)
+        } else {
+            timestamp.checked_mul(1_000)
+        };
+    }
+
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
 }
 
 fn compare_history_items_desc(
     left: &DownloadQueueItem,
     right: &DownloadQueueItem,
+    client_priorities: &HashMap<String, i64>,
 ) -> std::cmp::Ordering {
     parse_history_timestamp(right.last_updated_at.as_deref())
         .cmp(&parse_history_timestamp(left.last_updated_at.as_deref()))
+        .then_with(|| {
+            client_priorities
+                .get(&left.client_id)
+                .copied()
+                .unwrap_or(i64::MAX)
+                .cmp(
+                    &client_priorities
+                        .get(&right.client_id)
+                        .copied()
+                        .unwrap_or(i64::MAX),
+                )
+        })
         .then_with(|| right.id.cmp(&left.id))
 }
 
@@ -4286,6 +4359,53 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn history_timestamps_support_seconds_milliseconds_and_rfc3339() {
+        assert_eq!(
+            parse_history_timestamp(Some("1700000000")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            parse_history_timestamp(Some("1700000000000")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            parse_history_timestamp(Some("2023-11-14T22:13:20Z")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(parse_history_timestamp(Some("not-a-timestamp")), None);
+
+        let mut seconds = test_queue_item("seconds");
+        seconds.last_updated_at = Some("1700000001".to_string());
+        let mut milliseconds = test_queue_item("milliseconds");
+        milliseconds.last_updated_at = Some("1700000000500".to_string());
+        let mut rfc3339 = test_queue_item("rfc3339");
+        rfc3339.last_updated_at = Some("2023-11-14T22:13:20Z".to_string());
+        let mut malformed = test_queue_item("malformed");
+        malformed.last_updated_at = Some("not-a-timestamp".to_string());
+
+        let mut items = vec![malformed, rfc3339, milliseconds, seconds];
+        items.sort_by(|left, right| compare_history_items_desc(left, right, &HashMap::new()));
+        assert_eq!(
+            items
+                .into_iter()
+                .map(|item| item.download_client_item_id)
+                .collect::<Vec<_>>(),
+            vec!["seconds", "milliseconds", "rfc3339", "malformed"]
+        );
+
+        let mut high_priority = test_queue_item("aaa");
+        high_priority.client_id = "high".to_string();
+        high_priority.last_updated_at = Some("1700000000".to_string());
+        let mut low_priority = test_queue_item("zzz");
+        low_priority.client_id = "low".to_string();
+        low_priority.last_updated_at = Some("1700000000".to_string());
+        let client_priorities = HashMap::from([("high".to_string(), 0), ("low".to_string(), 10)]);
+        let mut tied = [low_priority, high_priority];
+        tied.sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
+        assert_eq!(tied[0].client_id, "high");
+    }
 
     fn test_indexer_config(base_url: &str) -> scryer_domain::IndexerConfig {
         let now = Utc::now();
@@ -8372,7 +8492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_recent_activity_merges_clients_before_truncating() {
+    async fn list_recent_activity_applies_limit_per_client() {
         let client_a = Arc::new(MockDownloadClient::default());
         let client_b = Arc::new(MockDownloadClient::default());
 
@@ -8419,7 +8539,82 @@ mod tests {
             .into_iter()
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+        assert_eq!(
+            ids,
+            vec![
+                "a-1".to_string(),
+                "b-1".to_string(),
+                "a-2".to_string(),
+                "b-2".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_feedback_limit_allows_300_rows_from_each_client() {
+        let client_a = Arc::new(MockDownloadClient::default());
+        let client_b = Arc::new(MockDownloadClient::default());
+        let now = Utc::now();
+
+        for index in 0..301 {
+            let mut a = test_queue_item(&format!("activity-a-{index:03}"));
+            a.last_updated_at = Some((1_800_000_000_i64 - index).to_string());
+            client_a.history_items.lock().unwrap().push(a);
+            let mut b = test_queue_item(&format!("activity-b-{index:03}"));
+            b.last_updated_at = Some((1_700_000_000_i64 - index).to_string());
+            client_b.history_items.lock().unwrap().push(b);
+
+            for (client, prefix) in [(&client_a, "a"), (&client_b, "b")] {
+                client
+                    .completed_downloads
+                    .lock()
+                    .unwrap()
+                    .push(scryer_domain::CompletedDownload {
+                        client_type: "qbittorrent".to_string(),
+                        client_id: String::new(),
+                        download_client_item_id: format!("completed-{prefix}-{index:03}"),
+                        download_id: None,
+                        name: format!("Completed {prefix} {index}"),
+                        release_name: None,
+                        dest_dir: format!("/downloads/{prefix}/{index}"),
+                        category: None,
+                        size_bytes: None,
+                        completed_at: Some(now - chrono::Duration::seconds(index)),
+                        parameters: Vec::new(),
+                    });
+            }
+        }
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![
+                    ("client-a".to_string(), client_a),
+                    ("client-b".to_string(), client_b),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("client-a", "Client A", "qbittorrent", 0),
+                    test_config("client-b", "Client B", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        assert_eq!(router.list_recent_activity(300).await.unwrap().len(), 600);
+        assert_eq!(
+            router
+                .list_recent_completed_downloads(300)
+                .await
+                .unwrap()
+                .len(),
+            600
+        );
     }
 
     #[tokio::test]
@@ -8483,7 +8678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_recent_completed_downloads_merges_clients_before_truncating() {
+    async fn list_recent_completed_downloads_applies_limit_per_client() {
         let client_a = Arc::new(MockDownloadClient::default());
         let client_b = Arc::new(MockDownloadClient::default());
 
@@ -8575,7 +8770,15 @@ mod tests {
             .into_iter()
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+        assert_eq!(
+            ids,
+            vec![
+                "a-1".to_string(),
+                "b-1".to_string(),
+                "a-2".to_string(),
+                "b-2".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

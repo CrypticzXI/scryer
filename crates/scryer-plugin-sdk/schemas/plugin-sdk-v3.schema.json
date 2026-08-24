@@ -884,6 +884,10 @@
           "type": "boolean",
           "default": false
         },
+        "mark_imported_non_destructive": {
+          "type": "boolean",
+          "default": false
+        },
         "prepare_for_import": {
           "type": "boolean",
           "default": false
@@ -1096,6 +1100,7 @@
             "remove": false,
             "remove_with_data": false,
             "mark_imported": false,
+            "mark_imported_non_destructive": false,
             "prepare_for_import": false,
             "client_status": false,
             "queue_priority": false,
@@ -2062,6 +2067,22 @@
             "operation": {
               "type": "string",
               "const": "mark_imported"
+            },
+            "request": {
+              "$ref": "#/$defs/PluginDownloadClientMarkImportedRequest"
+            }
+          },
+          "required": [
+            "operation",
+            "request"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "mark_imported_non_destructive"
             },
             "request": {
               "$ref": "#/$defs/PluginDownloadClientMarkImportedRequest"
@@ -4710,6 +4731,22 @@
             "operation": {
               "type": "string",
               "const": "mark_imported"
+            },
+            "result": {
+              "$ref": "#/$defs/PluginResult9"
+            }
+          },
+          "required": [
+            "operation",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "mark_imported_non_destructive"
             },
             "result": {
               "$ref": "#/$defs/PluginResult9"

@@ -8,7 +8,7 @@ mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
 
-pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
+pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 300;
 
 /// Widened completed-history bound used when a stuck download misses the recent
 /// window.

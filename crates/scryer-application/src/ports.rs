@@ -5758,6 +5758,21 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn mark_imported_non_destructive(
+        &self,
+        _request: &DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        _client_id: &str,
+        request: &DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.mark_imported_non_destructive(request).await
+    }
+
     async fn mark_imported_for_client_id(
         &self,
         _client_id: &str,
