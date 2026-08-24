@@ -125,6 +125,7 @@ pub enum PluginDownloadClientCommand {
     GetCompleted(PluginDownloadGetCompletedRequest),
     Control(PluginDownloadClientControlRequest),
     MarkImported(PluginDownloadClientMarkImportedRequest),
+    MarkImportedNonDestructive(PluginDownloadClientMarkImportedRequest),
     Status,
     TestConnection,
 }
@@ -140,6 +141,7 @@ pub enum PluginDownloadClientCommandResult {
     GetCompleted(PluginResult<Option<PluginCompletedDownload>>),
     Control(PluginResult<()>),
     MarkImported(PluginResult<()>),
+    MarkImportedNonDestructive(PluginResult<()>),
     Status(PluginResult<PluginDownloadClientStatus>),
     TestConnection(PluginResult<String>),
 }

@@ -618,4 +618,31 @@ mod tests {
             RejectionDisposition::Blocklist
         );
     }
+
+    /// A perfectly good download is refused because something *still sitting in
+    /// the queue* is equal or better, and that refusal is reported as
+    /// `AlreadyImported`. Downstream that reads as a successful import, so the
+    /// client entry is cleaned up and no import/failure history is written.
+    #[test]
+    fn a_queued_equal_or_better_release_is_reported_as_already_imported() {
+        let rejection = crate::admission::AdmissionRejection {
+            reason: crate::admission::AdmissionRejectionReason::QueuedEqualOrBetter {
+                queued_title: "Show.S01E01.1080p.WEB-DL".to_string(),
+                queued_score: 100,
+                candidate_score: 100,
+            },
+            message: "already downloading for this scope and is equal or better".to_string(),
+            incumbent_file_id: String::new(),
+            incumbent_file_path: String::new(),
+        };
+
+        let imported = admission_rejection_to_import("S01E01", &rejection);
+
+        assert_eq!(
+            imported.skip_reason,
+            Some(ImportSkipReason::AlreadyImported),
+            "a queued-equal-or-better refusal must not be laundered into AlreadyImported"
+        );
+        assert_eq!(imported.recycle_reason, "already_imported");
+    }
 }

@@ -175,6 +175,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             is_sensitive: false,
         },
         ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0007_emby_plugin_compatibility::MIGRATION_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0010_download_client_remove_failed_default::DOWNLOAD_CLIENT_REMOVE_FAILED_DEFAULT_FLIPPED_0018_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: crate::startup_migrations::_0008_title_credits_rehydration_018::TITLE_CREDITS_REHYDRATION_018_STATE_KEY,
@@ -1997,6 +2013,41 @@ mod tests {
             Some("4k".to_string()),
             "a valid explicit global choice is preserved"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_migration_state_definitions_accept_writes() {
+        let keys = [
+            crate::startup_migrations::_0007_emby_plugin_compatibility::MIGRATION_STATE_KEY,
+            crate::startup_migrations::_0010_download_client_remove_failed_default::DOWNLOAD_CLIENT_REMOVE_FAILED_DEFAULT_FLIPPED_0018_STATE_KEY,
+        ];
+        for key in keys {
+            let seed = service_setting_seeds()
+                .iter()
+                .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == key)
+                .unwrap_or_else(|| {
+                    panic!("startup migration state definition should exist: {key}")
+                });
+            assert_eq!(seed.category, SETTINGS_CATEGORY_SERVICE);
+            assert_eq!(seed.data_type, "string");
+            assert_eq!(seed.default_value_json, "\"none\"");
+            assert!(!seed.is_sensitive);
+        }
+
+        let (_temp, store) = bootstrap_settings_store().await;
+        for key in keys {
+            SettingsRepository::upsert_setting_json(
+                &*store,
+                SETTINGS_SCOPE_SYSTEM,
+                key,
+                None,
+                "\"pending\"".to_string(),
+                "system",
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("startup migration state should persist: {error}"));
+        }
     }
 
     #[tokio::test]

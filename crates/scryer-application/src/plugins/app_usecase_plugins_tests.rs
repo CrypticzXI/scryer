@@ -4729,7 +4729,7 @@ async fn auto_update_selects_only_official_patch_releases() {
 }
 
 #[tokio::test]
-async fn auto_update_skips_manual_builtin_and_unparseable_installations() {
+async fn auto_update_selects_builtins_but_skips_manual_and_unparseable_installations() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     h.plugin_repo
         .store_catalog_fixture_json(&make_catalog_fixture_json(&[
@@ -4757,7 +4757,7 @@ async fn auto_update_skips_manual_builtin_and_unparseable_installations() {
     // Installed but absent from the catalog: nothing to resolve, nothing to do.
     seed_auto_update_installation(&h, official_catalog_installation("orphan", "1.2.3")).await;
 
-    assert!(auto_update_candidate_ids(&h).await.is_empty());
+    assert_eq!(auto_update_candidate_ids(&h).await, vec!["builtin"]);
 }
 
 #[tokio::test]

@@ -1643,6 +1643,32 @@ mod client_snapshot_tests {
         }
     }
 
+    /// The grab-side double-submit guard matches the *release title string*,
+    /// while import admission matches the *scope*. A second release for a scope
+    /// another client already has queued therefore passes the grab guard and is
+    /// then refused at import as `QueuedEqualOrBetter`.
+    #[test]
+    fn the_grab_guard_misses_a_different_release_for_an_already_queued_scope() {
+        let mut snap = snapshot(false, false);
+        // qBittorrent is holding this exact release for S01E01.
+        snap.active_titles
+            .insert("show.s01e01.720p.web-dl.av1-ntb".to_string());
+
+        // The identical release is correctly recognised as active.
+        assert!(
+            snap.is_active("Show.S01E01.720p.WEB-DL.AV1-NTb"),
+            "the same release title must be seen as already active"
+        );
+
+        // A DIFFERENT release for the SAME episode is not, so the grab proceeds
+        // and SAB downloads a second copy of a scope that is already queued.
+        assert!(
+            !snap.is_active("Show.S01E01.1080p.WEB-DL.x264-GROUP"),
+            "grab guard is title-string equality, so it cannot see that this \
+             scope is already queued under another release name"
+        );
+    }
+
     fn standby(id: &str, score: i32, added_at: &str) -> PendingRelease {
         PendingRelease {
             id: id.to_string(),

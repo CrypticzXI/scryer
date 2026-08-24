@@ -736,6 +736,8 @@ pub struct DownloadClientCapabilities {
     #[serde(default)]
     pub mark_imported: bool,
     #[serde(default)]
+    pub mark_imported_non_destructive: bool,
+    #[serde(default)]
     pub prepare_for_import: bool,
     #[serde(default)]
     pub client_status: bool,
@@ -2933,7 +2935,29 @@ mod tests {
             vec![DownloadInputKind::MagnetUri, DownloadInputKind::TorrentFile]
         );
         assert!(provider.capabilities.pause);
+        assert!(!provider.capabilities.mark_imported_non_destructive);
         assert!(provider.capabilities.torrent.is_none());
+    }
+
+    #[test]
+    fn non_destructive_import_mark_command_serializes_with_a_distinct_operation() {
+        let command = command::PluginDownloadClientCommand::MarkImportedNonDestructive(
+            PluginDownloadClientMarkImportedRequest {
+                client_item_id: "ABCDEF".to_string(),
+                info_hash: Some("ABCDEF".to_string()),
+                title_id: None,
+                title_name: None,
+                category: None,
+                post_import_isolation: Vec::new(),
+                imported_path: None,
+                download_path: None,
+            },
+        );
+        let value = serde_json::to_value(command).unwrap();
+        assert_eq!(
+            value.get("operation").and_then(serde_json::Value::as_str),
+            Some("mark_imported_non_destructive")
+        );
     }
 
     #[test]
