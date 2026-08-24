@@ -2,6 +2,7 @@
 #![recursion_limit = "256"]
 
 mod application_upgrade_evidence;
+mod application_upgrade_helper;
 mod backup_routes;
 mod base_path;
 mod http_error;
@@ -301,6 +302,20 @@ fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     Err(command.exec())
 }
 
+#[cfg(windows)]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+
+    // SAFETY: GetTickCount64 has no arguments and is safe to call for the current host.
+    let uptime_millis = unsafe { GetTickCount64() };
+    std::time::SystemTime::now().checked_sub(std::time::Duration::from_millis(uptime_millis))
+}
+
+#[cfg(not(windows))]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    None
+}
+
 #[cfg(not(unix))]
 fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     let mut command = Command::new(&spec.executable);
@@ -355,10 +370,12 @@ impl SelfRestartController {
     fn application_upgrade_handle(
         &self,
     ) -> scryer_application::application_upgrade::ApplicationUpgradeRestartHandle {
-        let controller = self.clone();
-        scryer_application::application_upgrade::ApplicationUpgradeRestartHandle::new(move || {
-            controller.schedule_restart()
-        })
+        let restart_controller = self.clone();
+        let exit_controller = self.clone();
+        scryer_application::application_upgrade::ApplicationUpgradeRestartHandle::new_with_exit(
+            move || restart_controller.schedule_restart(),
+            move || exit_controller.schedule_exit_only(),
+        )
     }
 
     fn schedule_restart(&self) {
@@ -374,6 +391,18 @@ impl SelfRestartController {
                 tracing::error!(error = %error, "failed to restart after restore");
                 inner.scheduled.store(false, Ordering::SeqCst);
             }
+        });
+    }
+
+    fn schedule_exit_only(&self) {
+        if self.inner.scheduled.swap(true, Ordering::SeqCst) {
+            tracing::info!("restart or exit already scheduled");
+            return;
+        }
+        let delay = self.inner.delay;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            std::process::exit(0);
         });
     }
 }
@@ -478,6 +507,15 @@ fn install_panic_logging_hook() {
 
 #[tokio::main]
 async fn main() {
+    match application_upgrade_helper::maybe_run_upgrade_helper() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+
     // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
     let data_dir_override = match extract_data_dir(&mut args) {
@@ -1466,7 +1504,7 @@ async fn bootstrap_application(
     );
 
     let upgrade_reconcile_exclusions = match app_use_case
-        .finalize_application_upgrade_journal()
+        .finalize_application_upgrade_journal_with_boot_time(application_upgrade_boot_time())
         .await
     {
         Ok(exclusions) => exclusions,

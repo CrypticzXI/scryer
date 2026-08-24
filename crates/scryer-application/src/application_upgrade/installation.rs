@@ -97,6 +97,8 @@ pub struct InstallationAssessment {
     pub owner: ManagementOwner,
     pub eligible: bool,
     pub reason: EligibilityReason,
+    /// Whether the Windows tray is responsible for shutting down and relaunching this process.
+    pub tray_supervised: bool,
 }
 
 impl Default for InstallationAssessment {
@@ -106,6 +108,7 @@ impl Default for InstallationAssessment {
             owner: ManagementOwner::Operator,
             eligible: false,
             reason: EligibilityReason::UnsupportedLayout,
+            tray_supervised: false,
         }
     }
 }
@@ -149,7 +152,7 @@ pub fn classify_installation(evidence: &InstallationEvidence) -> InstallationAss
                 && evidence.windows_legacy_msi_registry_key_exists
                 && evidence.windows_executable_under_program_files))
     {
-        return in_app_assessment(InstallationKind::DirectMsi);
+        return in_app_assessment(InstallationKind::DirectMsi, evidence.tray_supervised);
     }
 
     if evidence.os == InstallationOs::Windows
@@ -169,7 +172,7 @@ pub fn classify_installation(evidence: &InstallationEvidence) -> InstallationAss
     }
 
     if evidence.executable_dir_writable {
-        return in_app_assessment(InstallationKind::Portable);
+        return in_app_assessment(InstallationKind::Portable, evidence.tray_supervised);
     }
 
     let reason = if evidence.executable_path.is_some() {
@@ -201,12 +204,13 @@ fn is_homebrew_layout(evidence: &InstallationEvidence) -> bool {
     })
 }
 
-fn in_app_assessment(kind: InstallationKind) -> InstallationAssessment {
+fn in_app_assessment(kind: InstallationKind, tray_supervised: bool) -> InstallationAssessment {
     InstallationAssessment {
         kind,
         owner: ManagementOwner::InApp,
         eligible: true,
         reason: EligibilityReason::Eligible,
+        tray_supervised,
     }
 }
 
@@ -219,6 +223,7 @@ fn operator_assessment(
         owner: ManagementOwner::Operator,
         eligible: false,
         reason,
+        tray_supervised: false,
     }
 }
 
@@ -249,6 +254,7 @@ mod tests {
                 owner,
                 eligible,
                 reason,
+                tray_supervised: evidence.tray_supervised && eligible,
             }
         );
     }
@@ -337,6 +343,17 @@ mod tests {
             false,
             EligibilityReason::UnsupportedLayout,
         );
+    }
+
+    #[test]
+    fn carries_tray_supervision_into_an_eligible_assessment() {
+        let mut evidence = evidence();
+        evidence.os = InstallationOs::Windows;
+        evidence.tray_supervised = true;
+        let assessment = classify_installation(&evidence);
+        assert_eq!(assessment.kind, InstallationKind::Portable);
+        assert!(assessment.eligible);
+        assert!(assessment.tray_supervised);
     }
 
     #[test]

@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use semver::Version;
@@ -11,6 +12,12 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::application_upgrade::InstallationKind;
+use crate::application_upgrade::helper_plan::reboot_required_completion_allowed;
+use crate::application_upgrade::helper_plan::{
+    APPLICATION_UPGRADE_HELPER_PLAN_SCHEMA, ApplicationUpgradeHelperMode,
+    ApplicationUpgradeHelperOwner, ApplicationUpgradeHelperPlan, ApplicationUpgradeHelperRelaunch,
+    ApplicationUpgradeHelperReplacement,
+};
 use crate::application_upgrade::manifest::{
     UPGRADE_MANIFEST_MAX_BYTES, UpgradeArchitecture, UpgradeArchive, UpgradeArtifact,
     UpgradeChannel, UpgradeManifest, UpgradePlatform, parse_and_validate_upgrade_manifest,
@@ -43,7 +50,6 @@ const UPGRADE_BUNDLE_MAX_BYTES: u64 = 256 * 1024;
 const UPGRADE_STAGING_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const JOURNAL_SCHEMA: &str = "scryer.upgrade.journal.v1";
-const WINDOWS_APPLY_UNSUPPORTED: &str = "windows apply is not yet supported";
 
 /// Progress persisted in `workflow_operations.progress_json` for an application upgrade.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -66,6 +72,8 @@ pub struct ApplicationUpgradeJobRequest {
     pub installation_kind: InstallationKind,
     /// Tests and nonstandard executable hosts may provide the startup evidence path directly.
     pub executable_path: Option<PathBuf>,
+    /// Whether the desktop tray owns and supervises this backend process.
+    pub tray_supervised: bool,
 }
 
 /// Accepted durable job run returned once the asynchronous engine is registered.
@@ -84,14 +92,44 @@ pub struct ApplicationUpgradeJournal {
     pub expected_tag: String,
     pub executable_path: PathBuf,
     pub backup_path: PathBuf,
+    #[serde(default)]
+    pub backup_paths: Vec<PathBuf>,
     pub phase: String,
     pub helper_error: Option<String>,
+    #[serde(default)]
+    pub written_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]
 struct AppliedPortableUpgrade {
     executable_path: PathBuf,
     backup_path: PathBuf,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct WindowsUpgradeHandoffInput<'a> {
+    run_id: &'a str,
+    expected_version: &'a str,
+    expected_tag: &'a str,
+    installation_kind: InstallationKind,
+    tray_supervised: bool,
+    executable_path: &'a Path,
+    install_dir: &'a Path,
+    artifact: Option<&'a UpgradeArtifact>,
+    extracted_dir: Option<&'a Path>,
+    msi_path: Option<&'a Path>,
+    journal_path: PathBuf,
+    direct_relaunch_args: &'a [String],
+    direct_relaunch_cwd: &'a Path,
+    current_version: &'a str,
+    written_at: DateTime<Utc>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+struct WindowsUpgradeHandoff {
+    journal: ApplicationUpgradeJournal,
+    plan: ApplicationUpgradeHelperPlan,
+    progress_phase: &'static str,
 }
 
 type UpgradeSpaceCheck = fn(&Path, u64) -> AppResult<()>;
@@ -427,38 +465,57 @@ impl AppUseCase {
             },
         )
         .await?;
-        let applied = apply_portable_upgrade(
-            &extracted_dir,
-            &artifact,
-            request,
-            SCRYER_VERSION,
-            dependencies.ensure_available_space,
-            dependencies.rename,
-        )?;
+        #[cfg(windows)]
+        {
+            return self
+                .handoff_windows_upgrade(run, request, &artifact, &extracted_dir, &download_path)
+                .await;
+        }
 
-        let journal = ApplicationUpgradeJournal {
-            schema: JOURNAL_SCHEMA.to_string(),
-            run_id: run.id.clone(),
-            expected_version: request.expected_version.clone(),
-            expected_tag: request.expected_tag.clone(),
-            executable_path: applied.executable_path,
-            backup_path: applied.backup_path,
-            phase: phases::RESTARTING.to_string(),
-            helper_error: None,
-        };
-        write_journal(&self.application_upgrade_journal_path(), &journal)?;
-        self.update_application_upgrade_progress(
-            run,
-            ApplicationUpgradeProgress {
+        #[cfg(not(windows))]
+        {
+            let applied = apply_portable_upgrade(
+                &extracted_dir,
+                &artifact,
+                request,
+                SCRYER_VERSION,
+                dependencies.ensure_available_space,
+                dependencies.rename,
+            )?;
+
+            let journal = ApplicationUpgradeJournal {
+                schema: JOURNAL_SCHEMA.to_string(),
+                run_id: run.id.clone(),
+                expected_version: request.expected_version.clone(),
+                expected_tag: request.expected_tag.clone(),
+                executable_path: applied.executable_path,
+                backup_path: applied.backup_path.clone(),
+                backup_paths: vec![applied.backup_path],
                 phase: phases::RESTARTING.to_string(),
-                downloaded_bytes: artifact.size,
-                total_bytes: artifact.size,
-                ..ApplicationUpgradeProgress::checking(request)
-            },
-        )
-        .await?;
-        let restart = self
-            .runtime
+                helper_error: None,
+                written_at: Some(Utc::now()),
+            };
+            write_journal(&self.application_upgrade_journal_path(), &journal)?;
+            self.update_application_upgrade_progress(
+                run,
+                ApplicationUpgradeProgress {
+                    phase: phases::RESTARTING.to_string(),
+                    downloaded_bytes: artifact.size,
+                    total_bytes: artifact.size,
+                    ..ApplicationUpgradeProgress::checking(request)
+                },
+            )
+            .await?;
+            let restart = self.application_upgrade_restart_handle()?;
+            restart.schedule_restart();
+            Ok(())
+        }
+    }
+
+    fn application_upgrade_restart_handle(
+        &self,
+    ) -> AppResult<crate::application_upgrade::ApplicationUpgradeRestartHandle> {
+        self.runtime
             .jobs
             .application_upgrade_restart
             .read()
@@ -468,8 +525,78 @@ impl AppUseCase {
                 AppError::Repository(
                     "application upgrade restart controller is not configured".to_string(),
                 )
+            })
+    }
+
+    #[cfg(windows)]
+    async fn handoff_windows_upgrade(
+        &self,
+        run: &mut JobRunRecord,
+        request: &ApplicationUpgradeJobRequest,
+        artifact: &UpgradeArtifact,
+        extracted_dir: &Path,
+        msi_path: &Path,
+    ) -> AppResult<()> {
+        let executable_path = request
+            .executable_path
+            .clone()
+            .or_else(|| std::env::current_exe().ok())
+            .ok_or_else(|| {
+                AppError::Repository("failed to resolve the running executable path".to_string())
             })?;
-        restart.schedule_restart();
+        let install_dir = executable_path.parent().map(PathBuf::from).ok_or_else(|| {
+            AppError::Validation("running executable has no parent directory".to_string())
+        })?;
+        let direct_relaunch_args = std::env::args_os()
+            .skip(1)
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let direct_relaunch_cwd = std::env::current_dir().unwrap_or_else(|_| install_dir.clone());
+        let handoff = build_windows_upgrade_handoff(WindowsUpgradeHandoffInput {
+            run_id: &run.id,
+            expected_version: &request.expected_version,
+            expected_tag: &request.expected_tag,
+            installation_kind: request.installation_kind,
+            tray_supervised: request.tray_supervised,
+            executable_path: &executable_path,
+            install_dir: &install_dir,
+            artifact: Some(artifact),
+            extracted_dir: Some(extracted_dir),
+            msi_path: Some(msi_path),
+            journal_path: self.application_upgrade_journal_path(),
+            direct_relaunch_args: &direct_relaunch_args,
+            direct_relaunch_cwd: &direct_relaunch_cwd,
+            current_version: SCRYER_VERSION,
+            written_at: Utc::now(),
+        })?;
+        if let Some(existing_backup) = handoff
+            .journal
+            .backup_paths
+            .iter()
+            .find(|path| path.exists())
+        {
+            return Err(AppError::Validation(format!(
+                "refusing to overwrite existing application backup '{}'",
+                existing_backup.display()
+            )));
+        }
+        write_journal(&handoff.plan.journal_path, &handoff.journal)?;
+        self.update_application_upgrade_progress(
+            run,
+            ApplicationUpgradeProgress {
+                phase: handoff.progress_phase.to_string(),
+                downloaded_bytes: artifact.size,
+                total_bytes: artifact.size,
+                ..ApplicationUpgradeProgress::checking(request)
+            },
+        )
+        .await?;
+        let helper_dir = self.application_upgrade_helper_dir();
+        let plan_path = helper_dir.join("plan.json");
+        let helper_path = helper_dir.join("scryer-upgrade-helper.exe");
+        write_helper_plan(&plan_path, &handoff.plan)?;
+        copy_and_spawn_windows_upgrade_helper(&helper_path, &plan_path)?;
+        self.application_upgrade_restart_handle()?.schedule_exit();
         Ok(())
     }
 
@@ -542,6 +669,16 @@ impl AppUseCase {
     /// Finalize the journal created before a restart and return runs that must
     /// remain running because an operating-system reboot is still required.
     pub async fn finalize_application_upgrade_journal(&self) -> AppResult<Vec<String>> {
+        self.finalize_application_upgrade_journal_with_boot_time(None)
+            .await
+    }
+
+    /// Finalize an upgrade journal with an injectable operating-system boot time.
+    /// Windows hosts supply this from `GetTickCount64`; tests inject a fixed value.
+    pub async fn finalize_application_upgrade_journal_with_boot_time(
+        &self,
+        boot_time: Option<SystemTime>,
+    ) -> AppResult<Vec<String>> {
         let journal_path = self.application_upgrade_journal_path();
         let Some(journal) = load_journal(&journal_path)? else {
             return Ok(Vec::new());
@@ -552,7 +689,22 @@ impl AppUseCase {
                 journal.schema
             )));
         }
+        let current_executable = std::env::current_exe().map_err(|error| {
+            AppError::Repository(format!("failed to resolve running executable: {error}"))
+        })?;
+        let expected_version_booted = SCRYER_VERSION == journal.expected_version;
+        let expected_executable_booted = current_executable == journal.executable_path;
         if journal.phase == phases::REBOOT_REQUIRED {
+            if reboot_required_completion_allowed(
+                journal.written_at,
+                boot_time.map(DateTime::<Utc>::from),
+                expected_version_booted,
+                expected_executable_booted,
+            ) {
+                self.complete_journal_application_upgrade(&journal, &journal_path)
+                    .await?;
+                return Ok(Vec::new());
+            }
             return Ok(vec![journal.run_id]);
         }
         if let Some(error) = journal.helper_error.clone() {
@@ -564,6 +716,8 @@ impl AppUseCase {
             )
             .await?;
             remove_file_if_exists(&journal_path)?;
+            remove_dir_if_exists(&self.application_upgrade_staging_dir())?;
+            remove_dir_if_exists(&self.application_upgrade_helper_dir())?;
             return Ok(Vec::new());
         }
         if journal.phase != phases::RESTARTING {
@@ -573,38 +727,9 @@ impl AppUseCase {
             )));
         }
 
-        let current_executable = std::env::current_exe().map_err(|error| {
-            AppError::Repository(format!("failed to resolve running executable: {error}"))
-        })?;
-        if SCRYER_VERSION == journal.expected_version
-            && current_executable == journal.executable_path
-        {
-            let old_version = self
-                .services
-                .events
-                .job_runs
-                .get_job_run(&journal.run_id)
-                .await?
-                .and_then(|run| {
-                    run.operation_type
-                        .split_once(':')
-                        .and_then(|(_, versions)| versions.split_once("->"))
-                        .map(|(old, _)| old.to_string())
-                })
-                .unwrap_or_else(|| "previous version".to_string());
-            self.finish_journal_application_upgrade(
-                &journal,
-                JobRunStatus::Completed,
-                Some(format!(
-                    "Upgraded application from {old_version} to {}",
-                    journal.expected_version
-                )),
-                None,
-            )
-            .await?;
-            remove_file_if_exists(&journal.backup_path)?;
-            remove_file_if_exists(&journal_path)?;
-            remove_dir_if_exists(&self.application_upgrade_staging_dir())?;
+        if expected_version_booted && expected_executable_booted {
+            self.complete_journal_application_upgrade(&journal, &journal_path)
+                .await?;
             return Ok(Vec::new());
         }
 
@@ -616,6 +741,44 @@ impl AppUseCase {
         )
         .await?;
         Ok(Vec::new())
+    }
+
+    async fn complete_journal_application_upgrade(
+        &self,
+        journal: &ApplicationUpgradeJournal,
+        journal_path: &Path,
+    ) -> AppResult<()> {
+        let old_version = self
+            .services
+            .events
+            .job_runs
+            .get_job_run(&journal.run_id)
+            .await?
+            .and_then(|run| {
+                run.operation_type
+                    .split_once(':')
+                    .and_then(|(_, versions)| versions.split_once("->"))
+                    .map(|(old, _)| old.to_string())
+            })
+            .unwrap_or_else(|| "previous version".to_string());
+        self.finish_journal_application_upgrade(
+            journal,
+            JobRunStatus::Completed,
+            Some(format!(
+                "Upgraded application from {old_version} to {}",
+                journal.expected_version
+            )),
+            None,
+        )
+        .await?;
+        remove_file_if_exists(&journal.backup_path)?;
+        for backup_path in &journal.backup_paths {
+            remove_file_if_exists(backup_path)?;
+        }
+        remove_file_if_exists(journal_path)?;
+        remove_dir_if_exists(&self.application_upgrade_staging_dir())?;
+        remove_dir_if_exists(&self.application_upgrade_helper_dir())?;
+        Ok(())
     }
 
     async fn finish_journal_application_upgrade(
@@ -697,6 +860,10 @@ impl AppUseCase {
 
     fn application_upgrade_staging_dir(&self) -> PathBuf {
         self.application_upgrade_root_dir().join("staging")
+    }
+
+    fn application_upgrade_helper_dir(&self) -> PathBuf {
+        self.application_upgrade_root_dir().join("helper")
     }
 
     fn application_upgrade_journal_path(&self) -> PathBuf {
@@ -1181,7 +1348,9 @@ fn apply_portable_upgrade(
     #[cfg(unix)]
     {
         if request.installation_kind != InstallationKind::Portable {
-            return Err(AppError::Validation(WINDOWS_APPLY_UNSUPPORTED.to_string()));
+            return Err(AppError::Validation(
+                "portable replacement is only available for portable installations".to_string(),
+            ));
         }
         let executable_path = request
             .executable_path
@@ -1248,7 +1417,9 @@ fn apply_portable_upgrade(
             ensure_available_space,
             rename,
         );
-        Err(AppError::Validation(WINDOWS_APPLY_UNSUPPORTED.to_string()))
+        Err(AppError::Validation(
+            "portable replacement is not available on this platform".to_string(),
+        ))
     }
 }
 
@@ -1276,6 +1447,212 @@ fn find_upgraded_executable(
             )
         })?;
     Ok(extracted_dir.join(&selected.path))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn build_windows_upgrade_handoff(
+    input: WindowsUpgradeHandoffInput<'_>,
+) -> AppResult<WindowsUpgradeHandoff> {
+    let owner = if input.tray_supervised {
+        ApplicationUpgradeHelperOwner::Tray
+    } else {
+        ApplicationUpgradeHelperOwner::Direct
+    };
+    let tray_path = input.install_dir.join("scryer-tray.exe");
+    let relaunch = if owner == ApplicationUpgradeHelperOwner::Tray {
+        ApplicationUpgradeHelperRelaunch {
+            program: tray_path.clone(),
+            args: vec!["--login-start".to_string()],
+            cwd: input.install_dir.to_path_buf(),
+        }
+    } else {
+        ApplicationUpgradeHelperRelaunch {
+            program: input.executable_path.to_path_buf(),
+            args: input.direct_relaunch_args.to_vec(),
+            cwd: input.direct_relaunch_cwd.to_path_buf(),
+        }
+    };
+    let backup_suffix = format!(".pre-upgrade-{}", input.current_version);
+    let (mode, replace, backup_paths, staged_dir, msi_path, progress_phase) = match input
+        .installation_kind
+    {
+        InstallationKind::Portable => {
+            let artifact = input.artifact.ok_or_else(|| {
+                AppError::Validation(
+                    "portable Windows upgrade handoff requires an artifact".to_string(),
+                )
+            })?;
+            let extracted_dir = input.extracted_dir.ok_or_else(|| {
+                AppError::Validation(
+                    "portable Windows upgrade handoff requires an extracted directory".to_string(),
+                )
+            })?;
+            let replacements =
+                windows_portable_replacements(extracted_dir, artifact, input.install_dir)?;
+            let backup_paths = replacements
+                .iter()
+                .map(|replacement| {
+                    PathBuf::from(format!(
+                        "{}{}",
+                        replacement.to_install.display(),
+                        backup_suffix
+                    ))
+                })
+                .collect();
+            (
+                ApplicationUpgradeHelperMode::PortableZip,
+                replacements,
+                backup_paths,
+                Some(extracted_dir.to_path_buf()),
+                None,
+                phases::RESTARTING,
+            )
+        }
+        InstallationKind::DirectMsi => {
+            let msi_path = input.msi_path.ok_or_else(|| {
+                AppError::Validation(
+                    "MSI Windows upgrade handoff requires an installer path".to_string(),
+                )
+            })?;
+            (
+                ApplicationUpgradeHelperMode::Msi,
+                Vec::new(),
+                Vec::new(),
+                None,
+                Some(msi_path.to_path_buf()),
+                phases::AWAITING_ELEVATION,
+            )
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "application upgrade installation is not eligible".to_string(),
+            ));
+        }
+    };
+    let journal = ApplicationUpgradeJournal {
+        schema: JOURNAL_SCHEMA.to_string(),
+        run_id: input.run_id.to_string(),
+        expected_version: input.expected_version.to_string(),
+        expected_tag: input.expected_tag.to_string(),
+        executable_path: input.executable_path.to_path_buf(),
+        backup_path: PathBuf::from(format!(
+            "{}{}",
+            input.executable_path.display(),
+            backup_suffix
+        )),
+        backup_paths,
+        phase: phases::RESTARTING.to_string(),
+        helper_error: None,
+        written_at: Some(input.written_at),
+    };
+    let plan = ApplicationUpgradeHelperPlan {
+        schema: APPLICATION_UPGRADE_HELPER_PLAN_SCHEMA.to_string(),
+        mode,
+        owner,
+        journal_path: input.journal_path,
+        staged_dir,
+        msi_path,
+        install_dir: input.install_dir.to_path_buf(),
+        replace,
+        backup_suffix,
+        relaunch,
+        tray_shutdown_program: (owner == ApplicationUpgradeHelperOwner::Tray).then_some(tray_path),
+        expected_version: input.expected_version.to_string(),
+        expected_tag: input.expected_tag.to_string(),
+    };
+    plan.validate().map_err(AppError::Validation)?;
+    Ok(WindowsUpgradeHandoff {
+        journal,
+        plan,
+        progress_phase,
+    })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_portable_replacements(
+    extracted_dir: &Path,
+    artifact: &UpgradeArtifact,
+    install_dir: &Path,
+) -> AppResult<Vec<ApplicationUpgradeHelperReplacement>> {
+    ["scryer.exe", "scryer-tray.exe"]
+        .into_iter()
+        .map(|filename| {
+            let member = artifact
+                .members
+                .iter()
+                .find(|member| {
+                    Path::new(&member.path)
+                        .file_name()
+                        .is_some_and(|name| name == filename)
+                })
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "upgrade archive does not contain required Windows executable '{filename}'"
+                    ))
+                })?;
+            Ok(ApplicationUpgradeHelperReplacement {
+                from_staged: extracted_dir.join(&member.path),
+                to_install: install_dir.join(filename),
+            })
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn write_helper_plan(path: &Path, plan: &ApplicationUpgradeHelperPlan) -> AppResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::Repository(
+            "application upgrade helper plan path has no parent directory".to_string(),
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to create application upgrade helper directory: {error}"
+        ))
+    })?;
+    let bytes = serde_json::to_vec(plan).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to encode application upgrade helper plan: {error}"
+        ))
+    })?;
+    let temporary = parent.join(".plan.tmp");
+    fs::write(&temporary, bytes).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to write application upgrade helper plan: {error}"
+        ))
+    })?;
+    fs::rename(&temporary, path).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to activate application upgrade helper plan: {error}"
+        ))
+    })
+}
+
+#[cfg(windows)]
+fn copy_and_spawn_windows_upgrade_helper(helper_path: &Path, plan_path: &Path) -> AppResult<()> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    let source = std::env::current_exe().map_err(|error| {
+        AppError::Repository(format!(
+            "failed to resolve upgrade helper source executable: {error}"
+        ))
+    })?;
+    fs::copy(&source, helper_path).map_err(|error| {
+        AppError::Repository(format!("failed to copy temporary upgrade helper: {error}"))
+    })?;
+    std::process::Command::new(helper_path)
+        .arg("--upgrade-helper")
+        .arg(plan_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| {
+            AppError::Repository(format!("failed to spawn temporary upgrade helper: {error}"))
+        })?;
+    Ok(())
 }
 
 fn recreate_staging_dir(path: &Path) -> AppResult<()> {
@@ -1380,6 +1757,26 @@ fn load_journal(path: &Path) -> AppResult<Option<ApplicationUpgradeJournal>> {
     })
 }
 
+/// Persist a terminal status observed by the temporary upgrade helper.
+///
+/// The helper is intentionally hosted by the executable crate, so journal mutation
+/// remains here with the schema owner rather than duplicating its atomic-write logic.
+pub fn application_upgrade_helper_update_journal(
+    path: &Path,
+    phase: &str,
+    helper_error: Option<String>,
+) -> AppResult<()> {
+    let mut journal = load_journal(path)?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "application upgrade journal '{}' was not found",
+            path.display()
+        ))
+    })?;
+    journal.phase = phase.to_string();
+    journal.helper_error = helper_error;
+    write_journal(path, &journal)
+}
+
 fn remove_file_if_exists(path: &Path) -> AppResult<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1444,11 +1841,39 @@ mod tests {
             expected_tag: "v0.18.22".to_string(),
             executable_path: PathBuf::from("/opt/scryer/scryer"),
             backup_path: PathBuf::from("/opt/scryer/scryer.pre-upgrade-0.18.21"),
+            backup_paths: vec![PathBuf::from("/opt/scryer/scryer.pre-upgrade-0.18.21")],
             phase: phases::RESTARTING.to_string(),
             helper_error: None,
+            written_at: Some(Utc::now()),
         };
         write_journal(&path, &journal).expect("write journal");
         assert_eq!(load_journal(&path).expect("load journal"), Some(journal));
+    }
+
+    #[test]
+    fn legacy_journal_without_additive_fields_still_parses() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("application-upgrade/journal.json");
+        fs::create_dir_all(path.parent().expect("journal parent")).expect("create parent");
+        fs::write(
+            &path,
+            r#"{
+                "schema":"scryer.upgrade.journal.v1",
+                "run_id":"run-1",
+                "expected_version":"0.18.22",
+                "expected_tag":"v0.18.22",
+                "executable_path":"/opt/scryer/scryer",
+                "backup_path":"/opt/scryer/scryer.pre-upgrade-0.18.21",
+                "phase":"reboot_required",
+                "helper_error":null
+            }"#,
+        )
+        .expect("write legacy journal");
+        let journal = load_journal(&path)
+            .expect("load legacy journal")
+            .expect("journal exists");
+        assert!(journal.backup_paths.is_empty());
+        assert_eq!(journal.written_at, None);
     }
 
     fn portable_tar_artifact(size: u64) -> UpgradeArtifact {
@@ -1469,6 +1894,138 @@ mod tests {
                     executable: true,
                 },
             ],
+        }
+    }
+
+    fn windows_portable_zip_artifact() -> UpgradeArtifact {
+        UpgradeArtifact {
+            platform: UpgradePlatform::Windows,
+            arch: UpgradeArchitecture::X86_64,
+            channel: UpgradeChannel::Portable,
+            asset_name: "scryer.zip".to_string(),
+            url: "https://example.invalid/scryer.zip".to_string(),
+            size: 0,
+            blake3: "0".repeat(64),
+            archive: UpgradeArchive::Zip,
+            members: vec![
+                UpgradeArtifactMember {
+                    path: "bin/scryer.exe".to_string(),
+                    size: 1,
+                    executable: true,
+                },
+                UpgradeArtifactMember {
+                    path: "bin/scryer-tray.exe".to_string(),
+                    size: 1,
+                    executable: true,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn windows_handoff_builder_covers_portable_and_msi_direct_and_tray_owners() {
+        let executable_path = PathBuf::from("C:/Scryer/scryer.exe");
+        let install_dir = PathBuf::from("C:/Scryer");
+        let extracted_dir = PathBuf::from("C:/data/application-upgrade/staging/extracted");
+        let msi_path = PathBuf::from("C:/data/application-upgrade/staging/artifact");
+        let journal_path = PathBuf::from("C:/data/application-upgrade/journal.json");
+        let direct_args = vec!["--data-dir".to_string(), "C:/data".to_string()];
+        let direct_cwd = PathBuf::from("C:/working");
+        let artifact = windows_portable_zip_artifact();
+        let written_at = Utc::now();
+
+        for (installation_kind, tray_supervised) in [
+            (InstallationKind::Portable, false),
+            (InstallationKind::Portable, true),
+            (InstallationKind::DirectMsi, false),
+            (InstallationKind::DirectMsi, true),
+        ] {
+            let handoff = build_windows_upgrade_handoff(WindowsUpgradeHandoffInput {
+                run_id: "run-1",
+                expected_version: "99.0.0",
+                expected_tag: "v99.0.0",
+                installation_kind,
+                tray_supervised,
+                executable_path: &executable_path,
+                install_dir: &install_dir,
+                artifact: Some(&artifact),
+                extracted_dir: Some(&extracted_dir),
+                msi_path: Some(&msi_path),
+                journal_path: journal_path.clone(),
+                direct_relaunch_args: &direct_args,
+                direct_relaunch_cwd: &direct_cwd,
+                current_version: "98.0.0",
+                written_at,
+            })
+            .expect("build Windows upgrade handoff");
+
+            handoff.plan.validate().expect("validate helper plan");
+            assert_eq!(handoff.journal.phase, phases::RESTARTING);
+            assert_eq!(handoff.journal.written_at, Some(written_at));
+            assert_eq!(handoff.plan.backup_suffix, ".pre-upgrade-98.0.0");
+            assert_eq!(
+                handoff.journal.backup_path,
+                PathBuf::from("C:/Scryer/scryer.exe.pre-upgrade-98.0.0")
+            );
+            assert_eq!(handoff.plan.journal_path, journal_path);
+
+            if tray_supervised {
+                assert_eq!(handoff.plan.owner, ApplicationUpgradeHelperOwner::Tray);
+                assert_eq!(
+                    handoff.plan.relaunch.program,
+                    install_dir.join("scryer-tray.exe")
+                );
+                assert_eq!(handoff.plan.relaunch.args, vec!["--login-start"]);
+                assert_eq!(handoff.plan.relaunch.cwd, install_dir);
+                assert_eq!(
+                    handoff.plan.tray_shutdown_program,
+                    Some(install_dir.join("scryer-tray.exe"))
+                );
+            } else {
+                assert_eq!(handoff.plan.owner, ApplicationUpgradeHelperOwner::Direct);
+                assert_eq!(handoff.plan.relaunch.program, executable_path);
+                assert_eq!(handoff.plan.relaunch.args, direct_args);
+                assert_eq!(handoff.plan.relaunch.cwd, direct_cwd);
+                assert_eq!(handoff.plan.tray_shutdown_program, None);
+            }
+
+            match installation_kind {
+                InstallationKind::Portable => {
+                    assert_eq!(handoff.plan.mode, ApplicationUpgradeHelperMode::PortableZip);
+                    assert_eq!(handoff.progress_phase, phases::RESTARTING);
+                    assert_eq!(handoff.plan.staged_dir, Some(extracted_dir.clone()));
+                    assert_eq!(handoff.plan.msi_path, None);
+                    assert_eq!(
+                        handoff.plan.replace,
+                        vec![
+                            ApplicationUpgradeHelperReplacement {
+                                from_staged: extracted_dir.join("bin/scryer.exe"),
+                                to_install: install_dir.join("scryer.exe"),
+                            },
+                            ApplicationUpgradeHelperReplacement {
+                                from_staged: extracted_dir.join("bin/scryer-tray.exe"),
+                                to_install: install_dir.join("scryer-tray.exe"),
+                            },
+                        ]
+                    );
+                    assert_eq!(
+                        handoff.journal.backup_paths,
+                        vec![
+                            PathBuf::from("C:/Scryer/scryer.exe.pre-upgrade-98.0.0"),
+                            PathBuf::from("C:/Scryer/scryer-tray.exe.pre-upgrade-98.0.0"),
+                        ]
+                    );
+                }
+                InstallationKind::DirectMsi => {
+                    assert_eq!(handoff.plan.mode, ApplicationUpgradeHelperMode::Msi);
+                    assert_eq!(handoff.progress_phase, phases::AWAITING_ELEVATION);
+                    assert_eq!(handoff.plan.staged_dir, None);
+                    assert_eq!(handoff.plan.msi_path, Some(msi_path.clone()));
+                    assert!(handoff.plan.replace.is_empty());
+                    assert!(handoff.journal.backup_paths.is_empty());
+                }
+                _ => unreachable!("test only covers eligible Windows installation kinds"),
+            }
         }
     }
 
@@ -1505,6 +2062,7 @@ mod tests {
             expected_version: "99.0.0".to_string(),
             installation_kind: InstallationKind::Portable,
             executable_path: Some(executable_path),
+            tray_supervised: false,
         }
     }
 
@@ -1984,8 +2542,10 @@ mod tests {
                 expected_tag: request.expected_tag.clone(),
                 executable_path,
                 backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone()],
                 phase: phases::RESTARTING.to_string(),
                 helper_error: None,
+                written_at: Some(Utc::now()),
             },
         )
         .expect("write journal");
@@ -2028,8 +2588,10 @@ mod tests {
                 expected_tag: request.expected_tag.clone(),
                 executable_path: request.executable_path.clone().expect("executable path"),
                 backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone()],
                 phase: phases::RESTARTING.to_string(),
                 helper_error: Some("elevation helper failed".to_string()),
+                written_at: Some(Utc::now()),
             },
         )
         .expect("write journal");
@@ -2072,8 +2634,10 @@ mod tests {
                 expected_tag: request.expected_tag.clone(),
                 executable_path: request.executable_path.clone().expect("executable path"),
                 backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone()],
                 phase: phases::RESTARTING.to_string(),
                 helper_error: None,
+                written_at: Some(Utc::now()),
             },
         )
         .expect("write journal");
@@ -2118,8 +2682,10 @@ mod tests {
                 expected_tag: request.expected_tag.clone(),
                 executable_path: request.executable_path.clone().expect("executable path"),
                 backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone()],
                 phase: phases::REBOOT_REQUIRED.to_string(),
                 helper_error: None,
+                written_at: None,
             },
         )
         .expect("write journal");
@@ -2137,6 +2703,115 @@ mod tests {
             .expect("load run")
             .expect("run exists");
         assert_eq!(unchanged.status, JobRunStatus::Running);
+        assert!(backup_path.exists());
+        assert!(app.application_upgrade_journal_path().exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn journal_finalization_completes_reboot_required_after_a_new_boot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let executable_path = std::env::current_exe().expect("current executable");
+        let request = test_request(executable_path.clone());
+        let run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let backup_path = temp.path().join("scryer.pre-upgrade");
+        let tray_backup_path = temp.path().join("scryer-tray.pre-upgrade");
+        fs::write(&backup_path, b"backup").expect("write backup");
+        fs::write(&tray_backup_path, b"tray backup").expect("write tray backup");
+        let helper_file = app.application_upgrade_helper_dir().join("plan.json");
+        fs::create_dir_all(helper_file.parent().expect("helper parent")).expect("create helper");
+        fs::write(&helper_file, b"helper plan").expect("write helper plan");
+        let staging_file = app.application_upgrade_staging_dir().join("artifact");
+        fs::create_dir_all(staging_file.parent().expect("staging parent")).expect("create staging");
+        fs::write(&staging_file, b"staged artifact").expect("write staging");
+        write_journal(
+            &app.application_upgrade_journal_path(),
+            &ApplicationUpgradeJournal {
+                schema: JOURNAL_SCHEMA.to_string(),
+                run_id: run.id.clone(),
+                expected_version: SCRYER_VERSION.to_string(),
+                expected_tag: request.expected_tag.clone(),
+                executable_path,
+                backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone(), tray_backup_path.clone()],
+                phase: phases::REBOOT_REQUIRED.to_string(),
+                helper_error: None,
+                written_at: Some(Utc::now() - chrono::Duration::seconds(5)),
+            },
+        )
+        .expect("write journal");
+
+        assert!(
+            app.finalize_application_upgrade_journal_with_boot_time(Some(SystemTime::now()))
+                .await
+                .expect("finalize reboot journal")
+                .is_empty()
+        );
+        assert_eq!(
+            job_runs
+                .get_job_run(&run.id)
+                .await
+                .expect("load run")
+                .expect("run exists")
+                .status,
+            JobRunStatus::Completed
+        );
+        assert!(!backup_path.exists());
+        assert!(!tray_backup_path.exists());
+        assert!(!app.application_upgrade_journal_path().exists());
+        assert!(!app.application_upgrade_staging_dir().exists());
+        assert!(!app.application_upgrade_helper_dir().exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn journal_finalization_excludes_reboot_required_before_a_new_boot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let executable_path = std::env::current_exe().expect("current executable");
+        let request = test_request(executable_path.clone());
+        let run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let backup_path = temp.path().join("scryer.pre-upgrade");
+        fs::write(&backup_path, b"backup").expect("write backup");
+        write_journal(
+            &app.application_upgrade_journal_path(),
+            &ApplicationUpgradeJournal {
+                schema: JOURNAL_SCHEMA.to_string(),
+                run_id: run.id.clone(),
+                expected_version: SCRYER_VERSION.to_string(),
+                expected_tag: request.expected_tag.clone(),
+                executable_path,
+                backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path.clone()],
+                phase: phases::REBOOT_REQUIRED.to_string(),
+                helper_error: None,
+                written_at: Some(Utc::now()),
+            },
+        )
+        .expect("write journal");
+
+        assert_eq!(
+            app.finalize_application_upgrade_journal_with_boot_time(Some(
+                SystemTime::now() - Duration::from_secs(60)
+            ))
+            .await
+            .expect("finalize reboot journal"),
+            vec![run.id.clone()]
+        );
+        assert_eq!(
+            job_runs
+                .get_job_run(&run.id)
+                .await
+                .expect("load run")
+                .expect("run exists")
+                .status,
+            JobRunStatus::Running
+        );
         assert!(backup_path.exists());
         assert!(app.application_upgrade_journal_path().exists());
     }

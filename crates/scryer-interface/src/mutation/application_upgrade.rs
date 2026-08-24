@@ -44,6 +44,7 @@ impl ApplicationUpgradeMutations {
                     expected_version: input.expected_version,
                     installation_kind: assessment.kind,
                     executable_path: None,
+                    tray_supervised: assessment.tray_supervised,
                 },
             )
             .await
