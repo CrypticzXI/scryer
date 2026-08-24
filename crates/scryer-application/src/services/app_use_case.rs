@@ -14,6 +14,27 @@ pub struct AppUseCase {
 }
 
 impl AppUseCase {
+    /// Install the executable-host restart callback used by application upgrades.
+    pub fn set_application_upgrade_restart_handle(
+        &self,
+        handle: crate::application_upgrade::ApplicationUpgradeRestartHandle,
+    ) {
+        if let Ok(mut restart) = self.runtime.jobs.application_upgrade_restart.write() {
+            *restart = Some(handle);
+        }
+    }
+
+    /// Acquire the process-local coordinator for a destructive system-wide
+    /// maintenance operation without waiting behind an existing operation.
+    pub fn try_acquire_system_maintenance(&self) -> AppResult<tokio::sync::OwnedMutexGuard<()>> {
+        self.runtime
+            .jobs
+            .system_maintenance_lock
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| AppError::Validation("maintenance operation in progress".to_string()))
+    }
+
     pub async fn upstream_scheduler_snapshot(
         &self,
         filter: SchedulerSnapshotFilter,

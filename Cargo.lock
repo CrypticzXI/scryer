@@ -5780,6 +5780,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock",
  "x509-cert 0.3.0",
+ "zip",
  "zstd",
 ]
 

@@ -12,13 +12,11 @@ runtime = [
     "runtime-plugin-trust",
 ]
 runtime-archives = [
-    "dep:flate2",
     "dep:lzma-rs",
-    "dep:tar",
     "dep:par2-rs",
     "dep:zstd",
 ]
-runtime-backups = ["dep:tar", "dep:zstd"]
+runtime-backups = ["dep:zstd"]
 runtime-media-analysis = [
     "dep:chardetng",
     "dep:encoding_rs",
@@ -49,7 +47,7 @@ argon2 = { workspace = true }
 aws-lc-rs = { workspace = true }
 uuid = { workspace = true }
 webauthn-rs = { workspace = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream", "rustls-no-provider", "http2", "gzip", "brotli", "deflate"] }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -65,8 +63,9 @@ metrics = { workspace = true }
 base64 = "0.23"
 sha2 = { version = "0.11", optional = true }
 brotli = { version = "8", optional = true }
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1", optional = true }
+tar = "0.4"
+flate2 = "1"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 zstd = { version = "0.13", default-features = false, optional = true }
 lzma-rs = { version = "0.3", optional = true }
 par2-rs = { version = "0.5.0", optional = true }

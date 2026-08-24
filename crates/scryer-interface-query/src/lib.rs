@@ -2553,8 +2553,10 @@ impl SystemQueries {
     ) -> GqlResult<ApplicationUpgradeStatusPayload> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let assessment = application_upgrade_assessment_from_ctx(ctx);
-        let update_notice = app_from_ctx(ctx)?
-            .smg_scryer_update_notice()
+        let app = app_from_ctx(ctx)?;
+        let update_notice = app.smg_scryer_update_notice().await.map_err(to_gql_error)?;
+        let (active_run, latest_run) = app
+            .application_upgrade_job_runs()
             .await
             .map_err(to_gql_error)?;
 
@@ -2562,6 +2564,8 @@ impl SystemQueries {
             assessment,
             scryer_application::SCRYER_VERSION.to_string(),
             update_notice,
+            active_run,
+            latest_run,
         ))
     }
 

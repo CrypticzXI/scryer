@@ -2232,7 +2232,7 @@ impl JobRunRepository for NullJobRunRepository {
         Ok(Vec::new())
     }
 
-    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+    async fn reconcile_interrupted_job_runs(&self, _excluded_run_ids: &[String]) -> AppResult<u64> {
         Ok(0)
     }
 }

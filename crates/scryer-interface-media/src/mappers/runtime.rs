@@ -80,6 +80,8 @@ pub fn from_application_upgrade_status(
     assessment: scryer_application::application_upgrade::InstallationAssessment,
     current_version: String,
     update_notice: Option<scryer_application::SmgScryerUpdateNotice>,
+    active_run: Option<scryer_application::JobRun>,
+    latest_run: Option<scryer_application::JobRun>,
 ) -> ApplicationUpgradeStatusPayload {
     let (update_version, update_tag, update_available) = match update_notice {
         Some(notice) => (
@@ -131,6 +133,8 @@ pub fn from_application_upgrade_status(
         },
         eligible: assessment.eligible,
         eligibility_reason: assessment.reason.as_str().to_string(),
+        active_run: active_run.map(from_job_run),
+        latest_run: latest_run.map(from_job_run),
     }
 }
 

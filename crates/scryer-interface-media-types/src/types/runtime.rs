@@ -1,4 +1,4 @@
-use super::{Long, RuntimePathStyleValue};
+use super::{JobRunPayload, Long, RuntimePathStyleValue};
 use async_graphql::{Enum, ID, InputObject, SimpleObject};
 use chrono::{DateTime, Utc};
 
@@ -159,6 +159,26 @@ pub struct ApplicationUpgradeStatusPayload {
     pub eligible: bool,
     /// Stable snake_case code explaining eligibility.
     pub eligibility_reason: String,
+    /// In-memory application-upgrade job still running in this process, if any.
+    pub active_run: Option<JobRunPayload>,
+    /// Most recent persisted application-upgrade job, if any.
+    pub latest_run: Option<JobRunPayload>,
+}
+
+/// The exact update notice accepted by `startApplicationUpgrade`.
+#[derive(InputObject, Clone)]
+pub struct StartApplicationUpgradeInput {
+    /// Release tag displayed by the current update notice.
+    pub expected_tag: String,
+    /// Release version displayed by the current update notice.
+    pub expected_version: String,
+}
+
+/// Durable job run accepted for an application upgrade.
+#[derive(SimpleObject, Clone)]
+pub struct ApplicationUpgradeStartPayload {
+    /// The registered application-upgrade job.
+    pub job_run: JobRunPayload,
 }
 
 /// Query and quota counters for one indexer.

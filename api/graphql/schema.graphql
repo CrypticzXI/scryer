@@ -536,6 +536,16 @@ enum ApplicationUpgradeOwnerValue {
 }
 
 """
+Durable job run accepted for an application upgrade.
+"""
+type ApplicationUpgradeStartPayload {
+	"""
+	The registered application-upgrade job.
+	"""
+	jobRun: JobRunPayload!
+}
+
+"""
 Current update availability and installation eligibility.
 """
 type ApplicationUpgradeStatusPayload {
@@ -571,6 +581,14 @@ type ApplicationUpgradeStatusPayload {
 	Stable snake_case code explaining eligibility.
 	"""
 	eligibilityReason: String!
+	"""
+	In-memory application-upgrade job still running in this process, if any.
+	"""
+	activeRun: JobRunPayload
+	"""
+	Most recent persisted application-upgrade job, if any.
+	"""
+	latestRun: JobRunPayload
 }
 
 """
@@ -7491,6 +7509,10 @@ enum JobKeyValue {
 	Acquisition search.
 	"""
 	ACQUISITION_SEARCH
+	"""
+	Application upgrade.
+	"""
+	APPLICATION_UPGRADE
 }
 
 """
@@ -9925,6 +9947,15 @@ type MovieEntityPayload {
 }
 
 type MutationRoot {
+	"""
+	Begin a signed in-application upgrade for the currently advertised release.
+	"""
+	startApplicationUpgrade(
+		"""
+		The update tag and version currently advertised by SMG.
+		"""
+		input: StartApplicationUpgradeInput!
+	): ApplicationUpgradeStartPayload!
 	"""
 	Create or reuse a title in an accessible library and return its hydration state.
 	"""
@@ -16509,6 +16540,20 @@ enum SortDirectionValue {
 	Highest or latest values first.
 	"""
 	DESC
+}
+
+"""
+The exact update notice accepted by `startApplicationUpgrade`.
+"""
+input StartApplicationUpgradeInput {
+	"""
+	Release tag displayed by the current update notice.
+	"""
+	expectedTag: String!
+	"""
+	Release version displayed by the current update notice.
+	"""
+	expectedVersion: String!
 }
 
 """

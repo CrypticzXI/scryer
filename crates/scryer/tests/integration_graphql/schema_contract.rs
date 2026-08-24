@@ -541,18 +541,22 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Application upgrade status adds one query root, one payload object, and
     // two enum types: query 129->130, OBJECT 309->310, ENUM 107->109, public
     // types 599->602.
+    // Starting an application upgrade adds one mutation root, its input, and
+    // its acceptance payload. The status run fields reuse JobRunPayload and
+    // APPLICATION_UPGRADE joins the existing JobKeyValue enum: mutation
+    // 190->191, OBJECT 310->311, INPUT_OBJECT 171->172, public types 602->604.
     assert_eq!(
         query_field_count, 130,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 190,
+        mutation_field_count, 191,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 602);
-    assert_eq!(kind_count("OBJECT"), 310);
-    assert_eq!(kind_count("INPUT_OBJECT"), 171);
+    assert_eq!(public_types.len(), 604);
+    assert_eq!(kind_count("OBJECT"), 311);
+    assert_eq!(kind_count("INPUT_OBJECT"), 172);
     assert_eq!(kind_count("ENUM"), 109);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
@@ -564,6 +568,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"indexerErrors"));
     assert!(query_field_names.contains(&"indexerError"));
     assert!(query_field_names.contains(&"applicationUpgradeStatus"));
+    assert!(mutation_field_names.contains(&"startApplicationUpgrade"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     assert!(!query_field_names.contains(&"catalogHasValidRoot"));

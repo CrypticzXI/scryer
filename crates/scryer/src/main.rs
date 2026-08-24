@@ -352,6 +352,15 @@ impl SelfRestartController {
         RestoreRestartHandle::new(move || controller.schedule_restart())
     }
 
+    fn application_upgrade_handle(
+        &self,
+    ) -> scryer_application::application_upgrade::ApplicationUpgradeRestartHandle {
+        let controller = self.clone();
+        scryer_application::application_upgrade::ApplicationUpgradeRestartHandle::new(move || {
+            controller.schedule_restart()
+        })
+    }
+
     fn schedule_restart(&self) {
         if self.inner.scheduled.swap(true, Ordering::SeqCst) {
             tracing::info!("restore restart already scheduled");
@@ -1450,9 +1459,29 @@ async fn bootstrap_application(
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
     spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
+    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
+        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
+    app_use_case.set_application_upgrade_restart_handle(
+        restore_restart_controller.application_upgrade_handle(),
+    );
+
+    let upgrade_reconcile_exclusions = match app_use_case
+        .finalize_application_upgrade_journal()
+        .await
+    {
+        Ok(exclusions) => exclusions,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to finalize application upgrade journal on startup");
+            Vec::new()
+        }
+    };
+
     // A persisted running job run whose worker died in a previous process is
     // unfinishable; fail those rows before any poller can wait on them forever.
-    if let Err(e) = app_use_case.reconcile_interrupted_job_runs().await {
+    if let Err(e) = app_use_case
+        .reconcile_interrupted_job_runs(&upgrade_reconcile_exclusions)
+        .await
+    {
         tracing::warn!(error = %e, "failed to reconcile interrupted job runs on startup");
     }
 
@@ -1508,9 +1537,6 @@ async fn bootstrap_application(
             "failed to build download-client category admission snapshot on startup; untracked observations will be deferred"
         );
     }
-    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
-        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
-
     let auth_mode = resolve_auth_mode_from_env()?;
     app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
     if auth_mode.recovery_active() {
