@@ -7,13 +7,8 @@ const WIRE_PREFIX: &str = "scryer-download:";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DownloadId(Uuid);
 
-impl Default for DownloadId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl DownloadId {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }

@@ -657,7 +657,7 @@ pub(super) fn download_submission_key(submission: &DownloadSubmission) -> Tracke
 }
 
 pub(super) fn download_source_identity_key(
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> TrackedDownloadStateKey {
     (
         identity
@@ -671,9 +671,9 @@ pub(super) fn download_source_identity_key(
     )
 }
 
-pub(super) fn download_identity_state_key(
+pub(super) fn test_tracked_state_key(
     identity: &DownloadSubmissionIdentity,
-    source_identity: Option<&DownloadSourceIdentity>,
+    source_identity: Option<&ClientJobLocator>,
 ) -> Option<String> {
     let download_id = identity
         .download_id
@@ -726,12 +726,16 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
+    async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        self.record_submission(submission).await
+    }
+
     async fn record_submission_with_identity(
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
     ) -> AppResult<()> {
-        let identity = DownloadSourceIdentity::from_submission(&submission);
+        let identity = ClientJobLocator::from_submission(&submission);
         self.record_submission(submission).await?;
         self.record_submission_identity(&identity, &submission_identity)
             .await
@@ -739,7 +743,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn record_submission_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         submission_identity: &DownloadSubmissionIdentity,
     ) -> AppResult<()> {
         let key = download_source_identity_key(identity);
@@ -753,7 +757,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn find_by_client_item_id(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
@@ -798,7 +802,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn get_submission_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionIdentity>> {
         Ok(self
             .identities
@@ -811,12 +815,12 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn record_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
         tracked_state: &str,
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()> {
-        if let Some(key) = download_identity_state_key(identity, source_identity) {
+        if let Some(key) = test_tracked_state_key(identity, source_identity) {
             self.identity_states
                 .lock()
                 .await
@@ -840,9 +844,9 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn get_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(key) = download_identity_state_key(identity, source_identity) else {
+        let Some(key) = test_tracked_state_key(identity, source_identity) else {
             return Ok(None);
         };
         Ok(self.identity_states.lock().await.get(&key).cloned())
@@ -851,9 +855,9 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn get_identity_tracked_state_reason(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(key) = download_identity_state_key(identity, source_identity) else {
+        let Some(key) = test_tracked_state_key(identity, source_identity) else {
             return Ok(None);
         };
         Ok(self.identity_state_reasons.lock().await.get(&key).cloned())
@@ -862,9 +866,9 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn get_identity_tracked_state_detail(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(key) = download_identity_state_key(identity, source_identity) else {
+        let Some(key) = test_tracked_state_key(identity, source_identity) else {
             return Ok(None);
         };
         Ok(self.identity_state_details.lock().await.get(&key).cloned())
@@ -872,7 +876,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
+        client_items: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>> {
         let entries = self.store.lock().await;
         Ok(entries
@@ -949,7 +953,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
         let key = download_source_identity_key(identity);
         self.store.lock().await.retain(|entry| {
             entry.download_client_id.as_deref().unwrap_or("").trim()
@@ -964,7 +968,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn update_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         tracked_state: &str,
     ) -> AppResult<()> {
         let key = download_source_identity_key(identity);
@@ -1003,7 +1007,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
 
     async fn get_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<String>> {
         Ok(self
             .tracked_states
@@ -1765,6 +1769,7 @@ impl TrackingDownloadQueueCommandRepo {
         self.queued.lock().await.push(DownloadQueueCommandRecord {
             id: id.clone(),
             action: scryer_domain::DownloadQueueCommandAction::Delete,
+            canonical_download_id: None,
             client_id: client_id.map(str::to_string),
             client_type: client_type.to_string(),
             download_client_item_id: download_client_item_id.to_string(),
@@ -1808,6 +1813,28 @@ impl DownloadQueueCommandRepository for TrackingDownloadQueueCommandRepo {
             .iter_mut()
             .find(|record| record.id == id)
             .expect("seeded queued delete command");
+        record.requested_by_user_id = requested_by_user_id.map(str::to_string);
+        Ok(record.clone())
+    }
+
+    async fn queue_delete_command_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<DownloadQueueCommandRecord> {
+        let id = self
+            .seed_pending(client_id, client_type, download_client_item_id, is_history)
+            .await;
+        let mut queued = self.queued.lock().await;
+        let record = queued
+            .iter_mut()
+            .find(|record| record.id == id)
+            .expect("seeded queued delete command");
+        record.canonical_download_id = canonical_download_id.copied();
         record.requested_by_user_id = requested_by_user_id.map(str::to_string);
         Ok(record.clone())
     }

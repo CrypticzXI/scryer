@@ -22,7 +22,7 @@ use crate::import_workflow::{
 };
 use crate::stored_paths::path_to_stored_string;
 use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, User};
+use crate::{AppResult, AppUseCase, ClientJobLocator, DownloadSubmissionActorSnapshot, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };

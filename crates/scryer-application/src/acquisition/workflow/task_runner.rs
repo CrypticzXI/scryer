@@ -382,7 +382,7 @@ async fn process_single_target(
     };
     let submission_identities = submissions
         .iter()
-        .map(crate::contracts::DownloadSourceIdentity::from_submission)
+        .map(crate::contracts::ClientJobLocator::from_submission)
         .collect::<Vec<_>>();
     let tracked_states = match app
         .services
@@ -410,7 +410,7 @@ async fn process_single_target(
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
     let has_blocking_download_submission = submissions.iter().any(|submission| {
-        let identity = crate::contracts::DownloadSourceIdentity::from_submission(submission);
+        let identity = crate::contracts::ClientJobLocator::from_submission(submission);
         submission_blocks_search_for_wanted_item(
             submission,
             item,

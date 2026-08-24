@@ -4,7 +4,7 @@ use crate::import_title_resolution::normalize_imdb_id;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery, AppError, AppResult,
-    AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
+    AppUseCase, ClientJobLocator, DownloadSubmission, DownloadSubmissionIdentity,
     ImportArtifact, ParsedReleaseMetadata, SubmissionScope,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},

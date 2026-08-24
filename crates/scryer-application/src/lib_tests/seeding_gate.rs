@@ -506,7 +506,7 @@ async fn a_restart_recovers_burned_usenet_failure_cleanup_origin() {
     );
     tracked.client_item.download_id = Some("scryer-download:nzb-burned-restart-1".to_string());
     let identity = crate::tracked_downloads::observed_queue_item_identity(&tracked.client_item);
-    let source_identity = crate::DownloadSourceIdentity::new(
+    let source_identity = crate::ClientJobLocator::new(
         Some(config.id.as_str()),
         "nzbget",
         "nzb-burned-restart-1",
@@ -1095,7 +1095,7 @@ async fn a_restarted_burned_torrent_stays_failed_while_held_for_seeding() {
     let id = crate::tracked_downloads::tracked_download_id_for_item(&before_restart.client_item);
     let identity =
         crate::tracked_downloads::observed_queue_item_identity(&before_restart.client_item);
-    let source_identity = crate::DownloadSourceIdentity::new(
+    let source_identity = crate::ClientJobLocator::new(
         Some(before_restart.client_id.as_str()),
         &before_restart.client_type,
         &before_restart.client_item.download_client_item_id,
@@ -1257,12 +1257,15 @@ async fn a_usenet_download_still_stops_being_tracked_once_it_is_removed() {
 /// persistence contract.
 #[derive(Default)]
 struct SeedGoalOnlySubmissionRepo {
+    by_canonical_download_id:
+        std::sync::Mutex<HashMap<scryer_domain::download_identity::DownloadId, PersistedSeedGoals>>,
     by_identity: std::sync::Mutex<HashMap<String, PersistedSeedGoals>>,
     by_info_hash: std::sync::Mutex<HashMap<String, PersistedSeedGoals>>,
-    identity_lookups: std::sync::Mutex<Vec<DownloadSourceIdentity>>,
+    canonical_lookups: std::sync::Mutex<Vec<Option<scryer_domain::download_identity::DownloadId>>>,
+    identity_lookups: std::sync::Mutex<Vec<ClientJobLocator>>,
     info_hash_lookups: std::sync::Mutex<Vec<String>>,
     /// One entry per batched read, holding the identities it was asked for.
-    batch_lookups: std::sync::Mutex<Vec<Vec<DownloadSourceIdentity>>>,
+    batch_lookups: std::sync::Mutex<Vec<Vec<ClientJobLocator>>>,
     /// When set, the batched read fails — the prefetch must then degrade to
     /// per-row reads, never to "these torrents have no obligation".
     batch_fails: std::sync::atomic::AtomicBool,
@@ -1274,16 +1277,20 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
         Ok(())
     }
 
+    async fn record_ambiguous_submission(&self, _: DownloadSubmission) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn find_by_client_item_id(
         &self,
-        _: &DownloadSourceIdentity,
+        _: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(None)
     }
 
     async fn list_for_client_items(
         &self,
-        _: &[DownloadSourceIdentity],
+        _: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
     }
@@ -1306,21 +1313,21 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
         Ok(())
     }
 
-    async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, _: &ClientJobLocator) -> AppResult<()> {
         Ok(())
     }
 
-    async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+    async fn update_tracked_state(&self, _: &ClientJobLocator, _: &str) -> AppResult<()> {
         Ok(())
     }
 
-    async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
         Ok(None)
     }
 
     async fn get_seed_goals(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<PersistedSeedGoals>> {
         self.identity_lookups
             .lock()
@@ -1332,6 +1339,26 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
             .expect("seed goals by identity")
             .get(&identity.item_id)
             .cloned())
+    }
+
+    async fn get_seed_goals_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        self.canonical_lookups
+            .lock()
+            .expect("canonical lookup log")
+            .push(canonical_download_id.cloned());
+        let canonical = canonical_download_id.and_then(|canonical_download_id| {
+            self.by_canonical_download_id
+                .lock()
+                .expect("seed goals by canonical download id")
+                .get(canonical_download_id)
+                .cloned()
+        });
+        let legacy = self.get_seed_goals(identity).await?;
+        Ok(legacy.or(canonical))
     }
 
     async fn find_seed_goals_by_info_hash(
@@ -1352,8 +1379,8 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
 
     async fn list_seed_goals_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<(ClientJobLocator, PersistedSeedGoals)>> {
         self.batch_lookups
             .lock()
             .expect("batch lookup log")
@@ -1411,6 +1438,7 @@ async fn the_gate_reads_the_goals_a_grab_was_persisted_under() {
     app.services.workflow.download_submissions = repo.clone();
 
     let key = SeedGoalLookupKey {
+        canonical_download_id: None,
         client_id: "client-1".to_string(),
         client_type: "qbittorrent".to_string(),
         client_item_id: item_id.to_string(),
@@ -1455,6 +1483,7 @@ async fn the_gate_falls_back_to_the_info_hash_when_the_client_item_id_moved() {
     app.services.workflow.download_submissions = repo.clone();
 
     let key = SeedGoalLookupKey {
+        canonical_download_id: None,
         client_id: "client-1".to_string(),
         client_type: "qbittorrent".to_string(),
         client_item_id: "some-other-item-id".to_string(),
@@ -2167,9 +2196,9 @@ async fn the_reconcile_tick_reads_every_settled_row_s_goals_in_one_batch() {
         bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
     app.services.workflow.download_submissions = repo.clone();
 
-    let identities: Vec<DownloadSourceIdentity> = ["torrent-a", "torrent-b", "torrent-c"]
+    let identities: Vec<ClientJobLocator> = ["torrent-a", "torrent-b", "torrent-c"]
         .iter()
-        .map(|item_id| DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", item_id))
+        .map(|item_id| ClientJobLocator::new(Some("client-1"), "qbittorrent", item_id))
         .collect();
     let batch = SeedGoalBatch::prefetch(&app, &identities).await;
 
@@ -2188,6 +2217,7 @@ async fn the_reconcile_tick_reads_every_settled_row_s_goals_in_one_batch() {
 
     for item_id in ["torrent-a", "torrent-b", "torrent-c"] {
         let key = SeedGoalLookupKey {
+            canonical_download_id: None,
             client_id: "client-1".to_string(),
             client_type: "qbittorrent".to_string(),
             client_item_id: item_id.to_string(),
@@ -2229,10 +2259,11 @@ async fn a_covered_row_without_goals_skips_the_identity_query_but_keeps_the_info
         bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
     app.services.workflow.download_submissions = repo.clone();
 
-    let identity = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "moved-item-id");
+    let identity = ClientJobLocator::new(Some("client-1"), "qbittorrent", "moved-item-id");
     let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&identity)).await;
 
     let key = SeedGoalLookupKey {
+        canonical_download_id: None,
         client_id: "client-1".to_string(),
         client_type: "qbittorrent".to_string(),
         client_item_id: "moved-item-id".to_string(),
@@ -2274,10 +2305,11 @@ async fn a_row_the_batch_never_covered_still_takes_the_per_row_path() {
         bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
     app.services.workflow.download_submissions = repo.clone();
 
-    let covered = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "covered");
+    let covered = ClientJobLocator::new(Some("client-1"), "qbittorrent", "covered");
     let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&covered)).await;
 
     let key = SeedGoalLookupKey {
+        canonical_download_id: None,
         client_id: "client-1".to_string(),
         client_type: "qbittorrent".to_string(),
         client_item_id: "uncovered".to_string(),
@@ -2316,10 +2348,11 @@ async fn a_failed_prefetch_falls_back_to_per_row_reads() {
         bootstrap_with_torrent_clients(Arc::new(StubDownloadClient::default()));
     app.services.workflow.download_submissions = repo.clone();
 
-    let identity = DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "torrent-a");
+    let identity = ClientJobLocator::new(Some("client-1"), "qbittorrent", "torrent-a");
     let batch = SeedGoalBatch::prefetch(&app, std::slice::from_ref(&identity)).await;
 
     let key = SeedGoalLookupKey {
+        canonical_download_id: None,
         client_id: "client-1".to_string(),
         client_type: "qbittorrent".to_string(),
         client_item_id: "torrent-a".to_string(),
@@ -2366,10 +2399,10 @@ async fn identical_routing_scopes_resolve_once_per_tick() {
         })
         .collect();
 
-    let identities: Vec<DownloadSourceIdentity> = rows
+    let identities: Vec<ClientJobLocator> = rows
         .iter()
         .map(|tracked| {
-            DownloadSourceIdentity::new(
+            ClientJobLocator::new(
                 Some(tracked.client_id.as_str()),
                 &tracked.client_type,
                 &tracked.client_item.download_client_item_id,

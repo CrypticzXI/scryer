@@ -97,7 +97,7 @@ async fn verify_import_with_mode(
     release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
     mode: ImportVerificationMode,
 ) -> bool {
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,

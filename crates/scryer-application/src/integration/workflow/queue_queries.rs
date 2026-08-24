@@ -327,17 +327,17 @@ fn download_queue_identity_key(
         download_client_item_id.to_string(),
     )
 }
-fn download_queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(
+fn download_queue_item_source_identity(item: &DownloadQueueItem) -> ClientJobLocator {
+    ClientJobLocator::new(
         Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
         &item.client_type,
         &item.download_client_item_id,
     )
 }
 fn push_source_identity_candidate(
-    identities: &mut Vec<DownloadSourceIdentity>,
+    identities: &mut Vec<ClientJobLocator>,
     seen: &mut HashSet<(String, String, String)>,
-    identity: DownloadSourceIdentity,
+    identity: ClientJobLocator,
 ) {
     if identity.client_type.is_empty() || identity.item_id.is_empty() {
         return;
@@ -355,7 +355,7 @@ fn push_source_identity_candidate(
 fn push_submission_lookup_key(
     keys: &mut Vec<(String, String, String)>,
     seen: &mut HashSet<(String, String, String)>,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) {
     if identity.client_type.is_empty() || identity.item_id.is_empty() {
         return;
@@ -399,7 +399,7 @@ pub async fn enrich_download_queue_items_from_submissions(
 async fn enrich_download_queue_items_from_submissions_with_original_identities(
     app: &AppUseCase,
     items: &mut [DownloadQueueItem],
-    original_source_identities: Option<&[DownloadSourceIdentity]>,
+    original_source_identities: Option<&[ClientJobLocator]>,
 ) {
     let mut client_items = Vec::new();
     let mut seen_client_items = HashSet::new();
@@ -410,7 +410,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             push_source_identity_candidate(
                 &mut client_items,
                 &mut seen_client_items,
-                DownloadSourceIdentity::new(None, &current.client_type, &current.item_id),
+                ClientJobLocator::new(None, &current.client_type, &current.item_id),
             );
         }
 
@@ -426,7 +426,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
                 push_source_identity_candidate(
                     &mut client_items,
                     &mut seen_client_items,
-                    DownloadSourceIdentity::new(None, &original.client_type, &original.item_id),
+                    ClientJobLocator::new(None, &original.client_type, &original.item_id),
                 );
             }
         }
@@ -550,7 +550,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             push_submission_lookup_key(
                 &mut lookup_keys,
                 &mut seen_lookup_keys,
-                &DownloadSourceIdentity::new(None, &current.client_type, &current.item_id),
+                &ClientJobLocator::new(None, &current.client_type, &current.item_id),
             );
         }
         if let Some(original) = original
@@ -559,7 +559,7 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             push_submission_lookup_key(
                 &mut lookup_keys,
                 &mut seen_lookup_keys,
-                &DownloadSourceIdentity::new(None, &original.client_type, &original.item_id),
+                &ClientJobLocator::new(None, &original.client_type, &original.item_id),
             );
         }
 
@@ -615,12 +615,18 @@ fn apply_seed_goals_to_queue_item(item: &mut DownloadQueueItem, goals: &crate::P
 async fn find_submission_for_queue_item_by_download_id(
     app: &AppUseCase,
     item: &DownloadQueueItem,
-    original: Option<&DownloadSourceIdentity>,
+    original: Option<&ClientJobLocator>,
 ) -> Option<DownloadSubmission> {
     let download_id = item.download_id.as_deref().map(str::trim)?;
     if download_id.is_empty() {
         return None;
     }
+
+    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+        app,
+        crate::download_identity::observed_queue_item_job(item),
+    )
+    .await;
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
@@ -657,17 +663,22 @@ async fn find_submission_for_queue_item_by_download_id(
             .services
             .workflow
             .download_submissions
-            .find_by_download_id(
+            .list_by_download_id_for_download(
+                canonical_download_id.as_ref(),
                 Some(client_id.as_str()).filter(|value| !value.trim().is_empty()),
                 &client_type,
                 download_id,
             )
             .await
         {
-            Ok(Some(submission)) if !submission.title_id.trim().is_empty() => {
-                return Some(submission);
+            Ok(submissions) => {
+                if let Some(submission) = submissions
+                    .into_iter()
+                    .find(|submission| !submission.title_id.trim().is_empty())
+                {
+                    return Some(submission);
+                }
             }
-            Ok(_) => {}
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1575,7 +1586,7 @@ impl AppUseCase {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(&DownloadSourceIdentity::new(
+            .find_by_client_item_id(&ClientJobLocator::new(
                 client_id,
                 client_type,
                 download_client_item_id,

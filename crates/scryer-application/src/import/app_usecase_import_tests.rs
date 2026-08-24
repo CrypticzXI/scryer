@@ -2471,14 +2471,14 @@ struct RecoveryImportRepo {
     canonical_download_ids:
         std::collections::HashMap<String, scryer_domain::download_identity::DownloadId>,
     windows: Mutex<Vec<chrono::DateTime<chrono::Utc>>>,
-    deleted_sources: Mutex<Vec<crate::DownloadSourceIdentity>>,
+    deleted_sources: Mutex<Vec<crate::ClientJobLocator>>,
 }
 
 #[async_trait]
 impl crate::ImportRepository for RecoveryImportRepo {
     async fn queue_import_request(
         &self,
-        _: crate::DownloadSourceIdentity,
+        _: crate::ClientJobLocator,
         _: String,
         _: String,
     ) -> AppResult<String> {
@@ -2540,7 +2540,7 @@ impl crate::ImportRepository for RecoveryImportRepo {
 
     async fn list_imports_for_identities(
         &self,
-        _: &[crate::DownloadSourceIdentity],
+        _: &[crate::ClientJobLocator],
     ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
         Ok(Vec::new())
     }
@@ -2554,13 +2554,13 @@ impl crate::ImportRepository for RecoveryImportRepo {
         Ok(self.records.clone())
     }
 
-    async fn is_already_imported(&self, _: &crate::DownloadSourceIdentity) -> AppResult<bool> {
+    async fn is_already_imported(&self, _: &crate::ClientJobLocator) -> AppResult<bool> {
         Ok(false)
     }
 
     async fn delete_manual_import_selections_for_source(
         &self,
-        source_identity: &crate::DownloadSourceIdentity,
+        source_identity: &crate::ClientJobLocator,
     ) -> AppResult<()> {
         self.deleted_sources
             .lock()
@@ -2763,7 +2763,7 @@ async fn completed_manual_import_recovery_decides_each_record_once_and_only_mark
     );
     assert_eq!(
         *repo.deleted_sources.lock().await,
-        vec![crate::DownloadSourceIdentity::new(
+        vec![crate::ClientJobLocator::new(
             Some("client-1"),
             "qbittorrent",
             "hash-marked"
@@ -2915,8 +2915,8 @@ async fn completed_manual_import_recovery_retries_busy_and_untracked_sources_on_
     assert_eq!(
         deleted,
         vec![
-            crate::DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "hash-busy"),
-            crate::DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "hash-untracked"),
+            crate::ClientJobLocator::new(Some("client-1"), "qbittorrent", "hash-busy"),
+            crate::ClientJobLocator::new(Some("client-1"), "qbittorrent", "hash-untracked"),
         ]
     );
 }

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AcquisitionScopeStatus, AppError, AppResult, DownloadQueueCommandRecord,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
     DownloadSubmissionIdentity, ExternalImportMonitorSnapshotChunk,
     ExternalImportMonitorSnapshotEntryKind, ImportArtifact, JobKey, JobRunRecord, JobRunStatus,
     JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
@@ -27,7 +27,7 @@ use crate::types::WorkflowOperationRecord;
 pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
 pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
-pub const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
+pub const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, canonical_download_id, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
 #[derive(Clone)]
 pub struct NewWorkflowOperation {
@@ -139,8 +139,12 @@ pub async fn commit_successful_grab_tx(
     if submission_recorded
         && let Some(submission_identity) = commit.download_submission_identity.as_ref()
     {
-        let identity = DownloadSourceIdentity::from_submission(&commit.download_submission);
-        record_download_submission_identity_tx(tx, &identity, submission_identity).await?;
+        record_download_submission_identity_tx(
+            tx,
+            &commit.download_submission.download_id,
+            submission_identity,
+        )
+        .await?;
     }
     let mut wanted_item_ids = commit.covered_wanted_item_ids.clone();
     if !wanted_item_ids
@@ -220,7 +224,7 @@ pub async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
 ) -> AppResult<bool> {
-    record_download_submission_tx_inner(tx, submission, true).await
+    record_download_submission_tx_inner(tx, submission).await
 }
 
 /// Persist a submit whose HTTP request may have reached the client but whose
@@ -330,17 +334,17 @@ pub async fn record_ambiguous_download_submission_tx(
 async fn record_download_submission_tx_inner(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
-    sync_canonical_rows: bool,
 ) -> AppResult<bool> {
     let (episode_id, collection_id, series_movie_link_id) =
         persisted_submission_scope(&submission.scope);
     let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
+    assert_active_binding_matches_submission_tx(tx, submission, &download_client_id).await?;
     let is_orphan = matches!(&submission.scope, SubmissionScope::Orphan)
         && submission.title_id.trim().is_empty();
     let conflict_clause = if is_orphan {
-        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO NOTHING"
+        "ON CONFLICT(id) DO NOTHING"
     } else {
-        "ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+        "ON CONFLICT(id) DO UPDATE
          SET title_id = excluded.title_id,
              facet = excluded.facet,
              source_hint = excluded.source_hint,
@@ -391,13 +395,6 @@ async fn record_download_submission_tx_inner(
     )
     .await?;
     if rows_affected == 0 {
-        if sync_canonical_rows {
-            sync_canonical_download_rows_tx(
-                tx,
-                &DownloadSourceIdentity::from_submission(submission),
-            )
-            .await?;
-        }
         return Ok(false);
     }
     replace_download_submission_episode_links_tx(
@@ -408,19 +405,55 @@ async fn record_download_submission_tx_inner(
         persisted_episode_set_ids(&submission.scope),
     )
     .await?;
-    if sync_canonical_rows {
-        sync_canonical_download_rows_tx(tx, &DownloadSourceIdentity::from_submission(submission))
-            .await?;
-    }
     Ok(true)
+}
+
+async fn assert_active_binding_matches_submission_tx(
+    tx: &mut SqlTx<'_>,
+    submission: &DownloadSubmission,
+    normalized_client_id: &str,
+) -> AppResult<()> {
+    if normalized_client_id.is_empty()
+        || submission.download_client_type.trim().is_empty()
+        || submission.download_client_item_id.trim().is_empty()
+    {
+        return Ok(());
+    }
+    let existing_download_id = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT download_id
+         FROM download_client_bindings
+         WHERE ended_at IS NULL
+           AND native_item_id IS NOT NULL
+           AND client_config_id = {}
+           AND client_type_snapshot = {}
+           AND native_item_id = {}
+         LIMIT 1",
+        &[
+            SqlArg::Text(normalized_client_id.to_string()),
+            SqlArg::Text(submission.download_client_type.clone()),
+            SqlArg::Text(submission.download_client_item_id.clone()),
+        ],
+    )
+    .await?
+    .map(|row| row.text("download_id"))
+    .transpose()?;
+    if let Some(existing_download_id) = existing_download_id
+        && existing_download_id != submission.download_id.to_string()
+    {
+        return Err(AppError::Repository(format!(
+            "active canonical download binding collision: existing download id {existing_download_id}, new download id {}",
+            submission.download_id
+        )));
+    }
+    Ok(())
 }
 
 pub async fn record_download_submission_identity_tx(
     tx: &mut SqlTx<'_>,
-    identity: &DownloadSourceIdentity,
+    canonical_download_id: &DownloadId,
     submission_identity: &DownloadSubmissionIdentity,
 ) -> AppResult<()> {
-    let download_client_id = normalize_download_client_id(identity.client_id.as_deref());
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "UPDATE download_submissions
@@ -435,20 +468,15 @@ pub async fn record_download_submission_identity_tx(
                  ELSE tracked_state_at
              END,
              download_id = {}
-         WHERE download_client_id = {}
-           AND download_client_type = {}
-           AND download_client_item_id = {}",
+         WHERE id = {}",
         &[
             SqlArg::OptText(submission_identity.download_id.clone()),
             SqlArg::OptText(submission_identity.download_id.clone()),
             SqlArg::OptText(submission_identity.download_id.clone()),
-            SqlArg::Text(download_client_id),
-            SqlArg::Text(identity.client_type.clone()),
-            SqlArg::Text(identity.item_id.clone()),
+            SqlArg::Text(canonical_download_id.to_string()),
         ],
     )
     .await?;
-    sync_canonical_download_rows_tx(tx, identity).await?;
     Ok(())
 }
 
@@ -457,158 +485,10 @@ pub async fn record_download_submission_with_identity_tx(
     submission: &DownloadSubmission,
     submission_identity: &DownloadSubmissionIdentity,
 ) -> AppResult<()> {
-    if !record_download_submission_tx_inner(tx, submission, false).await? {
+    if !record_download_submission_tx_inner(tx, submission).await? {
         return Ok(());
     }
-    let identity = DownloadSourceIdentity::from_submission(submission);
-    record_download_submission_identity_tx(tx, &identity, submission_identity).await
-}
-
-/// Keep the write-only 0178 canonical projection in lockstep with its legacy
-/// submission row. This intentionally mirrors the per-row backfill rules.
-pub async fn sync_canonical_download_rows_tx(
-    tx: &mut SqlTx<'_>,
-    client_tuple: &DownloadSourceIdentity,
-) -> AppResult<()> {
-    let normalized_client_id = normalize_download_client_id(client_tuple.client_id.as_deref());
-    let Some(row) = SqlRuntime::fetch_optional(
-        SqlExec::Tx(tx),
-        "SELECT s.id, s.title_id, s.download_client_id, s.download_client_type,
-                s.download_client_item_id, s.download_id, s.submitted_at,
-                dc.name AS client_name
-         FROM download_submissions s
-         LEFT JOIN download_clients dc ON dc.id = s.download_client_id
-         WHERE s.download_client_id = {}
-           AND s.download_client_type = {}
-           AND s.download_client_item_id = {}
-         LIMIT 1",
-        &[
-            SqlArg::Text(normalized_client_id),
-            SqlArg::Text(client_tuple.client_type.clone()),
-            SqlArg::Text(client_tuple.item_id.clone()),
-        ],
-    )
-    .await?
-    else {
-        return Ok(());
-    };
-
-    let legacy_id = row.text("id")?;
-    let canonical_id = row
-        .opt_text("download_id")?
-        .as_deref()
-        .and_then(DownloadId::from_wire)
-        .or_else(|| DownloadId::parse(&legacy_id))
-        .ok_or_else(|| {
-            AppError::Repository(format!(
-                "download submission {legacy_id:?} has no UUID canonical download identity"
-            ))
-        })?;
-    let canonical_id_text = canonical_id.to_string();
-    if legacy_id != canonical_id_text {
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "UPDATE download_submissions SET id = {} WHERE id = {}",
-            &[
-                SqlArg::Text(canonical_id_text.clone()),
-                SqlArg::Text(legacy_id),
-            ],
-        )
-        .await?;
-    }
-
-    let title_id = row.text("title_id")?;
-    let origin = if title_id.trim().is_empty() {
-        "foreign_observation"
-    } else {
-        "scryer_submission"
-    };
-    let created_at = parse_datetime_or_now(Some(&timestamp_string(&row, "submitted_at")?));
-    let now = Utc::now();
-    let client_config_id = row
-        .opt_text("download_client_id")?
-        .filter(|value| !value.trim().is_empty());
-    let client_type_snapshot = row
-        .opt_text("download_client_type")?
-        .filter(|value| !value.trim().is_empty());
-    let client_name_snapshot = row
-        .opt_text("client_name")?
-        .or_else(|| client_type_snapshot.clone());
-    let native_item_id = row
-        .opt_text("download_client_item_id")?
-        .filter(|value| !value.trim().is_empty());
-
-    if let (Some(client_config_id), Some(client_type_snapshot), Some(native_item_id)) = (
-        client_config_id.as_deref(),
-        client_type_snapshot.as_deref(),
-        native_item_id.as_deref(),
-    ) && let Some(existing_download_id) = SqlRuntime::fetch_optional(
-        SqlExec::Tx(tx),
-        "SELECT download_id
-             FROM download_client_bindings
-             WHERE ended_at IS NULL
-               AND native_item_id IS NOT NULL
-               AND client_config_id = {}
-               AND client_type_snapshot = {}
-               AND native_item_id = {}
-             LIMIT 1",
-        &[
-            SqlArg::Text(client_config_id.to_string()),
-            SqlArg::Text(client_type_snapshot.to_string()),
-            SqlArg::Text(native_item_id.to_string()),
-        ],
-    )
-    .await?
-    .map(|row| row.text("download_id"))
-    .transpose()?
-        && existing_download_id != canonical_id_text
-    {
-        return Err(AppError::Repository(format!(
-            "active canonical download binding collision: existing download id {existing_download_id}, new download id {canonical_id_text}"
-        )));
-    }
-
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO downloads (id, origin, created_at)
-         VALUES ({}, {}, {})
-         ON CONFLICT(id) DO UPDATE SET origin = excluded.origin",
-        &[
-            SqlArg::Text(canonical_id_text.clone()),
-            SqlArg::Text(origin.to_string()),
-            SqlArg::Timestamp(created_at),
-        ],
-    )
-    .await?;
-    let ended_at = client_config_id.is_none().then_some(now);
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO download_client_bindings (
-            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
-            native_item_id, created_at, ended_at
-         ) VALUES ({}, {}, {}, {}, {}, {}, {})
-         ON CONFLICT(download_id) DO UPDATE
-         SET client_config_id = excluded.client_config_id,
-             client_type_snapshot = excluded.client_type_snapshot,
-             client_name_snapshot = excluded.client_name_snapshot,
-             native_item_id = excluded.native_item_id,
-             ended_at = CASE
-                 WHEN excluded.client_config_id IS NULL
-                 THEN COALESCE(download_client_bindings.ended_at, excluded.ended_at)
-                 ELSE download_client_bindings.ended_at
-             END",
-        &[
-            SqlArg::Text(canonical_id_text),
-            SqlArg::OptText(client_config_id),
-            SqlArg::OptText(client_type_snapshot),
-            SqlArg::OptText(client_name_snapshot),
-            SqlArg::OptText(native_item_id),
-            SqlArg::Timestamp(now),
-            SqlArg::OptTimestamp(ended_at),
-        ],
-    )
-    .await?;
-    Ok(())
+    record_download_submission_identity_tx(tx, &submission.download_id, submission_identity).await
 }
 
 pub async fn replace_download_submission_episode_links_tx(
@@ -652,7 +532,7 @@ pub async fn replace_download_submission_episode_links_tx(
 
 pub async fn queue_import_request(
     datastore: &StoreDatastore,
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
     import_type: String,
     payload_json: String,
 ) -> AppResult<String> {
@@ -662,7 +542,7 @@ pub async fn queue_import_request(
 
 pub async fn queue_import_request_with_identity(
     datastore: &StoreDatastore,
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
     import_type: String,
     payload_json: String,
     submission_identity: Option<DownloadSubmissionIdentity>,
@@ -680,7 +560,7 @@ pub async fn queue_import_request_with_identity(
 
 pub async fn queue_import_request_with_identity_for_download(
     datastore: &StoreDatastore,
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
     import_type: String,
     payload_json: String,
     submission_identity: Option<DownloadSubmissionIdentity>,
@@ -1663,6 +1543,10 @@ pub fn download_queue_command_from_row(row: &SqlRow) -> AppResult<DownloadQueueC
         action: DownloadQueueCommandAction::parse(&action).ok_or_else(|| {
             AppError::Repository(format!("unknown download queue action: {action}"))
         })?,
+        canonical_download_id: row
+            .opt_text("canonical_download_id")?
+            .as_deref()
+            .and_then(DownloadId::parse),
         client_id: row
             .opt_text("client_id")?
             .filter(|value| !value.trim().is_empty()),
@@ -1830,8 +1714,8 @@ pub fn persisted_episode_set_ids(scope: &SubmissionScope) -> &[String] {
 const DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE: usize = 400;
 
 pub fn chunk_download_submission_client_items(
-    client_items: &[DownloadSourceIdentity],
-) -> Vec<Vec<DownloadSourceIdentity>> {
+    client_items: &[ClientJobLocator],
+) -> Vec<Vec<ClientJobLocator>> {
     let deduped = dedupe_identities(client_items);
     deduped
         .chunks(DOWNLOAD_SUBMISSION_BATCH_LOOKUP_CHUNK_SIZE)
@@ -1839,7 +1723,7 @@ pub fn chunk_download_submission_client_items(
         .collect()
 }
 
-pub fn dedupe_identities(identities: &[DownloadSourceIdentity]) -> Vec<DownloadSourceIdentity> {
+pub fn dedupe_identities(identities: &[ClientJobLocator]) -> Vec<ClientJobLocator> {
     let mut seen = HashSet::with_capacity(identities.len());
     let mut deduped = Vec::with_capacity(identities.len());
     for identity in identities {

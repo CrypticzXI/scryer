@@ -72,7 +72,8 @@ use scryer_infrastructure_metadata::metadata::gateway::client::{
 use scryer_infrastructure_workflow::workflow::{
     release_store::ReleaseStore,
     stores::{
-        AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
+        AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadRegistryStore,
+        DownloadSubmissionStore,
         ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
         WorkflowOperationStore,
     },
@@ -825,6 +826,7 @@ impl TestContext {
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
+        let download_registry_store = Arc::new(DownloadRegistryStore::new(datastore.clone()));
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
@@ -874,6 +876,7 @@ impl TestContext {
         .with_acquisition_state(acquisition_store)
         .with_domain_events(domain_event_store)
         .with_download_queue_commands(download_queue_command_store)
+        .with_download_registry(download_registry_store)
         .with_download_submissions(download_submission_store)
         .with_external_import_monitor_snapshots(external_import_monitor_store)
         .with_external_import_setup_secret_drafts(external_import_setup_secret_draft_store)

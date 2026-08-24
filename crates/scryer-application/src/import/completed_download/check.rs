@@ -734,7 +734,7 @@ async fn block_tracked_download_identity_for_manual_review(
     // set_state_to_import_blocked writes the generic blocked marker; record
     // the specific identity reason afterwards so it wins the upsert.
     set_state_to_import_blocked(app, td).await;
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,

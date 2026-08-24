@@ -1116,7 +1116,7 @@ impl AppUseCase {
         self.services
             .workflow
             .download_submissions
-            .delete_by_client_item_id(&DownloadSourceIdentity::new(
+            .delete_by_client_item_id(&ClientJobLocator::new(
                 conflict.download_client_id.as_deref(),
                 &conflict.download_client_type,
                 &conflict.download_client_item_id,
@@ -1557,7 +1557,7 @@ impl AppUseCase {
 
         let mut seen_downloads = HashSet::new();
         for submission in download_submissions {
-            let identity = DownloadSourceIdentity::from_submission(&submission);
+            let identity = ClientJobLocator::from_submission(&submission);
             if !seen_downloads.insert(identity.clone()) {
                 continue;
             }

@@ -417,7 +417,7 @@ impl AppUseCase {
         )
         .await?;
         let source_identity =
-            DownloadSourceIdentity::new(client_id, client_type, download_client_item_id);
+            ClientJobLocator::new(client_id, client_type, download_client_item_id);
         let tracked_id = crate::tracked_downloads::tracked_download_id(
             client_id,
             client_type,
@@ -483,7 +483,16 @@ fn preserved_terminal_ignore_error(state: &str) -> AppError {
 pub(crate) async fn finalize_scryer_download_ignored(
     app: &AppUseCase,
     actor: crate::domain_events::DomainEventActor,
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
+) -> AppResult<FinalizeIgnoredOutcome> {
+    finalize_scryer_download_ignored_for_download(app, actor, None, source_identity).await
+}
+
+pub(crate) async fn finalize_scryer_download_ignored_for_download(
+    app: &AppUseCase,
+    actor: crate::domain_events::DomainEventActor,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    source_identity: ClientJobLocator,
 ) -> AppResult<FinalizeIgnoredOutcome> {
     let ignored = scryer_domain::TrackedDownloadState::Ignored.as_str();
     if let Err(error) = app
@@ -509,7 +518,7 @@ pub(crate) async fn finalize_scryer_download_ignored(
 
     let submission_repository = &app.services.workflow.download_submissions;
     let Some(submission) = submission_repository
-        .find_by_client_item_id(&source_identity)
+        .find_by_client_item_id_for_download(canonical_download_id, &source_identity)
         .await?
     else {
         return Ok(FinalizeIgnoredOutcome::NoSubmission);
@@ -538,9 +547,12 @@ pub(crate) async fn finalize_scryer_download_ignored(
         .await?
     {
         let previous = submission_repository
-            .upsert_identity_tracked_state_returning_previous(
-                &submission_identity,
-                Some(&source_identity),
+            .upsert_identity_tracked_state_for_download_returning_previous(
+                crate::IdentityTrackedStateTarget {
+                    canonical_download_id,
+                    identity: &submission_identity,
+                    source_identity: Some(&source_identity),
+                },
                 ignored,
                 &preserved_states,
                 None,
@@ -755,6 +767,7 @@ pub(crate) async fn warning_timeout_applies(
     }
     use crate::seeding_gate::{SeedGoalLookupKey, SeedGoalsRead};
     let key = SeedGoalLookupKey {
+        canonical_download_id: td.canonical_download_id().cloned(),
         client_id: td.client_id.trim().to_string(),
         client_type: td.client_type.trim().to_string(),
         client_item_id: td.client_item.download_client_item_id.trim().to_string(),
@@ -1381,7 +1394,7 @@ pub(crate) async fn assign_tracked_download_title_command(
     // submission anyway). It names the requested scope, and it must not throw
     // away the grab-time indexer release name — that is still the best
     // release evidence for parsing and scoring, whatever title it lands in.
-    let source_identity = DownloadSourceIdentity::from_submission(&submission);
+    let source_identity = ClientJobLocator::from_submission(&submission);
     if submission
         .source_title
         .as_deref()
@@ -1651,13 +1664,12 @@ async fn handle_tracked_download_command(
                 ))));
                 return;
             }
-            let failure_identity = tracker.find(&id).and_then(
-                crate::failed_download_handler::tracked_download_failure_submission_identity,
-            );
-            let has_grabbed_submission = if let Some(identity) = failure_identity.as_ref() {
-                crate::failed_download_handler::download_submission_exists(app, identity).await
-            } else {
-                false
+            let has_grabbed_submission = match tracker.find(&id) {
+                Some(td) => crate::failed_download_handler::tracked_download_has_grabbed_submission(
+                    app, td,
+                )
+                .await,
+                None => false,
             };
             let result = if let Some(td) = tracker.find_mut(&id) {
                 if !has_grabbed_submission {
@@ -2725,7 +2737,7 @@ async fn reconcile_terminal_tracked_downloads(
     // One batched prefetch up front, then memoized reads for the rest — held
     // torrents are the common case, so this is a per-tick cost that would
     // otherwise scale with the seeding backlog.
-    let identities: Vec<crate::DownloadSourceIdentity> = settled
+    let identities: Vec<crate::ClientJobLocator> = settled
         .iter()
         .filter_map(|tracked| tracked_download_source_identity(tracked))
         .collect();
@@ -2773,7 +2785,7 @@ fn reconcile_duplicate_terminal_source_states(
     // `ImportedSeeding` has been through the gate, and flipping it back to a
     // sibling's `Imported` would only send it straight back through on the
     // next poll.
-    let updates: Vec<(String, crate::DownloadSourceIdentity, TrackedDownloadState)> = tracker
+    let updates: Vec<(String, crate::ClientJobLocator, TrackedDownloadState)> = tracker
         .get_all()
         .into_iter()
         .filter(|tracked| !tracked.state.is_import_settled())
@@ -2805,13 +2817,13 @@ fn reconcile_duplicate_terminal_source_states(
 
 fn tracked_download_source_identity(
     tracked: &TrackedDownload,
-) -> Option<crate::DownloadSourceIdentity> {
+) -> Option<crate::ClientJobLocator> {
     let client_type = tracked.client_type.trim();
     let item_id = tracked.client_item.download_client_item_id.trim();
     if client_type.is_empty() || item_id.is_empty() {
         return None;
     }
-    Some(crate::DownloadSourceIdentity::new(
+    Some(crate::ClientJobLocator::new(
         Some(tracked.client_id.as_str()),
         client_type,
         item_id,

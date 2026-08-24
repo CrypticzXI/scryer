@@ -18,7 +18,7 @@ use crate::null_repositories::test_nulls::{
 use crate::{
     ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
     CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
-    DownloadClientConfigRepository, DownloadGrabResult, DownloadSourceIdentity, DownloadSubmission,
+    DownloadClientConfigRepository, DownloadGrabResult, ClientJobLocator, DownloadSubmission,
     DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry,
     ImportArtifact, ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig,
     PendingTitleHydration, QualityProfile, QualityProfileRepository, ScopedExternalId,
@@ -574,7 +574,7 @@ impl TestImportRepo {
 
 fn test_import_record(
     id: &str,
-    source_identity: &DownloadSourceIdentity,
+    source_identity: &ClientJobLocator,
     status: ImportStatus,
     payload_json: String,
 ) -> scryer_domain::ImportRecord {
@@ -605,7 +605,7 @@ fn test_import_record(
 impl crate::ImportRepository for TestImportRepo {
     async fn queue_import_request(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
@@ -696,7 +696,7 @@ impl crate::ImportRepository for TestImportRepo {
 
     async fn list_imports_for_identities(
         &self,
-        identities: &[DownloadSourceIdentity],
+        identities: &[ClientJobLocator],
     ) -> AppResult<Vec<scryer_domain::ImportRecord>> {
         Ok(self
             .records
@@ -716,7 +716,7 @@ impl crate::ImportRepository for TestImportRepo {
             .collect())
     }
 
-    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
         Ok(self.records.lock().await.iter().any(|record| {
             record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
                 && record.source_system == identity.client_type
@@ -744,7 +744,7 @@ impl ImportArtifactRepository for TestImportArtifactRepo {
 
     async fn list_by_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
         let artifacts = self.artifacts.lock().await;
         Ok(artifacts
@@ -756,7 +756,7 @@ impl ImportArtifactRepository for TestImportArtifactRepo {
 
     async fn count_by_result_for_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
         let artifacts = self.artifacts.lock().await;
@@ -770,13 +770,13 @@ impl ImportArtifactRepository for TestImportArtifactRepo {
 #[derive(Default)]
 struct TestDownloadSubmissionRepo {
     rows: Arc<Mutex<Vec<(DownloadSubmission, DownloadSubmissionIdentity)>>>,
-    tracked_states: Arc<Mutex<Vec<(DownloadSourceIdentity, String)>>>,
+    tracked_states: Arc<Mutex<Vec<(ClientJobLocator, String)>>>,
     identity_tracked_states: Arc<Mutex<Vec<(String, String)>>>,
 }
 
-fn test_download_identity_state_key(
+fn test_tracked_state_key(
     identity: &DownloadSubmissionIdentity,
-    source_identity: Option<&DownloadSourceIdentity>,
+    source_identity: Option<&ClientJobLocator>,
 ) -> Option<String> {
     let download_id = identity
         .download_id
@@ -817,6 +817,10 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         Ok(())
     }
 
+    async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        self.record_submission(submission).await
+    }
+
     async fn record_submission_with_identity(
         &self,
         submission: DownloadSubmission,
@@ -831,7 +835,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
 
     async fn find_by_client_item_id(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(self
             .rows
@@ -839,7 +843,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .await
             .iter()
             .find(|(submission, _)| {
-                DownloadSourceIdentity::from_submission(submission) == *identity
+                ClientJobLocator::from_submission(submission) == *identity
             })
             .map(|(submission, _)| submission.clone()))
     }
@@ -868,7 +872,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
 
     async fn get_submission_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionIdentity>> {
         Ok(self
             .rows
@@ -876,7 +880,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .await
             .iter()
             .find(|(submission, _)| {
-                DownloadSourceIdentity::from_submission(submission) == *identity
+                ClientJobLocator::from_submission(submission) == *identity
             })
             .map(|(_, submission_identity)| submission_identity.clone()))
     }
@@ -884,12 +888,12 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
     async fn record_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
         tracked_state: &str,
         _reason: Option<&str>,
         _detail: Option<&str>,
     ) -> AppResult<()> {
-        let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+        let Some(key) = test_tracked_state_key(identity, source_identity) else {
             return Ok(());
         };
         let mut states = self.identity_tracked_states.lock().await;
@@ -904,9 +908,9 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
     async fn get_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+        let Some(key) = test_tracked_state_key(identity, source_identity) else {
             return Ok(None);
         };
         Ok(self
@@ -920,7 +924,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
+        client_items: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(self
             .rows
@@ -928,7 +932,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .await
             .iter()
             .filter(|(submission, _)| {
-                let identity = DownloadSourceIdentity::from_submission(submission);
+                let identity = ClientJobLocator::from_submission(submission);
                 client_items.contains(&identity)
             })
             .map(|(submission, _)| submission.clone())
@@ -975,16 +979,16 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
         self.rows.lock().await.retain(|(submission, _)| {
-            DownloadSourceIdentity::from_submission(submission) != *identity
+            ClientJobLocator::from_submission(submission) != *identity
         });
         Ok(())
     }
 
     async fn update_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         tracked_state: &str,
     ) -> AppResult<()> {
         let mut states = self.tracked_states.lock().await;
@@ -1001,7 +1005,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
 
     async fn get_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<String>> {
         Ok(self
             .tracked_states

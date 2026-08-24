@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission,
+    AppResult, AppUseCase, ClientJobLocator, DownloadSubmission,
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, SubmissionScope,
 };
 
@@ -176,7 +176,7 @@ impl From<&TrackedDownload> for TrackedDownloadQueueMetadata {
 
 impl TrackedDownload {
     pub(crate) fn canonical_download_id(&self) -> Option<&DownloadId> {
-        (self.download_id != legacy_fallback_download_id()).then_some(&self.download_id)
+        Some(&self.download_id)
     }
 
     pub fn warn(&mut self, message: impl Into<String>) {
@@ -317,11 +317,6 @@ pub struct TrackedDownloadService {
     cache: HashMap<DownloadId, TrackedDownload>,
     last_seen_at: HashMap<DownloadId, DateTime<Utc>>,
     warning_since: HashMap<DownloadId, DateTime<Utc>>,
-    /// Registry-outage compatibility path. It is intentionally isolated so a
-    /// legacy identifier cannot become the normal cache identity again.
-    legacy_cache: HashMap<String, TrackedDownload>,
-    legacy_last_seen_at: HashMap<String, DateTime<Utc>>,
-    legacy_warning_since: HashMap<String, DateTime<Utc>>,
 }
 
 impl TrackedDownloadService {
@@ -344,7 +339,7 @@ impl TrackedDownloadService {
             crate::download_identity::resolve_observed_client_job(app, observed_job.clone()).await;
         let id = tracked_download_id_for_item(&client_item);
         let download_id = match resolved_download_id {
-            Some(download_id) => Some(download_id),
+            Some(download_id) => download_id,
             None => match app
                 .services
                 .workflow
@@ -352,15 +347,15 @@ impl TrackedDownloadService {
                 .find_active_binding_by_locator(&observed_job.locator)
                 .await
             {
-                Ok(Some(binding)) => Some(binding.download_id),
+                Ok(Some(binding)) => binding.download_id,
                 Ok(None) => {
                     tracing::warn!(
                         client_id = client_item.client_id.as_str(),
                         client_type = client_item.client_type.as_str(),
                         download_client_item_id = client_item.download_client_item_id.as_str(),
-                        "failed to recover canonical download identity; tracking item on legacy cache key"
+                        "failed to recover canonical download identity; skipping item for this cycle"
                     );
-                    None
+                    return;
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -368,30 +363,19 @@ impl TrackedDownloadService {
                         client_id = client_item.client_id.as_str(),
                         client_type = client_item.client_type.as_str(),
                         download_client_item_id = client_item.download_client_item_id.as_str(),
-                        "failed to recover canonical download identity; tracking item on legacy cache key"
+                        "failed to recover canonical download identity; skipping item for this cycle"
                     );
-                    None
+                    return;
                 }
             },
         };
 
         let now = Utc::now();
-        let existing = match download_id {
-            Some(download_id) => {
-                self.last_seen_at.insert(download_id, now);
-                if client_item.state != DownloadQueueState::Warning {
-                    self.warning_since.remove(&download_id);
-                }
-                self.cache.get_mut(&download_id)
-            }
-            None => {
-                self.legacy_last_seen_at.insert(id.clone(), now);
-                if client_item.state != DownloadQueueState::Warning {
-                    self.legacy_warning_since.remove(&id);
-                }
-                self.legacy_cache.get_mut(&id)
-            }
-        };
+        self.last_seen_at.insert(download_id, now);
+        if client_item.state != DownloadQueueState::Warning {
+            self.warning_since.remove(&download_id);
+        }
+        let existing = self.cache.get_mut(&download_id);
 
         if let Some(existing) = existing {
             let matcher_dirty = app
@@ -429,16 +413,12 @@ impl TrackedDownloadService {
         // First time seeing this download — build, resolve, and insert.
         let td = Self::build_new_tracked_download(
             app,
-            download_id.unwrap_or_else(legacy_fallback_download_id),
+            download_id,
             id.clone(),
             client_item,
         )
         .await;
-        if let Some(download_id) = download_id {
-            self.cache.insert(download_id, td);
-        } else {
-            self.legacy_cache.insert(id, td);
-        }
+        self.cache.insert(download_id, td);
         self.prune_cache();
     }
 
@@ -484,10 +464,7 @@ impl TrackedDownloadService {
     }
 
     pub fn find(&self, id: &str) -> Option<&TrackedDownload> {
-        self.cache
-            .values()
-            .find(|tracked| tracked.id == id)
-            .or_else(|| self.legacy_cache.get(id))
+        self.cache.values().find(|tracked| tracked.id == id)
     }
 
     #[cfg(test)]
@@ -503,16 +480,12 @@ impl TrackedDownloadService {
             .cache
             .iter()
             .find_map(|(download_id, tracked)| (tracked.id == id).then_some(*download_id));
-        if let Some(download_id) = download_id {
-            return self.cache.get_mut(&download_id);
-        }
-        self.legacy_cache.get_mut(id)
+        download_id.and_then(|download_id| self.cache.get_mut(&download_id))
     }
 
     pub fn resolve_cached_id(&self, requested_id: &str) -> Option<String> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .find_map(|tracked| {
                 (tracked.id == requested_id
                     || tracked_download_matches_source_id(tracked, requested_id))
@@ -523,19 +496,17 @@ impl TrackedDownloadService {
     pub fn get_all(&self) -> Vec<&TrackedDownload> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .collect()
     }
 
     pub fn completed_source_for_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> Option<CompletedDownload> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .find(|tracked| {
-                DownloadSourceIdentity::new(
+                ClientJobLocator::new(
                     Some(tracked.client_id.as_str()),
                     tracked.client_type.as_str(),
                     tracked.client_item.download_client_item_id.as_str(),
@@ -546,13 +517,12 @@ impl TrackedDownloadService {
 
     pub fn cached_id_for_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> Option<String> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .find_map(|tracked| {
-                (DownloadSourceIdentity::new(
+                (ClientJobLocator::new(
                     Some(tracked.client_id.as_str()),
                     tracked.client_type.as_str(),
                     tracked.client_item.download_client_item_id.as_str(),
@@ -564,30 +534,17 @@ impl TrackedDownloadService {
     pub fn cached_id_for_source_identity_for_download(
         &self,
         canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> Option<String> {
-        let legacy = self.cached_id_for_source_identity(identity);
-        let canonical = canonical_download_id.and_then(|canonical_download_id| {
+        let _identity = identity;
+        canonical_download_id.and_then(|canonical_download_id| {
             self.cache
                 .values()
-                .chain(self.legacy_cache.values())
                 .find_map(|tracked| {
                     (tracked.canonical_download_id() == Some(canonical_download_id))
                         .then(|| tracked.id.clone())
                 })
-        });
-        if let (Some(canonical), Some(legacy)) = (&canonical, &legacy)
-            && canonical != legacy
-        {
-            tracing::warn!(
-                target: "download_identity_resolver",
-                canonical_download_id = ?canonical_download_id,
-                canonical_tracked_id = %canonical,
-                legacy_tracked_id = %legacy,
-                "manual import recovery canonical and legacy tracked download lookups disagreed; using legacy tracked download"
-            );
-        }
-        legacy.or(canonical)
+        })
     }
 
     pub fn cached_id_for_canonical_download_id(
@@ -596,7 +553,6 @@ impl TrackedDownloadService {
     ) -> Option<String> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .find_map(|tracked| {
                 (tracked.canonical_download_id() == Some(canonical_download_id))
                     .then(|| tracked.id.clone())
@@ -606,7 +562,6 @@ impl TrackedDownloadService {
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .filter(|td| td.is_trackable && !td.state.is_terminal())
             .collect()
     }
@@ -614,7 +569,6 @@ impl TrackedDownloadService {
     pub fn get_trackable_ids(&self) -> Vec<String> {
         self.cache
             .values()
-            .chain(self.legacy_cache.values())
             .filter(|td| td.is_trackable && !td.state.is_terminal())
             .map(|td| td.id.clone())
             .collect()
@@ -639,14 +593,13 @@ impl TrackedDownloadService {
             .cache
             .iter()
             .find_map(|(download_id, tracked)| (tracked.id == id).then_some(*download_id));
-        if canonical_download_id.is_none() && !self.legacy_cache.contains_key(id) {
+        let Some(canonical_download_id) = canonical_download_id else {
             return false;
-        }
-        let tracked = match canonical_download_id {
-            Some(download_id) => self.cache.get(&download_id),
-            None => self.legacy_cache.get(id),
-        }
-        .expect("tracked download was present when warning timeout started");
+        };
+        let tracked = self
+            .cache
+            .get(&canonical_download_id)
+            .expect("tracked download was present when warning timeout started");
 
         let warning_is_actionable = tracked.client_item.is_scryer_origin
             && matches!(
@@ -657,22 +610,11 @@ impl TrackedDownloadService {
             )
             && tracked.client_item.state == DownloadQueueState::Warning;
         if !warning_is_actionable || !timeout_applies {
-            if let Some(download_id) = canonical_download_id {
-                self.warning_since.remove(&download_id);
-            } else {
-                self.legacy_warning_since.remove(id);
-            }
+            self.warning_since.remove(&canonical_download_id);
             return false;
         }
 
-        let since = if let Some(download_id) = canonical_download_id {
-            *self.warning_since.entry(download_id).or_insert(now)
-        } else {
-            *self
-                .legacy_warning_since
-                .entry(id.to_string())
-                .or_insert(now)
-        };
+        let since = *self.warning_since.entry(canonical_download_id).or_insert(now);
         if now - since < Self::WARNING_FAILURE_TIMEOUT {
             return false;
         }
@@ -688,17 +630,12 @@ impl TrackedDownloadService {
             .filter(|reason| !reason.trim().is_empty())
             .unwrap_or("no reason supplied")
             .to_owned();
-        if let Some(download_id) = canonical_download_id {
-            self.warning_since.remove(&download_id);
-        } else {
-            self.legacy_warning_since.remove(id);
-        }
+        self.warning_since.remove(&canonical_download_id);
 
-        let tracked = match canonical_download_id {
-            Some(download_id) => self.cache.get_mut(&download_id),
-            None => self.legacy_cache.get_mut(id),
-        }
-        .expect("tracked download was present when warning timeout was evaluated");
+        let tracked = self
+            .cache
+            .get_mut(&canonical_download_id)
+            .expect("tracked download was present when warning timeout was evaluated");
         tracked.state = TrackedDownloadState::FailedPending;
         tracked.status = TrackedDownloadStatus::Error;
         if !tracked
@@ -717,17 +654,16 @@ impl TrackedDownloadService {
     }
 
     /// Mark downloads no longer visible in any client as untrackable.
-    pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) -> Vec<DownloadSourceIdentity> {
+    pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) -> Vec<ClientJobLocator> {
         let mut unavailable_sources = Vec::new();
         for td in self
             .cache
             .values_mut()
-            .chain(self.legacy_cache.values_mut())
         {
             if td.is_trackable && !seen_ids.contains(&td.id) && !should_preserve_tracking(td.state)
             {
                 td.is_trackable = false;
-                unavailable_sources.push(DownloadSourceIdentity::new(
+                unavailable_sources.push(ClientJobLocator::new(
                     Some(&td.client_id),
                     &td.client_type,
                     &td.client_item.download_client_item_id,
@@ -754,13 +690,12 @@ impl TrackedDownloadService {
         &mut self,
         seen_ids: &HashSet<String>,
         excluded_client_types: &[&str],
-    ) -> Vec<DownloadSourceIdentity> {
+    ) -> Vec<ClientJobLocator> {
         let now = Utc::now();
         let mut unavailable_sources = Vec::new();
         for td in self
             .cache
             .values_mut()
-            .chain(self.legacy_cache.values_mut())
         {
             if tracked_client_type_is_excluded(&td.client_type, excluded_client_types) {
                 continue;
@@ -774,7 +709,7 @@ impl TrackedDownloadService {
                 && snapshot_absence_exceeds_grace(td, now)
             {
                 td.is_trackable = false;
-                unavailable_sources.push(DownloadSourceIdentity::new(
+                unavailable_sources.push(ClientJobLocator::new(
                     Some(&td.client_id),
                     &td.client_type,
                     &td.client_item.download_client_item_id,
@@ -791,7 +726,7 @@ impl TrackedDownloadService {
         &mut self,
         seen_ids: &HashSet<String>,
         scope: &TrackedDownloadSnapshotScope,
-    ) -> Vec<DownloadSourceIdentity> {
+    ) -> Vec<ClientJobLocator> {
         let TrackedDownloadSnapshotScope::AuthoritativeForClient {
             client_id,
             client_type,
@@ -805,7 +740,6 @@ impl TrackedDownloadService {
         for td in self
             .cache
             .values_mut()
-            .chain(self.legacy_cache.values_mut())
         {
             if !tracked_matches_snapshot_scope(td, client_id.as_deref(), client_type) {
                 continue;
@@ -819,7 +753,7 @@ impl TrackedDownloadService {
                 && snapshot_absence_exceeds_grace(td, now)
             {
                 td.is_trackable = false;
-                unavailable_sources.push(DownloadSourceIdentity::new(
+                unavailable_sources.push(ClientJobLocator::new(
                     Some(&td.client_id),
                     &td.client_type,
                     &td.client_item.download_client_item_id,
@@ -841,21 +775,12 @@ impl TrackedDownloadService {
             self.cache.remove(&download_id);
             self.last_seen_at.remove(&download_id);
             self.warning_since.remove(&download_id);
-            return;
         }
-        self.legacy_cache.remove(id);
-        self.legacy_last_seen_at.remove(id);
-        self.legacy_warning_since.remove(id);
     }
 
     fn clear_untracked_warning_clocks(&mut self) {
         self.warning_since.retain(|id, _| {
             self.cache
-                .get(id)
-                .is_some_and(|tracked| tracked.is_trackable)
-        });
-        self.legacy_warning_since.retain(|id, _| {
-            self.legacy_cache
                 .get(id)
                 .is_some_and(|tracked| tracked.is_trackable)
         });
@@ -876,14 +801,6 @@ impl TrackedDownloadService {
                     .get(id)
                     .is_none_or(|last_seen| *last_seen >= stale_cutoff)
         });
-        let legacy_last_seen_at = &self.legacy_last_seen_at;
-        self.legacy_cache.retain(|id, tracked| {
-            tracked.is_trackable
-                || legacy_last_seen_at
-                    .get(id)
-                    .is_none_or(|last_seen| *last_seen >= stale_cutoff)
-        });
-
         if self.cache.len() > max_entries {
             let mut eviction_candidates = self
                 .cache
@@ -892,7 +809,7 @@ impl TrackedDownloadService {
                 .map(|(id, _)| {
                     (
                         self.last_seen_at.get(id).copied().unwrap_or(stale_cutoff),
-                        id.clone(),
+                        *id,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -907,10 +824,6 @@ impl TrackedDownloadService {
             .retain(|id, _| self.cache.contains_key(id));
         self.warning_since
             .retain(|id, _| self.cache.contains_key(id));
-        self.legacy_last_seen_at
-            .retain(|id, _| self.legacy_cache.contains_key(id));
-        self.legacy_warning_since
-            .retain(|id, _| self.legacy_cache.contains_key(id));
     }
 
     /// Persist a terminal state to download_submissions.
@@ -956,7 +869,7 @@ impl TrackedDownloadService {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(&DownloadSourceIdentity::new(
+            .find_by_client_item_id(&ClientJobLocator::new(
                 Some(td.client_id.as_str()),
                 &td.client_type,
                 &td.client_item.download_client_item_id,
@@ -969,7 +882,12 @@ impl TrackedDownloadService {
             .is_none_or(|submission| !title_id_present(Some(submission.title_id.as_str())));
         if should_try_download_id_lookup
             && let Some(download_id_submission) =
-                download_id_submission_for_tracked_download(app, td).await
+                download_id_submission_for_tracked_download_for_download(
+                    app,
+                    td.canonical_download_id(),
+                    td,
+                )
+                .await
             && title_id_present(Some(download_id_submission.title_id.as_str()))
         {
             existing_submission = Some(download_id_submission);
@@ -1078,7 +996,7 @@ impl TrackedDownloadService {
     async fn reconstruct_state(app: &AppUseCase, td: &mut TrackedDownload) {
         let observed_identity = observed_queue_item_identity(&td.client_item);
         let observed_source_identity = queue_item_source_identity(&td.client_item);
-        let terminal_source_identity = DownloadSourceIdentity::new(
+        let terminal_source_identity = ClientJobLocator::new(
             Some(td.client_id.as_str()),
             &td.client_type,
             &td.client_item.download_client_item_id,
@@ -1156,10 +1074,15 @@ impl TrackedDownloadService {
             return;
         }
 
-        let download_id_submission = download_id_submission_for_tracked_download(app, td).await;
+        let download_id_submission = download_id_submission_for_tracked_download_for_download(
+            app,
+            td.canonical_download_id(),
+            td,
+        )
+        .await;
         // Check tracked state against the matched submission identity first.
         if let Some(submission) = download_id_submission.as_ref() {
-            let submission_source_identity = DownloadSourceIdentity::from_submission(submission);
+            let submission_source_identity = ClientJobLocator::from_submission(submission);
             if let Ok(Some(tracked_state)) = app
                 .services
                 .workflow
@@ -1181,7 +1104,7 @@ impl TrackedDownloadService {
         // tracked state was not persisted before shutdown. This is only safe
         // after the current DownloadId resolves to a Scryer submission.
         if let Some(submission) = download_id_submission {
-            let submission_identity = DownloadSourceIdentity::from_submission(&submission);
+            let submission_identity = ClientJobLocator::from_submission(&submission);
             let download_identity = app
                 .services
                 .workflow
@@ -1217,8 +1140,9 @@ impl TrackedDownloadService {
     }
 }
 
-async fn download_id_submission_for_tracked_download(
+async fn download_id_submission_for_tracked_download_for_download(
     app: &AppUseCase,
+    canonical_download_id: Option<&DownloadId>,
     tracked: &TrackedDownload,
 ) -> Option<DownloadSubmission> {
     let observed_identity = observed_queue_item_identity(&tracked.client_item);
@@ -1232,7 +1156,8 @@ async fn download_id_submission_for_tracked_download(
             .services
             .workflow
             .download_submissions
-            .list_by_download_id(
+            .list_by_download_id_for_download(
+                canonical_download_id,
                 Some(tracked.client_id.as_str()),
                 &tracked.client_type,
                 download_id,
@@ -1560,7 +1485,7 @@ pub enum TrackedDownloadCommand {
     /// before that time and that is waiting on import may be marked; see
     /// [`manual_import_recovery_verdict`].
     MarkImportedIfAwaitingImport {
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         canonical_download_id: Option<DownloadId>,
         record_completed_at: DateTime<Utc>,
         reply: oneshot::Sender<AppResult<ManualImportRecoveryOutcome>>,
@@ -1586,7 +1511,7 @@ pub enum TrackedDownloadCommand {
         reply: oneshot::Sender<AppResult<()>>,
     },
     CompletedSource {
-        identity: DownloadSourceIdentity,
+        identity: ClientJobLocator,
         reply: oneshot::Sender<Option<CompletedDownload>>,
     },
     Snapshot {
@@ -1687,7 +1612,7 @@ impl TrackedDownloadHandle {
 
     pub async fn completed_source(
         &self,
-        identity: DownloadSourceIdentity,
+        identity: ClientJobLocator,
     ) -> AppResult<Option<CompletedDownload>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -1747,7 +1672,7 @@ impl TrackedDownloadHandle {
 
     pub async fn mark_imported_if_awaiting_import(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         record_completed_at: DateTime<Utc>,
     ) -> AppResult<ManualImportRecoveryOutcome> {
         self.mark_imported_if_awaiting_import_for_download(
@@ -1760,7 +1685,7 @@ impl TrackedDownloadHandle {
 
     pub async fn mark_imported_if_awaiting_import_for_download(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         canonical_download_id: Option<DownloadId>,
         record_completed_at: DateTime<Utc>,
     ) -> AppResult<ManualImportRecoveryOutcome> {
@@ -1915,9 +1840,15 @@ pub(crate) async fn persist_tracked_download_state_marker(
     reason: Option<&str>,
     detail: Option<&str>,
 ) -> bool {
-    let state_identity = match download_id_submission_for_tracked_download(app, td).await {
-        Some(submission) => DownloadSourceIdentity::from_submission(&submission),
-        None => DownloadSourceIdentity::new(
+    let state_identity = match download_id_submission_for_tracked_download_for_download(
+        app,
+        td.canonical_download_id(),
+        td,
+    )
+    .await
+    {
+        Some(submission) => ClientJobLocator::from_submission(&submission),
+        None => ClientJobLocator::new(
             Some(td.client_id.as_str()),
             &td.client_type,
             &td.client_item.download_client_item_id,
@@ -1949,7 +1880,7 @@ pub(crate) async fn persist_tracked_download_state_marker(
             .record_identity_tracked_state_for_download(
                 td.canonical_download_id(),
                 &observed_identity,
-                Some(&DownloadSourceIdentity::new(
+                Some(&ClientJobLocator::new(
                     Some(td.client_id.as_str()),
                     &td.client_type,
                     &td.client_item.download_client_item_id,
@@ -2049,14 +1980,6 @@ fn tracked_download_cache_max_entries() -> usize {
         .unwrap_or(DEFAULT_TRACKED_DOWNLOAD_CACHE_MAX_ENTRIES)
 }
 
-fn legacy_fallback_download_id() -> DownloadId {
-    // This value is never persisted as canonical identity: it marks the
-    // registry-outage compatibility cache path until the observation can be
-    // resolved on a later sighting.
-    DownloadId::parse("00000000-0000-0000-0000-000000000000")
-        .expect("the fixed legacy fallback DownloadId is valid")
-}
-
 pub(crate) fn observed_queue_item_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
     crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
         download_id: item.download_id.as_deref(),
@@ -2065,8 +1988,8 @@ pub(crate) fn observed_queue_item_identity(item: &DownloadQueueItem) -> Download
     })
 }
 
-fn queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(
+fn queue_item_source_identity(item: &DownloadQueueItem) -> ClientJobLocator {
+    ClientJobLocator::new(
         Some(item.client_id.as_str()),
         item.client_type.as_str(),
         item.download_client_item_id.as_str(),
@@ -2141,7 +2064,7 @@ mod tests {
     use crate::{
         AppError, AppResult, AppServices, AppUseCase, CreateTitleOutcome, DomainEventRepository,
         DownloadClient, DownloadClientAddRequest, DownloadGrabResult, DownloadRegistryRepository,
-        DownloadSourceIdentity, DownloadSubmissionRepository, FacetRegistry, ImportRepository,
+        ClientJobLocator, DownloadSubmissionRepository, FacetRegistry, ImportRepository,
         IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, TitleMetadataUpdate,
         TitleRepository,
     };
@@ -2157,6 +2080,7 @@ mod tests {
     #[derive(Default)]
     struct TestDownloadSubmissionRepo {
         submission: Option<crate::DownloadSubmission>,
+        canonical_submission: Option<crate::DownloadSubmission>,
         submission_identity: Option<crate::DownloadSubmissionIdentity>,
         mutable_submission: Option<Arc<Mutex<Option<crate::DownloadSubmission>>>>,
         mutable_submission_identity: Option<Arc<Mutex<Option<crate::DownloadSubmissionIdentity>>>>,
@@ -2174,7 +2098,7 @@ mod tests {
     }
 
     struct TestDownloadRegistry {
-        ids: HashMap<String, DownloadId>,
+        ids: Mutex<HashMap<String, DownloadId>>,
         failing_item_ids: HashSet<String>,
     }
 
@@ -2186,19 +2110,16 @@ mod tests {
         ) -> AppResult<crate::ObservationResolution> {
             if self
                 .failing_item_ids
-                .contains(&observation.locator.native_item_id)
+                .contains(&observation.locator.item_id)
             {
                 return Err(AppError::Repository(
                     "injected registry resolution failure".to_string(),
                 ));
             }
-            let download_id = self
-                .ids
-                .get(&observation.locator.native_item_id)
-                .copied()
-                .ok_or_else(|| {
-                    AppError::Repository("missing test registry identity".to_string())
-                })?;
+            let mut ids = self.ids.lock().await;
+            let download_id = *ids
+                .entry(observation.locator.item_id.clone())
+                .or_insert_with(DownloadId::new);
             Ok(crate::ObservationResolution::Resolved {
                 download_id,
                 newly_foreign: false,
@@ -2221,7 +2142,7 @@ mod tests {
             &self,
             locator: &crate::ClientJobLocator,
         ) -> AppResult<Option<crate::DownloadClientBindingRecord>> {
-            if self.failing_item_ids.contains(&locator.native_item_id) {
+            if self.failing_item_ids.contains(&locator.item_id) {
                 return Err(AppError::Repository(
                     "injected registry binding failure".to_string(),
                 ));
@@ -2234,9 +2155,9 @@ mod tests {
         }
     }
 
-    fn test_download_identity_state_key(
+    fn test_tracked_state_key(
         identity: &crate::DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> Option<String> {
         let download_id = identity
             .download_id
@@ -2293,13 +2214,35 @@ mod tests {
             Ok(())
         }
 
+        async fn record_ambiguous_submission(
+            &self,
+            submission: crate::DownloadSubmission,
+        ) -> AppResult<()> {
+            self.record_submission(submission).await
+        }
+
         async fn find_by_client_item_id(
             &self,
-            identity: &DownloadSourceIdentity,
+            identity: &ClientJobLocator,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
             Ok(self.current_submission().await.filter(|submission| {
-                DownloadSourceIdentity::from_submission(submission) == *identity
+                ClientJobLocator::from_submission(submission) == *identity
             }))
+        }
+
+        async fn find_by_client_item_id_for_download(
+            &self,
+            canonical_download_id: Option<&DownloadId>,
+            identity: &ClientJobLocator,
+        ) -> AppResult<Option<crate::DownloadSubmission>> {
+            let canonical = canonical_download_id.and_then(|canonical_download_id| {
+                self.canonical_submission
+                    .as_ref()
+                    .filter(|submission| submission.download_id == *canonical_download_id)
+                    .cloned()
+            });
+            let legacy = self.find_by_client_item_id(identity).await?;
+            Ok(legacy.or(canonical))
         }
 
         async fn list_by_download_id(
@@ -2347,16 +2290,38 @@ mod tests {
                 .collect())
         }
 
+        async fn list_by_download_id_for_download(
+            &self,
+            canonical_download_id: Option<&DownloadId>,
+            client_id: Option<&str>,
+            client_type: &str,
+            download_id: &str,
+        ) -> AppResult<Vec<crate::DownloadSubmission>> {
+            let canonical = canonical_download_id
+                .and_then(|canonical_download_id| {
+                    self.canonical_submission
+                        .as_ref()
+                        .filter(|submission| submission.download_id == *canonical_download_id)
+                        .cloned()
+                })
+                .into_iter()
+                .collect::<Vec<_>>();
+            let legacy = self
+                .list_by_download_id(client_id, client_type, download_id)
+                .await?;
+            Ok(if legacy.is_empty() { canonical } else { legacy })
+        }
+
         async fn get_submission_identity(
             &self,
-            _: &DownloadSourceIdentity,
+            _: &ClientJobLocator,
         ) -> AppResult<Option<crate::DownloadSubmissionIdentity>> {
             Ok(self.current_submission_identity().await)
         }
 
         async fn list_for_client_items(
             &self,
-            _: &[DownloadSourceIdentity],
+            _: &[ClientJobLocator],
         ) -> AppResult<Vec<crate::DownloadSubmission>> {
             Ok(self.current_submission().await.into_iter().collect())
         }
@@ -2379,13 +2344,13 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
+        async fn delete_by_client_item_id(&self, _: &ClientJobLocator) -> AppResult<()> {
             Ok(())
         }
 
         async fn update_tracked_state(
             &self,
-            _: &DownloadSourceIdentity,
+            _: &ClientJobLocator,
             tracked_state: &str,
         ) -> AppResult<()> {
             self.tracked_state_updates
@@ -2395,19 +2360,19 @@ mod tests {
             Ok(())
         }
 
-        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+        async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
             Ok(self.tracked_state.clone())
         }
 
         async fn record_identity_tracked_state(
             &self,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
             tracked_state: &str,
             reason: Option<&str>,
             detail: Option<&str>,
         ) -> AppResult<()> {
-            if let Some(key) = test_download_identity_state_key(identity, source_identity) {
+            if let Some(key) = test_tracked_state_key(identity, source_identity) {
                 self.identity_tracked_states
                     .lock()
                     .await
@@ -2431,9 +2396,9 @@ mod tests {
         async fn get_identity_tracked_state(
             &self,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
-            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+            let Some(key) = test_tracked_state_key(identity, source_identity) else {
                 return Ok(None);
             };
             Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
@@ -2443,7 +2408,7 @@ mod tests {
             &self,
             canonical_download_id: Option<&DownloadId>,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
             if let Some(canonical_download_id) = canonical_download_id {
                 return Ok(self
@@ -2460,9 +2425,9 @@ mod tests {
         async fn get_identity_tracked_state_reason(
             &self,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
-            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+            let Some(key) = test_tracked_state_key(identity, source_identity) else {
                 return Ok(None);
             };
             Ok(self
@@ -2477,7 +2442,7 @@ mod tests {
             &self,
             canonical_download_id: Option<&DownloadId>,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
             if let Some(canonical_download_id) = canonical_download_id {
                 return Ok(self
@@ -2494,9 +2459,9 @@ mod tests {
         async fn get_identity_tracked_state_detail(
             &self,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
-            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+            let Some(key) = test_tracked_state_key(identity, source_identity) else {
                 return Ok(None);
             };
             Ok(self
@@ -2511,7 +2476,7 @@ mod tests {
             &self,
             canonical_download_id: Option<&DownloadId>,
             identity: &crate::DownloadSubmissionIdentity,
-            source_identity: Option<&DownloadSourceIdentity>,
+            source_identity: Option<&ClientJobLocator>,
         ) -> AppResult<Option<String>> {
             if let Some(canonical_download_id) = canonical_download_id {
                 return Ok(self
@@ -2631,7 +2596,7 @@ mod tests {
     impl ImportRepository for TestImportRepo {
         async fn queue_import_request(
             &self,
-            _: DownloadSourceIdentity,
+            _: ClientJobLocator,
             _: String,
             _: String,
         ) -> AppResult<String> {
@@ -2693,7 +2658,7 @@ mod tests {
 
         async fn list_imports_for_identities(
             &self,
-            identities: &[DownloadSourceIdentity],
+            identities: &[ClientJobLocator],
         ) -> AppResult<Vec<ImportRecord>> {
             Ok(self
                 .stored_imports()
@@ -2709,7 +2674,7 @@ mod tests {
                 .collect())
         }
 
-        async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
             Ok(self.stored_imports().iter().any(|record| {
                 record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
                     && record.source_system == identity.client_type
@@ -2723,7 +2688,7 @@ mod tests {
 
         async fn is_already_imported_by_download_id(
             &self,
-            source_identity: &DownloadSourceIdentity,
+            source_identity: &ClientJobLocator,
             identity: &crate::DownloadSubmissionIdentity,
         ) -> AppResult<bool> {
             let Some(download_id) = identity.download_id.as_deref() else {
@@ -3307,6 +3272,12 @@ mod tests {
             },
             Arc::new(facet_registry),
         )
+        .with_test_overrides(|services| {
+            services.with_download_registry(Arc::new(TestDownloadRegistry {
+                ids: Mutex::new(HashMap::new()),
+                failing_item_ids: HashSet::new(),
+            }))
+        })
     }
 
     fn build_client_item() -> DownloadQueueItem {
@@ -3537,10 +3508,10 @@ mod tests {
         let canonical_download_id = DownloadId::new();
         let foreign_download_id = DownloadId::new();
         let registry = Arc::new(TestDownloadRegistry {
-            ids: HashMap::from([
+            ids: Mutex::new(HashMap::from([
                 ("job-1".to_string(), canonical_download_id),
                 ("foreign-job".to_string(), foreign_download_id),
-            ]),
+            ])),
             failing_item_ids: HashSet::new(),
         });
         let app = build_app(
@@ -3562,7 +3533,6 @@ mod tests {
         tracker.track(&app, locator_observation).await;
 
         assert_eq!(tracker.cache.len(), 1);
-        assert!(tracker.legacy_cache.is_empty());
         assert_eq!(
             tracker
                 .find(&legacy_token_id)
@@ -3580,10 +3550,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolver_failure_isolated_to_legacy_cache_fallback() {
+    async fn resolver_failure_skips_tracked_state_without_erasing_the_visible_queue_item() {
         let unaffected_download_id = DownloadId::new();
         let registry = Arc::new(TestDownloadRegistry {
-            ids: HashMap::from([("unaffected-job".to_string(), unaffected_download_id)]),
+            ids: Mutex::new(HashMap::from([(
+                "unaffected-job".to_string(),
+                unaffected_download_id,
+            )])),
             failing_item_ids: HashSet::from(["failing-job".to_string()]),
         });
         let app = build_app(
@@ -3599,12 +3572,18 @@ mod tests {
 
         let mut failing = build_client_item();
         failing.download_client_item_id = "failing-job".to_string();
-        let failing_legacy_id = tracked_download_id_for_item(&failing);
+        let failing_visible_queue_item = failing.clone();
+        let failing_id = tracked_download_id_for_item(&failing);
         tracker.track(&app, failing).await;
 
         assert!(tracker.cache.contains_key(&unaffected_download_id));
-        assert!(tracker.legacy_cache.contains_key(&failing_legacy_id));
-        assert_eq!(tracker.get_all().len(), 2);
+        assert!(tracker.find(&failing_id).is_none());
+        assert_eq!(tracker.get_all().len(), 1);
+        assert_eq!(
+            failing_visible_queue_item.download_client_item_id,
+            "failing-job",
+            "queue projection input remains available when tracking is skipped"
+        );
     }
 
     #[tokio::test]
@@ -3636,7 +3615,10 @@ mod tests {
                 "persisted import gate detail".to_string(),
             );
         let registry = Arc::new(TestDownloadRegistry {
-            ids: HashMap::from([("restart-job".to_string(), canonical_download_id)]),
+            ids: Mutex::new(HashMap::from([(
+                "restart-job".to_string(),
+                canonical_download_id,
+            )])),
             failing_item_ids: HashSet::new(),
         });
         let app = build_app(download_submissions, Arc::new(TestImportRepo::default()))
@@ -3745,6 +3727,175 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tracked_download_submission_lookup_uses_canonical_submission() {
+        let mut tracked = build_tracked_download("legacy-observed-job");
+        tracked.client_item.download_id = Some("legacy-observed-download-id".to_string());
+        let canonical_submission = crate::DownloadSubmission {
+            download_id: tracked.download_id,
+            title_id: "title-canonical".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "canonical-bound-job".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Canonical Observed Release".to_string()),
+            release_size_bytes: None,
+            request_signature: Some("canonical-observed-request".to_string()),
+            scope: crate::SubmissionScope::Title,
+        };
+        let app = build_app(
+            Arc::new(TestDownloadSubmissionRepo {
+                canonical_submission: Some(canonical_submission),
+                ..Default::default()
+            }),
+            Arc::new(TestImportRepo::default()),
+        );
+
+        let resolved = download_id_submission_for_tracked_download_for_download(
+            &app,
+            tracked.canonical_download_id(),
+            &tracked,
+        )
+        .await
+        .expect("canonical submission should resolve");
+
+        assert_eq!(resolved.download_id, tracked.download_id);
+        assert_eq!(resolved.title_id, "title-canonical");
+    }
+
+    #[tokio::test]
+    async fn failed_download_authorization_uses_canonical_submission() {
+        let mut tracked = build_tracked_download("legacy-failed-job");
+        tracked.client_item.is_scryer_origin = true;
+        let canonical_download_id = tracked.download_id;
+        let canonical_submission = crate::DownloadSubmission {
+            download_id: canonical_download_id,
+            title_id: "title-canonical".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "canonical-bound-job".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Canonical Failure Release".to_string()),
+            release_size_bytes: None,
+            request_signature: Some("canonical-failure-request".to_string()),
+            scope: crate::SubmissionScope::Title,
+        };
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            canonical_submission: Some(canonical_submission),
+            ..Default::default()
+        });
+        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
+
+        assert!(
+            crate::failed_download_handler::tracked_download_has_grabbed_submission(
+                &app, &tracked,
+            )
+            .await,
+            "the canonical submission must authorize mark-failed even when the legacy tuple moved"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_download_authorization_falls_back_to_legacy_submission() {
+        let mut tracked = build_tracked_download("legacy-failed-job");
+        tracked.client_item.is_scryer_origin = true;
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo {
+            submission: Some(crate::DownloadSubmission {
+                download_id: DownloadId::new(),
+                title_id: "title-legacy".to_string(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "series".to_string(),
+                download_client_id: Some("client-1".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: "legacy-failed-job".to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: None,
+                source_title: Some("Legacy Failure Release".to_string()),
+                release_size_bytes: None,
+                request_signature: Some("legacy-failure-request".to_string()),
+                scope: crate::SubmissionScope::Title,
+            }),
+            ..Default::default()
+        });
+        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
+
+        assert!(
+            crate::failed_download_handler::tracked_download_has_grabbed_submission(
+                &app, &tracked,
+            )
+            .await,
+            "a legacy row without a canonical binding must continue to authorize mark-failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_download_authorization_prefers_legacy_submission_on_divergence() {
+        let canonical_download_id = DownloadId::new();
+        let canonical_submission = crate::DownloadSubmission {
+            download_id: canonical_download_id,
+            title_id: "title-canonical".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "canonical-bound-job".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Canonical Failure Release".to_string()),
+            release_size_bytes: None,
+            request_signature: Some("canonical-failure-request".to_string()),
+            scope: crate::SubmissionScope::Title,
+        };
+        let legacy_submission = crate::DownloadSubmission {
+            download_id: DownloadId::new(),
+            title_id: "title-legacy".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "series".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "legacy-failed-job".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Legacy Failure Release".to_string()),
+            release_size_bytes: None,
+            request_signature: Some("legacy-failure-request".to_string()),
+            scope: crate::SubmissionScope::Title,
+        };
+        let download_submissions = TestDownloadSubmissionRepo {
+            submission: Some(legacy_submission.clone()),
+            canonical_submission: Some(canonical_submission),
+            ..Default::default()
+        };
+
+        let resolved = download_submissions
+            .find_by_client_item_id_for_download(
+                Some(&canonical_download_id),
+                &ClientJobLocator::new(Some("client-1"), "nzbget", "legacy-failed-job"),
+            )
+            .await
+            .expect("submission lookup should succeed")
+            .expect("a submission should resolve");
+
+        assert_eq!(resolved.download_id, legacy_submission.download_id);
+        assert_eq!(resolved.title_id, "title-legacy");
+    }
+
+    #[tokio::test]
     async fn resolves_submission_by_download_id_when_client_item_id_differs() {
         let download_id = "cc025b54883bbdc61258e9d5627b3bd1613241b2";
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
@@ -3765,6 +3916,7 @@ mod tests {
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
+            canonical_submission: None,
             submission_identity: Some(crate::DownloadSubmissionIdentity {
                 download_id: Some(download_id.to_string()),
             }),
@@ -4034,6 +4186,7 @@ mod tests {
                 request_signature: None,
                 scope: crate::SubmissionScope::Title,
             }),
+            canonical_submission: None,
             submission_identity: Some(crate::DownloadSubmissionIdentity {
                 download_id: Some(download_id.to_string()),
             }),
@@ -4094,45 +4247,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconstruct_state_restores_import_blocked_detail() {
-        let download_id = "scryer-download:blocked-recovery";
-        let identity = crate::DownloadSubmissionIdentity {
-            download_id: Some(download_id.to_string()),
-        };
-        let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
-        let detail = "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode.";
-        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
-        download_submissions
-            .record_identity_tracked_state(
-                &identity,
-                Some(&source_identity),
-                TrackedDownloadState::ImportBlocked.as_str(),
-                Some("import_blocked_after_import"),
-                Some(detail),
-            )
-            .await
-            .expect("blocked state should record");
-        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
-        let mut tracker = TrackedDownloadService::new();
-        let mut item = build_client_item();
-        item.download_id = Some(download_id.to_string());
-        let tracked_id = tracked_download_id_for_item(&item);
-
-        tracker.track(&app, item).await;
-
-        let tracked = tracker.find(&tracked_id).expect("tracked download");
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
-        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
-        assert_eq!(tracked.status_messages, vec![detail.to_string()]);
-    }
-
-    #[tokio::test]
     async fn reconstruct_state_does_not_recover_client_local_state_from_other_client() {
         let download_id = "10010";
         let identity = crate::DownloadSubmissionIdentity {
             download_id: Some(download_id.to_string()),
         };
-        let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
+        let other_client_source = ClientJobLocator::new(Some("client-2"), "nzbget", "dl-1");
         let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
         download_submissions
             .record_identity_tracked_state(
@@ -4248,16 +4368,23 @@ mod tests {
                 Ok(())
             }
 
+            async fn record_ambiguous_submission(
+                &self,
+                _: crate::DownloadSubmission,
+            ) -> AppResult<()> {
+                Ok(())
+            }
+
             async fn find_by_client_item_id(
                 &self,
-                _: &DownloadSourceIdentity,
+                _: &ClientJobLocator,
             ) -> AppResult<Option<crate::DownloadSubmission>> {
                 Ok(None)
             }
 
             async fn list_for_client_items(
                 &self,
-                _: &[DownloadSourceIdentity],
+                _: &[ClientJobLocator],
             ) -> AppResult<Vec<crate::DownloadSubmission>> {
                 Ok(vec![])
             }
@@ -4280,13 +4407,13 @@ mod tests {
                 Ok(())
             }
 
-            async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
+            async fn delete_by_client_item_id(&self, _: &ClientJobLocator) -> AppResult<()> {
                 Ok(())
             }
 
             async fn update_tracked_state(
                 &self,
-                _: &DownloadSourceIdentity,
+                _: &ClientJobLocator,
                 _: &str,
             ) -> AppResult<()> {
                 Err(AppError::Repository("boom".into()))
@@ -4294,7 +4421,7 @@ mod tests {
 
             async fn get_tracked_state(
                 &self,
-                _: &DownloadSourceIdentity,
+                _: &ClientJobLocator,
             ) -> AppResult<Option<String>> {
                 Ok(None)
             }
@@ -4325,7 +4452,13 @@ mod tests {
                 jwt_signing_salt: "test-salt".to_string(),
             },
             Arc::new(FacetRegistry::new()),
-        );
+        )
+        .with_test_overrides(|services| {
+            services.with_download_registry(Arc::new(TestDownloadRegistry {
+                ids: Mutex::new(HashMap::new()),
+                failing_item_ids: HashSet::new(),
+            }))
+        });
 
         let mut tracker = TrackedDownloadService::new();
         tracker.track(&app, build_client_item()).await;
@@ -4358,6 +4491,7 @@ mod tests {
         });
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: None,
+            canonical_submission: None,
             submission_identity: None,
             mutable_submission: None,
             mutable_submission_identity: None,
@@ -4859,7 +4993,7 @@ mod tests {
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(unavailable_sources.is_empty());
-        let blocked_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "blocked");
+        let blocked_identity = ClientJobLocator::new(Some("client-1"), "nzbget", "blocked");
         assert_eq!(
             tracker
                 .completed_source_for_identity(&blocked_identity)
@@ -4890,7 +5024,7 @@ mod tests {
         tracker.insert_for_tests(qbittorrent);
 
         let qbittorrent_identity =
-            DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "same-item");
+            ClientJobLocator::new(Some("client-1"), "qbittorrent", "same-item");
         assert_eq!(
             tracker.cached_id_for_source_identity(&qbittorrent_identity),
             Some("qbittorrent-entry".to_string())

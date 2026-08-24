@@ -258,13 +258,13 @@ pub struct SeedGoalGrabRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DownloadSourceIdentity {
+pub struct ClientJobLocator {
     pub client_id: Option<String>,
     pub client_type: String,
     pub item_id: String,
 }
 
-impl DownloadSourceIdentity {
+impl ClientJobLocator {
     pub fn new(
         client_id: Option<&str>,
         client_type: impl AsRef<str>,
@@ -295,31 +295,6 @@ impl DownloadSourceIdentity {
 
     pub fn client_id_or_empty(&self) -> &str {
         self.client_id.as_deref().unwrap_or("")
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ClientJobLocator {
-    pub client_config_id: Option<String>,
-    pub client_type: String,
-    pub native_item_id: String,
-}
-
-impl ClientJobLocator {
-    pub fn new(
-        client_config_id: Option<&str>,
-        client_type: impl AsRef<str>,
-        native_item_id: impl AsRef<str>,
-    ) -> Self {
-        let client_config_id = client_config_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        Self {
-            client_config_id,
-            client_type: client_type.as_ref().trim().to_ascii_lowercase(),
-            native_item_id: native_item_id.as_ref().trim().to_string(),
-        }
     }
 }
 
@@ -404,8 +379,8 @@ pub struct ImportArtifact {
 }
 
 impl ImportArtifact {
-    pub fn source_identity(&self) -> DownloadSourceIdentity {
-        DownloadSourceIdentity::new(
+    pub fn source_identity(&self) -> ClientJobLocator {
+        ClientJobLocator::new(
             self.source_client_id.as_deref(),
             &self.source_system,
             &self.source_ref,
@@ -1206,24 +1181,68 @@ pub struct IndexerDownloadClientProviderCompatibility {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientJobLocator, DownloadSourceIdentity};
+    use std::{fs, path::Path};
+
+    use super::ClientJobLocator;
 
     #[test]
-    fn client_job_locator_new_normalizes_like_download_source_identity() {
+    fn client_job_locator_new_normalizes_locator_values() {
         let client_config_id = Some("  config-1  ");
         let client_type = "  SABnzbd  ";
         let native_item_id = "  nzo-123  ";
 
         let locator = ClientJobLocator::new(client_config_id, client_type, native_item_id);
-        let source = DownloadSourceIdentity::new(client_config_id, client_type, native_item_id);
-
-        assert_eq!(locator.client_config_id, source.client_id);
-        assert_eq!(locator.client_type, source.client_type);
-        assert_eq!(locator.native_item_id, source.item_id);
+        assert_eq!(locator.client_id.as_deref(), Some("config-1"));
+        assert_eq!(locator.client_type, "sabnzbd");
+        assert_eq!(locator.item_id, "nzo-123");
 
         assert_eq!(
-            ClientJobLocator::new(Some("  \t "), " NZBGet ", " 10010 ").client_config_id,
+            ClientJobLocator::new(Some("  \t "), " NZBGet ", " 10010 ").client_id,
             None
         );
+    }
+
+    #[test]
+    fn canonical_download_identity_source_guard() {
+        // Keep all forbidden patterns here; add future retired identity machinery to this list.
+        let forbidden = [
+            ("global identity-state key selection", "download_identity_state_", "is_global"),
+            ("retired source identity type", "Download", "SourceIdentity"),
+            ("tuple submission conflict target", "ON CONFLICT(", "download_client_id"),
+        ];
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("application crate lives below the workspace root");
+        let mut files = fs::read_dir(workspace_root.join("crates"))
+            .expect("crates directory should be readable")
+            .map(|entry| entry.expect("crate directory entry should be readable").path().join("src"))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        while let Some(path) = files.pop() {
+            for entry in fs::read_dir(&path).expect("source tree should be readable") {
+                let entry = entry.expect("source tree entry should be readable");
+                let path = entry.path();
+                if path.is_dir() {
+                    files.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs")
+                    || path.file_name().is_some_and(|name| name == "migrations.rs")
+                    || path.components().any(|component| component.as_os_str() == "migrations")
+                {
+                    continue;
+                }
+                let source = fs::read_to_string(&path).expect("Rust source should be readable");
+                for (description, first, second) in forbidden {
+                    let pattern = format!("{first}{second}");
+                    assert!(
+                        !source.contains(&pattern),
+                        "{description} reappeared in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
     }
 }

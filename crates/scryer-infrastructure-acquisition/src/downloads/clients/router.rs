@@ -7548,16 +7548,23 @@ mod tests {
             Ok(())
         }
 
+        async fn record_ambiguous_submission(
+            &self,
+            _submission: scryer_application::DownloadSubmission,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn find_by_client_item_id(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<Option<scryer_application::DownloadSubmission>> {
             Ok(None)
         }
 
         async fn list_for_client_items(
             &self,
-            _identities: &[scryer_application::DownloadSourceIdentity],
+            _identities: &[scryer_application::ClientJobLocator],
         ) -> AppResult<Vec<scryer_application::DownloadSubmission>> {
             Ok(Vec::new())
         }
@@ -7585,14 +7592,14 @@ mod tests {
 
         async fn delete_by_client_item_id(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<()> {
             Ok(())
         }
 
         async fn update_tracked_state(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
             _tracked_state: &str,
         ) -> AppResult<()> {
             Ok(())
@@ -7600,7 +7607,7 @@ mod tests {
 
         async fn get_tracked_state(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<Option<String>> {
             Ok(None)
         }

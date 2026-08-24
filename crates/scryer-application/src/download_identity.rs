@@ -57,10 +57,7 @@ pub fn observed_download_identity(
     DownloadSubmissionIdentity { download_id }
 }
 
-/// Resolve an observation without allowing registry failures to alter legacy handling.
-///
-/// The canonical identity is returned when resolution succeeds. Callers must
-/// retain their legacy behavior when the registry is unavailable.
+/// Resolve an observation to the sole workflow identity.
 pub(crate) async fn resolve_observed_client_job(
     app: &AppUseCase,
     observation: ObservedClientJob,
@@ -72,11 +69,11 @@ pub(crate) async fn resolve_observed_client_job(
     let token = observation.wire_token.as_deref().unwrap_or("");
     let config_id = observation
         .locator
-        .client_config_id
+        .client_id
         .as_deref()
         .unwrap_or("");
     let client_type = observation.locator.client_type.as_str();
-    let native_item_id = observation.locator.native_item_id.as_str();
+    let native_item_id = observation.locator.item_id.as_str();
 
     match app
         .services
@@ -135,7 +132,11 @@ pub(crate) fn observed_queue_item_job(
             item.client_type.as_str(),
             item.download_client_item_id.as_str(),
         ),
-        wire_token: item.download_id.clone(),
+        wire_token: item
+            .download_id
+            .as_deref()
+            .and_then(DownloadId::from_wire)
+            .map(|id| id.to_wire()),
         observed_name: (!item.title_name.trim().is_empty()).then(|| item.title_name.clone()),
         observed_at: Utc::now(),
     }
@@ -154,7 +155,11 @@ pub(crate) fn observed_completed_job(item: &CompletedDownload) -> ObservedClient
             item.client_type.as_str(),
             item.download_client_item_id.as_str(),
         ),
-        wire_token: item.download_id.clone(),
+        wire_token: item
+            .download_id
+            .as_deref()
+            .and_then(DownloadId::from_wire)
+            .map(|id| id.to_wire()),
         observed_name,
         observed_at: Utc::now(),
     }

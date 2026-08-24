@@ -3,7 +3,7 @@ use chrono::Utc;
 use scryer_application::{
     AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
     AcquisitionScopeStatus, AppError, AppResult, CollectionUpdate, DomainEventRepository,
-    DownloadClientConfigRepository, DownloadQueueCommandRepository, DownloadSourceIdentity,
+    DownloadClientConfigRepository, DownloadQueueCommandRepository, ClientJobLocator,
     DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
@@ -47,7 +47,6 @@ mod sql_runtime_gated_write;
 mod stores_migrations_regressions;
 mod title_images;
 mod titles_metadata;
-mod tracked_download_identity;
 mod wanted_items_and_search;
 mod workflow_operation;
 
@@ -261,7 +260,7 @@ async fn assert_download_submission_orphan_precedence(
     workflow: &DownloadSubmissionStore,
 ) -> AppResult<()> {
     let item_id = "feedfacefeedfacefeedfacefeedfacefeedface";
-    let source_identity = DownloadSourceIdentity::new(Some("client-a"), "qbittorrent", item_id);
+    let source_identity = ClientJobLocator::new(Some("client-a"), "qbittorrent", item_id);
 
     workflow
         .record_submission(orphan_test_submission(item_id, "Foreign.Observation"))

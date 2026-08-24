@@ -357,8 +357,8 @@ pub(super) fn observed_queue_item_identity(
     })
 }
 
-pub(super) fn queue_item_source_identity(item: &DownloadQueueItem) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(
+pub(super) fn queue_item_source_identity(item: &DownloadQueueItem) -> ClientJobLocator {
+    ClientJobLocator::new(
         Some(item.client_id.as_str()),
         item.client_type.as_str(),
         item.download_client_item_id.as_str(),
@@ -377,8 +377,8 @@ pub(super) fn observed_completed_download_identity(
 
 pub(super) fn completed_download_source_identity(
     completed: &CompletedDownload,
-) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(
+) -> ClientJobLocator {
+    ClientJobLocator::new(
         Some(completed.client_id.as_str()),
         completed.client_type.as_str(),
         completed.download_client_item_id.as_str(),
@@ -389,7 +389,7 @@ pub(super) async fn download_id_tracked_state(
     app: &AppUseCase,
     canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
     identity: &crate::DownloadSubmissionIdentity,
-    source_identity: Option<&DownloadSourceIdentity>,
+    source_identity: Option<&ClientJobLocator>,
 ) -> Option<TrackedDownloadState> {
     if crate::download_submission_identity_is_empty(identity) {
         return None;

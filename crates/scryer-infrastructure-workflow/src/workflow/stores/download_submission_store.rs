@@ -3,13 +3,13 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, PersistedSeedGoals,
+    AppError, AppResult, ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, DownloadSubmissionRepository, IdentityTrackedStateTarget, PersistedSeedGoals,
     SeedGoalGrabRecord, SeedGoalResolutionSource,
 };
 use scryer_domain::{Id, download_identity::DownloadId};
 
-use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
+use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
 #[derive(Clone)]
 pub struct DownloadSubmissionStore {
@@ -20,57 +20,125 @@ impl DownloadSubmissionStore {
     pub fn new(datastore: StoreDatastore) -> Self {
         Self { datastore }
     }
-}
 
-fn download_identity_state_key(
-    identity: &DownloadSubmissionIdentity,
-    source_identity: Option<&DownloadSourceIdentity>,
-) -> Option<String> {
-    let download_id = identity
-        .download_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)?;
-
-    if download_identity_state_is_global(&download_id) {
-        return Some(format!("download:{download_id}"));
+    async fn find_by_canonical_download_id(
+        &self,
+        canonical_download_id: &DownloadId,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        let sql = download_submission_select_sql(&self.datastore, "WHERE id = {} LIMIT 1");
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Text(canonical_download_id.to_string())],
+        )
+        .await?;
+        row.map(|row| download_submission_from_row(&row))
+            .transpose()
     }
 
-    let source_identity = source_identity?;
-    let client_type = source_identity.client_type.trim();
-    if client_type.is_empty() {
-        return None;
+    async fn active_binding_download_id(
+        &self,
+        locator: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadId>> {
+        active_binding_download_id(self.datastore.read_exec(), locator).await
     }
 
-    Some(format!(
-        "client:{}:{}:download:{}",
-        normalize_download_client_id(source_identity.client_id.as_deref()),
-        client_type.to_ascii_lowercase(),
-        download_id
-    ))
+    async fn get_seed_goals_by_canonical_download_id(
+        &self,
+        canonical_download_id: &DownloadId,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &format!(
+                "SELECT {SEED_GOAL_COLUMNS}
+                 FROM download_submissions
+                 WHERE id = {{}}
+                 LIMIT 1"
+            ),
+            &[SqlArg::Text(canonical_download_id.to_string())],
+        )
+        .await?;
+        row.map(|row| seed_goals_from_row(&row))
+            .transpose()
+            .map(Option::flatten)
+    }
 }
 
-fn download_identity_state_is_global(download_id: &str) -> bool {
-    let value = download_id.trim();
-    value.starts_with("scryer-download:") || looks_like_torrent_info_hash(value)
-}
-
-fn looks_like_torrent_info_hash(value: &str) -> bool {
-    matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
-fn canonical_download_id_for_tracked_state(
-    canonical_download_id: Option<&DownloadId>,
-    identity: &DownloadSubmissionIdentity,
-) -> Option<String> {
-    canonical_download_id.map(ToString::to_string).or_else(|| {
-        identity
-            .download_id
-            .as_deref()
-            .and_then(DownloadId::from_wire)
-            .map(|download_id| download_id.to_string())
+async fn active_binding_download_id(
+    exec: SqlExec<'_, '_>,
+    locator: &ClientJobLocator,
+) -> AppResult<Option<DownloadId>> {
+    let row = SqlRuntime::fetch_optional(
+        exec,
+        "SELECT download_id
+         FROM download_client_bindings
+         WHERE ended_at IS NULL
+           AND native_item_id IS NOT NULL
+           AND COALESCE(client_config_id, '') = {}
+           AND LOWER(COALESCE(client_type_snapshot, '')) = {}
+           AND native_item_id = {}
+         ORDER BY created_at, download_id
+         LIMIT 1",
+        &[
+            SqlArg::Text(locator.client_id.clone().unwrap_or_default()),
+            SqlArg::Text(locator.client_type.clone()),
+            SqlArg::Text(locator.item_id.clone()),
+        ],
+    )
+    .await?;
+    row.map(|row| {
+        let value = row.text("download_id")?;
+        DownloadId::parse(&value).ok_or_else(|| {
+            AppError::Repository(format!("active client binding has invalid download id {value:?}"))
+        })
     })
+    .transpose()
+}
+
+async fn active_or_create_binding_download_id_tx(
+    tx: &mut SqlTx<'_>,
+    locator: &ClientJobLocator,
+) -> AppResult<DownloadId> {
+    if let Some(download_id) = active_binding_download_id(SqlExec::Tx(tx), locator).await? {
+        return Ok(download_id);
+    }
+
+    let download_id = DownloadId::new();
+    let now = Utc::now();
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO downloads (id, origin, created_at, first_observed_at, last_observed_at)
+         VALUES ({}, 'foreign_observation', {}, {}, {})",
+        &[
+            SqlArg::Text(download_id.to_string()),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at, last_seen_at, ended_at
+         ) VALUES ({}, {}, {}, {}, {}, {}, {}, NULL)",
+        &[
+            SqlArg::Text(download_id.to_string()),
+            SqlArg::OptText(locator.client_id.clone()),
+            SqlArg::Text(locator.client_type.clone()),
+            SqlArg::Text(locator.client_type.clone()),
+            SqlArg::Text(locator.item_id.clone()),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+    Ok(download_id)
+}
+
+fn canonical_tracked_state_key(canonical_download_id: &DownloadId) -> String {
+    format!("download:{canonical_download_id}")
 }
 
 #[async_trait]
@@ -127,7 +195,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn record_submission_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         submission_identity: &DownloadSubmissionIdentity,
     ) -> AppResult<()> {
         let identity = identity.clone();
@@ -139,8 +207,17 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 let identity = identity.clone();
                 let submission_identity = submission_identity.clone();
                 Box::pin(async move {
-                    record_download_submission_identity_tx(tx, &identity, &submission_identity)
-                        .await
+                    let Some(canonical_download_id) =
+                        active_binding_download_id(SqlExec::Tx(tx), &identity).await?
+                    else {
+                        return Ok(());
+                    };
+                    record_download_submission_identity_tx(
+                        tx,
+                        &canonical_download_id,
+                        &submission_identity,
+                    )
+                    .await
                 })
             },
         )
@@ -149,7 +226,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn record_submission_actor_snapshot(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         actor: DownloadSubmissionActorSnapshot,
     ) -> AppResult<()> {
         let identity = identity.clone();
@@ -190,7 +267,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn get_submission_actor_snapshot(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -214,7 +291,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn find_by_client_item_id(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         let sql = download_submission_select_sql(
             &self.datastore,
@@ -232,6 +309,21 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await?;
         row.map(|row| download_submission_from_row(&row))
             .transpose()
+    }
+
+    async fn find_by_client_item_id_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match self.active_binding_download_id(identity).await? {
+                Some(canonical_download_id) => canonical_download_id,
+                None => return Ok(None),
+            },
+        };
+        self.find_by_canonical_download_id(&canonical_download_id).await
     }
 
     async fn list_by_download_id(
@@ -256,9 +348,26 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await
     }
 
+    async fn list_by_download_id_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        _client_id: Option<&str>,
+        _client_type: &str,
+        _download_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let Some(canonical_download_id) = canonical_download_id else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .find_by_canonical_download_id(canonical_download_id)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     async fn get_submission_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionIdentity>> {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -285,37 +394,40 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn record_identity_tracked_state(
         &self,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
-        tracked_state: &str,
-        reason: Option<&str>,
-        detail: Option<&str>,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
+        _tracked_state: &str,
+        _reason: Option<&str>,
+        _detail: Option<&str>,
     ) -> AppResult<()> {
-        self.record_identity_tracked_state_for_download(
-            None,
-            identity,
-            source_identity,
-            tracked_state,
-            reason,
-            detail,
-        )
-        .await
+        Ok(())
     }
 
     async fn record_identity_tracked_state_for_download(
         &self,
         canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
         tracked_state: &str,
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()> {
-        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
-            return Ok(());
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match source_identity {
+                Some(source_identity) => {
+                    let Some(canonical_download_id) =
+                        self.active_binding_download_id(source_identity).await?
+                    else {
+                        return Ok(());
+                    };
+                    canonical_download_id
+                }
+                None => return Ok(()),
+            },
         };
-        let canonical_download_id =
-            canonical_download_id_for_tracked_state(canonical_download_id, identity);
+        let identity_key = canonical_tracked_state_key(&canonical_download_id);
+        let canonical_download_id = canonical_download_id.to_string();
         let identity = identity.clone();
         let source_identity = source_identity.cloned();
         let tracked_state = tracked_state.to_string();
@@ -354,7 +466,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &[
                             SqlArg::Text(Id::new().0),
                             SqlArg::Text(identity_key),
-                            SqlArg::OptText(canonical_download_id),
+                            SqlArg::OptText(Some(canonical_download_id)),
                             SqlArg::OptText(identity.download_id),
                             SqlArg::OptText(source_identity.as_ref().map(|source| {
                                 normalize_download_client_id(source.client_id.as_deref())
@@ -386,35 +498,31 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn get_identity_tracked_state(
         &self,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
-            return Ok(None);
-        };
-
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT tracked_state
-             FROM download_identity_states
-             WHERE identity_key = {}
-             LIMIT 1",
-            &[SqlArg::Text(identity_key)],
-        )
-        .await?;
-        row.map(|row| row.text("tracked_state")).transpose()
+        Ok(None)
     }
 
     async fn get_identity_tracked_state_for_download(
         &self,
         canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        _identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(canonical_download_id) = canonical_download_id else {
-            return self
-                .get_identity_tracked_state(identity, source_identity)
-                .await;
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match source_identity {
+                Some(source_identity) => {
+                    let Some(canonical_download_id) =
+                        self.active_binding_download_id(source_identity).await?
+                    else {
+                        return Ok(None);
+                    };
+                    canonical_download_id
+                }
+                None => return Ok(None),
+            },
         };
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -426,29 +534,45 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             &[SqlArg::Text(canonical_download_id.to_string())],
         )
         .await?;
-        if let Some(row) = row {
-            return row.text("tracked_state").map(Some);
-        }
-        self.get_identity_tracked_state(identity, source_identity)
-            .await
+        row.map(|row| row.text("tracked_state")).transpose()
     }
 
     async fn get_identity_tracked_state_reason(
         &self,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
-            return Ok(None);
-        };
+        Ok(None)
+    }
 
+    async fn get_identity_tracked_state_reason_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        _identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&ClientJobLocator>,
+    ) -> AppResult<Option<String>> {
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match source_identity {
+                Some(source_identity) => {
+                    let Some(canonical_download_id) =
+                        self.active_binding_download_id(source_identity).await?
+                    else {
+                        return Ok(None);
+                    };
+                    canonical_download_id
+                }
+                None => return Ok(None),
+            },
+        };
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT reason
              FROM download_identity_states
-             WHERE identity_key = {}
+             WHERE canonical_download_id = {}
+             ORDER BY updated_at DESC, id DESC
              LIMIT 1",
-            &[SqlArg::Text(identity_key)],
+            &[SqlArg::Text(canonical_download_id.to_string())],
         )
         .await?;
         row.map(|row| row.opt_text("reason"))
@@ -456,50 +580,42 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .map(Option::flatten)
     }
 
-    async fn get_identity_tracked_state_reason_for_download(
+    async fn get_identity_tracked_state_detail(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
+    async fn get_identity_tracked_state_detail_for_download(
         &self,
         canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        _identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
-        let Some(canonical_download_id) = canonical_download_id else {
-            return self
-                .get_identity_tracked_state_reason(identity, source_identity)
-                .await;
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match source_identity {
+                Some(source_identity) => {
+                    let Some(canonical_download_id) =
+                        self.active_binding_download_id(source_identity).await?
+                    else {
+                        return Ok(None);
+                    };
+                    canonical_download_id
+                }
+                None => return Ok(None),
+            },
         };
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT reason
+            "SELECT detail
              FROM download_identity_states
              WHERE canonical_download_id = {}
              ORDER BY updated_at DESC, id DESC
              LIMIT 1",
             &[SqlArg::Text(canonical_download_id.to_string())],
-        )
-        .await?;
-        if let Some(row) = row {
-            return row.opt_text("reason");
-        }
-        self.get_identity_tracked_state_reason(identity, source_identity)
-            .await
-    }
-
-    async fn get_identity_tracked_state_detail(
-        &self,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
-    ) -> AppResult<Option<String>> {
-        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
-            return Ok(None);
-        };
-
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT detail
-             FROM download_identity_states
-             WHERE identity_key = {}
-             LIMIT 1",
-            &[SqlArg::Text(identity_key)],
         )
         .await?;
         row.map(|row| row.opt_text("detail"))
@@ -507,72 +623,44 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .map(Option::flatten)
     }
 
-    async fn get_identity_tracked_state_detail_for_download(
-        &self,
-        canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
-    ) -> AppResult<Option<String>> {
-        let Some(canonical_download_id) = canonical_download_id else {
-            return self
-                .get_identity_tracked_state_detail(identity, source_identity)
-                .await;
-        };
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            "SELECT detail
-             FROM download_identity_states
-             WHERE canonical_download_id = {}
-             ORDER BY updated_at DESC, id DESC
-             LIMIT 1",
-            &[SqlArg::Text(canonical_download_id.to_string())],
-        )
-        .await?;
-        if let Some(row) = row {
-            return row.opt_text("detail");
-        }
-        self.get_identity_tracked_state_detail(identity, source_identity)
-            .await
-    }
-
     async fn upsert_identity_tracked_state_returning_previous(
         &self,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
-        tracked_state: &str,
-        preserve_previous: &[&str],
-        reason: Option<&str>,
-        detail: Option<&str>,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
+        _tracked_state: &str,
+        _preserve_previous: &[&str],
+        _reason: Option<&str>,
+        _detail: Option<&str>,
     ) -> AppResult<Option<String>> {
-        self.upsert_identity_tracked_state_for_download_returning_previous(
-            None,
-            identity,
-            source_identity,
-            tracked_state,
-            preserve_previous,
-            reason,
-            detail,
-        )
-        .await
+        Ok(None)
     }
 
     async fn upsert_identity_tracked_state_for_download_returning_previous(
         &self,
-        canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        target: IdentityTrackedStateTarget<'_>,
         tracked_state: &str,
         preserve_previous: &[&str],
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<Option<String>> {
-        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
-            return Ok(None);
+        let canonical_download_id = match target.canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match target.source_identity {
+                Some(source_identity) => {
+                    let Some(canonical_download_id) =
+                        self.active_binding_download_id(source_identity).await?
+                    else {
+                        return Ok(None);
+                    };
+                    canonical_download_id
+                }
+                None => return Ok(None),
+            },
         };
-        let canonical_download_id =
-            canonical_download_id_for_tracked_state(canonical_download_id, identity);
-        let identity = identity.clone();
-        let source_identity = source_identity.cloned();
+        let identity_key = canonical_tracked_state_key(&canonical_download_id);
+        let canonical_download_id = canonical_download_id.to_string();
+        let identity = target.identity.clone();
+        let source_identity = target.source_identity.cloned();
         let tracked_state = tracked_state.to_string();
         let preserve_previous = preserve_previous
             .iter()
@@ -593,28 +681,16 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 let reason = reason.clone();
                 let detail = detail.clone();
                 Box::pin(async move {
-                    let previous = if let Some(canonical_download_id) = &canonical_download_id {
-                        SqlRuntime::fetch_optional(
-                            SqlExec::Tx(tx),
-                            "SELECT tracked_state
-                             FROM download_identity_states
-                             WHERE canonical_download_id = {}
-                             ORDER BY updated_at DESC, id DESC
-                             LIMIT 1",
-                            &[SqlArg::Text(canonical_download_id.clone())],
-                        )
-                        .await?
-                    } else {
-                        SqlRuntime::fetch_optional(
-                            SqlExec::Tx(tx),
-                            "SELECT tracked_state
-                             FROM download_identity_states
-                             WHERE identity_key = {}
-                             LIMIT 1",
-                            &[SqlArg::Text(identity_key.clone())],
-                        )
-                        .await?
-                    }
+                    let previous = SqlRuntime::fetch_optional(
+                        SqlExec::Tx(tx),
+                        "SELECT tracked_state
+                         FROM download_identity_states
+                         WHERE canonical_download_id = {}
+                         ORDER BY updated_at DESC, id DESC
+                         LIMIT 1",
+                        &[SqlArg::Text(canonical_download_id.clone())],
+                    )
+                    .await?
                     .map(|row| row.text("tracked_state"))
                     .transpose()?;
                     if let Some(previous) = previous.as_deref().filter(|previous| {
@@ -648,7 +724,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &[
                             SqlArg::Text(Id::new().0),
                             SqlArg::Text(identity_key),
-                            SqlArg::OptText(canonical_download_id),
+                            SqlArg::OptText(Some(canonical_download_id)),
                             SqlArg::OptText(identity.download_id),
                             SqlArg::OptText(source_identity.as_ref().map(|source| {
                                 normalize_download_client_id(source.client_id.as_deref())
@@ -680,8 +756,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn list_identity_tracked_states_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<(ClientJobLocator, String)>> {
         let chunks = chunk_download_submission_client_items(client_items);
         if chunks.is_empty() {
             return Ok(Vec::new());
@@ -715,7 +791,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .await?;
             for row in rows {
                 states.push((
-                    DownloadSourceIdentity::new(
+                    ClientJobLocator::new(
                         row.opt_text("client_id")?.as_deref(),
                         row.text("client_type")?,
                         row.text("download_client_item_id")?,
@@ -729,7 +805,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
+        client_items: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>> {
         let chunks = chunk_download_submission_client_items(client_items);
         if chunks.is_empty() {
@@ -836,7 +912,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await
     }
 
-    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
         let identity = identity.clone();
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -878,7 +954,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn update_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         tracked_state: &str,
     ) -> AppResult<()> {
         let identity = identity.clone();
@@ -887,16 +963,18 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             let identity = identity.clone();
             let tracked_state = tracked_state.clone();
             Box::pin(async move {
+                let canonical_download_id =
+                    active_or_create_binding_download_id_tx(tx, &identity).await?;
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO download_submissions
                      (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, tracked_state, tracked_state_at)
                      VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, 'standard', NULL, NULL, {}, {})
-                     ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+                     ON CONFLICT(id) DO UPDATE
                      SET tracked_state = excluded.tracked_state,
                          tracked_state_at = excluded.tracked_state_at",
                     &[
-                        SqlArg::Text(Id::new().0),
+                        SqlArg::Text(canonical_download_id.to_string()),
                         SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
                         SqlArg::Text(identity.client_type.clone()),
                         SqlArg::Text(identity.item_id.clone()),
@@ -905,7 +983,6 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     ],
                 )
                 .await?;
-                sync_canonical_download_rows_tx(tx, &identity).await?;
                 Ok(())
             })
         })
@@ -914,20 +991,17 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn get_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<String>> {
+        let Some(canonical_download_id) = self.active_binding_download_id(identity).await? else {
+            return Ok(None);
+        };
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT tracked_state FROM download_submissions
-             WHERE download_client_type = {}
-               AND download_client_item_id = {}
-               AND download_client_id = {}
+             WHERE id = {}
              LIMIT 1",
-            &[
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-            ],
+            &[SqlArg::Text(canonical_download_id.to_string())],
         )
         .await?;
         row.map(|row| row.opt_text("tracked_state"))
@@ -956,7 +1030,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                           seed_goal_seconds, seed_never_remove, seed_goal_met_action,
                           seed_post_import_tracking, seed_goal_source, seed_info_hash)
                          VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-                         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
+                         ON CONFLICT(id) DO UPDATE
                          SET seeding_profile_id = excluded.seeding_profile_id,
                              seed_goal_ratio = excluded.seed_goal_ratio,
                              seed_goal_seconds = excluded.seed_goal_seconds,
@@ -997,15 +1071,6 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         ],
                     )
                     .await?;
-                    sync_canonical_download_rows_tx(
-                        tx,
-                        &DownloadSourceIdentity::new(
-                            record.client_id.as_deref(),
-                            &record.client_type,
-                            &record.client_item_id,
-                        ),
-                    )
-                    .await?;
                     Ok(())
                 })
             },
@@ -1015,7 +1080,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
 
     async fn get_seed_goals(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<PersistedSeedGoals>> {
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -1039,10 +1104,26 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .map(Option::flatten)
     }
 
+    async fn get_seed_goals_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        let canonical_download_id = match canonical_download_id {
+            Some(canonical_download_id) => *canonical_download_id,
+            None => match self.active_binding_download_id(identity).await? {
+                Some(canonical_download_id) => canonical_download_id,
+                None => return Ok(None),
+            },
+        };
+        self.get_seed_goals_by_canonical_download_id(&canonical_download_id)
+            .await
+    }
+
     async fn list_seed_goals_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<(ClientJobLocator, PersistedSeedGoals)>> {
         let chunks = chunk_download_submission_client_items(client_items);
         if chunks.is_empty() {
             return Ok(Vec::new());
@@ -1079,7 +1160,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 };
                 let client_id = row.opt_text("download_client_id")?;
                 out.push((
-                    DownloadSourceIdentity::new(
+                    ClientJobLocator::new(
                         client_id.as_deref(),
                         &row.text("download_client_type")?,
                         &row.text("download_client_item_id")?,
@@ -1246,6 +1327,20 @@ mod seed_goal_tests {
                  created_at TEXT NOT NULL,
                  last_seen_at TEXT,
                  ended_at TEXT
+             );
+             CREATE TABLE download_identity_states (
+                 id TEXT PRIMARY KEY,
+                 identity_key TEXT NOT NULL UNIQUE,
+                 canonical_download_id TEXT,
+                 download_id TEXT,
+                 client_id TEXT,
+                 client_type TEXT,
+                 download_client_item_id TEXT,
+                 tracked_state TEXT NOT NULL,
+                 reason TEXT,
+                 detail TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
              )",
         )
         .execute(&pool)
@@ -1283,8 +1378,8 @@ mod seed_goal_tests {
         })
     }
 
-    fn identity() -> DownloadSourceIdentity {
-        DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-1")
+    fn identity() -> ClientJobLocator {
+        ClientJobLocator::new(Some("primary"), "qbittorrent", "job-1")
     }
 
     fn record() -> SeedGoalGrabRecord {
@@ -1328,10 +1423,10 @@ mod seed_goal_tests {
         let loaded = store
             .list_seed_goals_for_client_items(&[
                 identity(),
-                DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-2"),
+                ClientJobLocator::new(Some("primary"), "qbittorrent", "job-2"),
                 // A row with no resolution at all must simply be absent, not a
                 // default-valued entry that would read as "no goals resolved".
-                DownloadSourceIdentity::new(Some("primary"), "qbittorrent", "job-missing"),
+                ClientJobLocator::new(Some("primary"), "qbittorrent", "job-missing"),
             ])
             .await
             .expect("batch read should succeed");
@@ -1350,186 +1445,23 @@ mod seed_goal_tests {
     }
 
     #[tokio::test]
-    async fn seed_goals_round_trip_by_client_identity_and_info_hash() {
-        let store = store().await;
-        store
-            .record_seed_goals(record())
-            .await
-            .expect("seed goals should persist");
-
-        let loaded = store
-            .get_seed_goals(&identity())
-            .await
-            .expect("read should succeed")
-            .expect("goals should be present");
-        assert_eq!(loaded.seeding_profile_id.as_deref(), Some("profile-1"));
-        assert_eq!(loaded.seed_goal_ratio, Some(2.5));
-        assert_eq!(loaded.seed_goal_seconds, Some(7200));
-        assert!(loaded.never_remove);
-        assert_eq!(
-            loaded.goal_met_action,
-            Some(scryer_domain::SeedGoalMetAction::StopSeeding)
-        );
-        assert_eq!(
-            loaded.post_import_tracking,
-            scryer_domain::PostImportTracking::HandOff
-        );
-        assert_eq!(loaded.resolution_source, SeedGoalResolutionSource::Indexer);
-        // Stored lowercased so an observed hash from any client matches.
-        assert_eq!(
-            loaded.info_hash.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef01")
-        );
-
-        let by_hash = store
-            .find_seed_goals_by_info_hash("AbCdEf0123456789ABCDEF0123456789abcdef01")
-            .await
-            .expect("read should succeed")
-            .expect("goals should be found by info hash");
-        assert_eq!(by_hash, loaded);
-    }
-
-    #[tokio::test]
-    async fn rows_without_a_resolution_read_back_as_none() {
-        let store = store().await;
-        store
-            .record_submission(DownloadSubmission {
-                download_id: scryer_domain::download_identity::DownloadId::new(),
-                scope: SubmissionScope::Title,
-                title_id: "title-1".to_string(),
-                facet: "series".to_string(),
-                download_client_id: Some("primary".to_string()),
-                download_client_type: "qbittorrent".to_string(),
-                download_client_item_id: "job-1".to_string(),
-                source_hint: None,
-                source_provider_id: None,
-                source_provider_name: None,
-                source_kind: None,
-                source_title: None,
-                release_size_bytes: None,
-                request_signature: None,
-                purpose: DownloadSubmissionPurpose::Standard,
-            })
-            .await
-            .expect("submission should record");
-
-        assert_eq!(
-            store
-                .get_seed_goals(&identity())
-                .await
-                .expect("read should succeed"),
-            None
-        );
-        assert_eq!(
-            store
-                .find_seed_goals_by_info_hash("abcdef0123456789abcdef0123456789abcdef01")
-                .await
-                .expect("read should succeed"),
-            None
-        );
-    }
-
-    /// Rows frozen before migration 0166 carry a NULL tracking mode. They must
-    /// read back as `Park` — Scryer keeps managing them — because the other
-    /// direction would silently stop tracking torrents that were grabbed under
-    /// a profile that never offered the choice.
-    #[tokio::test]
-    async fn a_row_written_before_the_tracking_column_reads_back_as_park() {
-        let store = store().await;
-        store
-            .record_seed_goals(record())
-            .await
-            .expect("seed goals should persist");
-        SqlRuntime::run_in_transaction(&store.datastore, "clear_post_import_tracking", |tx| {
-            Box::pin(async move {
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "UPDATE download_submissions SET seed_post_import_tracking = NULL",
-                    &[],
-                )
-                .await?;
-                Ok(())
-            })
-        })
-        .await
-        .expect("column should clear");
-
-        let loaded = store
-            .get_seed_goals(&identity())
-            .await
-            .expect("read should succeed")
-            .expect("goals should be present");
-        assert_eq!(
-            loaded.post_import_tracking,
-            scryer_domain::PostImportTracking::Park
-        );
-    }
-
-    /// The router writes the goals before the acquisition layer records the
-    /// submission, so the later insert must fill the row in without clobbering
-    /// what the choke point already froze onto it.
-    #[tokio::test]
-    async fn recording_the_submission_afterwards_preserves_the_seed_goals() {
+    async fn seed_goals_read_by_canonical_download_id() {
         let store = store().await;
         let record = record();
-        let seeded_download_id = record.download_id;
+        let canonical_download_id = record.download_id;
+        let mut expected = record.goals.clone();
+        expected.info_hash = expected.info_hash.map(|hash| hash.to_ascii_lowercase());
         store
             .record_seed_goals(record)
             .await
             .expect("seed goals should persist");
-        let stub = store
-            .find_by_client_item_id(&identity())
-            .await
-            .expect("stub should be readable")
-            .expect("record_seed_goals should create an externally visible row");
-        assert_eq!(stub.title_id, "title-1");
-        assert_eq!(stub.download_client_id.as_deref(), Some("primary"));
-        assert_eq!(stub.download_client_type, "qbittorrent");
-        assert_eq!(stub.download_client_item_id, "job-1");
-        assert_eq!(stub.download_id, seeded_download_id);
-        store
-            .record_submission(DownloadSubmission {
-                download_id: scryer_domain::download_identity::DownloadId::new(),
-                scope: SubmissionScope::Episode {
-                    episode_id: "episode-1".to_string(),
-                },
-                title_id: "title-1".to_string(),
-                facet: "series".to_string(),
-                download_client_id: Some("primary".to_string()),
-                download_client_type: "qbittorrent".to_string(),
-                download_client_item_id: "job-1".to_string(),
-                source_hint: Some("https://example.invalid/release.torrent".to_string()),
-                source_provider_id: None,
-                source_provider_name: None,
-                source_kind: None,
-                source_title: Some("Test Release".to_string()),
-                release_size_bytes: None,
-                request_signature: Some("sig".to_string()),
-                purpose: DownloadSubmissionPurpose::Standard,
-            })
-            .await
-            .expect("submission should record");
 
         let loaded = store
-            .get_seed_goals(&identity())
+            .get_seed_goals_for_download(Some(&canonical_download_id), &identity())
             .await
-            .expect("read should succeed")
-            .expect("goals should survive the submission upsert");
-        assert_eq!(loaded.seed_goal_ratio, Some(2.5));
+            .expect("canonical read should succeed");
 
-        let submission = store
-            .find_by_client_item_id(&identity())
-            .await
-            .expect("read should succeed")
-            .expect("submission should be present");
-        assert_eq!(
-            submission.scope,
-            SubmissionScope::Episode {
-                episode_id: "episode-1".to_string()
-            }
-        );
-        assert_eq!(submission.source_title.as_deref(), Some("Test Release"));
-        assert_eq!(submission.download_id, seeded_download_id);
+        assert_eq!(loaded, Some(expected));
     }
 
     fn ambiguous_submission(
@@ -1683,7 +1615,7 @@ mod seed_goal_tests {
             .await
             .expect("accepted SAB-style submission should persist");
         let stored = store
-            .find_by_client_item_id(&DownloadSourceIdentity::new(
+            .find_by_client_item_id(&ClientJobLocator::new(
                 Some("primary"),
                 "sabnzbd",
                 "SABnzbd_nzo_1",
@@ -1692,5 +1624,131 @@ mod seed_goal_tests {
             .expect("stored submission should load")
             .expect("accepted submission should be present");
         assert_eq!(stored.download_id, download_id);
+    }
+
+    #[tokio::test]
+    async fn download_id_submission_lookup_reads_the_canonical_row() {
+        let store = store().await;
+        let canonical_download_id = DownloadId::new();
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO download_submissions (
+                id, title_id, facet, download_client_id, download_client_type,
+                download_client_item_id, download_id
+             ) VALUES ({}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text(canonical_download_id.to_string()),
+                SqlArg::Text("title-canonical".to_string()),
+                SqlArg::Text("series".to_string()),
+                SqlArg::Text("primary".to_string()),
+                SqlArg::Text("nzbget".to_string()),
+                SqlArg::Text("canonical-bound-job".to_string()),
+                SqlArg::Text("canonical-overloaded-id".to_string()),
+            ],
+        )
+        .await
+        .expect("canonical submission fixture should insert");
+
+        let resolved = store
+            .list_by_download_id_for_download(
+                Some(&canonical_download_id),
+                Some("primary"),
+                "nzbget",
+                "legacy-overloaded-id",
+            )
+            .await
+            .expect("canonical-first lookup should succeed");
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].download_id, canonical_download_id);
+        assert_eq!(resolved[0].title_id, "title-canonical");
+    }
+
+    #[tokio::test]
+    async fn tracked_state_stub_creation_mints_registry_row_and_active_binding() {
+        let store = store().await;
+        let locator = ClientJobLocator::new(Some("primary"), "nzbget", "unseen-job");
+
+        store
+            .update_tracked_state(&locator, "ignored")
+            .await
+            .expect("tracked-state stub should persist");
+
+        let row = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT d.id, d.origin, b.download_id AS binding_download_id, s.tracked_state
+             FROM downloads d
+             JOIN download_client_bindings b ON b.download_id = d.id
+             JOIN download_submissions s ON s.id = d.id
+             WHERE b.ended_at IS NULL
+               AND COALESCE(b.client_config_id, '') = {}
+               AND b.client_type_snapshot = {}
+               AND b.native_item_id = {}",
+            &[
+                SqlArg::Text("primary".to_string()),
+                SqlArg::Text("nzbget".to_string()),
+                SqlArg::Text("unseen-job".to_string()),
+            ],
+        )
+        .await
+        .expect("registry row should load")
+        .expect("registry row should exist");
+
+        assert_eq!(row.text("origin").expect("origin"), "foreign_observation");
+        assert_eq!(
+            row.text("id").expect("download id"),
+            row.text("binding_download_id").expect("binding download id")
+        );
+        assert_eq!(row.text("tracked_state").expect("tracked state"), "ignored");
+    }
+
+
+
+    #[tokio::test]
+    async fn failed_identity_state_uses_the_canonical_key_and_preserves_compatibility_columns() {
+        let store = store().await;
+        let canonical_download_id = DownloadId::new();
+        let identity = DownloadSubmissionIdentity {
+            download_id: Some("legacy-failure-id".to_string()),
+        };
+        let source_identity =
+            ClientJobLocator::new(Some("primary"), "nzbget", "legacy-failed-job");
+
+        store
+            .record_identity_tracked_state_for_download(
+                Some(&canonical_download_id),
+                &identity,
+                Some(&source_identity),
+                "failed",
+                Some("import_gate_rejected"),
+                Some("failure detail"),
+            )
+            .await
+            .expect("failed state should persist");
+
+        let row = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT identity_key, canonical_download_id, download_id
+             FROM download_identity_states
+             LIMIT 1",
+            &[],
+        )
+        .await
+        .expect("failed state row should load")
+        .expect("failed state row should exist");
+
+        assert_eq!(
+            row.text("identity_key").expect("canonical identity key"),
+            format!("download:{canonical_download_id}")
+        );
+        assert_eq!(
+            row.opt_text("canonical_download_id")
+                .expect("canonical column"),
+            Some(canonical_download_id.to_string())
+        );
+        assert_eq!(
+            row.opt_text("download_id").expect("legacy download id"),
+            Some("legacy-failure-id".to_string())
+        );
     }
 }

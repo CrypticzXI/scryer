@@ -6,7 +6,7 @@ use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStateRepository, AcquisitionScopeStatus,
-    AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
+    AcquisitionStateRepository, AppError, ClientJobLocator, DownloadSourceKind,
     DownloadSubmission, DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository,
     LibraryRootDraft, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
     SuccessfulGrabCommit, TitleRepository, UserRepository,
@@ -657,7 +657,7 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
     );
 
     let submission = download_submission_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -816,7 +816,7 @@ async fn download_submission_roundtrips_episode_scope() {
     .expect("load raw submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
+        .find_by_client_item_id(&ClientJobLocator::new(
             None,
             "nzbget",
             "job-episode-scope",
@@ -877,7 +877,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     .expect("insert legacy submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
+        .find_by_client_item_id(&ClientJobLocator::new(
             None,
             "nzbget",
             "job-legacy-scope",

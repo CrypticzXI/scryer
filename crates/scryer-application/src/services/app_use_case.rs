@@ -598,7 +598,7 @@ impl AppUseCase {
             .services
             .workflow
             .download_submissions
-            .find_by_client_item_id(&DownloadSourceIdentity::new(
+            .find_by_client_item_id(&ClientJobLocator::new(
                 client_id,
                 client_type,
                 download_client_item_id,

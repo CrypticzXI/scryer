@@ -15,7 +15,7 @@ impl crate::DownloadRegistryRepository for CompletedLookupRegistry {
     ) -> AppResult<crate::ObservationResolution> {
         if self
             .failing_item_ids
-            .contains(&observation.locator.native_item_id)
+            .contains(&observation.locator.item_id)
         {
             return Err(AppError::Repository(
                 "injected completed lookup registry failure".to_string(),
@@ -23,7 +23,7 @@ impl crate::DownloadRegistryRepository for CompletedLookupRegistry {
         }
         let download_id = self
             .ids
-            .get(&observation.locator.native_item_id)
+            .get(&observation.locator.item_id)
             .copied()
             .ok_or_else(|| AppError::Repository("missing completed lookup registry id".into()))?;
         Ok(crate::ObservationResolution::Resolved {
@@ -458,7 +458,7 @@ async fn check_with_recent_lookup_retries_local_identity_miss_without_manual_blo
     let identity = DownloadSubmissionIdentity {
         download_id: Some(download_id.to_string()),
     };
-    let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+    let source_identity = ClientJobLocator::new(Some("client-1"), "nzbget", "dl-1");
     let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
     let app = build_app_with_download_client_configs_and_submissions(
         vec![title.clone()],
@@ -505,7 +505,7 @@ async fn check_with_lookup_uses_durable_terminal_state_before_redispatch() {
     submission_repo
         .record_identity_tracked_state(
             &identity,
-            Some(&DownloadSourceIdentity::new(
+            Some(&ClientJobLocator::new(
                 Some("client-1"),
                 "nzbget",
                 "dl-1",
@@ -549,8 +549,8 @@ async fn check_with_lookup_does_not_apply_client_local_terminal_state_from_other
     let identity = DownloadSubmissionIdentity {
         download_id: Some(download_id.to_string()),
     };
-    let other_client_source = DownloadSourceIdentity::new(Some("client-2"), "nzbget", "dl-1");
-    let current_client_source = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+    let other_client_source = ClientJobLocator::new(Some("client-2"), "nzbget", "dl-1");
+    let current_client_source = ClientJobLocator::new(Some("client-1"), "nzbget", "dl-1");
     let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
     submission_repo
         .record_identity_tracked_state(

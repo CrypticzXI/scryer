@@ -3294,19 +3294,26 @@ pub trait DownloadRegistryRepository: Send + Sync {
     async fn end_binding(&self, id: &DownloadId) -> AppResult<()>;
 }
 
+/// The canonical row and compatibility values carried by a tracked-state update.
+/// Keeping these together prevents identity state APIs from growing positional
+/// argument lists as the legacy compatibility columns are retired.
+pub struct IdentityTrackedStateTarget<'a> {
+    pub canonical_download_id: Option<&'a DownloadId>,
+    pub identity: &'a DownloadSubmissionIdentity,
+    pub source_identity: Option<&'a ClientJobLocator>,
+}
+
 #[async_trait]
 pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
 
     /// Persist a submit whose client may have accepted the mutation but did
     /// not return a native item identifier.
-    async fn record_ambiguous_submission(&self, _submission: DownloadSubmission) -> AppResult<()> {
-        Ok(())
-    }
+    async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()>;
 
     async fn record_submission_identity(
         &self,
-        _identity: &DownloadSourceIdentity,
+        _identity: &ClientJobLocator,
         _submission_identity: &DownloadSubmissionIdentity,
     ) -> AppResult<()> {
         Ok(())
@@ -3317,7 +3324,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
     ) -> AppResult<()> {
-        let identity = DownloadSourceIdentity::from_submission(&submission);
+        let identity = ClientJobLocator::from_submission(&submission);
         self.record_submission(submission).await?;
         self.record_submission_identity(&identity, &submission_identity)
             .await
@@ -3325,7 +3332,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn record_submission_actor_snapshot(
         &self,
-        _identity: &DownloadSourceIdentity,
+        _identity: &ClientJobLocator,
         _actor: DownloadSubmissionActorSnapshot,
     ) -> AppResult<()> {
         Ok(())
@@ -3342,9 +3349,19 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     /// Read the goals a torrent was grabbed under, by download-client identity.
     async fn get_seed_goals(
         &self,
-        _identity: &DownloadSourceIdentity,
+        _identity: &ClientJobLocator,
     ) -> AppResult<Option<PersistedSeedGoals>> {
         Ok(None)
+    }
+
+    /// Prefer the canonical submission row when available, then retain the
+    /// legacy source-identity lookup as a fallback.
+    async fn get_seed_goals_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<PersistedSeedGoals>> {
+        self.get_seed_goals(identity).await
     }
 
     /// Read the goals a torrent was grabbed under, by observed info hash — the
@@ -3363,8 +3380,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     /// reimplement it.
     async fn list_seed_goals_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, PersistedSeedGoals)>> {
+        client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<(ClientJobLocator, PersistedSeedGoals)>> {
         let mut out = Vec::new();
         for identity in client_items {
             if let Some(goals) = self.get_seed_goals(identity).await? {
@@ -3376,15 +3393,25 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn get_submission_actor_snapshot(
         &self,
-        _identity: &DownloadSourceIdentity,
+        _identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionActorSnapshot>> {
         Ok(None)
     }
 
     async fn find_by_client_item_id(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>>;
+
+    /// Prefer the canonical submission row when its download id is already
+    /// known, then retain the legacy source-identity lookup as a fallback.
+    async fn find_by_client_item_id_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        identity: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        self.find_by_client_item_id(identity).await
+    }
 
     async fn find_by_download_id(
         &self,
@@ -3408,9 +3435,22 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Prefer the canonical submission row when available, then retain the
+    /// legacy client-and-download-id query as a fallback.
+    async fn list_by_download_id_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        self.list_by_download_id(client_id, client_type, download_id)
+            .await
+    }
+
     async fn get_submission_identity(
         &self,
-        _identity: &DownloadSourceIdentity,
+        _identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmissionIdentity>> {
         Ok(None)
     }
@@ -3418,7 +3458,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn record_identity_tracked_state(
         &self,
         _identity: &DownloadSubmissionIdentity,
-        _source_identity: Option<&DownloadSourceIdentity>,
+        _source_identity: Option<&ClientJobLocator>,
         _tracked_state: &str,
         _reason: Option<&str>,
         _detail: Option<&str>,
@@ -3432,7 +3472,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         _canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
         tracked_state: &str,
         reason: Option<&str>,
         detail: Option<&str>,
@@ -3448,7 +3488,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn upsert_identity_tracked_state_returning_previous(
         &self,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
         tracked_state: &str,
         preserve_previous: &[&str],
         reason: Option<&str>,
@@ -3477,17 +3517,15 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     /// Canonical-aware variant of the durable tracked-state upsert.
     async fn upsert_identity_tracked_state_for_download_returning_previous(
         &self,
-        _canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        target: IdentityTrackedStateTarget<'_>,
         tracked_state: &str,
         preserve_previous: &[&str],
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<Option<String>> {
         self.upsert_identity_tracked_state_returning_previous(
-            identity,
-            source_identity,
+            target.identity,
+            target.source_identity,
             tracked_state,
             preserve_previous,
             reason,
@@ -3499,7 +3537,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn get_identity_tracked_state(
         &self,
         _identity: &DownloadSubmissionIdentity,
-        _source_identity: Option<&DownloadSourceIdentity>,
+        _source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         Ok(None)
     }
@@ -3510,7 +3548,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         _canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         self.get_identity_tracked_state(identity, source_identity)
             .await
@@ -3519,7 +3557,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn get_identity_tracked_state_reason(
         &self,
         _identity: &DownloadSubmissionIdentity,
-        _source_identity: Option<&DownloadSourceIdentity>,
+        _source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         Ok(None)
     }
@@ -3528,7 +3566,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         _canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         self.get_identity_tracked_state_reason(identity, source_identity)
             .await
@@ -3537,7 +3575,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     async fn get_identity_tracked_state_detail(
         &self,
         _identity: &DownloadSubmissionIdentity,
-        _source_identity: Option<&DownloadSourceIdentity>,
+        _source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         Ok(None)
     }
@@ -3546,7 +3584,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         _canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
-        source_identity: Option<&DownloadSourceIdentity>,
+        source_identity: Option<&ClientJobLocator>,
     ) -> AppResult<Option<String>> {
         self.get_identity_tracked_state_detail(identity, source_identity)
             .await
@@ -3554,8 +3592,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn list_identity_tracked_states_for_client_items(
         &self,
-        _client_items: &[DownloadSourceIdentity],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        _client_items: &[ClientJobLocator],
+    ) -> AppResult<Vec<(ClientJobLocator, String)>> {
         Ok(Vec::new())
     }
 
@@ -3563,8 +3601,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     /// keeps the legacy client-item lookup for entries that do not.
     async fn list_identity_tracked_states_for_client_items_with_download_ids(
         &self,
-        client_items: &[(DownloadSourceIdentity, Option<DownloadId>)],
-    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        client_items: &[(ClientJobLocator, Option<DownloadId>)],
+    ) -> AppResult<Vec<(ClientJobLocator, String)>> {
         let mut states = Vec::new();
         for (source_identity, canonical_download_id) in client_items {
             let identity = self
@@ -3587,7 +3625,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn list_for_client_items(
         &self,
-        client_items: &[DownloadSourceIdentity],
+        client_items: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
@@ -3601,17 +3639,17 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
 
-    async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()>;
+    async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()>;
 
     async fn update_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         tracked_state: &str,
     ) -> AppResult<()>;
 
     async fn get_tracked_state(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Option<String>>;
 }
 
@@ -3632,21 +3670,21 @@ pub trait ImportArtifactRepository: Send + Sync {
 
     async fn list_by_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>>;
 
     /// Canonical-first artifact history lookup with a legacy tuple fallback.
     async fn list_by_source_identity_for_download(
         &self,
         _canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
         self.list_by_source_identity(identity).await
     }
 
     async fn count_by_result_for_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64>;
 
@@ -3654,7 +3692,7 @@ pub trait ImportArtifactRepository: Send + Sync {
     async fn count_by_result_for_source_identity_for_download(
         &self,
         _canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
         self.count_by_result_for_source_identity(identity, result)
@@ -3764,14 +3802,14 @@ pub trait StagedNzbStore: Send + Sync {
 pub trait ImportRepository: Send + Sync {
     async fn queue_import_request(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String>;
 
     async fn queue_import_request_with_identity(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
         _submission_identity: Option<DownloadSubmissionIdentity>,
@@ -3785,7 +3823,7 @@ pub trait ImportRepository: Send + Sync {
     /// storage retain the legacy write path.
     async fn queue_import_request_with_identity_for_download(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
         submission_identity: Option<DownloadSubmissionIdentity>,
@@ -3840,7 +3878,7 @@ pub trait ImportRepository: Send + Sync {
 
     async fn list_imports_for_identities(
         &self,
-        identities: &[DownloadSourceIdentity],
+        identities: &[ClientJobLocator],
     ) -> AppResult<Vec<ImportRecord>>;
 
     /// Returns completed manual imports updated at or after `updated_after`
@@ -3856,21 +3894,21 @@ pub trait ImportRepository: Send + Sync {
         Ok(Vec::new())
     }
 
-    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
+    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool>;
 
     /// Read by canonical download id when it is available, then retain the
     /// legacy source-tuple lookup on a miss.
     async fn is_already_imported_for_download(
         &self,
         _canonical_download_id: Option<&DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<bool> {
         self.is_already_imported(identity).await
     }
 
     async fn is_already_imported_by_download_id(
         &self,
-        _source_identity: &DownloadSourceIdentity,
+        _source_identity: &ClientJobLocator,
         _identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
         Ok(false)
@@ -3881,7 +3919,7 @@ pub trait ImportRepository: Send + Sync {
     async fn is_already_imported_by_download_id_for_download(
         &self,
         _canonical_download_id: Option<&DownloadId>,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
         identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
         self.is_already_imported_by_download_id(source_identity, identity)
@@ -3914,7 +3952,7 @@ pub trait ImportRepository: Send + Sync {
         &self,
         _actor_user_id: &str,
         _title_id: &str,
-        _source_identity: &DownloadSourceIdentity,
+        _source_identity: &ClientJobLocator,
     ) -> AppResult<Option<ManualImportSelection>> {
         Ok(None)
     }
@@ -3925,7 +3963,7 @@ pub trait ImportRepository: Send + Sync {
         _canonical_download_id: Option<&DownloadId>,
         actor_user_id: &str,
         title_id: &str,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
     ) -> AppResult<Option<ManualImportSelection>> {
         self.find_manual_import_selection(actor_user_id, title_id, source_identity)
             .await
@@ -3951,7 +3989,7 @@ pub trait ImportRepository: Send + Sync {
 
     async fn delete_manual_import_selections_for_source(
         &self,
-        _source_identity: &DownloadSourceIdentity,
+        _source_identity: &ClientJobLocator,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -4101,6 +4139,28 @@ pub trait DownloadQueueCommandRepository: Send + Sync {
         is_history: bool,
         requested_by_user_id: Option<&str>,
     ) -> AppResult<crate::DownloadQueueCommandRecord>;
+
+    /// Persist the already-resolved canonical identity alongside the legacy
+    /// queue-command tuple. Implementations that do not yet store it retain
+    /// the legacy queue behavior.
+    async fn queue_delete_command_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+        is_history: bool,
+        requested_by_user_id: Option<&str>,
+    ) -> AppResult<crate::DownloadQueueCommandRecord> {
+        self.queue_delete_command(
+            client_id,
+            client_type,
+            download_client_item_id,
+            is_history,
+            requested_by_user_id,
+        )
+        .await
+    }
 
     async fn recover_stale_running_delete_commands(&self, stale_seconds: i64) -> AppResult<u64>;
 

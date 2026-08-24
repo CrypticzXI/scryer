@@ -691,7 +691,7 @@ impl AppUseCase {
                         "queued download submission without a release title; import will parse the client-reported release name"
                     );
                 }
-                let submission_identity = DownloadSourceIdentity::new(
+                let submission_identity = ClientJobLocator::new(
                     grab.client_id.as_deref(),
                     &grab.client_type,
                     &grab.job_id,
@@ -1459,7 +1459,7 @@ fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod grab_time_release_title_tests {
     use crate::{
-        AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+        AppResult, ClientJobLocator, DownloadSubmission, DownloadSubmissionRepository,
         QueuedReleaseSelection, SubmissionConflictPolicy, SubmissionScope,
     };
     use async_trait::async_trait;
@@ -1479,29 +1479,33 @@ mod grab_time_release_title_tests {
             Ok(())
         }
 
+        async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+            self.record_submission(submission).await
+        }
+
         async fn find_by_client_item_id(
             &self,
-            identity: &DownloadSourceIdentity,
+            identity: &ClientJobLocator,
         ) -> AppResult<Option<DownloadSubmission>> {
             Ok(self
                 .rows
                 .lock()
                 .await
                 .iter()
-                .find(|row| DownloadSourceIdentity::from_submission(row) == *identity)
+                .find(|row| ClientJobLocator::from_submission(row) == *identity)
                 .cloned())
         }
 
         async fn list_for_client_items(
             &self,
-            client_items: &[DownloadSourceIdentity],
+            client_items: &[ClientJobLocator],
         ) -> AppResult<Vec<DownloadSubmission>> {
             Ok(self
                 .rows
                 .lock()
                 .await
                 .iter()
-                .filter(|row| client_items.contains(&DownloadSourceIdentity::from_submission(row)))
+                .filter(|row| client_items.contains(&ClientJobLocator::from_submission(row)))
                 .cloned()
                 .collect())
         }
@@ -1543,19 +1547,19 @@ mod grab_time_release_title_tests {
             Ok(())
         }
 
-        async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+        async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
             self.rows
                 .lock()
                 .await
-                .retain(|row| DownloadSourceIdentity::from_submission(row) != *identity);
+                .retain(|row| ClientJobLocator::from_submission(row) != *identity);
             Ok(())
         }
 
-        async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+        async fn update_tracked_state(&self, _: &ClientJobLocator, _: &str) -> AppResult<()> {
             Ok(())
         }
 
-        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+        async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
             Ok(None)
         }
     }

@@ -197,6 +197,7 @@ pub(crate) async fn should_remove_terminal_download(
 )]
 async fn reconcile_terminal_download_cleanup(
     app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
     client_id: &str,
     client_type: &str,
     download_client_item_id: &str,
@@ -264,6 +265,7 @@ async fn reconcile_terminal_download_cleanup(
             && is_torrent)
     {
         let key = crate::seeding_gate::SeedGoalLookupKey {
+            canonical_download_id: canonical_download_id.cloned(),
             client_id: client_id.to_string(),
             client_type: client_type.trim().to_string(),
             client_item_id: download_client_item_id.trim().to_string(),

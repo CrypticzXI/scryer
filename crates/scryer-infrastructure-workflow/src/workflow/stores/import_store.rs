@@ -3,7 +3,7 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, DownloadSourceIdentity, DownloadSubmissionIdentity, ImportArtifact,
+    AppError, AppResult, ClientJobLocator, DownloadSubmissionIdentity, ImportArtifact,
     ImportArtifactRepository, ImportRepository, ManualImportSelection,
     ManualImportSelectionCandidate,
 };
@@ -50,11 +50,41 @@ async fn is_already_imported_by_canonical_download_id(
     Ok(row.i64("count")? > 0)
 }
 
+async fn active_binding_download_id(
+    datastore: &StoreDatastore,
+    locator: &ClientJobLocator,
+) -> AppResult<Option<scryer_domain::download_identity::DownloadId>> {
+    let row = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT download_id FROM download_client_bindings
+         WHERE ended_at IS NULL
+           AND native_item_id IS NOT NULL
+           AND COALESCE(client_config_id, '') = {}
+           AND LOWER(COALESCE(client_type_snapshot, '')) = {}
+           AND native_item_id = {}
+         ORDER BY created_at, download_id
+         LIMIT 1",
+        &[
+            SqlArg::Text(locator.client_id_or_empty().to_string()),
+            SqlArg::Text(locator.client_type.clone()),
+            SqlArg::Text(locator.item_id.clone()),
+        ],
+    )
+    .await?;
+    row.map(|row| {
+        let value = row.text("download_id")?;
+        scryer_domain::download_identity::DownloadId::parse(&value).ok_or_else(|| {
+            AppError::Repository(format!("invalid canonical download id {value:?} in binding"))
+        })
+    })
+    .transpose()
+}
+
 #[async_trait]
 impl ImportRepository for ImportStore {
     async fn queue_import_request(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
@@ -63,7 +93,7 @@ impl ImportRepository for ImportStore {
 
     async fn queue_import_request_with_identity(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
         submission_identity: Option<DownloadSubmissionIdentity>,
@@ -80,7 +110,7 @@ impl ImportRepository for ImportStore {
 
     async fn queue_import_request_with_identity_for_download(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
         submission_identity: Option<DownloadSubmissionIdentity>,
@@ -260,7 +290,7 @@ impl ImportRepository for ImportStore {
 
     async fn list_imports_for_identities(
         &self,
-        identities: &[DownloadSourceIdentity],
+        identities: &[ClientJobLocator],
     ) -> AppResult<Vec<ImportRecord>> {
         let identities = dedupe_identities(identities);
         if identities.is_empty() {
@@ -311,7 +341,7 @@ impl ImportRepository for ImportStore {
         .await
     }
 
-    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
         let already_imported_predicate = already_imported_status_predicate(&self.datastore);
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -337,20 +367,28 @@ impl ImportRepository for ImportStore {
     async fn is_already_imported_for_download(
         &self,
         canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<bool> {
-        if let Some(canonical_download_id) = canonical_download_id
-            && is_already_imported_by_canonical_download_id(&self.datastore, canonical_download_id)
+        let canonical_download_id = match canonical_download_id {
+            Some(id) => Some(id.to_string()),
+            None => active_binding_download_id(&self.datastore, identity)
                 .await?
-        {
-            return Ok(true);
-        }
-        self.is_already_imported(identity).await
+                .map(|id| id.to_string()),
+        };
+        let Some(canonical_download_id) = canonical_download_id else {
+            return Ok(false);
+        };
+        is_already_imported_by_canonical_download_id(
+            &self.datastore,
+            &scryer_domain::download_identity::DownloadId::parse(&canonical_download_id)
+                .expect("canonical binding ids are validated"),
+        )
+        .await
     }
 
     async fn is_already_imported_by_download_id(
         &self,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
         identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
         let Some(download_id) = identity
@@ -389,16 +427,10 @@ impl ImportRepository for ImportStore {
     async fn is_already_imported_by_download_id_for_download(
         &self,
         canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        source_identity: &DownloadSourceIdentity,
-        identity: &DownloadSubmissionIdentity,
+        source_identity: &ClientJobLocator,
+        _identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
-        if let Some(canonical_download_id) = canonical_download_id
-            && is_already_imported_by_canonical_download_id(&self.datastore, canonical_download_id)
-                .await?
-        {
-            return Ok(true);
-        }
-        self.is_already_imported_by_download_id(source_identity, identity)
+        self.is_already_imported_for_download(canonical_download_id, source_identity)
             .await
     }
 
@@ -526,7 +558,7 @@ impl ImportRepository for ImportStore {
         &self,
         actor_user_id: &str,
         title_id: &str,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
     ) -> AppResult<Option<ManualImportSelection>> {
         let selection = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -567,12 +599,16 @@ impl ImportRepository for ImportStore {
         canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
         actor_user_id: &str,
         title_id: &str,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
     ) -> AppResult<Option<ManualImportSelection>> {
+        let canonical_download_id = match canonical_download_id {
+            Some(id) => Some(id.to_string()),
+            None => active_binding_download_id(&self.datastore, source_identity)
+                .await?
+                .map(|id| id.to_string()),
+        };
         let Some(canonical_download_id) = canonical_download_id else {
-            return self
-                .find_manual_import_selection(actor_user_id, title_id, source_identity)
-                .await;
+            return Ok(None);
         };
         let canonical = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -584,7 +620,7 @@ impl ImportRepository for ImportStore {
              ORDER BY updated_at DESC, id DESC
              LIMIT 1",
             &[
-                SqlArg::Text(canonical_download_id.to_string()),
+                SqlArg::Text(canonical_download_id),
                 SqlArg::Text(actor_user_id.to_string()),
                 SqlArg::Text(title_id.to_string()),
             ],
@@ -604,21 +640,7 @@ impl ImportRepository for ImportStore {
         } else {
             None
         };
-        let legacy = self
-            .find_manual_import_selection(actor_user_id, title_id, source_identity)
-            .await?;
-        if let (Some(canonical), Some(legacy)) = (&canonical, &legacy) {
-            if canonical != legacy {
-                tracing::warn!(
-                    target: "download_identity_resolver",
-                    canonical_download_id = %canonical_download_id,
-                    canonical_selection_id = %canonical.id,
-                    legacy_selection_id = %legacy.id,
-                    "manual import selection canonical and legacy lookups disagreed; using legacy selection"
-                );
-            }
-        }
-        Ok(legacy.or(canonical))
+        Ok(canonical)
     }
 
     async fn get_manual_import_selection(
@@ -731,7 +753,7 @@ impl ImportRepository for ImportStore {
 
     async fn delete_manual_import_selections_for_source(
         &self,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
     ) -> AppResult<()> {
         let identity = source_identity.clone();
         SqlRuntime::run_in_transaction(
@@ -803,7 +825,7 @@ fn manual_import_selection_from_rows(
         release_evidence_json: row.opt_text("release_evidence_json")?,
         trusted_source_root: row.text("trusted_source_root")?,
         archive_workspace_root: row.opt_text("archive_workspace_root")?,
-        source_identity: DownloadSourceIdentity::new(
+        source_identity: ClientJobLocator::new(
             row.opt_text("source_client_id")?.as_deref(),
             row.text("source_system")?,
             row.text("source_ref")?,
@@ -864,7 +886,7 @@ impl ImportArtifactRepository for ImportStore {
 
     async fn list_by_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
         SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -890,10 +912,16 @@ impl ImportArtifactRepository for ImportStore {
     async fn list_by_source_identity_for_download(
         &self,
         canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
+        let canonical_download_id = match canonical_download_id {
+            Some(id) => Some(id.to_string()),
+            None => active_binding_download_id(&self.datastore, identity)
+                .await?
+                .map(|id| id.to_string()),
+        };
         let Some(canonical_download_id) = canonical_download_id else {
-            return self.list_by_source_identity(identity).await;
+            return Ok(Vec::new());
         };
         let canonical = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -904,38 +932,18 @@ impl ImportArtifactRepository for ImportStore {
              FROM download_import_artifacts
              WHERE canonical_download_id = {}
              ORDER BY created_at",
-            &[SqlArg::Text(canonical_download_id.to_string())],
+            &[SqlArg::Text(canonical_download_id)],
         )
         .await?
         .into_iter()
         .map(|row| import_artifact_from_row(&row))
         .collect::<AppResult<Vec<_>>>()?;
-        let legacy = self.list_by_source_identity(identity).await?;
-        if !canonical.is_empty() && !legacy.is_empty() {
-            let canonical_ids = canonical
-                .iter()
-                .map(|artifact| artifact.id.as_str())
-                .collect::<Vec<_>>();
-            let legacy_ids = legacy
-                .iter()
-                .map(|artifact| artifact.id.as_str())
-                .collect::<Vec<_>>();
-            if canonical_ids != legacy_ids {
-                tracing::warn!(
-                    target: "download_identity_resolver",
-                    canonical_download_id = %canonical_download_id,
-                    canonical_artifact_ids = ?canonical_ids,
-                    legacy_artifact_ids = ?legacy_ids,
-                    "import artifact canonical and legacy lookups disagreed; using legacy artifacts"
-                );
-            }
-        }
-        Ok(if legacy.is_empty() { canonical } else { legacy })
+        Ok(canonical)
     }
 
     async fn count_by_result_for_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
         let row = SqlRuntime::fetch_optional(
@@ -957,39 +965,31 @@ impl ImportArtifactRepository for ImportStore {
     async fn count_by_result_for_source_identity_for_download(
         &self,
         canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
+        let canonical_download_id = match canonical_download_id {
+            Some(id) => Some(id.to_string()),
+            None => active_binding_download_id(&self.datastore, identity)
+                .await?
+                .map(|id| id.to_string()),
+        };
         let Some(canonical_download_id) = canonical_download_id else {
-            return self
-                .count_by_result_for_source_identity(identity, result)
-                .await;
+            return Ok(0);
         };
         let canonical = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT COUNT(*) AS count FROM download_import_artifacts
              WHERE canonical_download_id = {} AND result = {}",
             &[
-                SqlArg::Text(canonical_download_id.to_string()),
+                SqlArg::Text(canonical_download_id),
                 SqlArg::Text(result.to_string()),
             ],
         )
         .await?
         .ok_or_else(|| AppError::Repository("missing canonical import artifact count".into()))?
         .i64("count")? as u64;
-        let legacy = self
-            .count_by_result_for_source_identity(identity, result)
-            .await?;
-        if canonical > 0 && legacy > 0 && canonical != legacy {
-            tracing::warn!(
-                target: "download_identity_resolver",
-                canonical_download_id = %canonical_download_id,
-                canonical_count = canonical,
-                legacy_count = legacy,
-                "import artifact canonical and legacy outcome counts disagreed; using legacy count"
-            );
-        }
-        Ok(if legacy == 0 { canonical } else { legacy })
+        Ok(canonical)
     }
 }
 
@@ -1098,13 +1098,13 @@ mod tests {
         })
     }
 
-    fn source_identity(item_id: &str) -> DownloadSourceIdentity {
-        DownloadSourceIdentity::new(Some("client-1"), "nzbget", item_id)
+    fn source_identity(item_id: &str) -> ClientJobLocator {
+        ClientJobLocator::new(Some("client-1"), "nzbget", item_id)
     }
 
     fn artifact(
         id: &str,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
         result: &str,
     ) -> ImportArtifact {
         ImportArtifact {
@@ -1127,7 +1127,7 @@ mod tests {
         }
     }
 
-    fn selection(id: &str, source_identity: DownloadSourceIdentity) -> ManualImportSelection {
+    fn selection(id: &str, source_identity: ClientJobLocator) -> ManualImportSelection {
         ManualImportSelection {
             id: id.to_string(),
             actor_user_id: "user-1".to_string(),
@@ -1141,41 +1141,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn canonical_ownership_lookup_falls_back_to_legacy_import_rows() {
-        let store = store().await;
-        let source_identity = source_identity("legacy-item");
-        let import_id = store
-            .queue_import_request(
-                source_identity.clone(),
-                ImportType::MovieDownload.as_str().to_string(),
-                "{}".to_string(),
-            )
-            .await
-            .expect("legacy import should be written");
-        store
-            .update_import_status(&import_id, ImportStatus::Completed, None)
-            .await
-            .expect("legacy import should complete");
-
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        assert!(
-            store
-                .is_already_imported_for_download(Some(&canonical_download_id), &source_identity)
-                .await
-                .expect("canonical-first legacy fallback should succeed")
-        );
-        assert_eq!(
-            store
-                .is_already_imported_for_download(None, &source_identity)
-                .await
-                .expect("legacy-only ownership should succeed"),
-            store
-                .is_already_imported(&source_identity)
-                .await
-                .expect("legacy ownership should succeed")
-        );
-    }
 
     #[tokio::test]
     async fn canonical_ownership_lookup_finds_canonical_import_rows_before_legacy_tuples() {
@@ -1227,34 +1192,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn artifact_reads_fall_back_to_legacy_rows_without_canonical_ids() {
-        let store = store().await;
-        let source_identity = source_identity("legacy-artifact");
-        store
-            .insert_artifact(artifact("legacy-artifact", &source_identity, "imported"))
-            .await
-            .expect("legacy artifact should be written");
-
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        let artifacts = store
-            .list_by_source_identity_for_download(Some(&canonical_download_id), &source_identity)
-            .await
-            .expect("canonical-first artifact fallback should succeed");
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].id, "legacy-artifact");
-        assert_eq!(
-            store
-                .count_by_result_for_source_identity_for_download(
-                    Some(&canonical_download_id),
-                    &source_identity,
-                    "imported",
-                )
-                .await
-                .expect("canonical-first artifact count fallback should succeed"),
-            1
-        );
-    }
 
     #[tokio::test]
     async fn artifact_reads_find_canonical_rows_before_legacy_tuples() {
@@ -1292,100 +1229,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn artifact_read_divergence_prefers_legacy_rows() {
-        let store = store().await;
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        let legacy_source_identity = source_identity("shared-artifact");
-        let canonical_source_identity = source_identity("canonical-artifact");
-        store
-            .insert_artifact(artifact(
-                "legacy-artifact",
-                &legacy_source_identity,
-                "imported",
-            ))
-            .await
-            .expect("legacy artifact should be written");
-        for id in ["canonical-artifact-1", "canonical-artifact-2"] {
-            store
-                .insert_artifact_for_download(
-                    artifact(id, &canonical_source_identity, "imported"),
-                    Some(&canonical_download_id),
-                )
-                .await
-                .expect("canonical artifact should be written");
-        }
 
-        let artifacts = store
-            .list_by_source_identity_for_download(
-                Some(&canonical_download_id),
-                &legacy_source_identity,
-            )
-            .await
-            .expect("divergent artifact lookup should succeed");
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].id, "legacy-artifact");
-        assert_eq!(
-            store
-                .count_by_result_for_source_identity_for_download(
-                    Some(&canonical_download_id),
-                    &legacy_source_identity,
-                    "imported",
-                )
-                .await
-                .expect("divergent artifact count should succeed"),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn manual_selection_reads_fall_back_to_legacy_rows_without_canonical_ids() {
-        let store = store().await;
-        let source_identity = source_identity("legacy-selection");
-        store
-            .replace_manual_import_selection(selection("legacy-selection", source_identity.clone()))
-            .await
-            .expect("legacy selection should be written");
-
-        let selection = store
-            .find_manual_import_selection_for_download(
-                Some(&scryer_domain::download_identity::DownloadId::new()),
-                "user-1",
-                "title-1",
-                &source_identity,
-            )
-            .await
-            .expect("canonical-first selection fallback should succeed")
-            .expect("legacy selection should be found");
-        assert_eq!(selection.id, "legacy-selection");
-        assert_eq!(selection.canonical_download_id, None);
-    }
-
-    #[tokio::test]
-    async fn legacy_selection_replacement_preserves_its_canonical_download_id() {
-        let store = store().await;
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        let source_identity = source_identity("replacement-selection");
-        store
-            .replace_manual_import_selection_for_download(
-                selection("canonical-selection", source_identity.clone()),
-                Some(&canonical_download_id),
-            )
-            .await
-            .expect("canonical selection should be written");
-        store
-            .replace_manual_import_selection(selection("legacy-selection", source_identity.clone()))
-            .await
-            .expect("legacy replacement should be written");
-
-        let selection = store
-            .find_manual_import_selection("user-1", "title-1", &source_identity)
-            .await
-            .expect("selection lookup should succeed")
-            .expect("replacement selection should be found");
-        assert_eq!(selection.id, "legacy-selection");
-        assert_eq!(selection.canonical_download_id, Some(canonical_download_id));
-    }
 
     #[tokio::test]
     async fn manual_selection_reads_find_canonical_rows_before_legacy_tuples() {
@@ -1414,39 +1258,4 @@ mod tests {
         assert_eq!(selection.canonical_download_id, Some(canonical_download_id));
     }
 
-    #[tokio::test]
-    async fn manual_selection_read_divergence_prefers_legacy_rows() {
-        let store = store().await;
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        let legacy_source_identity = source_identity("shared-selection");
-        store
-            .replace_manual_import_selection(selection(
-                "legacy-selection",
-                legacy_source_identity.clone(),
-            ))
-            .await
-            .expect("legacy selection should be written");
-        store
-            .replace_manual_import_selection_for_download(
-                selection(
-                    "canonical-selection",
-                    source_identity("canonical-selection"),
-                ),
-                Some(&canonical_download_id),
-            )
-            .await
-            .expect("canonical selection should be written");
-
-        let selection = store
-            .find_manual_import_selection_for_download(
-                Some(&canonical_download_id),
-                "user-1",
-                "title-1",
-                &legacy_source_identity,
-            )
-            .await
-            .expect("divergent selection lookup should succeed")
-            .expect("legacy selection should be found");
-        assert_eq!(selection.id, "legacy-selection");
-    }
 }

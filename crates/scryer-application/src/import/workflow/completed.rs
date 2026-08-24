@@ -70,8 +70,8 @@ async fn analyze_and_persist_imported_media_file(
     .await;
 }
 
-fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(
+fn completed_download_identity(completed: &CompletedDownload) -> ClientJobLocator {
+    ClientJobLocator::new(
         Some(completed.client_id.as_str()),
         &completed.client_type,
         &completed.download_client_item_id,
@@ -396,7 +396,7 @@ pub(crate) struct TerminalCleanupTickCache {
 impl TerminalCleanupTickCache {
     /// Prefetch the seed goals for every settled row in this tick in one query.
     /// The memoized caches start empty and fill as rows are reconciled.
-    pub(crate) async fn prefetch(app: &AppUseCase, identities: &[DownloadSourceIdentity]) -> Self {
+    pub(crate) async fn prefetch(app: &AppUseCase, identities: &[ClientJobLocator]) -> Self {
         Self {
             goals: crate::seeding_gate::SeedGoalBatch::prefetch(app, identities).await,
             routing_scopes: std::sync::Mutex::new(HashMap::new()),
@@ -509,7 +509,7 @@ async fn terminal_failure_origin_for_tracked(
     if crate::download_submission_identity_is_empty(&identity) {
         return TerminalFailureOrigin::ClientFailure;
     }
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(tracked.client_id.as_str()),
         &tracked.client_type,
         &tracked.client_item.download_client_item_id,
@@ -568,6 +568,7 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
     let failure_origin = terminal_failure_origin_for_tracked(app, tracked, state).await;
     reconcile_terminal_download_cleanup(
         app,
+        tracked.canonical_download_id(),
         &tracked.client_id,
         &tracked.client_type,
         &tracked.client_item.download_client_item_id,

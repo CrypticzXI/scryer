@@ -3,11 +3,25 @@ use super::*;
 #[derive(Default)]
 struct RecordingDownloadRegistry {
     rows: Arc<Mutex<HashMap<ClientJobLocator, scryer_domain::download_identity::DownloadId>>>,
+    ended: Arc<Mutex<HashSet<scryer_domain::download_identity::DownloadId>>>,
+    failing_bindings: Arc<Mutex<HashSet<ClientJobLocator>>>,
 }
 
 impl RecordingDownloadRegistry {
     async fn contains(&self, locator: &ClientJobLocator) -> bool {
         self.rows.lock().await.contains_key(locator)
+    }
+
+    async fn bind(
+        &self,
+        locator: ClientJobLocator,
+        download_id: scryer_domain::download_identity::DownloadId,
+    ) {
+        self.rows.lock().await.insert(locator, download_id);
+    }
+
+    async fn fail_binding_lookup(&self, locator: ClientJobLocator) {
+        self.failing_bindings.lock().await.insert(locator);
     }
 }
 
@@ -23,7 +37,9 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
             .wire_token
             .as_deref()
             .and_then(scryer_domain::download_identity::DownloadId::from_wire);
-        let download_id = token.or(known).unwrap_or_default();
+        let download_id = token
+            .or(known)
+            .unwrap_or_else(scryer_domain::download_identity::DownloadId::new);
         let newly_foreign = known.is_none() && token.is_none();
         rows.insert(observation.locator.clone(), download_id);
         Ok(ObservationResolution::Resolved {
@@ -57,45 +73,60 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
         &self,
         id: &scryer_domain::download_identity::DownloadId,
     ) -> AppResult<Option<DownloadClientBindingRecord>> {
-        Ok(self
+        let binding = self
             .rows
             .lock()
             .await
             .iter()
-            .find_map(|(locator, existing)| {
-                (existing == id).then(|| DownloadClientBindingRecord {
-                    download_id: *id,
-                    client_config_id: locator.client_config_id.clone(),
-                    client_type_snapshot: Some(locator.client_type.clone()),
-                    client_name_snapshot: None,
-                    native_item_id: Some(locator.native_item_id.clone()),
-                    created_at: Utc::now(),
-                    last_seen_at: None,
-                    ended_at: None,
-                })
-            }))
+            .find_map(|(locator, existing)| (existing == id).then(|| locator.clone()));
+        let Some(locator) = binding else {
+            return Ok(None);
+        };
+        let ended_at = self.ended.lock().await.contains(id).then(Utc::now);
+        Ok(Some(DownloadClientBindingRecord {
+            download_id: *id,
+            client_config_id: locator.client_id,
+            client_type_snapshot: Some(locator.client_type),
+            client_name_snapshot: None,
+            native_item_id: Some(locator.item_id),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            ended_at,
+        }))
     }
 
     async fn find_active_binding_by_locator(
         &self,
         locator: &ClientJobLocator,
     ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        if self.failing_bindings.lock().await.contains(locator) {
+            return Err(AppError::Repository(
+                "injected registry binding lookup failure".to_string(),
+            ));
+        }
         let Some(download_id) = self.rows.lock().await.get(locator).copied() else {
             return Ok(None);
         };
+        if self.ended.lock().await.contains(&download_id) {
+            return Ok(None);
+        }
         Ok(Some(DownloadClientBindingRecord {
             download_id,
-            client_config_id: locator.client_config_id.clone(),
+            client_config_id: locator.client_id.clone(),
             client_type_snapshot: Some(locator.client_type.clone()),
             client_name_snapshot: None,
-            native_item_id: Some(locator.native_item_id.clone()),
+            native_item_id: Some(locator.item_id.clone()),
             created_at: Utc::now(),
             last_seen_at: None,
             ended_at: None,
         }))
     }
 
-    async fn end_binding(&self, _: &scryer_domain::download_identity::DownloadId) -> AppResult<()> {
+    async fn end_binding(
+        &self,
+        id: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<()> {
+        self.ended.lock().await.insert(*id);
         Ok(())
     }
 }
@@ -1579,7 +1610,7 @@ async fn queued_manual_import_rejects_observed_targets_before_consuming_or_queue
         id: Id::new().0,
         actor_user_id: user.id.clone(),
         title_id: bound_title.id.clone(),
-        source_identity: DownloadSourceIdentity {
+        source_identity: ClientJobLocator {
             client_id: Some("qbittorrent-primary".to_string()),
             client_type: "qbittorrent".to_string(),
             item_id: "observed-target-selection".to_string(),
@@ -1929,7 +1960,7 @@ async fn assign_tracked_download_title_preserves_the_grab_time_release_name_and_
     // persisted — it is still the release evidence the import parses and
     // scores — and it must record the scope the operator asked for.
     let mut fixture = tracked_title_assignment_fixture().await;
-    let identity = DownloadSourceIdentity::from_submission(&fixture.submission);
+    let identity = ClientJobLocator::from_submission(&fixture.submission);
     let mut grabbed = fixture.submission.clone();
     grabbed.title_id = "some-other-title".to_string();
     grabbed.source_title = Some("Grabbed.Release.2026.1080p.WEB-DL-GRP".to_string());
@@ -2408,7 +2439,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
         download_id: Some(download_id.to_string()),
     };
     let submission_source_identity =
-        DownloadSourceIdentity::new(Some(config.id.as_str()), "nzbget", item_id);
+        ClientJobLocator::new(Some(config.id.as_str()), "nzbget", item_id);
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
@@ -3790,7 +3821,7 @@ async fn queued_manual_import_on_blocked_bridged_row_renders_as_importing() {
     .expect("unmatched observed completion should block for manual review");
 
     // The operator queues a manual import for the blocked row.
-    let source_identity = DownloadSourceIdentity::new(Some(config.id.as_str()), "weaver", item_id);
+    let source_identity = ClientJobLocator::new(Some(config.id.as_str()), "weaver", item_id);
     let manual_import_id = app
         .services
         .workflow
@@ -5469,7 +5500,7 @@ async fn manual_import_upgrade_reports_transfer_progress_on_its_record() {
     let source_root =
         Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root"));
     let source_identity =
-        DownloadSourceIdentity::new(Some("weaver-client"), "weaver", "pack-upgrade-progress");
+        ClientJobLocator::new(Some("weaver-client"), "weaver", "pack-upgrade-progress");
     let manual_import = |release_name: &str| {
         let source_file = write_pack_video(source_dir.path(), &format!("{release_name}.mkv"));
         let completed = series_pack_completed_download(
@@ -7364,6 +7395,202 @@ async fn queued_delete_poller_executes_client_delete() {
 }
 
 #[tokio::test]
+async fn queue_delete_persists_bound_download_id_and_ends_binding_after_execution() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let (base_app, user) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    let locator = ClientJobLocator::new(Some("client-bound"), "nzbget", "bound-job");
+    registry.bind(locator, canonical_download_id).await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let command = app
+        .delete_download_queue_item(&user, Some("client-bound"), "NZBGet", "bound-job", false)
+        .await
+        .expect("queue delete command");
+    assert_eq!(command.canonical_download_id, Some(canonical_download_id));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if download_queue_commands
+                .get(&command.id)
+                .await
+                .is_some_and(|record| {
+                    record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                })
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bound delete should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert!(
+        registry
+            .load_binding(&canonical_download_id)
+            .await
+            .expect("load binding")
+            .is_some_and(|binding| binding.ended_at.is_some())
+    );
+}
+
+#[tokio::test]
+async fn queue_delete_registry_miss_or_error_uses_legacy_command_and_still_executes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let (base_app, user) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let failing_locator = ClientJobLocator::new(Some("client-error"), "nzbget", "error-job");
+    registry.fail_binding_lookup(failing_locator).await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let missed = app
+        .delete_download_queue_item(&user, Some("client-miss"), "nzbget", "miss-job", false)
+        .await
+        .expect("queue legacy command after registry miss");
+    let failed = app
+        .delete_download_queue_item(&user, Some("client-error"), "nzbget", "error-job", false)
+        .await
+        .expect("queue legacy command after registry error");
+    assert_eq!(missed.canonical_download_id, None);
+    assert_eq!(failed.canonical_download_id, None);
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let missed_completed =
+                download_queue_commands
+                    .get(&missed.id)
+                    .await
+                    .is_some_and(|record| {
+                        record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                    });
+            let failed_completed =
+                download_queue_commands
+                    .get(&failed.id)
+                    .await
+                    .is_some_and(|record| {
+                        record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                    });
+            if missed_completed && failed_completed {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("legacy delete commands should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    let deleted = download_client.deleted_items.lock().await.clone();
+    assert!(deleted.contains(&("miss-job".to_string(), false)));
+    assert!(deleted.contains(&("error-job".to_string(), false)));
+}
+
+#[tokio::test]
+async fn legacy_delete_command_does_not_end_an_unrelated_binding() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let command_id = download_queue_commands
+        .seed_pending(Some("client-legacy"), "nzbget", "legacy-job", false)
+        .await;
+    let (base_app, _) =
+        bootstrap_with_delete_queue(download_client, download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    registry
+        .bind(
+            ClientJobLocator::new(Some("client-legacy"), "nzbget", "legacy-job"),
+            canonical_download_id,
+        )
+        .await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if download_queue_commands
+                .get(&command_id)
+                .await
+                .is_some_and(|record| {
+                    record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                })
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("legacy delete should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert!(
+        registry
+            .load_binding(&canonical_download_id)
+            .await
+            .expect("load binding")
+            .is_some_and(|binding| binding.ended_at.is_none())
+    );
+}
+
+#[tokio::test]
+async fn mark_imported_command_carries_canonical_download_id() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let handle = crate::tracked_downloads::TrackedDownloadHandle::new(tx);
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    let mark = tokio::spawn(async move {
+        handle
+            .mark_imported_for_download(
+                "tracked-mark-imported".to_string(),
+                Some(canonical_download_id),
+            )
+            .await
+    });
+
+    let command = rx.recv().await.expect("mark-imported command");
+    let crate::tracked_downloads::TrackedDownloadCommand::MarkImported {
+        id,
+        canonical_download_id: carried_download_id,
+        reply,
+    } = command
+    else {
+        panic!("expected a mark-imported command");
+    };
+    assert_eq!(id, "tracked-mark-imported");
+    assert_eq!(carried_download_id, Some(canonical_download_id));
+    reply.send(Ok(())).expect("reply to mark-imported command");
+    mark.await
+        .expect("mark-imported caller task")
+        .expect("mark imported");
+}
+
+#[tokio::test]
 async fn queued_delete_poller_marks_failure_and_persists_error() {
     let download_client = Arc::new(StubDownloadClient::default());
     download_client
@@ -7434,7 +7661,7 @@ async fn ignore_tracked_download_uses_durable_fallback_idempotently() {
         )
         .await
         .expect("create title");
-    let source_identity = DownloadSourceIdentity::new(None, "nzbget", "evicted-job-1");
+    let source_identity = ClientJobLocator::new(None, "nzbget", "evicted-job-1");
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
@@ -7529,7 +7756,7 @@ async fn finalize_ignore_preserves_an_imported_outcome() {
         )
         .await
         .expect("create title");
-    let source_identity = DownloadSourceIdentity::new(None, "nzbget", "done-job-1");
+    let source_identity = ClientJobLocator::new(None, "nzbget", "done-job-1");
     let identity = DownloadSubmissionIdentity {
         download_id: Some("scryer-download:done-job-1".to_string()),
     };

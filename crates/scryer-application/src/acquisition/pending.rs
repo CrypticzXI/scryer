@@ -1051,7 +1051,7 @@ impl AppUseCase {
             if !submissions.is_empty() {
                 let identities = submissions
                     .iter()
-                    .map(crate::contracts::DownloadSourceIdentity::from_submission)
+                    .map(crate::contracts::ClientJobLocator::from_submission)
                     .collect::<Vec<_>>();
                 let tracked_states = self
                     .services

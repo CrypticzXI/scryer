@@ -187,7 +187,7 @@ pub async fn start_background_manual_import_poller(
             };
 
             if terminalized {
-                let source_identity = DownloadSourceIdentity::new(
+                let source_identity = ClientJobLocator::new(
                     payload.client_id.as_deref(),
                     &payload.client_type,
                     &payload.download_client_item_id,
@@ -240,6 +240,7 @@ async fn maybe_remove_completed_manual_import_download(
     // parks it in `ImportedSeeding`.
     let _ = reconcile_terminal_download_cleanup(
         app,
+        None,
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
@@ -385,7 +386,7 @@ pub(crate) async fn resolve_current_manual_import_source(
 }
 
 struct AuthorizedManualImportSource {
-    identity: DownloadSourceIdentity,
+    identity: ClientJobLocator,
     title: scryer_domain::Title,
 }
 
@@ -402,7 +403,7 @@ async fn authorize_manual_import_source(
     }
 
     let source_identity =
-        DownloadSourceIdentity::new(Some(client_id), client_type, download_client_item_id);
+        ClientJobLocator::new(Some(client_id), client_type, download_client_item_id);
     let title = app
         .services
         .catalog
@@ -438,7 +439,7 @@ async fn authorize_manual_import_source(
 
 async fn resolve_authorized_manual_import_source(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> AppResult<CompletedDownload> {
     if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
         match handle.completed_source(identity.clone()).await {
@@ -466,7 +467,7 @@ async fn resolve_authorized_manual_import_source(
 
 async fn retained_manual_import_source_is_admitted(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
     completed: &CompletedDownload,
 ) -> AppResult<bool> {
     let has_scryer_submission = app
@@ -485,7 +486,7 @@ async fn retained_manual_import_source_is_admitted(
 
 async fn resolve_live_manual_import_source(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> AppResult<CompletedDownload> {
     let completed = match app
         .resolve_manual_import_source(
@@ -510,7 +511,7 @@ async fn resolve_live_manual_import_source(
 
 fn completed_download_matches_source(
     completed: &CompletedDownload,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> bool {
     completed.client_id == identity.client_id.as_deref().unwrap_or_default()
         && completed
@@ -927,7 +928,7 @@ pub async fn begin_manual_import_selection(
         .map_err(|error| AppError::Repository(error.to_string()))?;
     let download_root = std::fs::canonicalize(&completed.dest_dir)
         .map_err(|_| manual_import_source_unavailable())?;
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(&completed.client_id),
         &completed.client_type,
         &completed.download_client_item_id,
@@ -1510,7 +1511,7 @@ pub(crate) async fn find_active_manual_import_for_source(
         .services
         .workflow
         .imports
-        .list_imports_for_identities(&[DownloadSourceIdentity::new(
+        .list_imports_for_identities(&[ClientJobLocator::new(
             client_id,
             normalized_client_type.as_str(),
             source_ref,
@@ -2563,7 +2564,7 @@ async fn recover_completed_manual_imports(
 }
 
 struct CompletedManualImportRecovery {
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
     /// When the record reached `Completed`: `finished_at`, falling back to
     /// `updated_at`. Only a tracked download the client finished before this
     /// may be terminalized on the strength of the record.
@@ -2620,7 +2621,7 @@ fn completed_manual_import_recovery(
     // tracked download's completion, so it cannot safely recover anything.
     let record_completed_at = import_record_completed_at(record)?;
     Some(CompletedManualImportRecovery {
-        source_identity: DownloadSourceIdentity::new(
+        source_identity: ClientJobLocator::new(
             Some(client_id),
             &record.source_system,
             &record.source_ref,
@@ -2892,7 +2893,7 @@ mod manual_archive_workspace_tests {
             id: "selection-1".to_string(),
             actor_user_id: "user-1".to_string(),
             title_id: "title-1".to_string(),
-            source_identity: DownloadSourceIdentity::new(Some("client-1"), "weaver", "item-1"),
+            source_identity: ClientJobLocator::new(Some("client-1"), "weaver", "item-1"),
             canonical_download_id: None,
             release_evidence_json: None,
             trusted_source_root: path_to_stored_string(trusted_root),

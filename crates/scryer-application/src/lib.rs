@@ -260,11 +260,11 @@ pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{
-    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, ClientJobLocator,
+    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail,
     CollectionUpdate, DashboardActivityStats, DeleteExecutionConfirmation,
     DownloadClientAddRequest, DownloadClientBindingRecord, DownloadClientConfigUpdate,
     DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadOrigin, DownloadRecord,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
     DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
     IndexerConfigSyncResult, IndexerConfigUpdate, IndexerDownloadClientMappingCatalog,
     IndexerDownloadClientMappingClient, IndexerDownloadClientMappingIndexer,
@@ -438,7 +438,8 @@ pub use ports::{
     ArchiveExtractorPluginProvider, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadQueueCommandRepository,
-    DownloadRegistryRepository, DownloadSubmissionRepository, EmbyApiKeyExchange,
+    DownloadRegistryRepository, DownloadSubmissionRepository, IdentityTrackedStateTarget,
+    EmbyApiKeyExchange,
     EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
     EmbyConnectIdentityVerification, EmbyConnectServer, EmbyConnectUserType, EmbyServerIdentity,
     EmbyServerUser, ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,

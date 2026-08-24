@@ -288,7 +288,7 @@ async fn actor_for_tracked_download_import(
     fallback_actor: &User,
     td: &TrackedDownload,
 ) -> User {
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,
@@ -425,7 +425,7 @@ async fn prepare_completed_download_for_tracked_import(
 ///
 /// Returns true if all expected files are accounted for (imported or already_present).
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,

@@ -365,7 +365,7 @@ pub(crate) fn parsed_release_matches_title(parsed: &ParsedReleaseMetadata, title
 struct TitleQueueSnapshot {
     submissions: Vec<crate::DownloadSubmission>,
     tracked_states: std::collections::HashMap<
-        crate::contracts::DownloadSourceIdentity,
+        crate::contracts::ClientJobLocator,
         scryer_domain::TrackedDownloadState,
     >,
 }
@@ -708,7 +708,7 @@ impl AppUseCase {
         }
         let identities = submissions
             .iter()
-            .map(crate::contracts::DownloadSourceIdentity::from_submission)
+            .map(crate::contracts::ClientJobLocator::from_submission)
             .collect::<Vec<_>>();
         let tracked_states = self
             .services

@@ -764,7 +764,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         .expect("record active submission");
     download_submissions
         .update_tracked_state(
-            &DownloadSourceIdentity::from_submission(&active_submission),
+            &ClientJobLocator::from_submission(&active_submission),
             "downloading",
         )
         .await
@@ -775,7 +775,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         .expect("record terminal submission");
     download_submissions
         .update_tracked_state(
-            &DownloadSourceIdentity::from_submission(&terminal_submission),
+            &ClientJobLocator::from_submission(&terminal_submission),
             "imported",
         )
         .await

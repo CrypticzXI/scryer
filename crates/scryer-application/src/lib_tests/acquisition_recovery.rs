@@ -295,7 +295,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
     }));
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "failed-job",
@@ -885,7 +885,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
 
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "current-failed-job",
@@ -897,7 +897,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
     );
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "old-failed-job",
@@ -1111,7 +1111,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     }));
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "failed-job",
@@ -2375,7 +2375,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
     );
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "failed-season-pack",
@@ -2715,7 +2715,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
     );
     assert_eq!(
         download_submissions
-            .get_tracked_state(&DownloadSourceIdentity::new(
+            .get_tracked_state(&ClientJobLocator::new(
                 Some("primary"),
                 "nzbget",
                 "shared-failed-season-pack",

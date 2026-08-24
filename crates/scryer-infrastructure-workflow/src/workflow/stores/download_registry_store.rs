@@ -91,9 +91,9 @@ impl DownloadRegistryRepository for DownloadRegistryStore {
              ORDER BY created_at, download_id
              LIMIT 1",
             &[
-                SqlArg::Text(locator.client_config_id.clone().unwrap_or_default()),
+                SqlArg::Text(locator.client_id.clone().unwrap_or_default()),
                 SqlArg::Text(locator.client_type.clone()),
-                SqlArg::Text(locator.native_item_id.clone()),
+                SqlArg::Text(locator.item_id.clone()),
             ],
         )
         .await?
@@ -271,9 +271,9 @@ async fn active_observation_binding_by_locator_tx(
          ORDER BY b.created_at, b.download_id
          LIMIT 1",
         &[
-            SqlArg::Text(locator.client_config_id.clone().unwrap_or_default()),
+            SqlArg::Text(locator.client_id.clone().unwrap_or_default()),
             SqlArg::Text(locator.client_type.clone()),
-            SqlArg::Text(locator.native_item_id.clone()),
+            SqlArg::Text(locator.item_id.clone()),
         ],
     )
     .await?
@@ -351,7 +351,7 @@ async fn ambiguous_submission_candidates_tx(
             SqlArg::Text(
                 observation
                     .locator
-                    .client_config_id
+                    .client_id
                     .clone()
                     .unwrap_or_default(),
             ),
@@ -381,10 +381,10 @@ async fn attach_unbound_binding_tx(
            AND native_item_id IS NULL
            AND ended_at IS NULL",
         &[
-            SqlArg::OptText(observation.locator.client_config_id.clone()),
+            SqlArg::OptText(observation.locator.client_id.clone()),
             SqlArg::Text(observation.locator.client_type.clone()),
             SqlArg::Text(observation.locator.client_type.clone()),
-            SqlArg::Text(observation.locator.native_item_id.clone()),
+            SqlArg::Text(observation.locator.item_id.clone()),
             SqlArg::Text(download_id.to_string()),
         ],
     )
@@ -431,10 +431,10 @@ async fn create_bound_binding_tx(
          ) VALUES ({}, {}, {}, {}, {}, {}, {}, NULL)",
         &[
             SqlArg::Text(download_id.to_string()),
-            SqlArg::OptText(observation.locator.client_config_id.clone()),
+            SqlArg::OptText(observation.locator.client_id.clone()),
             SqlArg::Text(observation.locator.client_type.clone()),
             SqlArg::Text(observation.locator.client_type.clone()),
-            SqlArg::Text(observation.locator.native_item_id.clone()),
+            SqlArg::Text(observation.locator.item_id.clone()),
             SqlArg::Timestamp(observation.observed_at),
             SqlArg::Timestamp(observation.observed_at),
         ],
@@ -520,14 +520,14 @@ fn binding_matches_locator(
     locator: &ClientJobLocator,
 ) -> bool {
     binding.ended_at.is_none()
-        && binding.client_config_id.as_deref().map(str::trim) == locator.client_config_id.as_deref()
+        && binding.client_config_id.as_deref().map(str::trim) == locator.client_id.as_deref()
         && binding
             .client_type_snapshot
             .as_deref()
             .map(|value| value.trim().to_ascii_lowercase())
             .as_deref()
             == Some(locator.client_type.as_str())
-        && binding.native_item_id.as_deref().map(str::trim) == Some(locator.native_item_id.as_str())
+        && binding.native_item_id.as_deref().map(str::trim) == Some(locator.item_id.as_str())
 }
 
 fn locator_conflict(
@@ -544,7 +544,7 @@ fn locator_conflict(
 fn locator_display(locator: &ClientJobLocator) -> String {
     format!(
         "client_config_id={:?}, client_type={:?}, native_item_id={:?}",
-        locator.client_config_id, locator.client_type, locator.native_item_id
+        locator.client_id, locator.client_type, locator.item_id
     )
 }
 

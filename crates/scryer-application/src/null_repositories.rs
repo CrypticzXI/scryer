@@ -40,7 +40,7 @@ use crate::{
     DiscoveryPublicFeedCommit, DiscoveryRepository, DiscoverySectionRecord,
     DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
     DomainEventRepository, DownloadQueueCommandRecord, DownloadQueueCommandRepository,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+    DownloadSubmission, DownloadSubmissionRepository,
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
     ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
@@ -579,7 +579,7 @@ pub struct NullImportRepository;
 impl ImportRepository for NullImportRepository {
     async fn queue_import_request(
         &self,
-        _source_identity: DownloadSourceIdentity,
+        _source_identity: ClientJobLocator,
         _import_type: String,
         _payload_json: String,
     ) -> AppResult<String> {
@@ -625,11 +625,11 @@ impl ImportRepository for NullImportRepository {
     }
     async fn list_imports_for_identities(
         &self,
-        _: &[DownloadSourceIdentity],
+        _: &[ClientJobLocator],
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn is_already_imported(&self, _: &DownloadSourceIdentity) -> AppResult<bool> {
+    async fn is_already_imported(&self, _: &ClientJobLocator) -> AppResult<bool> {
         Ok(false)
     }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
@@ -1872,7 +1872,7 @@ impl DownloadRegistryRepository for NullDownloadRegistryRepository {
     ) -> AppResult<ObservationResolution> {
         Err(AppError::Repository(format!(
             "download registry is unavailable for observation {}:{}",
-            observation.locator.client_type, observation.locator.native_item_id
+            observation.locator.client_type, observation.locator.item_id
         )))
     }
 
@@ -1907,15 +1907,18 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     async fn record_submission(&self, _: DownloadSubmission) -> AppResult<()> {
         Ok(())
     }
+    async fn record_ambiguous_submission(&self, _: DownloadSubmission) -> AppResult<()> {
+        Ok(())
+    }
     async fn find_by_client_item_id(
         &self,
-        _: &DownloadSourceIdentity,
+        _: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         Ok(None)
     }
     async fn list_for_client_items(
         &self,
-        _: &[DownloadSourceIdentity],
+        _: &[ClientJobLocator],
     ) -> AppResult<Vec<DownloadSubmission>> {
         Ok(vec![])
     }
@@ -1934,13 +1937,13 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     async fn delete_for_title(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_by_client_item_id(&self, _: &DownloadSourceIdentity) -> AppResult<()> {
+    async fn delete_by_client_item_id(&self, _: &ClientJobLocator) -> AppResult<()> {
         Ok(())
     }
-    async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+    async fn update_tracked_state(&self, _: &ClientJobLocator, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
         Ok(None)
     }
 }
@@ -1961,13 +1964,13 @@ impl ImportArtifactRepository for NullImportArtifactRepository {
     }
     async fn list_by_source_identity(
         &self,
-        _: &DownloadSourceIdentity,
+        _: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
         Ok(vec![])
     }
     async fn count_by_result_for_source_identity(
         &self,
-        _: &DownloadSourceIdentity,
+        _: &ClientJobLocator,
         _: &str,
     ) -> AppResult<u64> {
         Ok(0)
