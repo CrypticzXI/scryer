@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AcquisitionScopeStateRepository, BlocklistRepository, DownloadClientConfigRepository,
-    ClientJobLocator, DownloadSubmission, DownloadSubmissionPurpose,
+    AcquisitionScopeStateRepository, BlocklistRepository, ClientJobLocator,
+    DownloadClientConfigRepository, DownloadSubmission, DownloadSubmissionPurpose,
     DownloadSubmissionRepository, ImportRepository, LibraryRepository, LibraryRootDraft,
     MediaFileRepository, ReleaseAttemptRepository, SaveQualityProfileSettings, ShowRepository,
     SubmissionScope, TitleRepository, import_completed_download,

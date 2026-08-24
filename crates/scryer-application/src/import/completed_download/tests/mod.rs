@@ -16,9 +16,9 @@ use crate::null_repositories::test_nulls::{
     NullReleaseAttemptRepository, NullUserRepository,
 };
 use crate::{
-    ActivityKind, AppError, AppResult, AppServices, AppUseCase, CollectionUpdate,
+    ActivityKind, AppError, AppResult, AppServices, AppUseCase, ClientJobLocator, CollectionUpdate,
     CreateTitleOutcome, DomainEventRepository, DownloadClient, DownloadClientAddRequest,
-    DownloadClientConfigRepository, DownloadGrabResult, ClientJobLocator, DownloadSubmission,
+    DownloadClientConfigRepository, DownloadGrabResult, DownloadSubmission,
     DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry,
     ImportArtifact, ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig,
     PendingTitleHydration, QualityProfile, QualityProfileRepository, ScopedExternalId,
@@ -842,9 +842,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .lock()
             .await
             .iter()
-            .find(|(submission, _)| {
-                ClientJobLocator::from_submission(submission) == *identity
-            })
+            .find(|(submission, _)| ClientJobLocator::from_submission(submission) == *identity)
             .map(|(submission, _)| submission.clone()))
     }
 
@@ -879,9 +877,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .lock()
             .await
             .iter()
-            .find(|(submission, _)| {
-                ClientJobLocator::from_submission(submission) == *identity
-            })
+            .find(|(submission, _)| ClientJobLocator::from_submission(submission) == *identity)
             .map(|(_, submission_identity)| submission_identity.clone()))
     }
 
@@ -980,9 +976,10 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
     }
 
     async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
-        self.rows.lock().await.retain(|(submission, _)| {
-            ClientJobLocator::from_submission(submission) != *identity
-        });
+        self.rows
+            .lock()
+            .await
+            .retain(|(submission, _)| ClientJobLocator::from_submission(submission) != *identity);
         Ok(())
     }
 
@@ -1003,10 +1000,7 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn get_tracked_state(
-        &self,
-        identity: &ClientJobLocator,
-    ) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, identity: &ClientJobLocator) -> AppResult<Option<String>> {
         Ok(self
             .tracked_states
             .lock()

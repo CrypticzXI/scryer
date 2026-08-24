@@ -506,11 +506,8 @@ async fn a_restart_recovers_burned_usenet_failure_cleanup_origin() {
     );
     tracked.client_item.download_id = Some("scryer-download:nzb-burned-restart-1".to_string());
     let identity = crate::tracked_downloads::observed_queue_item_identity(&tracked.client_item);
-    let source_identity = crate::ClientJobLocator::new(
-        Some(config.id.as_str()),
-        "nzbget",
-        "nzb-burned-restart-1",
-    );
+    let source_identity =
+        crate::ClientJobLocator::new(Some(config.id.as_str()), "nzbget", "nzb-burned-restart-1");
     download_submissions
         .record_identity_tracked_state(
             &identity,

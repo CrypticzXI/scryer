@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    AppResult, AppUseCase, ClientJobLocator, DownloadSubmission,
-    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, SubmissionScope,
+    AppResult, AppUseCase, ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
+    DownloadSubmissionIdentity, SubmissionScope,
 };
 
 const DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS: i64 = 24;
@@ -411,13 +411,7 @@ impl TrackedDownloadService {
         }
 
         // First time seeing this download — build, resolve, and insert.
-        let td = Self::build_new_tracked_download(
-            app,
-            download_id,
-            id.clone(),
-            client_item,
-        )
-        .await;
+        let td = Self::build_new_tracked_download(app, download_id, id.clone(), client_item).await;
         self.cache.insert(download_id, td);
         self.prune_cache();
     }
@@ -484,19 +478,15 @@ impl TrackedDownloadService {
     }
 
     pub fn resolve_cached_id(&self, requested_id: &str) -> Option<String> {
-        self.cache
-            .values()
-            .find_map(|tracked| {
-                (tracked.id == requested_id
-                    || tracked_download_matches_source_id(tracked, requested_id))
-                .then(|| tracked.id.clone())
-            })
+        self.cache.values().find_map(|tracked| {
+            (tracked.id == requested_id
+                || tracked_download_matches_source_id(tracked, requested_id))
+            .then(|| tracked.id.clone())
+        })
     }
 
     pub fn get_all(&self) -> Vec<&TrackedDownload> {
-        self.cache
-            .values()
-            .collect()
+        self.cache.values().collect()
     }
 
     pub fn completed_source_for_identity(
@@ -515,20 +505,15 @@ impl TrackedDownloadService {
             .and_then(|tracked| tracked.completed_source.clone())
     }
 
-    pub fn cached_id_for_source_identity(
-        &self,
-        identity: &ClientJobLocator,
-    ) -> Option<String> {
-        self.cache
-            .values()
-            .find_map(|tracked| {
-                (ClientJobLocator::new(
-                    Some(tracked.client_id.as_str()),
-                    tracked.client_type.as_str(),
-                    tracked.client_item.download_client_item_id.as_str(),
-                ) == *identity)
-                    .then(|| tracked.id.clone())
-            })
+    pub fn cached_id_for_source_identity(&self, identity: &ClientJobLocator) -> Option<String> {
+        self.cache.values().find_map(|tracked| {
+            (ClientJobLocator::new(
+                Some(tracked.client_id.as_str()),
+                tracked.client_type.as_str(),
+                tracked.client_item.download_client_item_id.as_str(),
+            ) == *identity)
+                .then(|| tracked.id.clone())
+        })
     }
 
     pub fn cached_id_for_source_identity_for_download(
@@ -538,12 +523,10 @@ impl TrackedDownloadService {
     ) -> Option<String> {
         let _identity = identity;
         canonical_download_id.and_then(|canonical_download_id| {
-            self.cache
-                .values()
-                .find_map(|tracked| {
-                    (tracked.canonical_download_id() == Some(canonical_download_id))
-                        .then(|| tracked.id.clone())
-                })
+            self.cache.values().find_map(|tracked| {
+                (tracked.canonical_download_id() == Some(canonical_download_id))
+                    .then(|| tracked.id.clone())
+            })
         })
     }
 
@@ -551,12 +534,10 @@ impl TrackedDownloadService {
         &self,
         canonical_download_id: &DownloadId,
     ) -> Option<String> {
-        self.cache
-            .values()
-            .find_map(|tracked| {
-                (tracked.canonical_download_id() == Some(canonical_download_id))
-                    .then(|| tracked.id.clone())
-            })
+        self.cache.values().find_map(|tracked| {
+            (tracked.canonical_download_id() == Some(canonical_download_id))
+                .then(|| tracked.id.clone())
+        })
     }
 
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
@@ -614,7 +595,10 @@ impl TrackedDownloadService {
             return false;
         }
 
-        let since = *self.warning_since.entry(canonical_download_id).or_insert(now);
+        let since = *self
+            .warning_since
+            .entry(canonical_download_id)
+            .or_insert(now);
         if now - since < Self::WARNING_FAILURE_TIMEOUT {
             return false;
         }
@@ -656,10 +640,7 @@ impl TrackedDownloadService {
     /// Mark downloads no longer visible in any client as untrackable.
     pub fn update_trackable(&mut self, seen_ids: &HashSet<String>) -> Vec<ClientJobLocator> {
         let mut unavailable_sources = Vec::new();
-        for td in self
-            .cache
-            .values_mut()
-        {
+        for td in self.cache.values_mut() {
             if td.is_trackable && !seen_ids.contains(&td.id) && !should_preserve_tracking(td.state)
             {
                 td.is_trackable = false;
@@ -693,10 +674,7 @@ impl TrackedDownloadService {
     ) -> Vec<ClientJobLocator> {
         let now = Utc::now();
         let mut unavailable_sources = Vec::new();
-        for td in self
-            .cache
-            .values_mut()
-        {
+        for td in self.cache.values_mut() {
             if tracked_client_type_is_excluded(&td.client_type, excluded_client_types) {
                 continue;
             }
@@ -737,10 +715,7 @@ impl TrackedDownloadService {
 
         let now = Utc::now();
         let mut unavailable_sources = Vec::new();
-        for td in self
-            .cache
-            .values_mut()
-        {
+        for td in self.cache.values_mut() {
             if !tracked_matches_snapshot_scope(td, client_id.as_deref(), client_type) {
                 continue;
             }
@@ -2062,9 +2037,9 @@ mod tests {
         NullTitleRepository, NullUserRepository,
     };
     use crate::{
-        AppError, AppResult, AppServices, AppUseCase, CreateTitleOutcome, DomainEventRepository,
-        DownloadClient, DownloadClientAddRequest, DownloadGrabResult, DownloadRegistryRepository,
-        ClientJobLocator, DownloadSubmissionRepository, FacetRegistry, ImportRepository,
+        AppError, AppResult, AppServices, AppUseCase, ClientJobLocator, CreateTitleOutcome,
+        DomainEventRepository, DownloadClient, DownloadClientAddRequest, DownloadGrabResult,
+        DownloadRegistryRepository, DownloadSubmissionRepository, FacetRegistry, ImportRepository,
         IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration, TitleMetadataUpdate,
         TitleRepository,
     };
@@ -2108,10 +2083,7 @@ mod tests {
             &self,
             observation: &crate::ObservedClientJob,
         ) -> AppResult<crate::ObservationResolution> {
-            if self
-                .failing_item_ids
-                .contains(&observation.locator.item_id)
-            {
+            if self.failing_item_ids.contains(&observation.locator.item_id) {
                 return Err(AppError::Repository(
                     "injected registry resolution failure".to_string(),
                 ));
@@ -2225,9 +2197,10 @@ mod tests {
             &self,
             identity: &ClientJobLocator,
         ) -> AppResult<Option<crate::DownloadSubmission>> {
-            Ok(self.current_submission().await.filter(|submission| {
-                ClientJobLocator::from_submission(submission) == *identity
-            }))
+            Ok(self
+                .current_submission()
+                .await
+                .filter(|submission| ClientJobLocator::from_submission(submission) == *identity))
         }
 
         async fn find_by_client_item_id_for_download(
@@ -3580,8 +3553,7 @@ mod tests {
         assert!(tracker.find(&failing_id).is_none());
         assert_eq!(tracker.get_all().len(), 1);
         assert_eq!(
-            failing_visible_queue_item.download_client_item_id,
-            "failing-job",
+            failing_visible_queue_item.download_client_item_id, "failing-job",
             "queue projection input remains available when tracking is skipped"
         );
     }
@@ -4411,18 +4383,11 @@ mod tests {
                 Ok(())
             }
 
-            async fn update_tracked_state(
-                &self,
-                _: &ClientJobLocator,
-                _: &str,
-            ) -> AppResult<()> {
+            async fn update_tracked_state(&self, _: &ClientJobLocator, _: &str) -> AppResult<()> {
                 Err(AppError::Repository("boom".into()))
             }
 
-            async fn get_tracked_state(
-                &self,
-                _: &ClientJobLocator,
-            ) -> AppResult<Option<String>> {
+            async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
                 Ok(None)
             }
         }

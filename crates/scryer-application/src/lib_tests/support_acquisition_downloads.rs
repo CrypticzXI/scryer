@@ -656,9 +656,7 @@ pub(super) fn download_submission_key(submission: &DownloadSubmission) -> Tracke
     )
 }
 
-pub(super) fn download_source_identity_key(
-    identity: &ClientJobLocator,
-) -> TrackedDownloadStateKey {
+pub(super) fn download_source_identity_key(identity: &ClientJobLocator) -> TrackedDownloadStateKey {
     (
         identity
             .client_id
@@ -1005,10 +1003,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
-    async fn get_tracked_state(
-        &self,
-        identity: &ClientJobLocator,
-    ) -> AppResult<Option<String>> {
+    async fn get_tracked_state(&self, identity: &ClientJobLocator) -> AppResult<Option<String>> {
         Ok(self
             .tracked_states
             .lock()

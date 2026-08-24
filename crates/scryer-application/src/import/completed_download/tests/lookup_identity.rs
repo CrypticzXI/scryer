@@ -13,10 +13,7 @@ impl crate::DownloadRegistryRepository for CompletedLookupRegistry {
         &self,
         observation: &crate::ObservedClientJob,
     ) -> AppResult<crate::ObservationResolution> {
-        if self
-            .failing_item_ids
-            .contains(&observation.locator.item_id)
-        {
+        if self.failing_item_ids.contains(&observation.locator.item_id) {
             return Err(AppError::Repository(
                 "injected completed lookup registry failure".to_string(),
             ));
@@ -505,11 +502,7 @@ async fn check_with_lookup_uses_durable_terminal_state_before_redispatch() {
     submission_repo
         .record_identity_tracked_state(
             &identity,
-            Some(&ClientJobLocator::new(
-                Some("client-1"),
-                "nzbget",
-                "dl-1",
-            )),
+            Some(&ClientJobLocator::new(Some("client-1"), "nzbget", "dl-1")),
             TrackedDownloadState::Imported.as_str(),
             None,
             None,

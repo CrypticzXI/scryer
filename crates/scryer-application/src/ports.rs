@@ -3647,10 +3647,7 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         tracked_state: &str,
     ) -> AppResult<()>;
 
-    async fn get_tracked_state(
-        &self,
-        identity: &ClientJobLocator,
-    ) -> AppResult<Option<String>>;
+    async fn get_tracked_state(&self, identity: &ClientJobLocator) -> AppResult<Option<String>>;
 }
 
 #[async_trait]

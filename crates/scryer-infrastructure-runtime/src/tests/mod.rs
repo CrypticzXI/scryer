@@ -2,8 +2,8 @@ use super::*;
 use chrono::Utc;
 use scryer_application::{
     AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
-    AcquisitionScopeStatus, AppError, AppResult, CollectionUpdate, DomainEventRepository,
-    DownloadClientConfigRepository, DownloadQueueCommandRepository, ClientJobLocator,
+    AcquisitionScopeStatus, AppError, AppResult, ClientJobLocator, CollectionUpdate,
+    DomainEventRepository, DownloadClientConfigRepository, DownloadQueueCommandRepository,
     DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,

@@ -2,12 +2,11 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionScopeStatus, AppError, AppResult, DownloadQueueCommandRecord,
-    ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, ExternalImportMonitorSnapshotChunk,
-    ExternalImportMonitorSnapshotEntryKind, ImportArtifact, JobKey, JobRunRecord, JobRunStatus,
-    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
-    WorkflowOperationInfo,
+    AcquisitionScopeStatus, AppError, AppResult, ClientJobLocator, DownloadQueueCommandRecord,
+    DownloadSubmission, DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity,
+    ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
+    JobKey, JobRunRecord, JobRunStatus, JobTriggerSource, PendingReleaseStatus, SubmissionScope,
+    SuccessfulGrabCommit, WorkflowOperationInfo,
 };
 use scryer_domain::download_identity::DownloadId;
 use scryer_domain::{
@@ -227,6 +226,26 @@ pub async fn record_download_submission_tx(
     record_download_submission_tx_inner(tx, submission).await
 }
 
+async fn ensure_submission_download_tx(
+    tx: &mut SqlTx<'_>,
+    submission: &DownloadSubmission,
+    origin: &str,
+) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES ({}, {}, {})
+         ON CONFLICT(id) DO NOTHING",
+        &[
+            SqlArg::Text(submission.download_id.to_string()),
+            SqlArg::Text(origin.to_string()),
+            SqlArg::Timestamp(Utc::now()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Persist a submit whose HTTP request may have reached the client but whose
 /// response never supplied a native client item identifier. The row remains
 /// deliberately unbound so legacy tuple readers cannot mistake it for a
@@ -264,6 +283,8 @@ pub async fn record_ambiguous_download_submission_tx(
     } else {
         "scryer_submission"
     };
+
+    ensure_submission_download_tx(tx, submission, origin).await?;
 
     SqlRuntime::execute(
         SqlExec::Tx(tx),
@@ -303,16 +324,6 @@ pub async fn record_ambiguous_download_submission_tx(
 
     SqlRuntime::execute(
         SqlExec::Tx(tx),
-        "INSERT INTO downloads (id, origin, created_at) VALUES ({}, {}, {})",
-        &[
-            SqlArg::Text(canonical_id.clone()),
-            SqlArg::Text(origin.to_string()),
-            SqlArg::Timestamp(now),
-        ],
-    )
-    .await?;
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
         "INSERT INTO download_client_bindings
          (download_id, client_config_id, client_type_snapshot, client_name_snapshot,
           native_item_id, created_at, ended_at)
@@ -341,6 +352,16 @@ async fn record_download_submission_tx_inner(
     assert_active_binding_matches_submission_tx(tx, submission, &download_client_id).await?;
     let is_orphan = matches!(&submission.scope, SubmissionScope::Orphan)
         && submission.title_id.trim().is_empty();
+    ensure_submission_download_tx(
+        tx,
+        submission,
+        if is_orphan {
+            "foreign_observation"
+        } else {
+            "scryer_submission"
+        },
+    )
+    .await?;
     let conflict_clause = if is_orphan {
         "ON CONFLICT(id) DO NOTHING"
     } else {
@@ -399,9 +420,7 @@ async fn record_download_submission_tx_inner(
     }
     replace_download_submission_episode_links_tx(
         tx,
-        &download_client_id,
-        &submission.download_client_type,
-        &submission.download_client_item_id,
+        &submission.download_id,
         persisted_episode_set_ids(&submission.scope),
     )
     .await?;
@@ -493,35 +512,25 @@ pub async fn record_download_submission_with_identity_tx(
 
 pub async fn replace_download_submission_episode_links_tx(
     tx: &mut SqlTx<'_>,
-    download_client_id: &str,
-    download_client_type: &str,
-    download_client_item_id: &str,
+    download_id: &DownloadId,
     episode_ids: &[String],
 ) -> AppResult<()> {
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "DELETE FROM download_submission_episode_links
-         WHERE download_client_id = {}
-           AND download_client_type = {}
-           AND download_client_item_id = {}",
-        &[
-            SqlArg::Text(download_client_id.to_string()),
-            SqlArg::Text(download_client_type.to_string()),
-            SqlArg::Text(download_client_item_id.to_string()),
-        ],
+         WHERE download_id = {}",
+        &[SqlArg::Text(download_id.to_string())],
     )
     .await?;
     for episode_id in episode_ids {
         SqlRuntime::execute(
             SqlExec::Tx(tx),
             "INSERT INTO download_submission_episode_links
-             (download_client_id, download_client_type, download_client_item_id, episode_id)
-             VALUES ({}, {}, {}, {})
+             (download_id, episode_id)
+             VALUES ({}, {})
              ON CONFLICT DO NOTHING",
             &[
-                SqlArg::Text(download_client_id.to_string()),
-                SqlArg::Text(download_client_type.to_string()),
-                SqlArg::Text(download_client_item_id.to_string()),
+                SqlArg::Text(download_id.to_string()),
                 SqlArg::Text(episode_id.clone()),
             ],
         )
@@ -1209,16 +1218,12 @@ pub fn download_submission_select_sql(datastore: &StoreDatastore, suffix: &str) 
         StoreDatastore::Sqlite { .. } => {
             "(SELECT group_concat(link.episode_id, char(31))
                 FROM download_submission_episode_links link
-               WHERE link.download_client_id = download_submissions.download_client_id
-                 AND link.download_client_type = download_submissions.download_client_type
-                 AND link.download_client_item_id = download_submissions.download_client_item_id)"
+               WHERE link.download_id = download_submissions.id)"
         }
         StoreDatastore::Postgres { .. } => {
             "(SELECT string_agg(link.episode_id, chr(31))
                 FROM download_submission_episode_links link
-               WHERE link.download_client_id = download_submissions.download_client_id
-                 AND link.download_client_type = download_submissions.download_client_type
-                 AND link.download_client_item_id = download_submissions.download_client_item_id)"
+               WHERE link.download_id = download_submissions.id)"
         }
     };
     format!(

@@ -1290,6 +1290,364 @@ async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -
 }
 
 #[tokio::test]
+async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_0179_migration_{}",
+        chrono::Utc::now().timestamp_micros()
+    );
+    let fresh_schema = format!("{schema}_fresh");
+    for schema_name in [&schema, &fresh_schema] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema_name}")))
+            .execute(&admin_pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create postgres schema: {error}"))
+            })?;
+    }
+
+    let schema_url = |schema_name: &str| -> AppResult<url::Url> {
+        let mut url = url::Url::parse(&raw_url)
+            .map_err(|error| AppError::Validation(format!("invalid postgres URL: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("options", &format!("-csearch_path={schema_name}"));
+        Ok(url)
+    };
+    let upgraded_url = schema_url(&schema)?;
+    let fresh_url = schema_url(&fresh_schema)?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(upgraded_url.as_str())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to open postgres schema: {error}"))
+        })?;
+    let fresh_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(fresh_url.as_str())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to open fresh postgres schema: {error}"))
+        })?;
+
+    let result = async {
+        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(178)).await?;
+        let now = "2026-08-24T12:00:00Z";
+        let first_id = "00000000-0000-4000-8000-000000000001";
+        sqlx::query(
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES ($1, 'scryer_submission', ($2::text)::timestamptz)",
+        )
+        .bind(first_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_submissions (
+                id, title_id, facet, download_client_id, download_client_type,
+                download_client_item_id, submitted_at
+             ) VALUES ($1, 'pg-title-0179', 'series', 'pg-client-0179', 'qbittorrent',
+                       'reused-native', ($2::text)::timestamptz)",
+        )
+        .bind(first_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_submission_episode_links (
+                download_client_id, download_client_type, download_client_item_id, episode_id
+             ) VALUES ('pg-client-0179', 'qbittorrent', 'reused-native', 'pg-episode-0179')",
+        )
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_client_bindings (
+                download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+                native_item_id, created_at
+             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+        )
+        .bind(first_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, client_id, client_type,
+                download_client_item_id, tracked_state, created_at, updated_at
+             ) VALUES ('pg-state-0179', 'download:pg-0179', $1, 'legacy-pg-0179',
+                       'pg-client-0179', 'qbittorrent', 'reused-native', 'queued', ($2::text)::timestamptz, ($2::text)::timestamptz)",
+        )
+        .bind(first_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO imports (
+                id, source_system, source_ref, import_type, payload_json, created_at, updated_at,
+                canonical_download_id
+             ) VALUES ('pg-import-0179', 'qbittorrent', 'reused-native', 'series_download',
+                       '{}', ($1::text)::timestamptz, ($1::text)::timestamptz, $2)",
+        )
+        .bind(now)
+        .bind(first_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_import_artifacts (
+                id, source_system, source_ref, normalized_file_name, media_kind, result, created_at,
+                canonical_download_id
+             ) VALUES ('pg-artifact-0179', 'qbittorrent', 'reused-native', 'episode.mkv',
+                       'episode', 'imported', ($1::text)::timestamptz, $2)",
+        )
+        .bind(now)
+        .bind(first_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_queue_commands (
+                id, action, client_type, download_client_item_id, status, created_at, updated_at,
+                canonical_download_id
+             ) VALUES ('pg-queue-0179', 'remove', 'qbittorrent', 'reused-native', 'queued',
+                       ($1::text)::timestamptz, ($1::text)::timestamptz, $2)",
+        )
+        .bind(now)
+        .bind(first_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        let services = crate::PostgresServices::new_with_mode(
+            upgraded_url.as_str(),
+            crate::types::MigrationMode::Apply,
+        )
+        .await?;
+        drop(services);
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT download_id FROM download_submission_episode_links
+                  WHERE episode_id = 'pg-episode-0179'",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?,
+            first_id
+        );
+        let first_fk: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+              FROM pg_constraint con
+              JOIN pg_class relation ON relation.oid = con.conrelid
+              JOIN pg_namespace ns ON ns.oid = relation.relnamespace
+              WHERE con.conname = 'download_submissions_id_fkey'
+                AND ns.nspname = $1",
+        )
+        .bind(&schema)
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(first_fk, 1);
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_indexes
+              WHERE schemaname = $1
+                AND indexname = 'idx_download_client_bindings_active_locator_unique'",
+        )
+        .bind(&schema)
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(index_count, 1);
+
+        let second_id = "00000000-0000-4000-8000-000000000002";
+        let third_id = "00000000-0000-4000-8000-000000000003";
+        sqlx::query(
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES ($1, 'scryer_submission', ($3::text)::timestamptz), ($2, 'scryer_submission', ($3::text)::timestamptz)",
+        )
+        .bind(second_id)
+        .bind(third_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let active_collision = sqlx::query(
+            "INSERT INTO download_client_bindings (
+                download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+                native_item_id, created_at
+             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+        )
+        .bind(second_id)
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(active_collision.is_err(), "partial active-binding index must reject a collision");
+        sqlx::query("UPDATE download_client_bindings SET ended_at = ($1::text)::timestamptz WHERE download_id = $2")
+            .bind(now)
+            .bind(first_id)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_client_bindings (
+                download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+                native_item_id, created_at
+             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+        )
+        .bind(second_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO download_submissions (
+                id, title_id, facet, download_client_id, download_client_type,
+                download_client_item_id, submitted_at
+             ) VALUES ($1, 'pg-title-0179-readd', 'series', 'pg-client-0179', 'qbittorrent',
+                       'reused-native', '2026-08-24T12:00:01Z')",
+        )
+        .bind(second_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let second_active_collision = sqlx::query(
+            "INSERT INTO download_client_bindings (
+                download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+                native_item_id, created_at
+             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+        )
+        .bind(third_id)
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(second_active_collision.is_err(), "only one active binding may remain");
+        let null_canonical = sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state, created_at, updated_at
+             ) VALUES ('pg-state-null', 'download:pg-null', NULL, 'legacy-pg-null', 'queued',
+                       ($1::text)::timestamptz, ($1::text)::timestamptz)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(null_canonical.is_err(), "canonical download id must be non-null");
+        let invalid_import = sqlx::query(
+            "INSERT INTO imports (
+                id, source_system, source_ref, import_type, payload_json, created_at, updated_at,
+                canonical_download_id
+             ) VALUES ('pg-import-invalid', 'qbittorrent', 'missing-native', 'series_download',
+                       '{}', ($1::text)::timestamptz, ($1::text)::timestamptz, 'missing-download')",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(invalid_import.is_err(), "dependent canonical foreign key must reject unknown IDs");
+
+        let services = crate::PostgresServices::new_with_mode(
+            upgraded_url.as_str(),
+            crate::types::MigrationMode::Apply,
+        )
+        .await?;
+        drop(services);
+        let ledger_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 179 AND success = TRUE",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(ledger_count, 1);
+
+        crate::postgres::replay_source_catalog_for_fresh_install(&fresh_pool, None).await?;
+        let table_query = "SELECT table_name, column_name, data_type, is_nullable
+                           FROM information_schema.columns
+                           WHERE table_schema = $1
+                             AND table_name IN (
+                                 'downloads', 'download_client_bindings', 'download_submissions',
+                                 'download_submission_episode_links', 'download_identity_states',
+                                 'imports', 'download_import_artifacts', 'download_queue_commands'
+                             )
+                           ORDER BY table_name, ordinal_position";
+        let upgraded_tables: Vec<(String, String, String, String)> = sqlx::query_as(table_query)
+            .bind(&schema)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        let fresh_tables: Vec<(String, String, String, String)> = sqlx::query_as(table_query)
+            .bind(&fresh_schema)
+            .fetch_all(&fresh_pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(fresh_tables, upgraded_tables);
+
+        let index_query = "SELECT tablename, indexname, indexdef
+                           FROM pg_indexes
+                           WHERE schemaname = $1
+                             AND tablename IN (
+                                 'downloads', 'download_client_bindings', 'download_submissions',
+                                 'download_submission_episode_links', 'download_identity_states',
+                                 'imports', 'download_import_artifacts', 'download_queue_commands'
+                             )
+                           ORDER BY tablename, indexname";
+        let upgraded_indexes: Vec<(String, String, String)> =
+            sqlx::query_as::<_, (String, String, String)>(index_query)
+                .bind(&schema)
+                .fetch_all(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?
+            .into_iter()
+            .map(|(table, name, definition)| (table, name, definition.replace(&schema, "<schema>")))
+            .collect();
+        let fresh_indexes: Vec<(String, String, String)> =
+            sqlx::query_as::<_, (String, String, String)>(index_query)
+                .bind(&fresh_schema)
+                .fetch_all(&fresh_pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?
+            .into_iter()
+            .map(|(table, name, definition)| {
+                (table, name, definition.replace(&fresh_schema, "<schema>"))
+            })
+            .collect();
+        assert_eq!(fresh_indexes, upgraded_indexes);
+        Ok(())
+    }
+    .await;
+
+    drop(fresh_pool);
+    drop(pool);
+    let fresh_cleanup = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA {fresh_schema} CASCADE"
+    )))
+    .execute(&admin_pool)
+    .await;
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    drop(admin_pool);
+    fresh_cleanup.map_err(|error| {
+        AppError::Repository(format!("failed to drop fresh postgres schema: {error}"))
+    })?;
+    cleanup.map_err(|error| {
+        AppError::Repository(format!("failed to drop postgres schema: {error}"))
+    })?;
+    result
+}
+
+#[tokio::test]
 async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");
@@ -2843,7 +3201,7 @@ async fn migration_0173_requeues_only_unhydrated_movie_titles_without_tvdb_ids()
 }
 
 #[tokio::test]
-async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy_tuple_behavior() {
+async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_identity() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");
     let db = std::env::temp_dir().join(format!(
@@ -3031,7 +3389,7 @@ async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy
 
     crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect("0178 upgrade should apply");
+        .expect("0178 and 0179 upgrade should apply");
 
     let token_submission_id: String = sqlx::query_scalar(
         "SELECT id FROM download_submissions WHERE download_client_item_id = 'native-token'",
@@ -3152,8 +3510,9 @@ async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM download_submission_episode_links
-              WHERE download_client_item_id = 'native-token'",
+              WHERE download_id = ?1",
         )
+        .bind(token_id)
         .fetch_one(&pool)
         .await
         .expect("tuple link should survive the rebuild"),
@@ -3188,6 +3547,15 @@ async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy
 
     for id in ["null-one", "null-two"] {
         sqlx::query(
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES (?1, 'scryer_submission', ?2)",
+        )
+        .bind(id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("canonical parent should insert");
+        sqlx::query(
             "INSERT INTO download_submissions (
                 id, title_id, facet, download_client_id, download_client_type,
                 download_client_item_id
@@ -3196,7 +3564,7 @@ async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy
         .bind(id)
         .execute(&pool)
         .await
-        .expect("retained tuple UNIQUE should permit NULL-distinct rows");
+        .expect("nullable tuple snapshots should permit distinct rows");
     }
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -3210,71 +3578,389 @@ async fn migration_0178_backfills_canonical_download_identity_and_retains_legacy
         .expect("NULL-distinct rows should count"),
         2
     );
-    sqlx::query(
-        "INSERT INTO download_submissions (
-            id, title_id, facet, download_client_id, download_client_type,
-            download_client_item_id, tracked_state
-         ) VALUES ('upsert-first', '', '', 'client-one', 'nzbget', 'upsert-native', 'queued')
-         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
-         SET tracked_state = excluded.tracked_state",
-    )
-    .execute(&pool)
-    .await
-    .expect("tracked-state upsert should insert");
-    sqlx::query(
-        "INSERT INTO download_submissions (
-            id, title_id, facet, download_client_id, download_client_type,
-            download_client_item_id, tracked_state
-         ) VALUES ('upsert-second', '', '', 'client-one', 'nzbget', 'upsert-native', 'complete')
-         ON CONFLICT(download_client_id, download_client_type, download_client_item_id) DO UPDATE
-         SET tracked_state = excluded.tracked_state",
-    )
-    .execute(&pool)
-    .await
-    .expect("tracked-state upsert should update");
+    for id in ["readd-first", "readd-second"] {
+        sqlx::query(
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES (?1, 'scryer_submission', ?2)",
+        )
+        .bind(id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("re-add canonical parent should insert");
+        sqlx::query(
+            "INSERT INTO download_submissions (
+                id, title_id, facet, download_client_id, download_client_type,
+                download_client_item_id
+             ) VALUES (?1, 'title-readd', 'series', 'client-one', 'nzbget', 'readd-native')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("reused native tuple should coexist after 0179");
+    }
     assert_eq!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT tracked_state FROM download_submissions WHERE download_client_item_id = 'upsert-native'",
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM download_submissions
+              WHERE download_client_id = 'client-one'
+                AND download_client_type = 'nzbget'
+                AND download_client_item_id = 'readd-native'",
         )
         .fetch_one(&pool)
         .await
-        .expect("upsert state should load"),
-        "complete"
+        .expect("coexisting re-add rows should count"),
+        2
+    );
+
+    sqlx::query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES ('active-binding-first', 'scryer_submission', ?1),
+                ('active-binding-second', 'scryer_submission', ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("active-binding parents should insert");
+    sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES ('active-binding-first', 'client-one', 'qbittorrent', 'qBittorrent One',
+                   'readd-active-native', ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("first active binding should insert");
+    let active_collision = sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES ('active-binding-second', 'client-one', 'qbittorrent', 'qBittorrent One',
+                   'readd-active-native', ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        active_collision.is_err(),
+        "active locator index must reject a collision"
+    );
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT [notnull] FROM pragma_table_info('download_identity_states')
+              WHERE name = 'canonical_download_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("identity-state nullability should load"),
+        1
+    );
+    let null_canonical = sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state, created_at, updated_at
+         ) VALUES ('state-null-canonical', 'download:state-null-canonical', NULL,
+                   'legacy-null-canonical', 'queued', ?1, ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        null_canonical.is_err(),
+        "canonical download id must be required"
+    );
+
+    let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("foreign-key check should run");
+    assert!(
+        foreign_key_violations.is_empty(),
+        "0179 foreign keys must validate existing rows"
+    );
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("0179 rerun should be idempotently skipped by the manifest ledger");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 179 AND success = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("0179 migration ledger entry should load"),
+        1
     );
 
     let fresh_db = std::env::temp_dir().join(format!(
-        "scryer_migration_0178_fresh_{}.db",
+        "scryer_migration_0179_fresh_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let fresh_pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_with_create(fresh_db.to_string_lossy().as_ref()))
         .await
-        .expect("fresh 0178 database should open");
+        .expect("fresh 0179 database should open");
     crate::migrations::replay_source_catalog_for_fresh_install(&fresh_pool, None, true)
         .await
-        .expect("fresh install through 0178 should apply");
-    let schema_query = "SELECT name, sql FROM sqlite_master
-                         WHERE type = 'table'
-                           AND name IN (
+        .expect("fresh install through 0179 should apply");
+    let schema_query = "SELECT type, name, sql FROM sqlite_master
+                         WHERE type IN ('table', 'index')
+                           AND tbl_name IN (
                                'downloads', 'download_client_bindings', 'download_submissions',
-                               'download_identity_states', 'imports', 'download_import_artifacts',
-                               'download_queue_commands'
+                               'download_submission_episode_links', 'download_identity_states',
+                               'imports', 'download_import_artifacts', 'download_queue_commands'
                            )
-                         ORDER BY name";
-    let upgraded_schema: Vec<(String, String)> = sqlx::query_as(schema_query)
+                         ORDER BY type, name";
+    let upgraded_schema: Vec<(String, String, Option<String>)> = sqlx::query_as(schema_query)
         .fetch_all(&pool)
         .await
-        .expect("upgraded 0178 schema should load");
-    let fresh_schema: Vec<(String, String)> = sqlx::query_as(schema_query)
+        .expect("upgraded 0179 schema and indexes should load");
+    let fresh_schema: Vec<(String, String, Option<String>)> = sqlx::query_as(schema_query)
         .fetch_all(&fresh_pool)
         .await
-        .expect("fresh 0178 schema should load");
+        .expect("fresh 0179 schema and indexes should load");
     assert_eq!(fresh_schema, upgraded_schema);
 
     drop(fresh_pool);
     drop(pool);
     let _ = std::fs::remove_file(fresh_db);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constraints() {
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register");
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0179_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("0178 database should open");
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(178), true)
+        .await
+        .expect("fresh 0178 fixture should apply");
+
+    let now = "2026-08-24T12:00:00Z";
+    let first_id = "00000000-0000-4000-8000-000000000001";
+    sqlx::query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES (?1, 'scryer_submission', ?2)",
+    )
+    .bind(first_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("post-0178 canonical parent should insert");
+    sqlx::query(
+        "INSERT INTO download_submissions (
+            id, title_id, facet, download_client_id, download_client_type,
+            download_client_item_id, submitted_at
+         ) VALUES (?1, 'title-0179', 'series', 'client-0179', 'qbittorrent',
+                   'reused-native', ?2)",
+    )
+    .bind(first_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("post-0178 submission should insert");
+    sqlx::query(
+        "INSERT INTO download_submission_episode_links (
+            download_client_id, download_client_type, download_client_item_id, episode_id
+         ) VALUES ('client-0179', 'qbittorrent', 'reused-native', 'episode-0179')",
+    )
+    .execute(&pool)
+    .await
+    .expect("post-0178 tuple link should insert");
+    sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+    )
+    .bind(first_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("post-0178 active binding should insert");
+    sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, client_id, client_type,
+            download_client_item_id, tracked_state, created_at, updated_at
+         ) VALUES ('state-0179', 'download:0179', ?1, 'legacy-0179', 'client-0179',
+                   'qbittorrent', 'reused-native', 'queued', ?2, ?2)",
+    )
+    .bind(first_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("post-0178 identity state should insert");
+    sqlx::query(
+        "INSERT INTO imports (
+            id, source_system, source_ref, import_type, payload_json, created_at, updated_at,
+            canonical_download_id
+         ) VALUES ('import-0179', 'qbittorrent', 'reused-native', 'series_download', '{}',
+                   ?1, ?1, ?2)",
+    )
+    .bind(now)
+    .bind(first_id)
+    .execute(&pool)
+    .await
+    .expect("post-0178 import should insert");
+    sqlx::query(
+        "INSERT INTO download_import_artifacts (
+            id, source_system, source_ref, normalized_file_name, media_kind, result, created_at,
+            canonical_download_id
+         ) VALUES ('artifact-0179', 'qbittorrent', 'reused-native', 'episode.mkv', 'episode',
+                   'imported', ?1, ?2)",
+    )
+    .bind(now)
+    .bind(first_id)
+    .execute(&pool)
+    .await
+    .expect("post-0178 artifact should insert");
+    sqlx::query(
+        "INSERT INTO download_queue_commands (
+            id, action, client_type, download_client_item_id, status, created_at, updated_at,
+            canonical_download_id
+         ) VALUES ('queue-0179', 'remove', 'qbittorrent', 'reused-native', 'queued', ?1, ?1,
+                   ?2)",
+    )
+    .bind(now)
+    .bind(first_id)
+    .execute(&pool)
+    .await
+    .expect("post-0178 queue command should insert");
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("0179 upgrade should apply");
+
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT download_id FROM download_submission_episode_links
+              WHERE episode_id = 'episode-0179'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("re-keyed link should load"),
+        first_id
+    );
+    let link_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('download_submission_episode_links') ORDER BY cid",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("re-keyed link columns should load");
+    assert_eq!(link_columns, vec!["download_id", "episode_id"]);
+
+    let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("foreign-key check should run");
+    assert!(
+        foreign_key_violations.is_empty(),
+        "0179 foreign keys must validate fixture rows"
+    );
+
+    let second_id = "00000000-0000-4000-8000-000000000002";
+    let third_id = "00000000-0000-4000-8000-000000000003";
+    sqlx::query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES (?1, 'scryer_submission', ?3), (?2, 'scryer_submission', ?3)",
+    )
+    .bind(second_id)
+    .bind(third_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("re-add canonical parents should insert");
+    let active_collision = sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+    )
+    .bind(second_id)
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        active_collision.is_err(),
+        "partial active-binding index should reject a second row"
+    );
+    sqlx::query("UPDATE download_client_bindings SET ended_at = ?1 WHERE download_id = ?2")
+        .bind(now)
+        .bind(first_id)
+        .execute(&pool)
+        .await
+        .expect("completed delete should end the first binding");
+    sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+    )
+    .bind(second_id)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("ended binding should admit the re-added locator");
+    sqlx::query(
+        "INSERT INTO download_submissions (
+            id, title_id, facet, download_client_id, download_client_type,
+            download_client_item_id, submitted_at
+         ) VALUES (?1, 'title-0179-readd', 'series', 'client-0179', 'qbittorrent',
+                   'reused-native', '2026-08-24T12:00:01Z')",
+    )
+    .bind(second_id)
+    .execute(&pool)
+    .await
+    .expect("re-added submission should coexist with the ended one");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM download_submissions
+              WHERE download_client_item_id = 'reused-native'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("re-added submissions should count"),
+        2
+    );
+    let second_active_collision = sqlx::query(
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at
+         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+    )
+    .bind(third_id)
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        second_active_collision.is_err(),
+        "new active binding must remain unique"
+    );
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("0179 rerun should be skipped by the manifest ledger");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 179 AND success = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("0179 migration ledger should load"),
+        1
+    );
+
+    drop(pool);
     let _ = std::fs::remove_file(db);
 }
 

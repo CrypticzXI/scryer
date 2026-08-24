@@ -128,8 +128,7 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
 #[tokio::test]
 async fn already_imported_lookup_ignores_uncataloged_duplicate_file_skips() {
     let (_, workflow) = import_store_test_harness(1).await;
-    let duplicate_identity =
-        ClientJobLocator::new(Some("client-a"), "weaver", "duplicate-job");
+    let duplicate_identity = ClientJobLocator::new(Some("client-a"), "weaver", "duplicate-job");
     let duplicate_download_identity = DownloadSubmissionIdentity {
         download_id: Some("scryer-download:duplicate-file".to_string()),
     };
@@ -164,8 +163,7 @@ async fn already_imported_lookup_ignores_uncataloged_duplicate_file_skips() {
             .expect("duplicate download id lookup should succeed")
     );
 
-    let cataloged_identity =
-        ClientJobLocator::new(Some("client-a"), "weaver", "cataloged-job");
+    let cataloged_identity = ClientJobLocator::new(Some("client-a"), "weaver", "cataloged-job");
     let cataloged_download_identity = DownloadSubmissionIdentity {
         download_id: Some("scryer-download:already-imported".to_string()),
     };
@@ -530,7 +528,6 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
 
     let _ = std::fs::remove_file(db);
 }
-
 
 #[tokio::test]
 async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {

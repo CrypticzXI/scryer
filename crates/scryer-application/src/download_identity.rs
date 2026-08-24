@@ -67,11 +67,7 @@ pub(crate) async fn resolve_observed_client_job(
         .as_deref()
         .and_then(scryer_domain::download_identity::DownloadId::from_wire);
     let token = observation.wire_token.as_deref().unwrap_or("");
-    let config_id = observation
-        .locator
-        .client_id
-        .as_deref()
-        .unwrap_or("");
+    let config_id = observation.locator.client_id.as_deref().unwrap_or("");
     let client_type = observation.locator.client_type.as_str();
     let native_item_id = observation.locator.item_id.as_str();
 

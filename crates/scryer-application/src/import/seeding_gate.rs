@@ -70,9 +70,7 @@ use scryer_domain::{
     SeedGoalMetAction, download_identity::DownloadId,
 };
 
-use crate::{
-    AppResult, AppUseCase, ClientJobLocator, DownloadSourceKind, PersistedSeedGoals,
-};
+use crate::{AppResult, AppUseCase, ClientJobLocator, DownloadSourceKind, PersistedSeedGoals};
 
 /// The reasons the gate reports, verbatim, in logs and outcomes.
 ///

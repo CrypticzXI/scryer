@@ -1206,9 +1206,17 @@ mod tests {
     fn canonical_download_identity_source_guard() {
         // Keep all forbidden patterns here; add future retired identity machinery to this list.
         let forbidden = [
-            ("global identity-state key selection", "download_identity_state_", "is_global"),
+            (
+                "global identity-state key selection",
+                "download_identity_state_",
+                "is_global",
+            ),
             ("retired source identity type", "Download", "SourceIdentity"),
-            ("tuple submission conflict target", "ON CONFLICT(", "download_client_id"),
+            (
+                "tuple submission conflict target",
+                "ON CONFLICT(",
+                "download_client_id",
+            ),
         ];
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1216,7 +1224,12 @@ mod tests {
             .expect("application crate lives below the workspace root");
         let mut files = fs::read_dir(workspace_root.join("crates"))
             .expect("crates directory should be readable")
-            .map(|entry| entry.expect("crate directory entry should be readable").path().join("src"))
+            .map(|entry| {
+                entry
+                    .expect("crate directory entry should be readable")
+                    .path()
+                    .join("src")
+            })
             .filter(|path| path.is_dir())
             .collect::<Vec<_>>();
         while let Some(path) = files.pop() {
@@ -1229,7 +1242,9 @@ mod tests {
                 }
                 if path.extension().is_none_or(|extension| extension != "rs")
                     || path.file_name().is_some_and(|name| name == "migrations.rs")
-                    || path.components().any(|component| component.as_os_str() == "migrations")
+                    || path
+                        .components()
+                        .any(|component| component.as_os_str() == "migrations")
                 {
                     continue;
                 }

@@ -62,10 +62,7 @@ impl DownloadRegistryRepository for FixtureDownloadRegistry {
         }))
     }
 
-    async fn end_binding(
-        &self,
-        _: &scryer_domain::download_identity::DownloadId,
-    ) -> AppResult<()> {
+    async fn end_binding(&self, _: &scryer_domain::download_identity::DownloadId) -> AppResult<()> {
         Ok(())
     }
 }

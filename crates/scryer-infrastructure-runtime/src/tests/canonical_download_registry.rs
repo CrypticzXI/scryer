@@ -1,9 +1,8 @@
 use super::*;
 use scryer_application::{
-    ClientJobLocator, DownloadRegistryRepository, DownloadSubmissionPurpose, ObservationResolution,
-    ObservedClientJob, PersistedSeedGoals, SeedGoalGrabRecord, SeedGoalResolutionSource,
+    ClientJobLocator, DownloadRegistryRepository, DownloadSubmissionPurpose,
+    DownloadSubmissionRepository, ObservationResolution, ObservedClientJob,
 };
-use scryer_domain::PostImportTracking;
 
 #[derive(Debug, PartialEq, Eq)]
 struct CanonicalSnapshot {
@@ -148,6 +147,112 @@ async fn ambiguous_submissions_attach_only_when_the_observation_is_unambiguous()
             attached: true,
         }
     );
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn readding_a_completed_delete_locator_creates_a_new_canonical_submission() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_readded_download_locator_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("database should migrate through 0179");
+    sqlx::query(
+        "INSERT INTO download_clients (
+            id, name, client_type, config_json, created_at, updated_at
+         ) VALUES ('client-one', 'Primary qBittorrent', 'qbittorrent', '{}', ?1, ?1)",
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(services.pool())
+    .await
+    .expect("configured client should insert");
+
+    let submissions = DownloadSubmissionStore::new(services.datastore());
+    let registry = DownloadRegistryStore::new(services.datastore());
+    let locator = ClientJobLocator::new(Some("client-one"), "qbittorrent", "reused-native-id");
+    let first_id =
+        scryer_domain::download_identity::DownloadId::parse("00000000-0000-4000-8000-000000000001")
+            .expect("first fixed download id should parse");
+    let second_id =
+        scryer_domain::download_identity::DownloadId::parse("00000000-0000-4000-8000-000000000002")
+            .expect("second fixed download id should parse");
+
+    for download_id in [first_id, second_id] {
+        let observation = ObservedClientJob {
+            locator: locator.clone(),
+            wire_token: Some(download_id.to_wire()),
+            observed_name: Some("reused torrent".to_string()),
+            observed_at: chrono::Utc::now(),
+        };
+        if download_id == first_id {
+            registry
+                .resolve_observation(&observation)
+                .await
+                .expect("first submission binding should resolve");
+            let mut first = submission("reused-native-id", "title-first");
+            first.download_id = first_id;
+            submissions
+                .record_submission(first)
+                .await
+                .expect("first submission should persist");
+
+            // This is the store-level action the completed delete-command path
+            // invokes after the client has removed the native item.
+            registry
+                .end_binding(&first_id)
+                .await
+                .expect("completed delete should end the first binding");
+        } else {
+            registry
+                .resolve_observation(&observation)
+                .await
+                .expect("re-added submission binding should resolve");
+            let mut second = submission("reused-native-id", "title-second");
+            second.download_id = second_id;
+            submissions
+                .record_submission(second)
+                .await
+                .expect("re-added submission should persist");
+        }
+    }
+
+    let submission_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_submissions
+          WHERE download_client_id = 'client-one'
+            AND download_client_type = 'qbittorrent'
+            AND download_client_item_id = 'reused-native-id'",
+    )
+    .fetch_one(services.pool())
+    .await
+    .expect("coexisting submissions should count");
+    assert_eq!(submission_count, 2);
+
+    let bindings: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT download_id, ended_at
+           FROM download_client_bindings
+          WHERE download_id IN (?1, ?2)
+          ORDER BY download_id",
+    )
+    .bind(first_id.to_string())
+    .bind(second_id.to_string())
+    .fetch_all(services.pool())
+    .await
+    .expect("bindings should load");
+    assert_eq!(bindings.len(), 2);
+    assert_eq!(bindings[0].0, first_id.to_string());
+    assert!(bindings[0].1.is_some());
+    assert_eq!(bindings[1], (second_id.to_string(), None));
+
+    let projected = submissions
+        .list_for_client_items(&[locator])
+        .await
+        .expect("tuple projection should load");
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].download_id, second_id);
 
     drop(services);
     let _ = std::fs::remove_file(db);

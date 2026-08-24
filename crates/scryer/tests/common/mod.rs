@@ -73,9 +73,8 @@ use scryer_infrastructure_workflow::workflow::{
     release_store::ReleaseStore,
     stores::{
         AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadRegistryStore,
-        DownloadSubmissionStore,
-        ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
-        WorkflowOperationStore,
+        DownloadSubmissionStore, ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore,
+        ImportStore, WorkflowOperationStore,
     },
 };
 use scryer_interface::context::{

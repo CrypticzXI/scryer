@@ -348,13 +348,7 @@ async fn ambiguous_submission_candidates_tx(
          ORDER BY b.created_at, b.download_id
          LIMIT 2",
         &[
-            SqlArg::Text(
-                observation
-                    .locator
-                    .client_id
-                    .clone()
-                    .unwrap_or_default(),
-            ),
+            SqlArg::Text(observation.locator.client_id.clone().unwrap_or_default()),
             SqlArg::Text(observation.locator.client_type.clone()),
             SqlArg::Text(observed_name),
         ],

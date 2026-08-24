@@ -74,7 +74,9 @@ async fn active_binding_download_id(
     row.map(|row| {
         let value = row.text("download_id")?;
         scryer_domain::download_identity::DownloadId::parse(&value).ok_or_else(|| {
-            AppError::Repository(format!("invalid canonical download id {value:?} in binding"))
+            AppError::Repository(format!(
+                "invalid canonical download id {value:?} in binding"
+            ))
         })
     })
     .transpose()
@@ -1102,11 +1104,7 @@ mod tests {
         ClientJobLocator::new(Some("client-1"), "nzbget", item_id)
     }
 
-    fn artifact(
-        id: &str,
-        source_identity: &ClientJobLocator,
-        result: &str,
-    ) -> ImportArtifact {
+    fn artifact(id: &str, source_identity: &ClientJobLocator, result: &str) -> ImportArtifact {
         ImportArtifact {
             id: id.to_string(),
             source_client_id: source_identity.client_id.clone(),
@@ -1140,7 +1138,6 @@ mod tests {
             candidates: Vec::new(),
         }
     }
-
 
     #[tokio::test]
     async fn canonical_ownership_lookup_finds_canonical_import_rows_before_legacy_tuples() {
@@ -1192,7 +1189,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn artifact_reads_find_canonical_rows_before_legacy_tuples() {
         let store = store().await;
@@ -1229,8 +1225,6 @@ mod tests {
         );
     }
 
-
-
     #[tokio::test]
     async fn manual_selection_reads_find_canonical_rows_before_legacy_tuples() {
         let store = store().await;
@@ -1257,5 +1251,4 @@ mod tests {
         assert_eq!(selection.id, "canonical-selection");
         assert_eq!(selection.canonical_download_id, Some(canonical_download_id));
     }
-
 }
