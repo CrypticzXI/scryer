@@ -2614,6 +2614,7 @@ export const securitySettingsQuery = `query SecuritySettings {
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
+    apiKeysRestrictToSystemSettingsUsers
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     mfaRequireJellyfinLogin
@@ -2847,6 +2848,13 @@ export const myOauthAppsQuery = `query MyOauthApps {
     clientName
     authorizedAt
     lastUsedAt
+  }
+}`;
+
+export const myApiKeysQuery = `query MyApiKeys {
+  canCreateMyApiKeys
+  myApiKeys {
+    id label actor expiresAt revokedAt lastUsedAt createdAt provisioningSource
   }
 }`;
 

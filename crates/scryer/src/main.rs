@@ -3,6 +3,8 @@
 
 mod backup_routes;
 mod base_path;
+#[cfg(any(debug_assertions, test))]
+mod dev_api_keys;
 mod http_error;
 mod init;
 mod log_buffer;
@@ -1612,6 +1614,11 @@ async fn bootstrap_application(
                 "running with authentication disabled; private/local clients act as admin and public clients are rejected unless explicitly allowed"
             );
         }
+    }
+    #[cfg(any(debug_assertions, test))]
+    if let Err(error) = dev_api_keys::sync_from_env(&app_use_case).await {
+        tracing::error!(error = %error, "failed to synchronize development API keys");
+        std::process::exit(1);
     }
     // Bridge coverage is decided at runtime, not at boot. Resolving the
     // weaver subscription bridge once at startup meant a weaver client added

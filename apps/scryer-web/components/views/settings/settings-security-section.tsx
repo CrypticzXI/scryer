@@ -40,6 +40,8 @@ type SettingsSecuritySectionProps = {
   onPasswordMinLengthDraftChange: (value: string) => void;
   onPasswordMinLengthSubmit: (value?: string) => Promise<void> | void;
   onSkipLocalIpsChange: (enabled: boolean) => void;
+  onApiKeysRestrictionChange: (enabled: boolean) => void;
+  canManageApiKeysRestriction: boolean;
   onMfaConfigStepUpChange: (enabled: boolean) => void;
   onMfaPasswordLoginChange: (enabled: boolean) => void;
   onTotpJellyfinLoginChange: (enabled: boolean) => void;
@@ -70,6 +72,8 @@ export function SettingsSecuritySection({
   onPasswordMinLengthDraftChange,
   onPasswordMinLengthSubmit,
   onSkipLocalIpsChange,
+  onApiKeysRestrictionChange,
+  canManageApiKeysRestriction,
   onMfaConfigStepUpChange,
   onMfaPasswordLoginChange,
   onTotpJellyfinLoginChange,
@@ -154,6 +158,23 @@ export function SettingsSecuritySection({
                   <InfoHelp
                     ariaLabel={t("settings.securitySkipLocalIps")}
                     text={t("settings.securitySkipLocalIpsHelp")}
+                  />
+                }
+                className={`${SECURITY_INSET_CLASS} w-fit max-w-full items-center px-3 py-2`}
+                checkboxClassName="mt-0"
+              />
+              <CheckboxField
+                id="security-api-keys-restrict-to-system-settings-users"
+                checked={settings.apiKeysRestrictToSystemSettingsUsers}
+                disabled={busy || !canManageApiKeysRestriction}
+                onCheckedChange={(checked) =>
+                  onApiKeysRestrictionChange(checked === true)
+                }
+                label="Restrict API keys to system-settings users"
+                labelAccessory={
+                  <InfoHelp
+                    ariaLabel="Restrict API keys to system-settings users"
+                    text="Only users with Manage System Settings can create or use API keys. Existing keys are preserved and resume if permission is restored or this setting is disabled."
                   />
                 }
                 className={`${SECURITY_INSET_CLASS} w-fit max-w-full items-center px-3 py-2`}

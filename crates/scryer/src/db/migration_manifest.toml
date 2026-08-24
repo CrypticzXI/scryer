@@ -1202,6 +1202,23 @@ file = "postgres/migrations/0177_movie_smg_identity_backfill.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 178
+description = "persist user API keys"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0178_api_keys.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0178_api_keys.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

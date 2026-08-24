@@ -538,19 +538,21 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // query inputs and payload fields only, so it adds no roots or named types.
     // OAuth client registrations add their create, update, and delete mutation
     // roots and six named types: mutation 187->190, public types 593->599.
+    // API-key lifecycle adds two queries, two mutations, and five named types:
+    // query 129->131, mutation 190->192, public types 599->604.
     assert_eq!(
-        query_field_count, 129,
+        query_field_count, 131,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 190,
+        mutation_field_count, 192,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 599);
-    assert_eq!(kind_count("OBJECT"), 309);
-    assert_eq!(kind_count("INPUT_OBJECT"), 171);
-    assert_eq!(kind_count("ENUM"), 107);
+    assert_eq!(public_types.len(), 604);
+    assert_eq!(kind_count("OBJECT"), 312);
+    assert_eq!(kind_count("INPUT_OBJECT"), 172);
+    assert_eq!(kind_count("ENUM"), 108);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -560,6 +562,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"indexerErrors"));
     assert!(query_field_names.contains(&"indexerError"));
+    assert!(query_field_names.contains(&"canCreateMyApiKeys"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     assert!(!query_field_names.contains(&"catalogHasValidRoot"));

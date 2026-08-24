@@ -3,9 +3,10 @@ use std::time::Instant;
 use async_graphql::{Context, Error, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionSettings as AppAcquisitionSettings, AppError, CreateOAuthClientRegistration,
-    LoginFailureTimingClass, LoginVerificationMethod, LoginVerificationRequirement,
-    MediaServerConnectionDraft, MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
+    AcquisitionSettings as AppAcquisitionSettings, ApiKeyExpiryPreset as AppApiKeyExpiryPreset,
+    AppError, CreateApiKey, CreateOAuthClientRegistration, LoginFailureTimingClass,
+    LoginVerificationMethod, LoginVerificationRequirement, MediaServerConnectionDraft,
+    MediaServerConnectionPatch, QualityProfile, QualityProfileCriteria,
     SecuritySettings as AppSecuritySettings,
     UpdateAutoBackupSettings as AppUpdateAutoBackupSettings,
     UpdateBackupSettings as AppUpdateBackupSettings,
@@ -17,13 +18,14 @@ use scryer_application::{
 };
 
 use super::{
-    from_oauth_client_registration, from_plugin_auto_update_settings, from_ui_settings,
-    ui_settings_update_from_input,
+    from_api_key, from_oauth_client_registration, from_plugin_auto_update_settings,
+    from_ui_settings, ui_settings_update_from_input,
 };
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
-    login_verification_required_gql_error, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, password_change_required_actor_from_ctx, persist_session_or_default,
+    interactive_session_actor_from_ctx, login_verification_required_gql_error,
+    mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx,
+    password_change_required_actor_from_ctx, persist_session_or_default,
     require_config_app_permission, to_gql_error, to_login_gql_error,
     to_login_gql_error_after_timing,
 };
@@ -154,6 +156,8 @@ fn from_security_settings(
         form_login_enabled: settings.form_login_enabled,
         password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        api_keys_restrict_to_system_settings_users: settings
+            .api_keys_restrict_to_system_settings_users,
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         mfa_require_jellyfin_login: settings.totp_require_jellyfin_login,
@@ -1034,6 +1038,10 @@ impl SettingsMutations {
         let auth_runtime = auth_runtime_from_ctx(ctx);
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageUsers).await?;
+        if input.api_keys_restrict_to_system_settings_users.is_some() {
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        }
         let previous_snapshot = auth_runtime.snapshot();
         let jellyfin_mfa_requirement = resolve_mfa_route_requirement(
             input.mfa_require_jellyfin_login,
@@ -1058,6 +1066,8 @@ impl SettingsMutations {
                     form_login_enabled: input.form_login_enabled,
                     password_min_length: input.password_min_length,
                     skip_login_for_local_ips: input.skip_login_for_local_ips,
+                    api_keys_restrict_to_system_settings_users: input
+                        .api_keys_restrict_to_system_settings_users,
                     mfa_require_config_step_up: input.mfa_require_config_step_up,
                     mfa_require_password_login: input.mfa_require_password_login,
                     totp_require_jellyfin_login: jellyfin_mfa_requirement,
@@ -2079,6 +2089,53 @@ impl SettingsMutations {
             .await
             .map_err(to_gql_error)?;
         Ok(RevokeMyOauthAppPayload { grant_id, revoked })
+    }
+
+    /// Creates an API key for the interactive actor and returns its secret once.
+    async fn create_my_api_key(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Label and expiration policy for the new API key.")]
+        input: CreateMyApiKeyInput,
+    ) -> GqlResult<CreateMyApiKeyPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let expiry = match input.expiry.unwrap_or(ApiKeyExpiryPresetValue::Days90) {
+            ApiKeyExpiryPresetValue::Days30 => AppApiKeyExpiryPreset::Days30,
+            ApiKeyExpiryPresetValue::Days90 => AppApiKeyExpiryPreset::Days90,
+            ApiKeyExpiryPresetValue::Days365 => AppApiKeyExpiryPreset::Days365,
+            ApiKeyExpiryPresetValue::Never => AppApiKeyExpiryPreset::Never,
+        };
+        let created = app
+            .create_api_key(
+                &actor,
+                CreateApiKey {
+                    label: input.label,
+                    expiry,
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(CreateMyApiKeyPayload {
+            api_key: created.raw_key,
+            key: from_api_key(created.api_key, &actor.username),
+        })
+    }
+
+    /// Revokes one user-created API key owned by the interactive actor.
+    async fn revoke_my_api_key(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "API-key record ID to revoke.")] id: ID,
+    ) -> GqlResult<RevokeMyApiKeyPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let id_string = id.to_string();
+        let revoked = app
+            .revoke_api_key(&actor, &id_string)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(RevokeMyApiKeyPayload { id, revoked })
     }
 
     /// Authenticates local credentials, optionally verifies required TOTP, and issues a session or MFA-enrollment token.

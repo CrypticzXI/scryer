@@ -2404,6 +2404,43 @@ pub struct OAuthClientRegistrationRecord {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiKeyProvisioningSource {
+    User,
+    Environment,
+}
+
+impl ApiKeyProvisioningSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Environment => "environment",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "environment" => Some(Self::Environment),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub user_id: String,
+    pub lookup_id: String,
+    pub secret_hash: String,
+    pub label: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub provisioning_source: ApiKeyProvisioningSource,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthAuthorizationCodeRecord {
     pub id: String,

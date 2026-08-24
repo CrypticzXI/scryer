@@ -15,7 +15,9 @@ use crate::ports::{
     DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
     DiscoveryHomeSectionCandidatesRecord,
 };
-use crate::types::{OAuthClientRegistrationRecord, PendingImportStatus, PendingReleaseStatus};
+use crate::types::{
+    ApiKeyRecord, OAuthClientRegistrationRecord, PendingImportStatus, PendingReleaseStatus,
+};
 use crate::{
     AcquisitionScopeStatesQuery, AcquisitionStateRepository, IndexerErrorDetail, IndexerErrorPage,
     IndexerErrorRepository, InsertMediaFileInput, JellyfinServerUser, MediaRequestResolutionResult,
@@ -2632,6 +2634,43 @@ pub struct NullOAuthRepository;
 
 #[async_trait]
 impl OAuthRepository for NullOAuthRepository {
+    async fn create_api_key(&self, _: ApiKeyRecord) -> AppResult<ApiKeyRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn get_api_key_by_lookup_id(&self, _: &str) -> AppResult<Option<ApiKeyRecord>> {
+        Ok(None)
+    }
+
+    async fn list_api_keys(&self, _: &str) -> AppResult<Vec<ApiKeyRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_environment_api_keys(&self) -> AppResult<Vec<ApiKeyRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_environment_api_key(&self, _: ApiKeyRecord) -> AppResult<ApiKeyRecord> {
+        Err(AppError::Repository("not configured".into()))
+    }
+
+    async fn revoke_api_key(
+        &self,
+        _: &str,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
+    async fn touch_api_key_last_used(
+        &self,
+        _: &str,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+
     async fn create_client_registration(
         &self,
         _: OAuthClientRegistrationRecord,

@@ -4,7 +4,7 @@ use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_interface_core::{
     AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx,
-    default_persist_session_from_ctx, to_gql_error,
+    default_persist_session_from_ctx, interactive_session_actor_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
@@ -83,6 +83,19 @@ fn from_oauth_connected_app(
         client_name: app.client_name,
         authorized_at: app.authorized_at,
         last_used_at: app.last_used_at,
+    }
+}
+
+fn from_api_key(key: scryer_application::ApiKeySummary, owner_username: &str) -> ApiKeyPayload {
+    ApiKeyPayload {
+        id: key.id.into(),
+        actor: format!("api ({}) obo {owner_username}", key.label),
+        label: key.label,
+        expires_at: key.expires_at,
+        revoked_at: key.revoked_at,
+        last_used_at: key.last_used_at,
+        created_at: key.created_at,
+        provisioning_source: key.provisioning_source.as_str().to_owned(),
     }
 }
 
@@ -246,6 +259,8 @@ fn from_security_settings(
         form_login_enabled: settings.form_login_enabled,
         password_min_length: settings.password_min_length,
         skip_login_for_local_ips: settings.skip_login_for_local_ips,
+        api_keys_restrict_to_system_settings_users: settings
+            .api_keys_restrict_to_system_settings_users,
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         mfa_require_jellyfin_login: settings.totp_require_jellyfin_login,
@@ -806,6 +821,28 @@ impl SettingsQueries {
             .await
             .map(|apps| apps.into_iter().map(from_oauth_connected_app).collect())
             .map_err(to_gql_error)
+    }
+
+    /// Lists the interactive actor's API keys without returning their secrets.
+    async fn my_api_keys(&self, ctx: &Context<'_>) -> GqlResult<Vec<ApiKeyPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let owner_username = actor.username.clone();
+        app.list_api_keys(&actor)
+            .await
+            .map(|keys| {
+                keys.into_iter()
+                    .map(|key| from_api_key(key, &owner_username))
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+
+    /// Whether the interactive actor may create API keys under the active security policy.
+    async fn can_create_my_api_keys(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = interactive_session_actor_from_ctx(ctx)?;
+        app.can_create_api_key(&actor).await.map_err(to_gql_error)
     }
 
     /// Lists delay profiles with minute-based delays and their media-facet assignments.
