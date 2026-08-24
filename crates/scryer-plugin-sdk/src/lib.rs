@@ -33,7 +33,7 @@ pub use notification::{
     PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
     to_script_environment, to_webhook_json,
 };
-pub const SDK_VERSION: &str = "3.7.0";
+pub const SDK_VERSION: &str = "3.8.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -2658,7 +2658,14 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.7.0, <4.0.0");
+        let version = Version::parse(SDK_VERSION).expect("SDK_VERSION should be valid semver");
+        let expected = format!(
+            ">={}.{}.0, <{}.0.0",
+            version.major,
+            version.minor,
+            version.major + 1
+        );
+        assert_eq!(current_sdk_constraint(), expected);
     }
 
     #[test]
