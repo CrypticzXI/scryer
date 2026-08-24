@@ -1,6 +1,7 @@
 // async-graphql schema expansion exceeded the default macro recursion depth.
 #![recursion_limit = "256"]
 
+mod application_upgrade_evidence;
 mod backup_routes;
 mod base_path;
 mod http_error;
@@ -83,7 +84,9 @@ use scryer_interface::context::{
     RestoreDatastoreEngine, RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
     RestoreSqliteDatastoreRequest,
 };
-use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
+use scryer_interface::{
+    LogBuffer, build_schema_with_log_buffer_and_restore_and_application_upgrade,
+};
 use scryer_logging::{JsonContextFormatter, LogContextLayer, enable_context_spans};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -685,6 +688,13 @@ async fn main() {
 
     tracing::info!(version = VERSION, "starting scryer");
 
+    let application_upgrade_assessment =
+        application_upgrade_evidence::collect_installation_assessment();
+    tracing::info!(
+        kind = ?application_upgrade_assessment.kind,
+        "application upgrade installation assessment"
+    );
+
     // ValidateOnly mode: check for pending migrations and exit immediately (no server).
     if matches!(migration_mode, MigrationMode::ValidateOnly) {
         run_validate_only(datastore_config).await;
@@ -736,6 +746,7 @@ async fn main() {
                     metrics_handle,
                     data_dir,
                     bootstrap_base_path,
+                    application_upgrade_assessment,
                 )
                 .await
                 {
@@ -827,6 +838,7 @@ async fn bootstrap_application(
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     data_dir: PathBuf,
     base_path: BasePath,
+    application_upgrade_assessment: scryer_application::application_upgrade::InstallationAssessment,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
@@ -1538,7 +1550,7 @@ async fn bootstrap_application(
     });
     let log_buf_snapshot = log_ring_buffer.clone();
     let log_buf_subscribe = log_ring_buffer.clone();
-    let schema = build_schema_with_log_buffer_and_restore(
+    let schema = build_schema_with_log_buffer_and_restore_and_application_upgrade(
         app_use_case.clone(),
         auth_runtime.clone(),
         Some(LogBuffer::new(
@@ -1551,6 +1563,7 @@ async fn bootstrap_application(
             datastore: restore_datastore_handle(),
             restart: restore_restart_controller.handle(),
         }),
+        application_upgrade_assessment,
     );
     let authless_access_allowlist_raw =
         normalize_env_option(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV).unwrap_or_default();

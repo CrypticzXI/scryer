@@ -538,8 +538,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // query inputs and payload fields only, so it adds no roots or named types.
     // OAuth client registrations add their create, update, and delete mutation
     // roots and six named types: mutation 187->190, public types 593->599.
+    // Application upgrade status adds one query root, one payload object, and
+    // two enum types: query 129->130, OBJECT 309->310, ENUM 107->109, public
+    // types 599->602.
     assert_eq!(
-        query_field_count, 129,
+        query_field_count, 130,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
@@ -547,10 +550,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 599);
-    assert_eq!(kind_count("OBJECT"), 309);
+    assert_eq!(public_types.len(), 602);
+    assert_eq!(kind_count("OBJECT"), 310);
     assert_eq!(kind_count("INPUT_OBJECT"), 171);
-    assert_eq!(kind_count("ENUM"), 107);
+    assert_eq!(kind_count("ENUM"), 109);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -560,6 +563,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"indexerErrors"));
     assert!(query_field_names.contains(&"indexerError"));
+    assert!(query_field_names.contains(&"applicationUpgradeStatus"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     assert!(!query_field_names.contains(&"catalogHasValidRoot"));
@@ -601,6 +605,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
+    assert!(public_type_names.contains(&"ApplicationUpgradeStatusPayload"));
+    assert!(public_type_names.contains(&"ApplicationInstallationKindValue"));
+    assert!(public_type_names.contains(&"ApplicationUpgradeOwnerValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
     // interactive-search job + convergence surface is present…

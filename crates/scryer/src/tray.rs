@@ -476,6 +476,7 @@ mod windows {
                 .arg(&log_file)
                 .env("SCRYER_BIND", format!("127.0.0.1:{DEFAULT_PORT}"))
                 .env("SCRYER_OPEN_BROWSER", "false")
+                .env("SCRYER_TRAY_SUPERVISED", "1")
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
                 .map_err(|error| {

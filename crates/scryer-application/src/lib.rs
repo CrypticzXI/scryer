@@ -1,4 +1,5 @@
 mod acquisition;
+pub mod application_upgrade;
 mod authorization;
 mod catalog;
 pub mod challenge_solver;

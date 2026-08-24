@@ -484,6 +484,96 @@ enum AppPermissionValue {
 }
 
 """
+Installation layout identified for the in-app upgrade surface.
+"""
+enum ApplicationInstallationKindValue {
+	"""
+	A writable standalone installation.
+	"""
+	PORTABLE
+	"""
+	A directly installed Windows MSI package.
+	"""
+	DIRECT_MSI
+	"""
+	A container-managed installation.
+	"""
+	DOCKER
+	"""
+	A Homebrew-managed installation.
+	"""
+	HOMEBREW
+	"""
+	A winget-managed Windows installation.
+	"""
+	WINGET
+	"""
+	A Windows service or session-zero installation.
+	"""
+	WINDOWS_SUPERVISED
+	"""
+	In-app upgrades disabled by the operator.
+	"""
+	DISABLED
+	"""
+	An installation layout that is not supported for in-app upgrades.
+	"""
+	UNSUPPORTED
+}
+
+"""
+Party responsible for managing application upgrades.
+"""
+enum ApplicationUpgradeOwnerValue {
+	"""
+	The application can manage its own upgrade.
+	"""
+	IN_APP
+	"""
+	The operator or an external package manager owns upgrades.
+	"""
+	OPERATOR
+}
+
+"""
+Current update availability and installation eligibility.
+"""
+type ApplicationUpgradeStatusPayload {
+	"""
+	Running application version.
+	"""
+	currentVersion: String!
+	"""
+	Available application version, or null when no update notice exists.
+	"""
+	updateVersion: String
+	"""
+	Available release tag, or null when no update notice exists.
+	"""
+	updateTag: String
+	"""
+	Whether the current update notice offers a newer version.
+	"""
+	updateAvailable: Boolean!
+	"""
+	Installation layout identified at startup.
+	"""
+	installationKind: ApplicationInstallationKindValue!
+	"""
+	Party responsible for managing application upgrades.
+	"""
+	managementOwner: ApplicationUpgradeOwnerValue!
+	"""
+	Whether this installation is eligible for an in-app upgrade.
+	"""
+	eligible: Boolean!
+	"""
+	Stable snake_case code explaining eligibility.
+	"""
+	eligibilityReason: String!
+}
+
+"""
 Approval choices for a media request.
 """
 input ApproveMediaRequestInput {
@@ -6592,6 +6682,256 @@ type IndexerDownloadClientProviderCompatibilityPayload {
 	Compatible download-client IDs.
 	"""
 	compatibleClientIds: [ID!]!
+}
+
+"""
+A normalized, safe classification for an indexer HTTP error.
+"""
+enum IndexerErrorClassificationValue {
+	"""
+	Newznab reported an invalid API key.
+	"""
+	NEWZNAB_INVALID_API_KEY
+	"""
+	Newznab reported a suspended account.
+	"""
+	NEWZNAB_ACCOUNT_SUSPENDED
+	"""
+	Newznab reported insufficient account privileges.
+	"""
+	NEWZNAB_INSUFFICIENT_PRIVILEGES
+	"""
+	Newznab denied registration.
+	"""
+	NEWZNAB_REGISTRATION_DENIED
+	"""
+	Newznab has closed registrations.
+	"""
+	NEWZNAB_REGISTRATIONS_CLOSED
+	"""
+	Newznab rejected registration data.
+	"""
+	NEWZNAB_INVALID_REGISTRATION
+	"""
+	Newznab rejected the registration email address.
+	"""
+	NEWZNAB_INVALID_REGISTRATION_EMAIL
+	"""
+	Newznab registration failed.
+	"""
+	NEWZNAB_REGISTRATION_FAILED
+	"""
+	Newznab reported a missing request parameter.
+	"""
+	NEWZNAB_MISSING_PARAMETER
+	"""
+	Newznab reported an incorrect request parameter.
+	"""
+	NEWZNAB_INCORRECT_PARAMETER
+	"""
+	Newznab reported an unsupported function.
+	"""
+	NEWZNAB_NO_SUCH_FUNCTION
+	"""
+	Newznab reported a function that is unavailable.
+	"""
+	NEWZNAB_FUNCTION_NOT_AVAILABLE
+	"""
+	Newznab reported that no matching item exists.
+	"""
+	NEWZNAB_NO_SUCH_ITEM
+	"""
+	Newznab reported that the request limit was reached.
+	"""
+	NEWZNAB_REQUEST_LIMIT_REACHED
+	"""
+	Newznab reported that the download limit was reached.
+	"""
+	NEWZNAB_DOWNLOAD_LIMIT_REACHED
+	"""
+	Newznab reported its generic unknown error.
+	"""
+	NEWZNAB_UNKNOWN_ERROR
+	"""
+	Newznab reported that its API is disabled.
+	"""
+	NEWZNAB_API_DISABLED
+	"""
+	The server rejected the request as invalid.
+	"""
+	HTTP_BAD_REQUEST
+	"""
+	The server rejected authentication.
+	"""
+	HTTP_UNAUTHORIZED
+	"""
+	The server forbade access to the resource.
+	"""
+	HTTP_FORBIDDEN
+	"""
+	The requested endpoint was not found.
+	"""
+	HTTP_NOT_FOUND
+	"""
+	The server timed out the request.
+	"""
+	HTTP_REQUEST_TIMEOUT
+	"""
+	The server rate limited the request.
+	"""
+	HTTP_RATE_LIMITED
+	"""
+	The server returned a 5xx response.
+	"""
+	HTTP_SERVER_ERROR
+	"""
+	The accepted response did not match a known error shape.
+	"""
+	UNKNOWN
+}
+
+"""
+A newest-first page of persisted indexer HTTP errors.
+"""
+type IndexerErrorConnectionPayload {
+	"""
+	Error events in newest-first order.
+	"""
+	items: [IndexerErrorSummaryPayload!]!
+	"""
+	Cursor for the following page, or null at the end of the result set.
+	"""
+	nextCursor: String
+}
+
+"""
+A persisted error event together with its complete HTTP response.
+"""
+type IndexerErrorDetailPayload {
+	"""
+	List-safe metadata for the error event.
+	"""
+	error: IndexerErrorSummaryPayload!
+	"""
+	Complete response data available only through this detail query.
+	"""
+	response: IndexerErrorResponsePayload!
+}
+
+"""
+One raw response header retained for privileged diagnostics.
+"""
+type IndexerErrorHeaderPayload {
+	"""
+	Original response header name.
+	"""
+	name: String!
+	"""
+	Raw header value encoded as base64.
+	"""
+	valueBase64: String!
+	"""
+	Raw header value when it is valid UTF-8.
+	"""
+	value: String
+}
+
+"""
+Identifies the indexer operation that produced a persisted HTTP error.
+"""
+enum IndexerErrorOperationValue {
+	"""
+	Connection validation against the configured indexer.
+	"""
+	CONNECTION_TEST
+	"""
+	An operator-initiated release search.
+	"""
+	INTERACTIVE_SEARCH
+	"""
+	A scheduled or automated release search.
+	"""
+	AUTOMATIC_SEARCH
+	"""
+	A periodic RSS synchronization.
+	"""
+	RSS_SYNC
+	"""
+	A plugin-defined indexer action.
+	"""
+	INDEXER_ACTION
+	"""
+	Synchronization with an indexer management service.
+	"""
+	MANAGEMENT_SYNC
+	"""
+	Refreshing a managed indexer's capabilities document.
+	"""
+	CAPS_REFRESH
+}
+
+"""
+Complete persisted HTTP response retained for privileged diagnostics.
+"""
+type IndexerErrorResponsePayload {
+	"""
+	Original HTTP status code.
+	"""
+	status: Int!
+	"""
+	Repeated raw response headers in their retained order.
+	"""
+	headers: [IndexerErrorHeaderPayload!]!
+	"""
+	Raw response body encoded as base64.
+	"""
+	bodyBase64: String!
+}
+
+"""
+List-safe metadata for a persisted indexer HTTP error.
+"""
+type IndexerErrorSummaryPayload {
+	"""
+	Stable error-event identifier.
+	"""
+	id: ID!
+	"""
+	Configured indexer identifier captured with the event.
+	"""
+	indexerId: ID!
+	"""
+	Indexer name captured when the event occurred.
+	"""
+	indexerName: String!
+	"""
+	Operation that received the failed response.
+	"""
+	operation: IndexerErrorOperationValue!
+	"""
+	RFC 3339 time at which the response was accepted.
+	"""
+	occurredAt: String!
+	"""
+	HTTP response status code.
+	"""
+	httpStatus: Int!
+	"""
+	Safe error classification derived from the response.
+	"""
+	classification: IndexerErrorClassificationValue!
+	"""
+	Newznab provider code when a known Newznab error was recognized.
+	"""
+	providerErrorCode: Int
+	"""
+	Canonical safe error message that excludes response-body text.
+	"""
+	message: String!
+	"""
+	Response Content-Type header when it was valid UTF-8.
+	"""
+	contentType: String
 }
 
 """
@@ -13916,6 +14256,10 @@ type QueryRoot {
 	"""
 	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
 	"""
+	Return application update availability and installation eligibility; requires system-settings management permission.
+	"""
+	applicationUpgradeStatus: ApplicationUpgradeStatusPayload!
+	"""
 	List recycled media items in a bounded page, optionally restricted to library IDs.
 	"""
 	recycledItems(
@@ -14260,24 +14604,24 @@ type QueryRoot {
 	"""
 	externalAccountInvites: [LinkedAccountPayload!]!
 	"""
-	List durable indexer HTTP errors newest first; requires system-settings permission.
+	List persisted indexer HTTP errors; requires system-settings management permission.
 	"""
 	indexerErrors(
 		"""
 		Restrict results to one configured indexer.
 		"""
-		indexerId: ID
+		indexerId: ID,
 		"""
 		Requested page size from 1 through 100; defaults to 50.
 		"""
-		first: Int = 50
+		first: Int = 50,
 		"""
 		Opaque cursor returned by a prior indexerErrors page.
 		"""
 		after: String
 	): IndexerErrorConnectionPayload!
 	"""
-	Return a complete persisted indexer HTTP error response; requires system-settings permission.
+	Return one complete persisted indexer HTTP response; requires system-settings management permission.
 	"""
 	indexerError(
 		"""
@@ -19856,256 +20200,6 @@ input WebauthnRegisterCompleteInput {
 	Optional display name for the new passkey; absent or null leaves it unset.
 	"""
 	friendlyName: String
-}
-
-"""
-Identifies the indexer operation that produced a persisted HTTP error.
-"""
-enum IndexerErrorOperationValue {
-	"""
-	Connection validation against the configured indexer.
-	"""
-	CONNECTION_TEST
-	"""
-	An operator-initiated release search.
-	"""
-	INTERACTIVE_SEARCH
-	"""
-	A scheduled or automated release search.
-	"""
-	AUTOMATIC_SEARCH
-	"""
-	A periodic RSS synchronization.
-	"""
-	RSS_SYNC
-	"""
-	A plugin-defined indexer action.
-	"""
-	INDEXER_ACTION
-	"""
-	Synchronization with an indexer management service.
-	"""
-	MANAGEMENT_SYNC
-	"""
-	Refreshing a managed indexer's capabilities document.
-	"""
-	CAPS_REFRESH
-}
-
-"""
-A normalized, safe classification for an indexer HTTP error.
-"""
-enum IndexerErrorClassificationValue {
-	"""
-	Newznab reported an invalid API key.
-	"""
-	NEWZNAB_INVALID_API_KEY
-	"""
-	Newznab reported a suspended account.
-	"""
-	NEWZNAB_ACCOUNT_SUSPENDED
-	"""
-	Newznab reported insufficient account privileges.
-	"""
-	NEWZNAB_INSUFFICIENT_PRIVILEGES
-	"""
-	Newznab denied registration.
-	"""
-	NEWZNAB_REGISTRATION_DENIED
-	"""
-	Newznab has closed registrations.
-	"""
-	NEWZNAB_REGISTRATIONS_CLOSED
-	"""
-	Newznab rejected registration data.
-	"""
-	NEWZNAB_INVALID_REGISTRATION
-	"""
-	Newznab rejected the registration email address.
-	"""
-	NEWZNAB_INVALID_REGISTRATION_EMAIL
-	"""
-	Newznab registration failed.
-	"""
-	NEWZNAB_REGISTRATION_FAILED
-	"""
-	Newznab reported a missing request parameter.
-	"""
-	NEWZNAB_MISSING_PARAMETER
-	"""
-	Newznab reported an incorrect request parameter.
-	"""
-	NEWZNAB_INCORRECT_PARAMETER
-	"""
-	Newznab reported an unsupported function.
-	"""
-	NEWZNAB_NO_SUCH_FUNCTION
-	"""
-	Newznab reported a function that is unavailable.
-	"""
-	NEWZNAB_FUNCTION_NOT_AVAILABLE
-	"""
-	Newznab reported that no matching item exists.
-	"""
-	NEWZNAB_NO_SUCH_ITEM
-	"""
-	Newznab reported that the request limit was reached.
-	"""
-	NEWZNAB_REQUEST_LIMIT_REACHED
-	"""
-	Newznab reported that the download limit was reached.
-	"""
-	NEWZNAB_DOWNLOAD_LIMIT_REACHED
-	"""
-	Newznab reported its generic unknown error.
-	"""
-	NEWZNAB_UNKNOWN_ERROR
-	"""
-	Newznab reported that its API is disabled.
-	"""
-	NEWZNAB_API_DISABLED
-	"""
-	The server rejected the request as invalid.
-	"""
-	HTTP_BAD_REQUEST
-	"""
-	The server rejected authentication.
-	"""
-	HTTP_UNAUTHORIZED
-	"""
-	The server forbade access to the resource.
-	"""
-	HTTP_FORBIDDEN
-	"""
-	The requested endpoint was not found.
-	"""
-	HTTP_NOT_FOUND
-	"""
-	The server timed out the request.
-	"""
-	HTTP_REQUEST_TIMEOUT
-	"""
-	The server rate limited the request.
-	"""
-	HTTP_RATE_LIMITED
-	"""
-	The server returned a 5xx response.
-	"""
-	HTTP_SERVER_ERROR
-	"""
-	The accepted response did not match a known error shape.
-	"""
-	UNKNOWN
-}
-
-"""
-List-safe metadata for a persisted indexer HTTP error.
-"""
-type IndexerErrorSummaryPayload {
-	"""
-	Stable error-event identifier.
-	"""
-	id: ID!
-	"""
-	Configured indexer identifier captured with the event.
-	"""
-	indexerId: ID!
-	"""
-	Indexer name captured when the event occurred.
-	"""
-	indexerName: String!
-	"""
-	Operation that received the failed response.
-	"""
-	operation: IndexerErrorOperationValue!
-	"""
-	RFC 3339 time at which the response was accepted.
-	"""
-	occurredAt: String!
-	"""
-	HTTP response status code.
-	"""
-	httpStatus: Int!
-	"""
-	Safe error classification derived from the response.
-	"""
-	classification: IndexerErrorClassificationValue!
-	"""
-	Newznab provider code when a known Newznab error was recognized.
-	"""
-	providerErrorCode: Int
-	"""
-	Canonical safe error message that excludes response-body text.
-	"""
-	message: String!
-	"""
-	Response Content-Type header when it was valid UTF-8.
-	"""
-	contentType: String
-}
-
-"""
-One raw response header retained for privileged diagnostics.
-"""
-type IndexerErrorHeaderPayload {
-	"""
-	Original response header name.
-	"""
-	name: String!
-	"""
-	Raw header value encoded as base64.
-	"""
-	valueBase64: String!
-	"""
-	Raw header value when it is valid UTF-8.
-	"""
-	value: String
-}
-
-"""
-Complete persisted HTTP response retained for privileged diagnostics.
-"""
-type IndexerErrorResponsePayload {
-	"""
-	Original HTTP status code.
-	"""
-	status: Int!
-	"""
-	Repeated raw response headers in their retained order.
-	"""
-	headers: [IndexerErrorHeaderPayload!]!
-	"""
-	Raw response body encoded as base64.
-	"""
-	bodyBase64: String!
-}
-
-"""
-A persisted error event together with its complete HTTP response.
-"""
-type IndexerErrorDetailPayload {
-	"""
-	List-safe metadata for the error event.
-	"""
-	error: IndexerErrorSummaryPayload!
-	"""
-	Complete response data available only through this detail query.
-	"""
-	response: IndexerErrorResponsePayload!
-}
-
-"""
-A newest-first page of persisted indexer HTTP errors.
-"""
-type IndexerErrorConnectionPayload {
-	"""
-	Error events in newest-first order.
-	"""
-	items: [IndexerErrorSummaryPayload!]!
-	"""
-	Cursor for the following page, or null at the end of the result set.
-	"""
-	nextCursor: String
 }
 
 """

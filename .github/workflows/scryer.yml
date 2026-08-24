@@ -1266,7 +1266,14 @@ jobs:
             -Architecture ${{ matrix.msi_arch }} `
             -StageDir "${{ matrix.artifact_name }}-stage" `
             -Version $version `
-            -OutputPath "${{ matrix.artifact_name }}.msi"
+            -OutputPath "${{ matrix.artifact_name }}.msi" `
+            -DistributionOwner msi
+          .\packaging\windows\build-msi.ps1 `
+            -Architecture ${{ matrix.msi_arch }} `
+            -StageDir "${{ matrix.artifact_name }}-stage" `
+            -Version $version `
+            -OutputPath "${{ matrix.artifact_name }}-winget.msi" `
+            -DistributionOwner winget
 
       - name: Validate packaged Windows artifact
         shell: pwsh
@@ -1276,6 +1283,8 @@ jobs:
             -ZipPath "${{ matrix.artifact_name }}.zip" `
             -MsiPath "${{ matrix.artifact_name }}.msi" `
             -MsiMetadataPath "${{ matrix.artifact_name }}.msi.json" `
+            -WingetMsiPath "${{ matrix.artifact_name }}-winget.msi" `
+            -WingetMsiMetadataPath "${{ matrix.artifact_name }}-winget.msi.json" `
             -BuiltExePath "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe" `
             -BuiltTrayPath "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer-tray.exe"
 
@@ -1299,6 +1308,8 @@ jobs:
             ${{ matrix.artifact_name }}.zip
             ${{ matrix.artifact_name }}.msi
             ${{ matrix.artifact_name }}.msi.json
+            ${{ matrix.artifact_name }}-winget.msi
+            ${{ matrix.artifact_name }}-winget.msi.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1799,6 +1810,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz
 
       - name: Generate deterministic checksums
@@ -1815,6 +1828,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz > scryer-checksums.txt
 
       - name: Install Cosign
@@ -1836,6 +1851,34 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             scryer-checksums.txt
 
+      - name: Download WinGet xtask binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: winget-xtask-release-${{ github.run_id }}
+          path: winget-tools
+
+      - name: Generate and sign upgrade manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#scryer-v}"
+          chmod +x winget-tools/xtask-release
+          ./winget-tools/xtask-release ci upgrade-manifest \
+            --version "$VERSION" \
+            --tag "${{ github.ref_name }}" \
+            --repository "${{ github.repository }}" \
+            --artifacts-dir release-artifacts \
+            --output release-artifacts/scryer-upgrade-manifest.json
+          cosign sign-blob --yes \
+            --bundle release-artifacts/scryer-upgrade-manifest.json.sigstore.json \
+            release-artifacts/scryer-upgrade-manifest.json
+          cosign verify-blob \
+            --bundle release-artifacts/scryer-upgrade-manifest.json.sigstore.json \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/scryer.yml@refs/tags/${{ github.ref_name }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            release-artifacts/scryer-upgrade-manifest.json
+
       - name: Verify release notes
         run: test -s "release-notes/${{ steps.release_meta.outputs.tag_name }}.md"
 
@@ -1848,9 +1891,14 @@ jobs:
           files: |
             release-artifacts/scryer-*.tar.gz
             release-artifacts/scryer-*.zip
-            release-artifacts/scryer-*.msi
+            release-artifacts/scryer-windows-arm64.msi
+            release-artifacts/scryer-windows-x86_64.msi
+            release-artifacts/scryer-windows-arm64-winget.msi
+            release-artifacts/scryer-windows-x86_64-winget.msi
             release-artifacts/scryer-checksums.txt
             release-artifacts/scryer-checksums.txt.sigstore.json
+            release-artifacts/scryer-upgrade-manifest.json
+            release-artifacts/scryer-upgrade-manifest.json.sigstore.json
             release-artifacts/scryer-provenance.intoto.jsonl
           fail_on_unmatched_files: true
 
@@ -2098,6 +2146,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz > scryer-subjects.sha256
           echo "base64_subjects=$(base64 < scryer-subjects.sha256 | tr -d '\n')" >> "$GITHUB_OUTPUT"
 

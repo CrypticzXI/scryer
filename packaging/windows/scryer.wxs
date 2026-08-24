@@ -41,6 +41,12 @@
               Type="integer"
               Value="1"
               KeyPath="yes" />
+          <RegistryValue
+              Root="HKLM"
+              Key="Software\Scryer Media\Scryer"
+              Name="DistributionOwner"
+              Type="string"
+              Value="$(var.DistributionOwner)" />
         </Component>
       </Directory>
     </StandardDirectory>

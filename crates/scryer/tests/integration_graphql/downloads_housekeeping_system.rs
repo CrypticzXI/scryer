@@ -1060,3 +1060,97 @@ async fn graphql_smg_scryer_update_notice_reads_persisted_notice() {
         "2026-06-15T12:00:00+00:00"
     );
 }
+
+#[tokio::test]
+async fn graphql_application_upgrade_status_requires_system_settings_permission() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("find default admin");
+    let denied_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_status_denied".to_string(),
+            "upgrade-status-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create actor without system settings permission");
+    let system_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_status_system".to_string(),
+            "upgrade-status-pass2".to_string(),
+            AppPermissionMask::from_permission(scryer_domain::AppPermission::ManageSystemSettings),
+            vec![],
+        )
+        .await
+        .expect("create actor with system settings permission");
+
+    let query = r#"
+        {
+          applicationUpgradeStatus {
+            currentVersion
+            updateVersion
+            updateTag
+            updateAvailable
+            installationKind
+            managementOwner
+            eligible
+            eligibilityReason
+          }
+        }
+    "#;
+
+    let denied = schema_exec(&ctx, query, Some(denied_actor)).await;
+    assert_graphql_field_denied(&denied, "applicationUpgradeStatus");
+
+    let allowed = schema_exec(&ctx, query, Some(system_actor)).await;
+    assert_no_errors(&allowed);
+    let status = &allowed["data"]["applicationUpgradeStatus"];
+    assert!(
+        status["currentVersion"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty()),
+        "currentVersion must be populated: {status}"
+    );
+    assert!(status["updateVersion"].is_null() || status["updateVersion"].is_string());
+    assert!(status["updateTag"].is_null() || status["updateTag"].is_string());
+    assert!(status["updateAvailable"].is_boolean());
+    assert!(matches!(
+        status["installationKind"].as_str(),
+        Some(
+            "PORTABLE"
+                | "DIRECT_MSI"
+                | "DOCKER"
+                | "HOMEBREW"
+                | "WINGET"
+                | "WINDOWS_SUPERVISED"
+                | "DISABLED"
+                | "UNSUPPORTED"
+        )
+    ));
+    assert!(matches!(
+        status["managementOwner"].as_str(),
+        Some("IN_APP" | "OPERATOR")
+    ));
+    assert!(status["eligible"].is_boolean());
+    assert!(matches!(
+        status["eligibilityReason"].as_str(),
+        Some(
+            "disabled_by_operator"
+                | "managed_by_docker"
+                | "managed_by_homebrew"
+                | "windows_supervised"
+                | "managed_by_winget"
+                | "eligible"
+                | "unsupported_layout"
+                | "install_dir_not_writable"
+        )
+    ));
+}
