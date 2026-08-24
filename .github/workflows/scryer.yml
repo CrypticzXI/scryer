@@ -64,7 +64,7 @@ jobs:
   winget-xtask-build:
     name: winget-xtask-build
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 50
     needs: [release-trust]
     permissions:
       contents: read
@@ -333,7 +333,7 @@ jobs:
   launcher-build:
     name: launcher-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     needs: [release-trust]
     if: ${{ always() && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
@@ -472,24 +472,13 @@ jobs:
         run: |
           set -euo pipefail
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -W linker-messages"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 2100 \
-              -- cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}"
-          fi
+          cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.launcher-cargo-build.outcome }}" = "success" ]; then
             compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
           fi
@@ -518,8 +507,6 @@ jobs:
             ${{ matrix.artifact_name }}-test.log
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
@@ -534,7 +521,7 @@ jobs:
   linux-build:
     name: linux-${{ matrix.arch }}-${{ matrix.variant }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     needs: [web, release-trust]
     if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
@@ -680,24 +667,13 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
-          fi
+          cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.linux-cargo-build.outcome }}" = "success" ]; then
             compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
           fi
@@ -733,8 +709,6 @@ jobs:
           path: |
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
           retention-days: 14
@@ -901,24 +875,13 @@ jobs:
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
-          fi
+          cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.macos-cargo-build.outcome }}" = "success" ]; then
             test -n "$(find "${CARGO_TARGET_DIR}/cargo-timings" -type f -print -quit 2>/dev/null)"
           fi
@@ -978,8 +941,6 @@ jobs:
           path: |
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
           retention-days: 14
@@ -1174,18 +1135,8 @@ jobs:
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
-          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
-            cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
-            $cargoExitCode = $LASTEXITCODE
-          } else {
-            & python .github/scripts/build_heartbeat.py `
-              --output "${{ matrix.artifact_name }}-heartbeat.log" `
-              --build-log "${{ matrix.artifact_name }}-build.log" `
-              --status-file "${{ matrix.artifact_name }}-build-status.json" `
-              --timeout-seconds 5400 `
-              -- cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
-            $cargoExitCode = $LASTEXITCODE
-          }
+          cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+          $cargoExitCode = $LASTEXITCODE
           if ($cargoExitCode -ne 0) {
             exit $cargoExitCode
           }
@@ -1195,12 +1146,6 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "${{ matrix.artifact_name }}-heartbeat.log" -PathType Leaf)) {
-            throw "release heartbeat log was not created"
-          }
-          if (-not (Test-Path "${{ matrix.artifact_name }}-build-status.json" -PathType Leaf)) {
-            throw "release build status was not created"
-          }
           if ("${{ steps.windows-cargo-build.outcome }}" -eq "success") {
             $timing = Get-ChildItem -Path (Join-Path $env:CARGO_TARGET_DIR "cargo-timings") -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $timing) {
@@ -1370,8 +1315,6 @@ jobs:
             ${{ matrix.artifact_name }}-winget-install.log
             ${{ matrix.artifact_name }}-msi-install.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
           if-no-files-found: warn
           retention-days: 14
 
