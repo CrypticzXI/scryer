@@ -1,4 +1,4 @@
-const DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT: usize = 100;
+const DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT: usize = 300;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrackedDownloadBackgroundWorkKind {
     Import,

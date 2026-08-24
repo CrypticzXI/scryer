@@ -5644,6 +5644,21 @@ pub trait DownloadClient: Send + Sync {
         ))
     }
 
+    async fn mark_imported_non_destructive(
+        &self,
+        _request: &DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        _client_id: &str,
+        request: &DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.mark_imported_non_destructive(request).await
+    }
+
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
         Err(AppError::Repository(
             "client status is not supported for this download client".to_string(),

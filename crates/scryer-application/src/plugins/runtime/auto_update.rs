@@ -82,7 +82,11 @@ impl AppUseCase {
             .list_plugin_installations()
             .await?
             .into_iter()
-            .filter(installation_is_catalog_official)
+            .filter(|installation| {
+                installation_is_catalog_official(installation)
+                    || (installation.is_builtin
+                        && installation.source_kind == PluginSourceKind::Bundled)
+            })
             .collect::<Vec<_>>();
         if installations.is_empty() {
             return Ok(Vec::new());
@@ -211,8 +215,9 @@ impl AppUseCase {
         reporter: &PluginInstallProgressReporter,
     ) -> Result<PluginInstallation, PluginAutoUpdateFailed> {
         let prior_record = installation.clone();
-        // Automation only touches a plugin it can put back: without the prior
-        // artifact in hand there is nothing to compensate a failed upgrade with.
+        // Automation only touches a plugin it can put back. Downloaded plugins
+        // need their persisted artifact; bundled plugins can be restored from
+        // the host's built-in runtime.
         let prior_wasm = match self
             .services
             .customization
@@ -220,7 +225,13 @@ impl AppUseCase {
             .get_plugin_installation_wasm_payload(&prior_record.plugin_id)
             .await
         {
-            Ok(Some(payload)) => payload,
+            Ok(Some(payload)) => Some(payload),
+            Ok(None)
+                if prior_record.is_builtin
+                    && prior_record.source_kind == PluginSourceKind::Bundled =>
+            {
+                None
+            }
             Ok(None) => {
                 return Err(PluginAutoUpdateFailed {
                     error: AppError::Validation(format!(
@@ -272,8 +283,8 @@ impl AppUseCase {
                 });
             }
         };
-        let Some(current) = current
-            .filter(|current| !plugin_installation_matches_snapshot(current, &prior_record))
+        let Some(current) =
+            current.filter(|current| !plugin_installation_matches_snapshot(current, &prior_record))
         else {
             return Err(PluginAutoUpdateFailed {
                 error,
@@ -282,10 +293,18 @@ impl AppUseCase {
             });
         };
 
-        match self
-            .restore_plugin_installation_snapshot(&prior_record, &prior_wasm, &current)
-            .await
-        {
+        let rollback = match prior_wasm.as_ref() {
+            Some(prior_wasm) => {
+                self.restore_plugin_installation_snapshot(&prior_record, prior_wasm, &current)
+                    .await
+            }
+            None => {
+                self.restore_bundled_plugin_installation_snapshot(&prior_record, &current)
+                    .await
+            }
+        };
+
+        match rollback {
             Ok(()) => Err(PluginAutoUpdateFailed {
                 error,
                 rolled_back: true,
@@ -330,10 +349,35 @@ impl AppUseCase {
         }
 
         self.finalize_runtime_plugin_mutation_for_types(
-            [
-                current.plugin_type.as_str(),
-                restored.plugin_type.as_str(),
-            ],
+            [current.plugin_type.as_str(), restored.plugin_type.as_str()],
+            restored.is_enabled,
+        )
+        .await
+    }
+
+    async fn restore_bundled_plugin_installation_snapshot(
+        &self,
+        prior_record: &PluginInstallation,
+        current: &PluginInstallation,
+    ) -> AppResult<()> {
+        let restored = self
+            .services
+            .customization
+            .plugin_installations
+            .update_plugin_installation(prior_record, None)
+            .await?;
+
+        if restored.is_enabled {
+            if current.plugin_type != restored.plugin_type
+                || current.provider_type != restored.provider_type
+            {
+                self.apply_runtime_plugin_removal(current)?;
+            }
+            self.apply_runtime_builtin_restore(&restored)?;
+        }
+
+        self.finalize_runtime_plugin_mutation_for_types(
+            [current.plugin_type.as_str(), restored.plugin_type.as_str()],
             restored.is_enabled,
         )
         .await

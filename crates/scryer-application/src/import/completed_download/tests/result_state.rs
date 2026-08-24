@@ -23,6 +23,47 @@ impl crate::DownloadClientPluginProvider for TorrentOnlyPluginProvider {
     }
 }
 
+struct MarkingDownloadClient {
+    calls: AtomicUsize,
+    failures_before_success: usize,
+}
+
+impl MarkingDownloadClient {
+    fn new(failures_before_success: usize) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            failures_before_success,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl DownloadClient for MarkingDownloadClient {
+    async fn submit_download(
+        &self,
+        _request: &DownloadClientAddRequest,
+    ) -> AppResult<DownloadGrabResult> {
+        Err(AppError::Repository("not used in test".to_string()))
+    }
+
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        _client_id: &str,
+        _request: &crate::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
+        if attempt < self.failures_before_success {
+            Err(AppError::Repository("transient mark failure".to_string()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[tokio::test]
 async fn apply_result_marks_verified_already_present_skip_imported() {
     let title = build_title("title-1", "Show", MediaFacet::Series);
@@ -64,6 +105,62 @@ async fn apply_result_marks_verified_already_present_skip_imported() {
     assert_eq!(td.state, TrackedDownloadState::Imported);
     assert_eq!(td.status, TrackedDownloadStatus::Ok);
     assert!(td.status_messages.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn verified_import_mark_retries_without_rolling_back_import() {
+    let marker = Arc::new(MarkingDownloadClient::new(3));
+    let app = build_app_with_download_client_configs_submissions_and_settings(
+        vec![build_title("title-1", "Show", MediaFacet::Series)],
+        vec![build_collection("season-1", "title-1", "1")],
+        vec![build_episode("ep-1", "title-1", "season-1", "1", "1", None)],
+        vec![build_artifact_with_result(
+            "dl-1",
+            Some("ep-1"),
+            "Show.S01E01.mkv",
+            "already_present",
+        )],
+        TestAppRepositories {
+            download_client: marker.clone(),
+            download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+            download_submissions: Arc::new(
+                crate::null_repositories::NullDownloadSubmissionRepository,
+            ),
+            settings: Arc::new(crate::null_repositories::NullSettingsRepository),
+        },
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let result = ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: Some(ImportSkipReason::AlreadyImported),
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: Some("/library/Show/Season 01/Show.S01E01.mkv".to_string()),
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some("episode already imported".to_string()),
+        release_burned: false,
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+    tokio::task::yield_now().await;
+    assert_eq!(marker.call_count(), 1);
+
+    for (delay, expected_calls) in [(15, 2), (30, 3), (60, 4)] {
+        tokio::time::advance(std::time::Duration::from_secs(delay)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(marker.call_count(), expected_calls);
+        assert_eq!(td.state, TrackedDownloadState::Imported);
+    }
 }
 
 #[tokio::test]

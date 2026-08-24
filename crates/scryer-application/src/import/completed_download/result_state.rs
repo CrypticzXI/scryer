@@ -1,6 +1,62 @@
 use super::verification::verify_import_inner_with_release_evidence;
 use super::*;
 
+const IMPORT_MARK_RETRY_INITIAL_SECONDS: u64 = 15;
+const IMPORT_MARK_RETRY_MAX_SECONDS: u64 = 300;
+
+fn schedule_non_destructive_import_mark(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    result: &ImportResult,
+    completed: Option<&CompletedDownload>,
+) {
+    let client_id = td.client_id.trim();
+    if client_id.is_empty() {
+        return;
+    }
+
+    let request = crate::DownloadClientMarkImportedRequest {
+        client_item_id: completed
+            .map(|item| item.download_client_item_id.clone())
+            .unwrap_or_else(|| td.client_item.download_client_item_id.clone()),
+        info_hash: None,
+        title_id: td.title_id.clone(),
+        title_name: Some(td.client_item.title_name.clone()),
+        category: completed
+            .and_then(|item| item.category.clone())
+            .or_else(|| td.client_item.category.clone()),
+        imported_path: result.dest_path.clone(),
+        download_path: completed.map(|item| item.dest_dir.clone()),
+    };
+    let client_id = client_id.to_string();
+    let download_client = app.services.integrations.download_client.clone();
+
+    tokio::spawn(async move {
+        let mut retry_seconds = IMPORT_MARK_RETRY_INITIAL_SECONDS;
+        loop {
+            match download_client
+                .mark_imported_non_destructive_for_client_id(&client_id, &request)
+                .await
+            {
+                Ok(()) => break,
+                Err(error) => {
+                    tracing::warn!(
+                        client_id,
+                        client_item_id = %request.client_item_id,
+                        retry_seconds,
+                        error = %error,
+                        "failed to mark imported download in client; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_seconds)).await;
+                    retry_seconds = retry_seconds
+                        .saturating_mul(2)
+                        .min(IMPORT_MARK_RETRY_MAX_SECONDS);
+                }
+            }
+        }
+    });
+}
+
 async fn apply_no_video_import_backoff(
     app: &AppUseCase,
     td: &mut TrackedDownload,
@@ -153,6 +209,7 @@ pub(super) async fn apply_import_result_with_completed(
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
+            schedule_non_destructive_import_mark(app, td, &result, completed);
             return true;
         }
 

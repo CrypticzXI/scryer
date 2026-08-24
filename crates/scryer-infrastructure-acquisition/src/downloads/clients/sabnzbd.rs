@@ -896,7 +896,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     };
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let state = sabnzbd_queue_state(status);
+                let state = sabnzbd_queue_state(status)?;
 
                 let percentage = slot
                     .get("percentage")
@@ -1007,18 +1007,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     .to_string();
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let (state, mut attention_reason) = sabnzbd_history_state(status);
-
-                // SABnzbd provides a dedicated fail_message field with the actual
-                // failure detail (e.g. "54 articles were missing"). Use it when the
-                // status line alone didn't produce a reason.
-                if state == DownloadQueueState::Failed && attention_reason.is_none() {
-                    attention_reason = slot
-                        .get("fail_message")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                }
+                let fail_message = slot.get("fail_message").and_then(Value::as_str);
+                let (state, attention_reason) = sabnzbd_history_state(status, fail_message)?;
                 let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
@@ -1097,15 +1087,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     .to_string();
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let (state, mut attention_reason) = sabnzbd_history_state(status);
-
-                if state == DownloadQueueState::Failed && attention_reason.is_none() {
-                    attention_reason = slot
-                        .get("fail_message")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                }
+                let fail_message = slot.get("fail_message").and_then(Value::as_str);
+                let (state, attention_reason) = sabnzbd_history_state(status, fail_message)?;
                 let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
@@ -1922,18 +1905,19 @@ fn sabnzbd_queue_priority(raw_priority: Option<&str>) -> i32 {
     }
 }
 
-fn sabnzbd_queue_state(status: &str) -> DownloadQueueState {
+fn sabnzbd_queue_state(status: &str) -> Option<DownloadQueueState> {
     let normalized = status.to_ascii_uppercase();
     match normalized.as_str() {
-        "DOWNLOADING" => DownloadQueueState::Downloading,
-        "QUEUED" | "FETCHING" | "PROPAGATING" | "GRABBING" => DownloadQueueState::Queued,
-        "PAUSED" => DownloadQueueState::Paused,
+        "DELETED" => None,
+        "DOWNLOADING" => Some(DownloadQueueState::Downloading),
+        "QUEUED" | "FETCHING" | "PROPAGATING" | "GRABBING" => Some(DownloadQueueState::Queued),
+        "PAUSED" => Some(DownloadQueueState::Paused),
         // Post-processing stages reported in queue (SABnzbd 4.x can show these)
-        "VERIFYING" | "QUICKCHECK" => DownloadQueueState::Verifying,
-        "REPAIRING" => DownloadQueueState::Repairing,
-        "EXTRACTING" => DownloadQueueState::Extracting,
-        "MOVING" | "RUNNING" => DownloadQueueState::Downloading,
-        _ => DownloadQueueState::Queued,
+        "VERIFYING" | "QUICKCHECK" => Some(DownloadQueueState::Verifying),
+        "REPAIRING" => Some(DownloadQueueState::Repairing),
+        "EXTRACTING" => Some(DownloadQueueState::Extracting),
+        "MOVING" | "RUNNING" => Some(DownloadQueueState::Downloading),
+        _ => Some(DownloadQueueState::Queued),
     }
 }
 
@@ -1949,9 +1933,18 @@ fn sabnzbd_postprocessing_stage(status: &str) -> Option<String> {
     }
 }
 
-fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
+fn sabnzbd_history_state(
+    status: &str,
+    fail_message: Option<&str>,
+) -> Option<(DownloadQueueState, Option<String>)> {
+    const UNPACK_WRITE_FAILURE: &str = "Unpacking failed, write error or disk is full?";
+
     let normalized = status.to_ascii_uppercase();
-    match normalized.as_str() {
+    if normalized == "DELETED" {
+        return None;
+    }
+
+    let (state, mut reason) = match normalized.as_str() {
         "COMPLETED" => (DownloadQueueState::Completed, None),
         "FAILED" => (DownloadQueueState::Failed, None),
         "QUEUED" => (DownloadQueueState::Queued, None),
@@ -1968,10 +1961,25 @@ fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
                     .filter(|d| !d.is_empty());
                 (DownloadQueueState::Failed, reason)
             } else {
-                (DownloadQueueState::Completed, None)
+                (DownloadQueueState::Downloading, None)
             }
         }
+    };
+
+    if state == DownloadQueueState::Failed
+        && let Some(fail_message) = fail_message
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        if fail_message.eq_ignore_ascii_case(UNPACK_WRITE_FAILURE) {
+            return Some((DownloadQueueState::Warning, Some(fail_message.to_string())));
+        }
+        if reason.is_none() {
+            reason = Some(fail_message.to_string());
+        }
     }
+
+    Some((state, reason))
 }
 
 fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<String> {
@@ -2174,10 +2182,12 @@ mod tests {
         evaluate_sab_addfile_response, evaluate_sab_api_response, extract_sabnzbd_category,
         map_sabnzbd_outbound_error, normalize_sab_job_name, redact_sab_secret_values,
         sab_addfile_query_params, sab_api_mode_matches_response, sab_reconcile_slot_nzo_id,
+        sabnzbd_history_state, sabnzbd_queue_state,
     };
     use chrono::Utc;
     use reqwest::StatusCode;
     use scryer_application::{AppError, DownloadClient};
+    use scryer_domain::DownloadQueueState;
     use scryer_outbound_http::OutboundHttpError;
     use serde_json::json;
     use std::time::Duration;
@@ -2228,6 +2238,40 @@ mod tests {
         assert_eq!(
             completed_downloads_from_sab_slots(&slots, None)[0].download_client_item_id,
             "old-nzo"
+        );
+    }
+
+    #[test]
+    fn sabnzbd_deleted_items_are_skipped() {
+        assert_eq!(sabnzbd_queue_state("Deleted"), None);
+        assert_eq!(sabnzbd_history_state("Deleted", None), None);
+    }
+
+    #[test]
+    fn sabnzbd_unknown_history_status_remains_in_progress() {
+        assert_eq!(
+            sabnzbd_history_state("FutureStatus", None),
+            Some((DownloadQueueState::Downloading, None))
+        );
+    }
+
+    #[test]
+    fn sabnzbd_unpack_write_failure_is_a_warning() {
+        let message = "Unpacking failed, write error or disk is full?";
+        assert_eq!(
+            sabnzbd_history_state("Failed", Some(message)),
+            Some((DownloadQueueState::Warning, Some(message.to_string())))
+        );
+    }
+
+    #[test]
+    fn sabnzbd_regular_failure_preserves_its_message() {
+        assert_eq!(
+            sabnzbd_history_state("Failed", Some("54 articles were missing")),
+            Some((
+                DownloadQueueState::Failed,
+                Some("54 articles were missing".to_string())
+            ))
         );
     }
 
