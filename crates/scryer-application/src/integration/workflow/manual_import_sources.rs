@@ -302,10 +302,12 @@ impl AppUseCase {
             .services
             .workflow
             .imports
-            .queue_import_request(
+            .queue_import_request_with_identity_for_download(
                 source_identity.clone(),
                 ImportType::ManualImport.as_str().to_string(),
                 payload_json,
+                None,
+                selection.canonical_download_id.as_ref(),
             )
             .await?;
         let title = self

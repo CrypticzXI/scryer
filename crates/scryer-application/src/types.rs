@@ -3251,6 +3251,7 @@ pub struct ManualImportSelection {
     pub actor_user_id: String,
     pub title_id: String,
     pub source_identity: crate::DownloadSourceIdentity,
+    pub canonical_download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub release_evidence_json: Option<String>,
     /// Server-selected root that every candidate must remain beneath.
     pub trusted_source_root: String,

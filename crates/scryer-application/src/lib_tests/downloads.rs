@@ -1584,6 +1584,7 @@ async fn queued_manual_import_rejects_observed_targets_before_consuming_or_queue
             client_type: "qbittorrent".to_string(),
             item_id: "observed-target-selection".to_string(),
         },
+        canonical_download_id: None,
         release_evidence_json: None,
         trusted_source_root: "/private/tmp".to_string(),
         archive_workspace_root: None,

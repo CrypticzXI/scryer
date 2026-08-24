@@ -434,14 +434,22 @@ async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u
         .services
         .workflow
         .import_artifacts
-        .count_by_result_for_source_identity(&source_identity, "imported")
+        .count_by_result_for_source_identity_for_download(
+            td.canonical_download_id(),
+            &source_identity,
+            "imported",
+        )
         .await
         .unwrap_or(0);
     let already_present = app
         .services
         .workflow
         .import_artifacts
-        .count_by_result_for_source_identity(&source_identity, "already_present")
+        .count_by_result_for_source_identity_for_download(
+            td.canonical_download_id(),
+            &source_identity,
+            "already_present",
+        )
         .await
         .unwrap_or(0);
     imported + already_present

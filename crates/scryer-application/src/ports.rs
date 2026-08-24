@@ -3619,16 +3619,47 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 pub trait ImportArtifactRepository: Send + Sync {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
 
+    /// Canonical-aware artifact writer for a completed download already
+    /// resolved by the caller. Implementations that have not adopted
+    /// canonical storage retain the legacy write path.
+    async fn insert_artifact_for_download(
+        &self,
+        artifact: ImportArtifact,
+        _canonical_download_id: Option<&DownloadId>,
+    ) -> AppResult<()> {
+        self.insert_artifact(artifact).await
+    }
+
     async fn list_by_source_identity(
         &self,
         identity: &DownloadSourceIdentity,
     ) -> AppResult<Vec<ImportArtifact>>;
+
+    /// Canonical-first artifact history lookup with a legacy tuple fallback.
+    async fn list_by_source_identity_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Vec<ImportArtifact>> {
+        self.list_by_source_identity(identity).await
+    }
 
     async fn count_by_result_for_source_identity(
         &self,
         identity: &DownloadSourceIdentity,
         result: &str,
     ) -> AppResult<u64>;
+
+    /// Canonical-first artifact outcome count with a legacy tuple fallback.
+    async fn count_by_result_for_source_identity_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSourceIdentity,
+        result: &str,
+    ) -> AppResult<u64> {
+        self.count_by_result_for_source_identity(identity, result)
+            .await
+    }
 }
 
 #[async_trait]
@@ -3771,6 +3802,12 @@ pub trait ImportRepository: Send + Sync {
 
     async fn get_import_by_id(&self, id: &str) -> AppResult<Option<ImportRecord>>;
 
+    /// Returns the canonical id durably attached to an import request, when
+    /// one was available while it was queued.
+    async fn canonical_download_id_for_import(&self, _id: &str) -> AppResult<Option<DownloadId>> {
+        Ok(None)
+    }
+
     async fn update_import_status(
         &self,
         import_id: &str,
@@ -3861,6 +3898,17 @@ pub trait ImportRepository: Send + Sync {
         ))
     }
 
+    /// Canonical-aware selection replacement for a completed download already
+    /// resolved by the caller.
+    async fn replace_manual_import_selection_for_download(
+        &self,
+        mut selection: ManualImportSelection,
+        canonical_download_id: Option<&DownloadId>,
+    ) -> AppResult<()> {
+        selection.canonical_download_id = canonical_download_id.copied();
+        self.replace_manual_import_selection(selection).await
+    }
+
     /// Returns the caller's current unconsumed selection for a source and title, if any.
     async fn find_manual_import_selection(
         &self,
@@ -3869,6 +3917,18 @@ pub trait ImportRepository: Send + Sync {
         _source_identity: &DownloadSourceIdentity,
     ) -> AppResult<Option<ManualImportSelection>> {
         Ok(None)
+    }
+
+    /// Canonical-first selection lookup with a legacy source-tuple fallback.
+    async fn find_manual_import_selection_for_download(
+        &self,
+        _canonical_download_id: Option<&DownloadId>,
+        actor_user_id: &str,
+        title_id: &str,
+        source_identity: &DownloadSourceIdentity,
+    ) -> AppResult<Option<ManualImportSelection>> {
+        self.find_manual_import_selection(actor_user_id, title_id, source_identity)
+            .await
     }
 
     async fn get_manual_import_selection(

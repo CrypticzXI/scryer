@@ -107,7 +107,7 @@ async fn verify_import_with_mode(
         .services
         .workflow
         .import_artifacts
-        .list_by_source_identity(&source_identity)
+        .list_by_source_identity_for_download(td.canonical_download_id(), &source_identity)
         .await
     {
         Ok(artifacts) => artifacts,

@@ -1333,6 +1333,28 @@ fn resolve_tracked_command_id(
         .resolve_cached_id(requested_id)
         .unwrap_or_else(|| requested_id.to_string())
 }
+
+fn resolve_tracked_command_id_for_download(
+    tracker: &crate::tracked_downloads::TrackedDownloadService,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    requested_id: &str,
+) -> String {
+    let legacy = tracker.resolve_cached_id(requested_id);
+    let canonical = canonical_download_id
+        .and_then(|canonical_download_id| tracker.cached_id_for_canonical_download_id(canonical_download_id));
+    if let (Some(canonical), Some(legacy)) = (&canonical, &legacy)
+        && canonical != legacy
+    {
+        tracing::warn!(
+            target: "download_identity_resolver",
+            canonical_download_id = ?canonical_download_id,
+            canonical_tracked_id = %canonical,
+            legacy_tracked_id = %legacy,
+            "manual import canonical and legacy tracked download lookups disagreed; using legacy tracked download"
+        );
+    }
+    legacy.or(canonical).unwrap_or_else(|| requested_id.to_string())
+}
 pub(crate) async fn assign_tracked_download_title_command(
     app: &AppUseCase,
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
@@ -1420,12 +1442,17 @@ async fn handle_tracked_download_command(
     match command {
         TrackedDownloadCommand::ReconcileManualImport {
             id,
+            canonical_download_id,
             files_imported_this_pass,
             expected_mapping_count,
             reply,
         } => {
             let requested_id = id;
-            let id = resolve_tracked_command_id(tracker, &requested_id);
+            let id = resolve_tracked_command_id_for_download(
+                tracker,
+                canonical_download_id.as_ref(),
+                &requested_id,
+            );
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
                     "tracked download {requested_id} is busy processing"
@@ -1469,9 +1496,17 @@ async fn handle_tracked_download_command(
             }
             let _ = reply.send(result);
         }
-        TrackedDownloadCommand::MarkImported { id, reply } => {
+        TrackedDownloadCommand::MarkImported {
+            id,
+            canonical_download_id,
+            reply,
+        } => {
             let requested_id = id;
-            let id = resolve_tracked_command_id(tracker, &requested_id);
+            let id = resolve_tracked_command_id_for_download(
+                tracker,
+                canonical_download_id.as_ref(),
+                &requested_id,
+            );
             if tracked_work_in_flight.contains(&id) {
                 let _ = reply.send(Err(AppError::Validation(format!(
                     "tracked download {requested_id} is busy processing"
@@ -1503,6 +1538,7 @@ async fn handle_tracked_download_command(
         }
         TrackedDownloadCommand::MarkImportedIfAwaitingImport {
             source_identity,
+            canonical_download_id,
             record_completed_at,
             reply,
         } => {
@@ -1511,7 +1547,10 @@ async fn handle_tracked_download_command(
                 manual_import_recovery_verdict,
             };
 
-            let Some(id) = tracker.cached_id_for_source_identity(&source_identity) else {
+            let Some(id) = tracker.cached_id_for_source_identity_for_download(
+                canonical_download_id.as_ref(),
+                &source_identity,
+            ) else {
                 let _ = reply.send(Ok(ManualImportRecoveryOutcome::Untracked));
                 return;
             };

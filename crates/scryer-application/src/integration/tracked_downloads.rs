@@ -561,6 +561,48 @@ impl TrackedDownloadService {
             })
     }
 
+    pub fn cached_id_for_source_identity_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSourceIdentity,
+    ) -> Option<String> {
+        let legacy = self.cached_id_for_source_identity(identity);
+        let canonical = canonical_download_id.and_then(|canonical_download_id| {
+            self.cache
+                .values()
+                .chain(self.legacy_cache.values())
+                .find_map(|tracked| {
+                    (tracked.canonical_download_id() == Some(canonical_download_id))
+                        .then(|| tracked.id.clone())
+                })
+        });
+        if let (Some(canonical), Some(legacy)) = (&canonical, &legacy)
+            && canonical != legacy
+        {
+            tracing::warn!(
+                target: "download_identity_resolver",
+                canonical_download_id = ?canonical_download_id,
+                canonical_tracked_id = %canonical,
+                legacy_tracked_id = %legacy,
+                "manual import recovery canonical and legacy tracked download lookups disagreed; using legacy tracked download"
+            );
+        }
+        legacy.or(canonical)
+    }
+
+    pub fn cached_id_for_canonical_download_id(
+        &self,
+        canonical_download_id: &DownloadId,
+    ) -> Option<String> {
+        self.cache
+            .values()
+            .chain(self.legacy_cache.values())
+            .find_map(|tracked| {
+                (tracked.canonical_download_id() == Some(canonical_download_id))
+                    .then(|| tracked.id.clone())
+            })
+    }
+
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
         self.cache
             .values()
@@ -1502,12 +1544,14 @@ pub fn manual_import_recovery_verdict(
 pub enum TrackedDownloadCommand {
     ReconcileManualImport {
         id: String,
+        canonical_download_id: Option<DownloadId>,
         files_imported_this_pass: usize,
         expected_mapping_count: Option<usize>,
         reply: oneshot::Sender<AppResult<bool>>,
     },
     MarkImported {
         id: String,
+        canonical_download_id: Option<DownloadId>,
         reply: oneshot::Sender<AppResult<()>>,
     },
     /// Recovery for a manual-import record that reached `Completed` (at
@@ -1517,6 +1561,7 @@ pub enum TrackedDownloadCommand {
     /// [`manual_import_recovery_verdict`].
     MarkImportedIfAwaitingImport {
         source_identity: DownloadSourceIdentity,
+        canonical_download_id: Option<DownloadId>,
         record_completed_at: DateTime<Utc>,
         reply: oneshot::Sender<AppResult<ManualImportRecoveryOutcome>>,
     },
@@ -1676,10 +1721,19 @@ impl TrackedDownloadHandle {
     }
 
     pub async fn mark_imported(&self, id: String) -> AppResult<()> {
+        self.mark_imported_for_download(id, None).await
+    }
+
+    pub async fn mark_imported_for_download(
+        &self,
+        id: String,
+        canonical_download_id: Option<DownloadId>,
+    ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::MarkImported {
                 id,
+                canonical_download_id,
                 reply: reply_tx,
             })
             .await
@@ -1696,10 +1750,25 @@ impl TrackedDownloadHandle {
         source_identity: DownloadSourceIdentity,
         record_completed_at: DateTime<Utc>,
     ) -> AppResult<ManualImportRecoveryOutcome> {
+        self.mark_imported_if_awaiting_import_for_download(
+            source_identity,
+            None,
+            record_completed_at,
+        )
+        .await
+    }
+
+    pub async fn mark_imported_if_awaiting_import_for_download(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        canonical_download_id: Option<DownloadId>,
+        record_completed_at: DateTime<Utc>,
+    ) -> AppResult<ManualImportRecoveryOutcome> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::MarkImportedIfAwaitingImport {
                 source_identity,
+                canonical_download_id,
                 record_completed_at,
                 reply: reply_tx,
             })
@@ -1718,10 +1787,27 @@ impl TrackedDownloadHandle {
         files_imported_this_pass: usize,
         expected_mapping_count: Option<usize>,
     ) -> AppResult<bool> {
+        self.reconcile_manual_import_for_download(
+            id,
+            None,
+            files_imported_this_pass,
+            expected_mapping_count,
+        )
+        .await
+    }
+
+    pub async fn reconcile_manual_import_for_download(
+        &self,
+        id: String,
+        canonical_download_id: Option<DownloadId>,
+        files_imported_this_pass: usize,
+        expected_mapping_count: Option<usize>,
+    ) -> AppResult<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::ReconcileManualImport {
                 id,
+                canonical_download_id,
                 files_imported_this_pass,
                 expected_mapping_count,
                 reply: reply_tx,
