@@ -555,6 +555,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-linux-${{ matrix.arch }}-${{ matrix.variant }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
       SCCACHE_CACHE_SIZE: 10G
@@ -657,17 +661,44 @@ jobs:
           export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_env_suffix="$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_cc_var="CC_${target_env_suffix}"
+          target_cflags_var="CFLAGS_${target_env_suffix}"
+          target_cxxflags_var="CXXFLAGS_${target_env_suffix}"
           if [ "${SCRYER_SCCACHE_ENABLED:-false}" = "true" ]; then
             export "${target_cc_var}=sccache musl-gcc"
           else
             export "${target_cc_var}=musl-gcc"
           fi
+          native_flags="-O3 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden"
+          export "${target_cflags_var}=${native_flags}"
+          export "${target_cxxflags_var}=${native_flags}"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -W linker-messages"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
+          {
+            musl-gcc --version
+            printf '%s=%s\n' "${target_cc_var}" "${!target_cc_var}"
+            printf '%s=%s\n' "${target_cflags_var}" "${!target_cflags_var}"
+            printf '%s=%s\n' "${target_cxxflags_var}" "${!target_cxxflags_var}"
+            printf 'AWS_LC_SYS_USE_SYSTEM=%s\n' "${AWS_LC_SYS_USE_SYSTEM}"
+            printf 'AWS_LC_SYS_STATIC=%s\n' "${AWS_LC_SYS_STATIC}"
+            printf 'AWS_LC_SYS_SMALL=%s\n' "${AWS_LC_SYS_SMALL}"
+            printf 'AWS_LC_SYS_CMAKE_BUILDER=%s\n' "${AWS_LC_SYS_CMAKE_BUILDER}"
+          } | tee "${{ matrix.artifact_name }}-native-build-env.txt"
           cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+
+      - name: Validate native linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE/scryer"
+          readelf -d "$binary" | tee "${{ matrix.artifact_name }}-native-linkage.txt"
+          if grep -q '(NEEDED)' "${{ matrix.artifact_name }}-native-linkage.txt"; then
+            echo "::error::Linux release binary has dynamic NEEDED libraries"
+            exit 1
+          fi
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
@@ -676,6 +707,15 @@ jobs:
           set -euo pipefail
           if [ "${{ steps.linux-cargo-build.outcome }}" = "success" ]; then
             compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
+            build_log="${{ matrix.artifact_name }}-build.log"
+            if ! grep -Eq 'aws-lc-sys@[^:]+: Building with: CC' "$build_log"; then
+              echo "::error::Cold release log does not confirm the AWS-LC CC source builder"
+              exit 1
+            fi
+            if grep -Eq 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)' "$build_log"; then
+              echo "::error::Cold release log reports an unsupported AWS-LC build mode"
+              exit 1
+            fi
           fi
 
       - name: Package tarball
@@ -708,6 +748,8 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
@@ -756,6 +798,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-macos-${{ matrix.arch }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: ${{ github.workspace }}
       SCCACHE_CACHE_SIZE: 10G
@@ -871,11 +917,39 @@ jobs:
             export CC="clang"
             export CXX="clang++"
           fi
+          target_env_suffix="$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_cflags_var="CFLAGS_${target_env_suffix}"
+          target_cxxflags_var="CXXFLAGS_${target_env_suffix}"
+          native_flags="-O3 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden"
+          export "${target_cflags_var}=${native_flags}"
+          export "${target_cxxflags_var}=${native_flags}"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -A linker-messages"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
+          {
+            clang --version
+            printf 'CC=%s\n' "${CC}"
+            printf 'CXX=%s\n' "${CXX}"
+            printf '%s=%s\n' "${target_cflags_var}" "${!target_cflags_var}"
+            printf '%s=%s\n' "${target_cxxflags_var}" "${!target_cxxflags_var}"
+            printf 'AWS_LC_SYS_USE_SYSTEM=%s\n' "${AWS_LC_SYS_USE_SYSTEM}"
+            printf 'AWS_LC_SYS_STATIC=%s\n' "${AWS_LC_SYS_STATIC}"
+            printf 'AWS_LC_SYS_SMALL=%s\n' "${AWS_LC_SYS_SMALL}"
+            printf 'AWS_LC_SYS_CMAKE_BUILDER=%s\n' "${AWS_LC_SYS_CMAKE_BUILDER}"
+          } | tee "${{ matrix.artifact_name }}-native-build-env.txt"
           cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+
+      - name: Validate native linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE/scryer"
+          otool -L "$binary" | tee "${{ matrix.artifact_name }}-native-linkage.txt"
+          if grep -Eiq 'aws[-_]?lc|libcrypto' "${{ matrix.artifact_name }}-native-linkage.txt"; then
+            echo "::error::macOS release binary links an external AWS-LC or libcrypto library"
+            exit 1
+          fi
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
@@ -884,6 +958,15 @@ jobs:
           set -euo pipefail
           if [ "${{ steps.macos-cargo-build.outcome }}" = "success" ]; then
             test -n "$(find "${CARGO_TARGET_DIR}/cargo-timings" -type f -print -quit 2>/dev/null)"
+            build_log="${{ matrix.artifact_name }}-build.log"
+            if ! grep -Eq 'aws-lc-sys@[^:]+: Building with: CC' "$build_log"; then
+              echo "::error::Cold release log does not confirm the AWS-LC CC source builder"
+              exit 1
+            fi
+            if grep -Eq 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)' "$build_log"; then
+              echo "::error::Cold release log reports an unsupported AWS-LC build mode"
+              exit 1
+            fi
           fi
 
       - name: Codesign binary
@@ -940,6 +1023,8 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
@@ -990,6 +1075,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-windows-${{ matrix.arch }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: ${{ github.workspace }}
       SCCACHE_CACHE_SIZE: 10G
@@ -1098,6 +1187,7 @@ jobs:
         id: windows-cargo-build
         shell: pwsh
         env:
+          INSTALL_NASM: ${{ matrix.install_nasm }}
           USE_CLANG_CL: ${{ matrix.use_clang_cl }}
           USE_LLD_LINK: ${{ matrix.use_lld_link }}
         run: |
@@ -1135,10 +1225,49 @@ jobs:
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
+          $targetEnvSuffix = "${{ matrix.target }}".Replace("-", "_")
+          $cFlagsName = "CFLAGS_$targetEnvSuffix"
+          $cxxFlagsName = "CXXFLAGS_$targetEnvSuffix"
+          Set-Item -Path "Env:$cFlagsName" -Value "/O2 /DNDEBUG /Gy /Gw"
+          Set-Item -Path "Env:$cxxFlagsName" -Value "/O2 /DNDEBUG /Gy /Gw"
+          if ($env:INSTALL_NASM -eq "true") {
+            $env:AWS_LC_SYS_PREBUILT_NASM = "0"
+          }
+          $cFlagsValue = (Get-Item -Path "Env:$cFlagsName").Value
+          $cxxFlagsValue = (Get-Item -Path "Env:$cxxFlagsName").Value
+          $nativeDiagnostics = @(
+            "CC=$env:CC"
+            "CXX=$env:CXX"
+            "${cFlagsName}=$cFlagsValue"
+            "${cxxFlagsName}=$cxxFlagsValue"
+            "AWS_LC_SYS_USE_SYSTEM=$env:AWS_LC_SYS_USE_SYSTEM"
+            "AWS_LC_SYS_STATIC=$env:AWS_LC_SYS_STATIC"
+            "AWS_LC_SYS_SMALL=$env:AWS_LC_SYS_SMALL"
+            "AWS_LC_SYS_CMAKE_BUILDER=$env:AWS_LC_SYS_CMAKE_BUILDER"
+            "AWS_LC_SYS_PREBUILT_NASM=$env:AWS_LC_SYS_PREBUILT_NASM"
+          )
+          $nativeDiagnostics | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt"
+          clang-cl --version 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt" -Append
+          lld-link --version 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt" -Append
           cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
           $cargoExitCode = $LASTEXITCODE
           if ($cargoExitCode -ne 0) {
             exit $cargoExitCode
+          }
+
+      - name: Validate native linkage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binary = Join-Path $env:CARGO_TARGET_DIR "${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe"
+          $imports = & llvm-readobj --coff-imports $binary 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $imports | Write-Host
+            throw "llvm-readobj failed while inspecting PE imports"
+          }
+          $imports | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-linkage.txt"
+          if ($imports -match '(?i)aws[-_]?lc|libcrypto[^\s]*\.dll|(^|\s)crypto\.dll(\s|$)') {
+            throw "Windows release binary imports an external AWS-LC or crypto DLL"
           }
 
       - name: Validate release build diagnostics
@@ -1150,6 +1279,13 @@ jobs:
             $timing = Get-ChildItem -Path (Join-Path $env:CARGO_TARGET_DIR "cargo-timings") -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $timing) {
               throw "successful release build did not produce Cargo timing output"
+            }
+            $buildLog = Get-Content "${{ matrix.artifact_name }}-build.log" -Raw
+            if ($buildLog -notmatch 'aws-lc-sys@[^:]+: Building with: CC') {
+              throw "cold release log does not confirm the AWS-LC CC source builder"
+            }
+            if ($buildLog -match 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)') {
+              throw "cold release log reports an unsupported AWS-LC build mode"
             }
           }
 
@@ -1320,6 +1456,8 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-defender-scan.log
             ${{ matrix.artifact_name }}-attachment-services.log
             ${{ matrix.artifact_name }}-noarg-startup.log
