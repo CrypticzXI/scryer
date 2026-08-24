@@ -74,8 +74,8 @@ toml = "1"
 quick-xml = "0.41.0"
 # Native Wasmtime hosts for command-model archive plugins and legacy reactor
 # compatibility.
-wasmtime = { version = "47", default-features = false, features = ["runtime", "cranelift", "std", "threads", "cache"] }
-wasmtime-wasi = { version = "47", default-features = false, features = ["p1"] }
+wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "std", "threads", "cache"] }
+wasmtime-wasi = { version = "48", default-features = false, features = ["p1"] }
 semver = "1"
 metrics = "0.24"
 security-framework = "3"
