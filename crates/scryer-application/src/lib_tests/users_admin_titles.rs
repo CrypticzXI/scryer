@@ -725,6 +725,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         .expect("create title");
 
     let active_submission = DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: created.id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),
@@ -741,6 +742,7 @@ async fn delete_title_queues_targeted_cancel_for_active_submission_only() {
         scope: SubmissionScope::Title,
     };
     let terminal_submission = DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: created.id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),

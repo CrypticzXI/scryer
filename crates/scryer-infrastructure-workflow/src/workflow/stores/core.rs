@@ -9,6 +9,7 @@ use scryer_application::{
     JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
     WorkflowOperationInfo,
 };
+use scryer_domain::download_identity::DownloadId;
 use scryer_domain::{
     DomainEvent, DomainEventActorKind, DomainEventFilter, DomainEventStream, DomainEventType,
     DownloadQueueCommandAction, DownloadQueueDeleteStatus, Id, ImportRecord, ImportStatus,
@@ -24,7 +25,7 @@ use crate::queries::sql_runtime::{
 use crate::types::WorkflowOperationRecord;
 
 pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
-pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
+pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
 pub const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
@@ -219,6 +220,118 @@ pub async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
 ) -> AppResult<bool> {
+    record_download_submission_tx_inner(tx, submission, true).await
+}
+
+/// Persist a submit whose HTTP request may have reached the client but whose
+/// response never supplied a native client item identifier. The row remains
+/// deliberately unbound so legacy tuple readers cannot mistake it for a
+/// tracked client job.
+pub async fn record_ambiguous_download_submission_tx(
+    tx: &mut SqlTx<'_>,
+    submission: &DownloadSubmission,
+) -> AppResult<()> {
+    let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
+    let canonical_id = submission.download_id.to_string();
+    let client_config_id = submission
+        .download_client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let client_type_snapshot = (!submission.download_client_type.trim().is_empty())
+        .then(|| submission.download_client_type.clone());
+    let client_name_snapshot = if let Some(client_config_id) = client_config_id.as_deref() {
+        SqlRuntime::fetch_optional(
+            SqlExec::Tx(tx),
+            "SELECT name FROM download_clients WHERE id = {} LIMIT 1",
+            &[SqlArg::Text(client_config_id.to_string())],
+        )
+        .await?
+        .map(|row| row.text("name"))
+        .transpose()?
+        .or_else(|| client_type_snapshot.clone())
+    } else {
+        client_type_snapshot.clone()
+    };
+    let now = Utc::now();
+    let origin = if submission.title_id.trim().is_empty() {
+        "foreign_observation"
+    } else {
+        "scryer_submission"
+    };
+
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO download_submissions
+         (id, title_id, facet, download_client_id, download_client_type,
+          download_client_item_id, source_hint, source_provider_id,
+          source_provider_name, source_kind, source_title, release_size_bytes,
+          request_signature, purpose, episode_id, collection_id,
+          series_movie_link_id, download_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        &[
+            SqlArg::Text(canonical_id.clone()),
+            SqlArg::Text(submission.title_id.clone()),
+            SqlArg::Text(submission.facet.clone()),
+            SqlArg::Text(download_client_id),
+            SqlArg::Text(submission.download_client_type.clone()),
+            SqlArg::OptText(None),
+            SqlArg::OptText(submission.source_hint.clone()),
+            SqlArg::OptText(submission.source_provider_id.clone()),
+            SqlArg::OptText(submission.source_provider_name.clone()),
+            SqlArg::OptText(
+                submission
+                    .source_kind
+                    .map(|value| value.as_str().to_string()),
+            ),
+            SqlArg::OptText(submission.source_title.clone()),
+            SqlArg::OptI64(submission.release_size_bytes),
+            SqlArg::OptText(submission.request_signature.clone()),
+            SqlArg::Text(submission.purpose.as_str().to_string()),
+            SqlArg::OptText(None),
+            SqlArg::OptText(None),
+            SqlArg::OptText(None),
+            SqlArg::OptText(Some(submission.download_id.to_wire())),
+        ],
+    )
+    .await?;
+
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO downloads (id, origin, created_at) VALUES ({}, {}, {})",
+        &[
+            SqlArg::Text(canonical_id.clone()),
+            SqlArg::Text(origin.to_string()),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO download_client_bindings
+         (download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+          native_item_id, created_at, ended_at)
+         VALUES ({}, {}, {}, {}, {}, {}, {})",
+        &[
+            SqlArg::Text(canonical_id),
+            SqlArg::OptText(client_config_id),
+            SqlArg::OptText(client_type_snapshot),
+            SqlArg::OptText(client_name_snapshot),
+            SqlArg::OptText(None),
+            SqlArg::Timestamp(now),
+            SqlArg::OptTimestamp(None),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_download_submission_tx_inner(
+    tx: &mut SqlTx<'_>,
+    submission: &DownloadSubmission,
+    sync_canonical_rows: bool,
+) -> AppResult<bool> {
     let (episode_id, collection_id, series_movie_link_id) =
         persisted_submission_scope(&submission.scope);
     let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
@@ -253,7 +366,7 @@ pub async fn record_download_submission_tx(
         SqlExec::Tx(tx),
         &sql,
         &[
-            SqlArg::Text(Id::new().0),
+            SqlArg::Text(submission.download_id.to_string()),
             SqlArg::Text(submission.title_id.clone()),
             SqlArg::Text(submission.facet.clone()),
             SqlArg::Text(download_client_id.clone()),
@@ -278,6 +391,13 @@ pub async fn record_download_submission_tx(
     )
     .await?;
     if rows_affected == 0 {
+        if sync_canonical_rows {
+            sync_canonical_download_rows_tx(
+                tx,
+                &DownloadSourceIdentity::from_submission(submission),
+            )
+            .await?;
+        }
         return Ok(false);
     }
     replace_download_submission_episode_links_tx(
@@ -288,6 +408,10 @@ pub async fn record_download_submission_tx(
         persisted_episode_set_ids(&submission.scope),
     )
     .await?;
+    if sync_canonical_rows {
+        sync_canonical_download_rows_tx(tx, &DownloadSourceIdentity::from_submission(submission))
+            .await?;
+    }
     Ok(true)
 }
 
@@ -324,6 +448,7 @@ pub async fn record_download_submission_identity_tx(
         ],
     )
     .await?;
+    sync_canonical_download_rows_tx(tx, identity).await?;
     Ok(())
 }
 
@@ -332,11 +457,158 @@ pub async fn record_download_submission_with_identity_tx(
     submission: &DownloadSubmission,
     submission_identity: &DownloadSubmissionIdentity,
 ) -> AppResult<()> {
-    if !record_download_submission_tx(tx, submission).await? {
+    if !record_download_submission_tx_inner(tx, submission, false).await? {
         return Ok(());
     }
     let identity = DownloadSourceIdentity::from_submission(submission);
     record_download_submission_identity_tx(tx, &identity, submission_identity).await
+}
+
+/// Keep the write-only 0178 canonical projection in lockstep with its legacy
+/// submission row. This intentionally mirrors the per-row backfill rules.
+pub async fn sync_canonical_download_rows_tx(
+    tx: &mut SqlTx<'_>,
+    client_tuple: &DownloadSourceIdentity,
+) -> AppResult<()> {
+    let normalized_client_id = normalize_download_client_id(client_tuple.client_id.as_deref());
+    let Some(row) = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT s.id, s.title_id, s.download_client_id, s.download_client_type,
+                s.download_client_item_id, s.download_id, s.submitted_at,
+                dc.name AS client_name
+         FROM download_submissions s
+         LEFT JOIN download_clients dc ON dc.id = s.download_client_id
+         WHERE s.download_client_id = {}
+           AND s.download_client_type = {}
+           AND s.download_client_item_id = {}
+         LIMIT 1",
+        &[
+            SqlArg::Text(normalized_client_id),
+            SqlArg::Text(client_tuple.client_type.clone()),
+            SqlArg::Text(client_tuple.item_id.clone()),
+        ],
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+
+    let legacy_id = row.text("id")?;
+    let canonical_id = row
+        .opt_text("download_id")?
+        .as_deref()
+        .and_then(DownloadId::from_wire)
+        .or_else(|| DownloadId::parse(&legacy_id))
+        .ok_or_else(|| {
+            AppError::Repository(format!(
+                "download submission {legacy_id:?} has no UUID canonical download identity"
+            ))
+        })?;
+    let canonical_id_text = canonical_id.to_string();
+    if legacy_id != canonical_id_text {
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "UPDATE download_submissions SET id = {} WHERE id = {}",
+            &[
+                SqlArg::Text(canonical_id_text.clone()),
+                SqlArg::Text(legacy_id),
+            ],
+        )
+        .await?;
+    }
+
+    let title_id = row.text("title_id")?;
+    let origin = if title_id.trim().is_empty() {
+        "foreign_observation"
+    } else {
+        "scryer_submission"
+    };
+    let created_at = parse_datetime_or_now(Some(&timestamp_string(&row, "submitted_at")?));
+    let now = Utc::now();
+    let client_config_id = row
+        .opt_text("download_client_id")?
+        .filter(|value| !value.trim().is_empty());
+    let client_type_snapshot = row
+        .opt_text("download_client_type")?
+        .filter(|value| !value.trim().is_empty());
+    let client_name_snapshot = row
+        .opt_text("client_name")?
+        .or_else(|| client_type_snapshot.clone());
+    let native_item_id = row
+        .opt_text("download_client_item_id")?
+        .filter(|value| !value.trim().is_empty());
+
+    if let (Some(client_config_id), Some(client_type_snapshot), Some(native_item_id)) = (
+        client_config_id.as_deref(),
+        client_type_snapshot.as_deref(),
+        native_item_id.as_deref(),
+    ) && let Some(existing_download_id) = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT download_id
+             FROM download_client_bindings
+             WHERE ended_at IS NULL
+               AND native_item_id IS NOT NULL
+               AND client_config_id = {}
+               AND client_type_snapshot = {}
+               AND native_item_id = {}
+             LIMIT 1",
+        &[
+            SqlArg::Text(client_config_id.to_string()),
+            SqlArg::Text(client_type_snapshot.to_string()),
+            SqlArg::Text(native_item_id.to_string()),
+        ],
+    )
+    .await?
+    .map(|row| row.text("download_id"))
+    .transpose()?
+        && existing_download_id != canonical_id_text
+    {
+        return Err(AppError::Repository(format!(
+            "active canonical download binding collision: existing download id {existing_download_id}, new download id {canonical_id_text}"
+        )));
+    }
+
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES ({}, {}, {})
+         ON CONFLICT(id) DO UPDATE SET origin = excluded.origin",
+        &[
+            SqlArg::Text(canonical_id_text.clone()),
+            SqlArg::Text(origin.to_string()),
+            SqlArg::Timestamp(created_at),
+        ],
+    )
+    .await?;
+    let ended_at = client_config_id.is_none().then_some(now);
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO download_client_bindings (
+            download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+            native_item_id, created_at, ended_at
+         ) VALUES ({}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(download_id) DO UPDATE
+         SET client_config_id = excluded.client_config_id,
+             client_type_snapshot = excluded.client_type_snapshot,
+             client_name_snapshot = excluded.client_name_snapshot,
+             native_item_id = excluded.native_item_id,
+             ended_at = CASE
+                 WHEN excluded.client_config_id IS NULL
+                 THEN COALESCE(download_client_bindings.ended_at, excluded.ended_at)
+                 ELSE download_client_bindings.ended_at
+             END",
+        &[
+            SqlArg::Text(canonical_id_text),
+            SqlArg::OptText(client_config_id),
+            SqlArg::OptText(client_type_snapshot),
+            SqlArg::OptText(client_name_snapshot),
+            SqlArg::OptText(native_item_id),
+            SqlArg::Timestamp(now),
+            SqlArg::OptTimestamp(ended_at),
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn replace_download_submission_episode_links_tx(
@@ -395,6 +667,25 @@ pub async fn queue_import_request_with_identity(
     payload_json: String,
     submission_identity: Option<DownloadSubmissionIdentity>,
 ) -> AppResult<String> {
+    queue_import_request_with_identity_for_download(
+        datastore,
+        source_identity,
+        import_type,
+        payload_json,
+        submission_identity,
+        None,
+    )
+    .await
+}
+
+pub async fn queue_import_request_with_identity_for_download(
+    datastore: &StoreDatastore,
+    source_identity: DownloadSourceIdentity,
+    import_type: String,
+    payload_json: String,
+    submission_identity: Option<DownloadSubmissionIdentity>,
+    canonical_download_id: Option<&DownloadId>,
+) -> AppResult<String> {
     let normalized_client_id = source_identity
         .client_id
         .as_deref()
@@ -410,6 +701,7 @@ pub async fn queue_import_request_with_identity(
     let download_id = submission_identity
         .as_ref()
         .and_then(|identity| identity.download_id.clone());
+    let canonical_download_id = canonical_download_id.map(ToString::to_string);
     let has_download_id = download_id
         .as_deref()
         .map(str::trim)
@@ -426,6 +718,7 @@ pub async fn queue_import_request_with_identity(
         let rename_arg = rename_arg.clone();
         let result_arg = result_arg.clone();
         let download_id = download_id.clone();
+        let canonical_download_id = canonical_download_id.clone();
         let has_download_id = has_download_id;
         let id = id.clone();
         Box::pin(async move {
@@ -462,6 +755,7 @@ pub async fn queue_import_request_with_identity(
                     rename_arg,
                     result_arg,
                     SqlArg::OptText(download_id.clone()),
+                    SqlArg::OptText(canonical_download_id.clone()),
                     SqlArg::OptTimestamp(None),
                     SqlArg::OptTimestamp(None),
                     SqlArg::Timestamp(now),
@@ -536,8 +830,8 @@ async fn find_active_import_by_download_id_tx(
 
 pub fn import_request_insert_sql() -> String {
     "INSERT INTO imports
-     (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, download_id, started_at, finished_at, created_at, updated_at)
-     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})"
+     (id, source_client_id, source_system, source_ref, import_type, status, payload_json, rename_plan_json, result_json, download_id, canonical_download_id, started_at, finished_at, created_at, updated_at)
+     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})"
         .to_string()
 }
 
@@ -570,6 +864,7 @@ pub fn import_request_upsert_sql(tx: &SqlTx<'_>) -> String {
             rename_plan_json = excluded.rename_plan_json,
             result_json = NULL,
             download_id = excluded.download_id,
+            canonical_download_id = COALESCE(excluded.canonical_download_id, canonical_download_id),
             import_transfer_phase = NULL,
             import_transfer_bytes = NULL,
             import_transfer_total_bytes = NULL,
@@ -1209,6 +1504,12 @@ pub fn stream_from_parts(kind: &str, identifier: Option<String>) -> AppResult<Do
 }
 
 pub fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmission> {
+    let download_id = row.text("id")?;
+    let download_id = DownloadId::parse(&download_id).ok_or_else(|| {
+        AppError::Repository(format!(
+            "invalid canonical download id {download_id:?} in download submission"
+        ))
+    })?;
     let title_id = row.text("title_id")?;
     let episode_id = opt_text_lenient(row, "episode_id")?;
     let collection_id = opt_text_lenient(row, "collection_id")?;
@@ -1225,6 +1526,7 @@ pub fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSubmissio
         .as_deref()
         .and_then(scryer_application::DownloadSourceKind::parse);
     Ok(DownloadSubmission {
+        download_id,
         scope: SubmissionScope::from_persisted(
             &title_id,
             episode_id,

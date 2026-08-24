@@ -1196,8 +1196,8 @@ impl DownloadClient for NzbgetDownloadClient {
             json!({"*scryer_facet": facet_str}),
             json!({"*scryer_import_purpose": request.purpose.as_str()}),
         ];
-        if let Some(download_id) = request.download_id.as_deref() {
-            parameters.push(json!({"*scryer_download_id": download_id}));
+        if let Some(download_id) = request.download_id {
+            parameters.push(json!({"*scryer_download_id": download_id.to_wire()}));
         }
 
         if let Some(imdb_id) = title
@@ -1270,6 +1270,7 @@ impl DownloadClient for NzbgetDownloadClient {
             // the NZBID in NZBGet's history — required for failure detection
             // in check_grabbed_for_failures.
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: nzbget_id.to_string(),
                 client_id: None,
                 client_type: "nzbget".to_string(),
@@ -2329,6 +2330,48 @@ mod tests {
             Some("scryer-download:nzbget-1")
         );
         assert!(params.is_scryer);
+    }
+
+    #[test]
+    fn build_append_payload_preserves_the_passed_scryer_download_id() {
+        let parameters = vec![
+            json!({"*scryer_title_id": "title-1"}),
+            json!({"*scryer_facet": "movie"}),
+            json!({"*scryer_import_purpose": "standard"}),
+            json!({"*scryer_download_id": "scryer-download:nzbget-token"}),
+        ];
+        let append_request = NzbgetAppendRequest {
+            request_id: "request-1",
+            title_name: "Example",
+            nzb_filename: "Example.nzb",
+            source_for_payload: "YmFzZTY0LWRhdGE=",
+            category: "movies",
+            queue_priority: 50,
+            parameters: &parameters,
+            use_auto_category: true,
+        };
+
+        assert_eq!(
+            build_nzbget_append_payload(&append_request, "SCORE"),
+            json!({
+                "version": "2.0",
+                "method": "append",
+                "params": [
+                    "Example.nzb",
+                    "YmFzZTY0LWRhdGE=",
+                    "movies",
+                    50,
+                    false,
+                    false,
+                    "",
+                    0,
+                    "SCORE",
+                    false,
+                    parameters,
+                ],
+                "id": "request-1",
+            }),
+        );
     }
 
     #[test]

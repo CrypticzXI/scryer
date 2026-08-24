@@ -492,6 +492,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
     for idx in 0..805 {
         workflow
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: format!("title-{idx}"),
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -603,6 +604,7 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
 
     workflow
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "legacy-title".to_string(),
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -655,6 +657,7 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
 
     workflow
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-1".to_string(),
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -682,6 +685,7 @@ async fn recording_new_download_identity_clears_stale_terminal_state_for_reused_
     workflow
         .record_submission_with_identity(
             DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: "title-1".to_string(),
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
@@ -735,6 +739,7 @@ async fn record_download_submission_persists_episode_set_scope() {
 
     workflow
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-1".to_string(),
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -789,6 +794,7 @@ async fn download_submission_signature_lookup_matches_scope() {
     for (episode_id, item_id) in [("episode-1", "job-1"), ("episode-2", "job-2")] {
         workflow
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: "title-1".to_string(),
                 purpose: scryer_application::DownloadSubmissionPurpose::AdditionalFile,
                 facet: "series".to_string(),

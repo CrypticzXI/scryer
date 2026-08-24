@@ -688,6 +688,7 @@ impl AppUseCase {
         )
         .await?;
         let submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: title.facet.as_str().to_string(),

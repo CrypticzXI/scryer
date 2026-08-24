@@ -11,6 +11,11 @@ use scryer_domain::{
 
 use scryer_domain::RuleSet;
 
+use crate::contracts::{
+    ClientJobLocator, DownloadClientBindingRecord, DownloadRecord, ObservationResolution,
+    ObservedClientJob,
+};
+use crate::ports::DownloadRegistryRepository;
 use crate::ports::{
     DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
     DiscoveryHomeSectionCandidatesRecord,
@@ -1854,7 +1859,48 @@ impl HousekeepingRepository for NullHousekeepingRepository {
 pub struct NullDownloadSubmissionRepository;
 
 #[derive(Default)]
+pub struct NullDownloadRegistryRepository;
+
+#[derive(Default)]
 pub struct NullAcquisitionStateRepository;
+
+#[async_trait]
+impl DownloadRegistryRepository for NullDownloadRegistryRepository {
+    async fn resolve_observation(
+        &self,
+        observation: &ObservedClientJob,
+    ) -> AppResult<ObservationResolution> {
+        Err(AppError::Repository(format!(
+            "download registry is unavailable for observation {}:{}",
+            observation.locator.client_type, observation.locator.native_item_id
+        )))
+    }
+
+    async fn load_download(
+        &self,
+        _: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadRecord>> {
+        Ok(None)
+    }
+
+    async fn load_binding(
+        &self,
+        _: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        Ok(None)
+    }
+
+    async fn find_active_binding_by_locator(
+        &self,
+        _: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        Ok(None)
+    }
+
+    async fn end_binding(&self, _: &scryer_domain::download_identity::DownloadId) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {

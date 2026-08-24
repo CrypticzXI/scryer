@@ -664,6 +664,7 @@ mod expected_episode_release_title_tests {
 
     fn tracked_download(source_title: Option<&str>, display_label: &str) -> TrackedDownload {
         TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "client-1:dl-1".to_string(),
             client_id: "client-1".to_string(),
             client_type: "qbittorrent".to_string(),

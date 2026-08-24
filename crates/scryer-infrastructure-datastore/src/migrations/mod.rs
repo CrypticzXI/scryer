@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod canonical_download_identity;
 pub mod hook_ids;
 pub mod known_bad;
 pub mod notification_targets;
@@ -768,6 +769,9 @@ async fn run_rust_hook(
         }
         "converge_post_0_16_6_prerelease_schema" => {
             post_0_16_6_prerelease::converge_post_0_16_6_prerelease_schema_sqlite(tx).await
+        }
+        "backfill_canonical_download_identity" => {
+            canonical_download_identity::backfill_canonical_download_identity_sqlite(tx).await
         }
         #[cfg(test)]
         "test_insert_hook_marker" => {

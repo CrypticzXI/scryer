@@ -587,6 +587,7 @@ impl AppUseCase {
             .list_episodes_for_title(title_id)
             .await?;
         let fake_submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             // Scope matching only; this submission is never persisted.
             release_size_bytes: None,

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod download_identity;
 mod title_sort;
 pub use title_sort::{
     title_catalog_name_tie_key, title_catalog_sort_input, title_catalog_sort_key,

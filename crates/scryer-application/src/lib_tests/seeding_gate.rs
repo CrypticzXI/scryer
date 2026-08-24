@@ -106,6 +106,7 @@ fn tracked_for(
     client_item.title_name = title.name.clone();
     client_item.facet = Some("movie".to_string());
     TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: tracked_download_id(Some(client_id), client_type, item_id),
         client_id: client_id.to_string(),
         client_type: client_type.to_string(),

@@ -30,6 +30,26 @@ fn already_imported_status_predicate(datastore: &StoreDatastore) -> String {
     format!("(status = 'completed' OR (status = 'skipped' AND {skip_reason} = 'already_imported'))")
 }
 
+async fn is_already_imported_by_canonical_download_id(
+    datastore: &StoreDatastore,
+    canonical_download_id: &scryer_domain::download_identity::DownloadId,
+) -> AppResult<bool> {
+    let already_imported_predicate = already_imported_status_predicate(datastore);
+    let row = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        &format!(
+            "SELECT COUNT(1) AS count
+             FROM imports
+             WHERE canonical_download_id = {{}}
+               AND {already_imported_predicate}"
+        ),
+        &[SqlArg::Text(canonical_download_id.to_string())],
+    )
+    .await?
+    .ok_or_else(|| AppError::Repository("missing canonical import count".into()))?;
+    Ok(row.i64("count")? > 0)
+}
+
 #[async_trait]
 impl ImportRepository for ImportStore {
     async fn queue_import_request(
@@ -54,6 +74,25 @@ impl ImportRepository for ImportStore {
             import_type,
             payload_json,
             submission_identity,
+        )
+        .await
+    }
+
+    async fn queue_import_request_with_identity_for_download(
+        &self,
+        source_identity: DownloadSourceIdentity,
+        import_type: String,
+        payload_json: String,
+        submission_identity: Option<DownloadSubmissionIdentity>,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    ) -> AppResult<String> {
+        queue_import_request_with_identity_for_download(
+            &self.datastore,
+            source_identity,
+            import_type,
+            payload_json,
+            submission_identity,
+            canonical_download_id,
         )
         .await
     }
@@ -277,6 +316,20 @@ impl ImportRepository for ImportStore {
         Ok(row.i64("count")? > 0)
     }
 
+    async fn is_already_imported_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<bool> {
+        if let Some(canonical_download_id) = canonical_download_id
+            && is_already_imported_by_canonical_download_id(&self.datastore, canonical_download_id)
+                .await?
+        {
+            return Ok(true);
+        }
+        self.is_already_imported(identity).await
+    }
+
     async fn is_already_imported_by_download_id(
         &self,
         source_identity: &DownloadSourceIdentity,
@@ -313,6 +366,22 @@ impl ImportRepository for ImportStore {
         .await?
         .ok_or_else(|| AppError::Repository("missing import identity count".into()))?;
         Ok(row.i64("count")? > 0)
+    }
+
+    async fn is_already_imported_by_download_id_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        source_identity: &DownloadSourceIdentity,
+        identity: &DownloadSubmissionIdentity,
+    ) -> AppResult<bool> {
+        if let Some(canonical_download_id) = canonical_download_id
+            && is_already_imported_by_canonical_download_id(&self.datastore, canonical_download_id)
+                .await?
+        {
+            return Ok(true);
+        }
+        self.is_already_imported_by_download_id(source_identity, identity)
+            .await
     }
 
     async fn replace_manual_import_selection(
@@ -722,5 +791,145 @@ impl ImportArtifactRepository for ImportStore {
         .await?
         .ok_or_else(|| AppError::Repository("missing import artifact count".into()))?;
         Ok(row.i64("count")? as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use scryer_application::ImportRepository;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn store() -> ImportStore {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        sqlx::query(
+            "CREATE TABLE imports (
+                 id TEXT PRIMARY KEY,
+                 source_client_id TEXT,
+                 source_system TEXT NOT NULL,
+                 source_ref TEXT NOT NULL,
+                 import_type TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 payload_json TEXT,
+                 rename_plan_json TEXT,
+                 result_json TEXT,
+                 download_id TEXT,
+                 canonical_download_id TEXT,
+                 import_transfer_phase TEXT,
+                 import_transfer_bytes INTEGER,
+                 import_transfer_total_bytes INTEGER,
+                 import_transfer_started_at TEXT,
+                 import_transfer_updated_at TEXT,
+                 started_at TEXT,
+                 finished_at TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 UNIQUE(source_client_id, source_system, source_ref, import_type)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("imports table should be created");
+        ImportStore::new(StoreDatastore::Sqlite {
+            pool,
+            writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    fn source_identity(item_id: &str) -> DownloadSourceIdentity {
+        DownloadSourceIdentity::new(Some("client-1"), "nzbget", item_id)
+    }
+
+    #[tokio::test]
+    async fn canonical_ownership_lookup_falls_back_to_legacy_import_rows() {
+        let store = store().await;
+        let source_identity = source_identity("legacy-item");
+        let import_id = store
+            .queue_import_request(
+                source_identity.clone(),
+                ImportType::MovieDownload.as_str().to_string(),
+                "{}".to_string(),
+            )
+            .await
+            .expect("legacy import should be written");
+        store
+            .update_import_status(&import_id, ImportStatus::Completed, None)
+            .await
+            .expect("legacy import should complete");
+
+        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+        assert!(
+            store
+                .is_already_imported_for_download(Some(&canonical_download_id), &source_identity)
+                .await
+                .expect("canonical-first legacy fallback should succeed")
+        );
+        assert_eq!(
+            store
+                .is_already_imported_for_download(None, &source_identity)
+                .await
+                .expect("legacy-only ownership should succeed"),
+            store
+                .is_already_imported(&source_identity)
+                .await
+                .expect("legacy ownership should succeed")
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_ownership_lookup_finds_canonical_import_rows_before_legacy_tuples() {
+        let store = store().await;
+        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+        let written_source_identity = source_identity("canonical-item");
+        let import_id = store
+            .queue_import_request_with_identity_for_download(
+                written_source_identity,
+                ImportType::MovieDownload.as_str().to_string(),
+                "{}".to_string(),
+                None,
+                Some(&canonical_download_id),
+            )
+            .await
+            .expect("canonical import should be written");
+        store
+            .update_import_status(&import_id, ImportStatus::Completed, None)
+            .await
+            .expect("canonical import should complete");
+
+        let other_source_identity = source_identity("different-item");
+        assert!(
+            store
+                .is_already_imported_for_download(
+                    Some(&canonical_download_id),
+                    &other_source_identity,
+                )
+                .await
+                .expect("canonical ownership should succeed")
+        );
+        assert!(
+            store
+                .is_already_imported_by_download_id_for_download(
+                    Some(&canonical_download_id),
+                    &other_source_identity,
+                    &DownloadSubmissionIdentity {
+                        download_id: Some("legacy-id-that-does-not-match".to_string()),
+                    },
+                )
+                .await
+                .expect("canonical download-id ownership should succeed")
+        );
+        assert!(
+            !store
+                .is_already_imported(&other_source_identity)
+                .await
+                .expect("legacy tuple should not match")
+        );
     }
 }

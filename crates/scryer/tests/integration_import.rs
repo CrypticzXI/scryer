@@ -132,6 +132,7 @@ async fn record_movie_grab_submission(
 ) {
     DownloadSubmissionStore::new(ctx.db.datastore())
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             facet: "movie".to_string(),
             download_client_id: Some(completed.client_id.clone()),
@@ -2278,6 +2279,7 @@ fn tracked_movie_download(
     title_id: &str,
 ) -> scryer_application::tracked_downloads::TrackedDownload {
     scryer_application::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: format!(
             "{}:{}",
             completed.client_id, completed.download_client_item_id

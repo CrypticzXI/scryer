@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title};
+use scryer_domain::{
+    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -1378,6 +1380,8 @@ pub struct DownloadGrabResult {
     pub client_id: Option<String>,
     pub client_type: String,
     pub info_hash: Option<String>,
+    /// The pre-allocated identity used for the successful client mutation.
+    pub download_id: Option<DownloadId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -2423,10 +2423,14 @@ impl PrioritizedDownloadClientRouter {
         if !seed_goals.is_resolved() {
             return;
         }
+        let Some(download_id) = request.download_id else {
+            return;
+        };
         let Some(submissions) = self.download_submissions.as_ref() else {
             return;
         };
         let record = SeedGoalGrabRecord {
+            download_id,
             client_id: Some(config.id.clone()),
             client_type: config.client_type.clone(),
             client_item_id: grab.job_id.clone(),
@@ -3074,7 +3078,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         } else {
             None
         };
-        for config in clients {
+        for (candidate_index, config) in clients.into_iter().enumerate() {
             info!(
                 routing_mode = if mapped_client_id.is_some() {
                     "mapped"
@@ -3133,7 +3137,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
 
-            let (effective_request, resolved_seed_goals) = match self
+            let (mut effective_request, resolved_seed_goals) = match self
                 .apply_selected_client_routing(request, &config.id)
                 .await
             {
@@ -3145,8 +3149,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                             if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
                                 effective_request.resolved_download_artifact.clone()
                             {
-                                let source_label = effective_request
-                                    .download_id
+                                let wire_download_id =
+                                    effective_request.download_id.map(|id| id.to_wire());
+                                let source_label = wire_download_id
                                     .as_deref()
                                     .or(effective_request.source_title.as_deref())
                                     .unwrap_or("proxied-nzb");
@@ -3289,6 +3294,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
 
+            if candidate_index > 0 && effective_request.download_id.is_some() {
+                effective_request.download_id =
+                    Some(scryer_domain::download_identity::DownloadId::new());
+            }
+
             match client.submit_download(&effective_request).await {
                 Ok(result) => {
                     self.delete_staged_nzb(
@@ -3297,6 +3307,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     )
                     .await;
                     let grab = DownloadGrabResult {
+                        download_id: effective_request.download_id,
                         job_id: result.job_id,
                         client_id: Some(config.id.clone()),
                         client_type: config.client_type.clone(),
@@ -3339,7 +3350,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                                 "mapped_ambiguous_submit",
                             )
                             .await;
-                            return Err(error);
+                            return Err(error.with_ambiguous_download_submission_client(
+                                Some(config.id.clone()),
+                                config.client_type.clone(),
+                            ));
                         }
                         warn!(
                             routing_mode = "mapped",
@@ -3396,6 +3410,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         "submit_failure",
                     )
                     .await;
+                    if error.is_download_submit_ambiguous() {
+                        return Err(error.with_ambiguous_download_submission_client(
+                            Some(config.id.clone()),
+                            config.client_type.clone(),
+                        ));
+                    }
                     return Err(error);
                 }
             }
@@ -5480,6 +5500,7 @@ mod tests {
                 None => {}
             }
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "mock".to_string(),
@@ -5701,6 +5722,7 @@ mod tests {
             _request: &DownloadClientAddRequest,
         ) -> AppResult<DownloadGrabResult> {
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "delayed".to_string(),
@@ -5850,6 +5872,7 @@ mod tests {
             _request: &DownloadClientAddRequest,
         ) -> AppResult<DownloadGrabResult> {
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "failing".to_string(),
@@ -6109,14 +6132,27 @@ mod tests {
             None,
         );
         request.indexer_id = Some("indexer-1".to_string());
+        let first_attempt_id = scryer_domain::download_identity::DownloadId::parse(
+            "00000000-0000-4000-8000-000000000011",
+        )
+        .expect("fixed UUID should parse");
+        request.download_id = Some(first_attempt_id);
 
         let result = router
             .submit_download(&request)
             .await
             .expect("automatic route should fail over for an unmapped indexer");
         assert_eq!(result.client_id.as_deref(), Some("secondary"));
-        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
-        assert_eq!(secondary.submissions.lock().unwrap().len(), 1);
+        let primary_submissions = primary.submissions.lock().unwrap();
+        let secondary_submissions = secondary.submissions.lock().unwrap();
+        assert_eq!(primary_submissions.len(), 1);
+        assert_eq!(secondary_submissions.len(), 1);
+        let second_attempt_id = secondary_submissions[0]
+            .download_id
+            .expect("fallback attempt should carry an ID");
+        assert_eq!(primary_submissions[0].download_id, Some(first_attempt_id));
+        assert_ne!(second_attempt_id, first_attempt_id);
+        assert_eq!(result.download_id, Some(second_attempt_id));
     }
 
     #[tokio::test]
@@ -6296,10 +6332,12 @@ mod tests {
         );
         request.indexer_id = Some("indexer-1".to_string());
 
-        assert!(matches!(
-            router.submit_download(&request).await,
-            Err(AppError::DownloadSubmitAmbiguous(_))
-        ));
+        assert!(
+            router
+                .submit_download(&request)
+                .await
+                .is_err_and(|error| error.is_download_submit_ambiguous())
+        );
         assert_eq!(mapped.submissions.lock().unwrap().len(), 1);
         assert!(fallback.submissions.lock().unwrap().is_empty());
     }
@@ -6946,7 +6984,7 @@ mod tests {
             .await
             .expect_err("ambiguous submit errors should stop router failover");
 
-        assert!(matches!(error, AppError::DownloadSubmitAmbiguous(_)));
+        assert!(error.is_download_submit_ambiguous());
         assert_eq!(primary.submissions.lock().unwrap().len(), 1);
         assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
     }
@@ -7645,7 +7683,7 @@ mod tests {
             title: test_title(),
             search_facet: None,
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
-            download_id: None,
+            download_id: Some(scryer_domain::download_identity::DownloadId::new()),
             source_hint: None,
             staged_nzb: None,
             resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
@@ -7690,10 +7728,12 @@ mod tests {
         let mut request = torrent_add_request(Some("indexer-1"));
         // Tracker demands more than the indexer profile's 1.5.
         request.tracker_min_seed_ratio = Some(3.0);
-        router
+        let expected_download_id = request.download_id.expect("test request has an ID");
+        let grab = router
             .submit_download(&request)
             .await
             .expect("torrent request should route");
+        assert_eq!(grab.download_id, Some(expected_download_id));
 
         let sent = primary.submissions.lock().unwrap();
         let sent = sent.first().expect("submission should be recorded");
@@ -7707,6 +7747,7 @@ mod tests {
         assert_eq!(recorded.client_id.as_deref(), Some("primary"));
         assert_eq!(recorded.client_item_id, "job-1");
         assert_eq!(recorded.client_type, "qbittorrent");
+        assert_eq!(recorded.download_id, expected_download_id);
         assert_eq!(
             recorded.goals.seeding_profile_id.as_deref(),
             Some("indexer-profile")

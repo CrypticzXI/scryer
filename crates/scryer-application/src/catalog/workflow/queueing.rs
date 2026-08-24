@@ -153,6 +153,7 @@ fn wanted_item_candidate_for_episode_id(
 }
 fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
     DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title_id.to_string(),
         // Scope matching only; this submission is never persisted.
         release_size_bytes: None,
@@ -530,10 +531,7 @@ impl AppUseCase {
                 .as_deref()
                 .or(title.digital_release_date.as_deref()),
         );
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
         let job_result = self
             .services
             .integrations
@@ -587,6 +585,10 @@ impl AppUseCase {
                 self.record_indexer_grab(indexer_id.as_deref(), source_provider_name.as_deref());
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
@@ -606,6 +608,7 @@ impl AppUseCase {
                     .download_submissions
                     .record_submission_with_identity(
                         DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
@@ -752,6 +755,34 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                if error.is_download_submit_ambiguous()
+                    && let Some((client_id, client_type)) =
+                        error.ambiguous_download_submission_client()
+                    && let Err(persist_error) = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .record_ambiguous_submission(DownloadSubmission {
+                            download_id,
+                            title_id: title.id.clone(),
+                            facet: title.facet.as_str().to_string(),
+                            download_client_id: client_id.map(str::to_string),
+                            download_client_type: client_type.to_string(),
+                            download_client_item_id: String::new(),
+                            source_hint: source_hint_for_attempt.clone(),
+                            source_provider_id: indexer_id.clone(),
+                            source_provider_name: source_provider_name.clone(),
+                            source_kind,
+                            source_title: source_title_for_attempt.clone(),
+                            release_size_bytes: size_bytes,
+                            request_signature: request_signature.clone(),
+                            purpose,
+                            scope: scope.clone(),
+                        })
+                        .await
+                {
+                    tracing::warn!(error = %persist_error, "ambiguous download submission persistence failed");
+                }
                 if !submit_unavailable {
                     // The per-title blocklist entry is what search-time
                     // exclusion consults (and what the operator can remove);

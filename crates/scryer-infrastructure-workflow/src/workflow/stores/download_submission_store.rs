@@ -7,7 +7,7 @@ use scryer_application::{
     DownloadSubmissionIdentity, DownloadSubmissionRepository, PersistedSeedGoals,
     SeedGoalGrabRecord, SeedGoalResolutionSource,
 };
-use scryer_domain::Id;
+use scryer_domain::{Id, download_identity::DownloadId};
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
@@ -60,6 +60,19 @@ fn looks_like_torrent_info_hash(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
+fn canonical_download_id_for_tracked_state(
+    canonical_download_id: Option<&DownloadId>,
+    identity: &DownloadSubmissionIdentity,
+) -> Option<String> {
+    canonical_download_id.map(ToString::to_string).or_else(|| {
+        identity
+            .download_id
+            .as_deref()
+            .and_then(DownloadId::from_wire)
+            .map(|download_id| download_id.to_string())
+    })
+}
+
 #[async_trait]
 impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
@@ -70,6 +83,20 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 Ok(())
             })
         })
+        .await
+    }
+
+    async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_ambiguous_download_submission",
+            move |tx| {
+                let submission = submission.clone();
+                Box::pin(
+                    async move { record_ambiguous_download_submission_tx(tx, &submission).await },
+                )
+            },
+        )
         .await
     }
 
@@ -215,7 +242,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     ) -> AppResult<Vec<DownloadSubmission>> {
         let sql = download_submission_select_sql(
             &self.datastore,
-            "WHERE download_client_type = {} AND download_client_id = {} AND download_id = {} ORDER BY submitted_at DESC, id DESC",
+            "WHERE download_client_type = {} AND download_client_id = {} AND download_id = {} AND download_client_item_id IS NOT NULL ORDER BY submitted_at DESC, id DESC",
         );
         fetch_download_submissions(
             self.datastore.read_exec(),
@@ -264,9 +291,31 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<()> {
+        self.record_identity_tracked_state_for_download(
+            None,
+            identity,
+            source_identity,
+            tracked_state,
+            reason,
+            detail,
+        )
+        .await
+    }
+
+    async fn record_identity_tracked_state_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<()> {
         let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
             return Ok(());
         };
+        let canonical_download_id =
+            canonical_download_id_for_tracked_state(canonical_download_id, identity);
         let identity = identity.clone();
         let source_identity = source_identity.cloned();
         let tracked_state = tracked_state.to_string();
@@ -277,6 +326,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             "record_download_identity_tracked_state",
             move |tx| {
                 let identity_key = identity_key.clone();
+                let canonical_download_id = canonical_download_id.clone();
                 let identity = identity.clone();
                 let source_identity = source_identity.clone();
                 let tracked_state = tracked_state.clone();
@@ -287,12 +337,13 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "INSERT INTO download_identity_states
-                         (id, identity_key, download_id,
+                         (id, identity_key, canonical_download_id, download_id,
                           client_id, client_type, download_client_item_id,
                           tracked_state, reason, detail, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                          ON CONFLICT(identity_key) DO UPDATE
-                         SET download_id = excluded.download_id,
+                         SET canonical_download_id = excluded.canonical_download_id,
+                             download_id = excluded.download_id,
                              client_id = excluded.client_id,
                              client_type = excluded.client_type,
                              download_client_item_id = excluded.download_client_item_id,
@@ -303,6 +354,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &[
                             SqlArg::Text(Id::new().0),
                             SqlArg::Text(identity_key),
+                            SqlArg::OptText(canonical_download_id),
                             SqlArg::OptText(identity.download_id),
                             SqlArg::OptText(source_identity.as_ref().map(|source| {
                                 normalize_download_client_id(source.client_id.as_deref())
@@ -353,6 +405,34 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.text("tracked_state")).transpose()
     }
 
+    async fn get_identity_tracked_state_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(canonical_download_id) = canonical_download_id else {
+            return self
+                .get_identity_tracked_state(identity, source_identity)
+                .await;
+        };
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT tracked_state
+             FROM download_identity_states
+             WHERE canonical_download_id = {}
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1",
+            &[SqlArg::Text(canonical_download_id.to_string())],
+        )
+        .await?;
+        if let Some(row) = row {
+            return row.text("tracked_state").map(Some);
+        }
+        self.get_identity_tracked_state(identity, source_identity)
+            .await
+    }
+
     async fn get_identity_tracked_state_reason(
         &self,
         identity: &DownloadSubmissionIdentity,
@@ -374,6 +454,34 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.opt_text("reason"))
             .transpose()
             .map(Option::flatten)
+    }
+
+    async fn get_identity_tracked_state_reason_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(canonical_download_id) = canonical_download_id else {
+            return self
+                .get_identity_tracked_state_reason(identity, source_identity)
+                .await;
+        };
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT reason
+             FROM download_identity_states
+             WHERE canonical_download_id = {}
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1",
+            &[SqlArg::Text(canonical_download_id.to_string())],
+        )
+        .await?;
+        if let Some(row) = row {
+            return row.opt_text("reason");
+        }
+        self.get_identity_tracked_state_reason(identity, source_identity)
+            .await
     }
 
     async fn get_identity_tracked_state_detail(
@@ -399,8 +507,58 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             .map(Option::flatten)
     }
 
+    async fn get_identity_tracked_state_detail_for_download(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        let Some(canonical_download_id) = canonical_download_id else {
+            return self
+                .get_identity_tracked_state_detail(identity, source_identity)
+                .await;
+        };
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT detail
+             FROM download_identity_states
+             WHERE canonical_download_id = {}
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1",
+            &[SqlArg::Text(canonical_download_id.to_string())],
+        )
+        .await?;
+        if let Some(row) = row {
+            return row.opt_text("detail");
+        }
+        self.get_identity_tracked_state_detail(identity, source_identity)
+            .await
+    }
+
     async fn upsert_identity_tracked_state_returning_previous(
         &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        preserve_previous: &[&str],
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.upsert_identity_tracked_state_for_download_returning_previous(
+            None,
+            identity,
+            source_identity,
+            tracked_state,
+            preserve_previous,
+            reason,
+            detail,
+        )
+        .await
+    }
+
+    async fn upsert_identity_tracked_state_for_download_returning_previous(
+        &self,
+        canonical_download_id: Option<&DownloadId>,
         identity: &DownloadSubmissionIdentity,
         source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
@@ -411,6 +569,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
             return Ok(None);
         };
+        let canonical_download_id =
+            canonical_download_id_for_tracked_state(canonical_download_id, identity);
         let identity = identity.clone();
         let source_identity = source_identity.cloned();
         let tracked_state = tracked_state.to_string();
@@ -425,6 +585,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             "upsert_download_identity_tracked_state",
             move |tx| {
                 let identity_key = identity_key.clone();
+                let canonical_download_id = canonical_download_id.clone();
                 let identity = identity.clone();
                 let source_identity = source_identity.clone();
                 let tracked_state = tracked_state.clone();
@@ -432,15 +593,28 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 let reason = reason.clone();
                 let detail = detail.clone();
                 Box::pin(async move {
-                    let previous = SqlRuntime::fetch_optional(
-                        SqlExec::Tx(tx),
-                        "SELECT tracked_state
-                         FROM download_identity_states
-                         WHERE identity_key = {}
-                         LIMIT 1",
-                        &[SqlArg::Text(identity_key.clone())],
-                    )
-                    .await?
+                    let previous = if let Some(canonical_download_id) = &canonical_download_id {
+                        SqlRuntime::fetch_optional(
+                            SqlExec::Tx(tx),
+                            "SELECT tracked_state
+                             FROM download_identity_states
+                             WHERE canonical_download_id = {}
+                             ORDER BY updated_at DESC, id DESC
+                             LIMIT 1",
+                            &[SqlArg::Text(canonical_download_id.clone())],
+                        )
+                        .await?
+                    } else {
+                        SqlRuntime::fetch_optional(
+                            SqlExec::Tx(tx),
+                            "SELECT tracked_state
+                             FROM download_identity_states
+                             WHERE identity_key = {}
+                             LIMIT 1",
+                            &[SqlArg::Text(identity_key.clone())],
+                        )
+                        .await?
+                    }
                     .map(|row| row.text("tracked_state"))
                     .transpose()?;
                     if let Some(previous) = previous.as_deref().filter(|previous| {
@@ -457,12 +631,13 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "INSERT INTO download_identity_states
-                         (id, identity_key, download_id,
+                         (id, identity_key, canonical_download_id, download_id,
                           client_id, client_type, download_client_item_id,
                           tracked_state, reason, detail, created_at, updated_at)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
                          ON CONFLICT(identity_key) DO UPDATE
-                         SET download_id = excluded.download_id,
+                         SET canonical_download_id = excluded.canonical_download_id,
+                             download_id = excluded.download_id,
                              client_id = excluded.client_id,
                              client_type = excluded.client_type,
                              download_client_item_id = excluded.download_client_item_id,
@@ -473,6 +648,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         &[
                             SqlArg::Text(Id::new().0),
                             SqlArg::Text(identity_key),
+                            SqlArg::OptText(canonical_download_id),
                             SqlArg::OptText(identity.download_id),
                             SqlArg::OptText(source_identity.as_ref().map(|source| {
                                 normalize_download_client_id(source.client_id.as_deref())
@@ -581,7 +757,10 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     }
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>> {
-        let sql = download_submission_select_sql(&self.datastore, "WHERE title_id = {}");
+        let sql = download_submission_select_sql(
+            &self.datastore,
+            "WHERE title_id = {} AND download_client_item_id IS NOT NULL",
+        );
         fetch_download_submissions(
             self.datastore.read_exec(),
             &sql,
@@ -600,7 +779,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         let recent_cutoff = Utc::now() - chrono::Duration::seconds(30);
         let sql = download_submission_select_sql(
             &self.datastore,
-            "WHERE title_id = {} AND request_signature = {} AND purpose = {} AND COALESCE(tracked_state, '') = '' AND submitted_at >= {} ORDER BY submitted_at DESC, id DESC",
+            "WHERE title_id = {} AND request_signature = {} AND purpose = {} AND download_client_item_id IS NOT NULL AND COALESCE(tracked_state, '') = '' AND submitted_at >= {} ORDER BY submitted_at DESC, id DESC",
         );
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -719,13 +898,14 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     &[
                         SqlArg::Text(Id::new().0),
                         SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                        SqlArg::Text(identity.client_type),
-                        SqlArg::Text(identity.item_id),
+                        SqlArg::Text(identity.client_type.clone()),
+                        SqlArg::Text(identity.item_id.clone()),
                         SqlArg::Text(tracked_state),
                         SqlArg::Timestamp(Utc::now()),
                     ],
                 )
                 .await?;
+                sync_canonical_download_rows_tx(tx, &identity).await?;
                 Ok(())
             })
         })
@@ -786,7 +966,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                              seed_goal_source = excluded.seed_goal_source,
                              seed_info_hash = excluded.seed_info_hash",
                         &[
-                            SqlArg::Text(Id::new().0),
+                            SqlArg::Text(record.download_id.to_string()),
                             SqlArg::Text(record.title_id.clone()),
                             SqlArg::Text(record.facet.clone()),
                             SqlArg::Text(normalize_download_client_id(
@@ -815,6 +995,15 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                                 record.goals.info_hash.as_deref(),
                             )),
                         ],
+                    )
+                    .await?;
+                    sync_canonical_download_rows_tx(
+                        tx,
+                        &DownloadSourceIdentity::new(
+                            record.client_id.as_deref(),
+                            &record.client_type,
+                            &record.client_item_id,
+                        ),
                     )
                     .await?;
                     Ok(())
@@ -998,7 +1187,7 @@ mod seed_goal_tests {
                  facet TEXT NOT NULL,
                  download_client_id TEXT NOT NULL DEFAULT '',
                  download_client_type TEXT NOT NULL,
-                 download_client_item_id TEXT NOT NULL,
+                 download_client_item_id TEXT,
                  source_title TEXT,
                  release_size_bytes INTEGER,
                  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -1035,6 +1224,33 @@ mod seed_goal_tests {
         .execute(&pool)
         .await
         .expect("episode link table should be created");
+        sqlx::query(
+            "CREATE TABLE download_clients (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL
+             );
+             CREATE TABLE downloads (
+                 id TEXT PRIMARY KEY,
+                 origin TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 first_observed_at TEXT,
+                 last_observed_at TEXT,
+                 terminal_at TEXT
+             );
+             CREATE TABLE download_client_bindings (
+                 download_id TEXT PRIMARY KEY,
+                 client_config_id TEXT,
+                 client_type_snapshot TEXT,
+                 client_name_snapshot TEXT,
+                 native_item_id TEXT,
+                 created_at TEXT NOT NULL,
+                 last_seen_at TEXT,
+                 ended_at TEXT
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("canonical download fixture tables should be created");
         for statement in include_str!(
             "../../../../scryer/src/db/migrations/0164_download_submission_seed_goals.sql"
         )
@@ -1073,6 +1289,7 @@ mod seed_goal_tests {
 
     fn record() -> SeedGoalGrabRecord {
         SeedGoalGrabRecord {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             client_id: Some("primary".to_string()),
             client_type: "qbittorrent".to_string(),
             client_item_id: "job-1".to_string(),
@@ -1177,6 +1394,7 @@ mod seed_goal_tests {
         let store = store().await;
         store
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 scope: SubmissionScope::Title,
                 title_id: "title-1".to_string(),
                 facet: "series".to_string(),
@@ -1253,12 +1471,25 @@ mod seed_goal_tests {
     #[tokio::test]
     async fn recording_the_submission_afterwards_preserves_the_seed_goals() {
         let store = store().await;
+        let record = record();
+        let seeded_download_id = record.download_id;
         store
-            .record_seed_goals(record())
+            .record_seed_goals(record)
             .await
             .expect("seed goals should persist");
+        let stub = store
+            .find_by_client_item_id(&identity())
+            .await
+            .expect("stub should be readable")
+            .expect("record_seed_goals should create an externally visible row");
+        assert_eq!(stub.title_id, "title-1");
+        assert_eq!(stub.download_client_id.as_deref(), Some("primary"));
+        assert_eq!(stub.download_client_type, "qbittorrent");
+        assert_eq!(stub.download_client_item_id, "job-1");
+        assert_eq!(stub.download_id, seeded_download_id);
         store
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 scope: SubmissionScope::Episode {
                     episode_id: "episode-1".to_string(),
                 },
@@ -1298,5 +1529,168 @@ mod seed_goal_tests {
             }
         );
         assert_eq!(submission.source_title.as_deref(), Some("Test Release"));
+        assert_eq!(submission.download_id, seeded_download_id);
+    }
+
+    fn ambiguous_submission(
+        download_id: scryer_domain::download_identity::DownloadId,
+    ) -> DownloadSubmission {
+        DownloadSubmission {
+            download_id,
+            scope: SubmissionScope::Title,
+            title_id: "title-ambiguous".to_string(),
+            facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "sabnzbd".to_string(),
+            // `record_ambiguous_submission` deliberately persists NULL here.
+            download_client_item_id: String::new(),
+            source_hint: Some("https://indexer.invalid/release.nzb".to_string()),
+            source_provider_id: Some("indexer-1".to_string()),
+            source_provider_name: Some("Indexer".to_string()),
+            source_kind: Some(scryer_application::DownloadSourceKind::NzbUrl),
+            source_title: Some("Ambiguous Release".to_string()),
+            release_size_bytes: Some(123),
+            request_signature: Some("ambiguous-signature".to_string()),
+            purpose: DownloadSubmissionPurpose::Standard,
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_submissions_are_unbound_durable_rows_and_hidden_from_legacy_readers() {
+        let store = store().await;
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO download_clients (id, name) VALUES ({}, {})",
+            &[
+                SqlArg::Text("primary".to_string()),
+                SqlArg::Text("Primary SAB".to_string()),
+            ],
+        )
+        .await
+        .expect("client fixture should insert");
+        let first = scryer_domain::download_identity::DownloadId::parse(
+            "00000000-0000-4000-8000-000000000001",
+        )
+        .expect("fixed UUID should parse");
+        let second = scryer_domain::download_identity::DownloadId::parse(
+            "00000000-0000-4000-8000-000000000002",
+        )
+        .expect("fixed UUID should parse");
+
+        store
+            .record_ambiguous_submission(ambiguous_submission(first))
+            .await
+            .expect("first ambiguous mutation should persist");
+        store
+            .record_ambiguous_submission(ambiguous_submission(second))
+            .await
+            .expect("a later ambiguous mutation must coexist");
+
+        let rows = SqlRuntime::fetch_all(
+            store.datastore.read_exec(),
+            "SELECT id, download_client_item_id FROM download_submissions
+             WHERE title_id = {} ORDER BY id",
+            &[SqlArg::Text("title-ambiguous".to_string())],
+        )
+        .await
+        .expect("ambiguous rows should be readable directly");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text("id").expect("first id"), first.to_string());
+        assert_eq!(rows[1].text("id").expect("second id"), second.to_string());
+        assert!(rows.iter().all(|row| {
+            row.opt_text("download_client_item_id")
+                .expect("nullable item id")
+                .is_none()
+        }));
+
+        let bindings = SqlRuntime::fetch_all(
+            store.datastore.read_exec(),
+            "SELECT download_id, client_config_id, client_type_snapshot,
+                    client_name_snapshot, native_item_id, ended_at
+             FROM download_client_bindings ORDER BY download_id",
+            &[],
+        )
+        .await
+        .expect("unbound bindings should persist with the rows");
+        assert_eq!(bindings.len(), 2);
+        for binding in &bindings {
+            assert_eq!(
+                binding.opt_text("client_config_id").expect("config"),
+                Some("primary".to_string())
+            );
+            assert_eq!(
+                binding.opt_text("client_type_snapshot").expect("type"),
+                Some("sabnzbd".to_string())
+            );
+            assert_eq!(
+                binding.opt_text("client_name_snapshot").expect("name"),
+                Some("Primary SAB".to_string())
+            );
+            assert_eq!(binding.opt_text("native_item_id").expect("native id"), None);
+            assert_eq!(binding.opt_text("ended_at").expect("ended at"), None);
+        }
+        let downloads = SqlRuntime::fetch_all(
+            store.datastore.read_exec(),
+            "SELECT id, origin FROM downloads ORDER BY id",
+            &[],
+        )
+        .await
+        .expect("canonical downloads should persist with the rows");
+        assert_eq!(downloads.len(), 2);
+        assert!(
+            downloads
+                .iter()
+                .all(|row| { row.text("origin").expect("origin") == "scryer_submission" })
+        );
+
+        assert!(
+            store
+                .list_for_title("title-ambiguous")
+                .await
+                .expect("legacy title reader should succeed")
+                .is_empty()
+        );
+        assert!(
+            store
+                .find_by_title_and_request_signature(
+                    "title-ambiguous",
+                    "ambiguous-signature",
+                    DownloadSubmissionPurpose::Standard,
+                    &SubmissionScope::Title,
+                )
+                .await
+                .expect("legacy dedupe reader should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_sab_style_submission_keeps_its_preallocated_row_id() {
+        let store = store().await;
+        let download_id = scryer_domain::download_identity::DownloadId::parse(
+            "00000000-0000-4000-8000-000000000003",
+        )
+        .expect("fixed UUID should parse");
+        let mut submission = ambiguous_submission(download_id);
+        submission.download_client_item_id = "SABnzbd_nzo_1".to_string();
+        store
+            .record_submission_with_identity(
+                submission,
+                DownloadSubmissionIdentity {
+                    download_id: Some("SABnzbd_nzo_1".to_string()),
+                },
+            )
+            .await
+            .expect("accepted SAB-style submission should persist");
+        let stored = store
+            .find_by_client_item_id(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "sabnzbd",
+                "SABnzbd_nzo_1",
+            ))
+            .await
+            .expect("stored submission should load")
+            .expect("accepted submission should be present");
+        assert_eq!(stored.download_id, download_id);
     }
 }

@@ -1790,6 +1790,7 @@ mod queue_query_unit_tests {
 
     fn submission(scope: SubmissionScope) -> DownloadSubmission {
         DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-1".to_string(),
             purpose: DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),

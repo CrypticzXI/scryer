@@ -1776,10 +1776,7 @@ impl AppUseCase {
             .and_then(|value| value.as_str())
             .map(str::to_string);
         let seed_minimums = crate::ReleaseSeedMinimums::from_release_extra(&best.extra);
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
 
         // Resolve the submission scope from the winning release's coverage before
         // submitting: a multi-episode/season pack grabs once with the pack scope
@@ -1888,6 +1885,10 @@ impl AppUseCase {
 
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
@@ -1907,6 +1908,7 @@ impl AppUseCase {
                     .download_submissions
                     .record_submission_with_identity(
                         DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
@@ -2065,6 +2067,34 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                if err.is_download_submit_ambiguous()
+                    && let Some((client_id, client_type)) =
+                        err.ambiguous_download_submission_client()
+                    && let Err(error) = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .record_ambiguous_submission(DownloadSubmission {
+                            download_id,
+                            title_id: title.id.clone(),
+                            facet: title.facet.as_str().to_string(),
+                            download_client_id: client_id.map(str::to_string),
+                            download_client_type: client_type.to_string(),
+                            download_client_item_id: String::new(),
+                            source_hint: None,
+                            source_provider_id: best.indexer_id.clone(),
+                            source_provider_name: Some(best.source.clone()),
+                            source_kind: None,
+                            source_title: source_title.clone(),
+                            release_size_bytes: best.size_bytes,
+                            request_signature: request_signature.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
+                            scope: submission_scope.clone(),
+                        })
+                        .await
+                {
+                    warn!(error = %error, "ambiguous download submission persistence failed");
+                }
                 if defer {
                     return;
                 }

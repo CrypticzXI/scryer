@@ -1646,6 +1646,7 @@ fn build_artifact_with_result(
 
 fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> TrackedDownload {
     TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: format!("nzbget:{release_title}"),
         client_id: "client-1".to_string(),
         client_type: "nzbget".to_string(),

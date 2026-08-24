@@ -459,6 +459,7 @@ fn map_add_response_to_grab_result(
     });
 
     DownloadGrabResult {
+        download_id: None,
         job_id: client_item_id,
         client_id: None,
         client_type: client_type.to_string(),
@@ -851,7 +852,7 @@ fn build_plugin_add_request(
             source_password: request.source_password.clone(),
         },
         release: PluginDownloadRelease {
-            download_id: request.download_id.clone(),
+            download_id: request.download_id.map(|id| id.to_wire()),
             release_title: request
                 .release_title
                 .clone()
@@ -2546,6 +2547,66 @@ mod tests {
         assert_eq!(queue_item.category.as_deref(), Some("series"));
         assert_eq!(queue_item.progress_percent, 100);
         assert_eq!(queue_item.remaining_seconds, Some(0));
+    }
+
+    #[test]
+    fn plugin_queue_and_history_keep_their_current_identity_projections() {
+        const INFO_HASH: &str = "abcdef0123456789abcdef0123456789abcdef01";
+        const DOWNLOAD_ID: &str = "scryer-download:plugin-token";
+
+        let queue_item = map_queue_item(
+            PluginDownloadItem {
+                client_item_id: "native-plugin-item".to_string(),
+                download_id: Some(DOWNLOAD_ID.to_string()),
+                info_hash: Some(INFO_HASH.to_string()),
+                title: "Plugin Queue Item".to_string(),
+                state: DownloadItemState::Downloading,
+                message: None,
+                category: Some("series".to_string()),
+                remote_output_path: None,
+                torrent: None,
+                total_size_bytes: Some(2048),
+                remaining_size_bytes: Some(1024),
+                eta_seconds: Some(60),
+                progress_percent: Some(50),
+                can_move_files: None,
+                can_remove: None,
+                removed: None,
+                raw_state: None,
+                completed_at: None,
+            },
+            "client-1",
+            "Plugin Client",
+            "plugin-client",
+        );
+        assert_eq!(queue_item.id, format!("plugin-client:{INFO_HASH}"));
+        assert_eq!(queue_item.download_id.as_deref(), Some(DOWNLOAD_ID));
+        assert_eq!(queue_item.download_client_item_id, "native-plugin-item");
+        assert!(!queue_item.is_scryer_origin);
+
+        let history_item = map_history_item_from_completed(
+            PluginCompletedDownload {
+                client_item_id: "native-plugin-item".to_string(),
+                download_id: Some(DOWNLOAD_ID.to_string()),
+                info_hash: Some(INFO_HASH.to_string()),
+                name: "Plugin Queue Item".to_string(),
+                release_name: None,
+                dest_dir: "/downloads/series".to_string(),
+                category: Some("series".to_string()),
+                output_kind: None,
+                content_paths: vec![],
+                size_bytes: Some(2048),
+                completed_at: Some("2026-05-02T00:00:00Z".to_string()),
+                parameters: vec![],
+            },
+            "client-1",
+            "Plugin Client",
+            "plugin-client",
+        );
+        assert_eq!(history_item.id, format!("plugin-client:{INFO_HASH}"));
+        assert_eq!(history_item.download_id.as_deref(), Some(DOWNLOAD_ID));
+        assert_eq!(history_item.download_client_item_id, INFO_HASH);
+        assert!(!history_item.is_scryer_origin);
     }
 
     #[test]

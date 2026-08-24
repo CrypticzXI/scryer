@@ -176,6 +176,8 @@ impl SubmissionScope {
 
 #[derive(Clone, Debug)]
 pub struct DownloadSubmission {
+    /// Canonical identity allocated immediately before this client mutation.
+    pub download_id: scryer_domain::download_identity::DownloadId,
     pub title_id: String,
     pub facet: String,
     pub download_client_id: Option<String>,
@@ -244,6 +246,8 @@ impl PersistedSeedGoals {
 /// land before the acquisition layer records the submission itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeedGoalGrabRecord {
+    /// Canonical identity of the client mutation whose seed goals are frozen.
+    pub download_id: scryer_domain::download_identity::DownloadId,
     pub client_id: Option<String>,
     pub client_type: String,
     pub client_item_id: String,
@@ -292,6 +296,78 @@ impl DownloadSourceIdentity {
     pub fn client_id_or_empty(&self) -> &str {
         self.client_id.as_deref().unwrap_or("")
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ClientJobLocator {
+    pub client_config_id: Option<String>,
+    pub client_type: String,
+    pub native_item_id: String,
+}
+
+impl ClientJobLocator {
+    pub fn new(
+        client_config_id: Option<&str>,
+        client_type: impl AsRef<str>,
+        native_item_id: impl AsRef<str>,
+    ) -> Self {
+        let client_config_id = client_config_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Self {
+            client_config_id,
+            client_type: client_type.as_ref().trim().to_ascii_lowercase(),
+            native_item_id: native_item_id.as_ref().trim().to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadOrigin {
+    ScryerSubmission,
+    ForeignObservation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadRecord {
+    pub id: scryer_domain::download_identity::DownloadId,
+    pub origin: DownloadOrigin,
+    pub created_at: DateTime<Utc>,
+    pub first_observed_at: Option<DateTime<Utc>>,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub terminal_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadClientBindingRecord {
+    pub download_id: scryer_domain::download_identity::DownloadId,
+    pub client_config_id: Option<String>,
+    pub client_type_snapshot: Option<String>,
+    pub client_name_snapshot: Option<String>,
+    pub native_item_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// One observed client job, keyed by the configured-client/native-item locator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedClientJob {
+    pub locator: ClientJobLocator,
+    pub wire_token: Option<String>,
+    pub observed_name: Option<String>,
+    pub observed_at: DateTime<Utc>,
+}
+
+/// Canonical identity selected for an observed client job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObservationResolution {
+    Resolved {
+        download_id: scryer_domain::download_identity::DownloadId,
+        newly_foreign: bool,
+        attached: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -985,7 +1061,8 @@ pub struct DownloadClientAddRequest {
     /// against this; `None` means the owner facet is the search facet.
     pub search_facet: Option<MediaFacet>,
     pub purpose: DownloadSubmissionPurpose,
-    pub download_id: Option<String>,
+    /// Canonical identity allocated before submitting this concrete mutation.
+    pub download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
     pub resolved_download_artifact: Option<ResolvedDownloadArtifact>,
@@ -1125,4 +1202,28 @@ pub struct IndexerDownloadClientProviderCompatibility {
     pub protocol_families: Vec<String>,
     pub supports_mapping: bool,
     pub compatible_client_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClientJobLocator, DownloadSourceIdentity};
+
+    #[test]
+    fn client_job_locator_new_normalizes_like_download_source_identity() {
+        let client_config_id = Some("  config-1  ");
+        let client_type = "  SABnzbd  ";
+        let native_item_id = "  nzo-123  ";
+
+        let locator = ClientJobLocator::new(client_config_id, client_type, native_item_id);
+        let source = DownloadSourceIdentity::new(client_config_id, client_type, native_item_id);
+
+        assert_eq!(locator.client_config_id, source.client_id);
+        assert_eq!(locator.client_type, source.client_type);
+        assert_eq!(locator.native_item_id, source.item_id);
+
+        assert_eq!(
+            ClientJobLocator::new(Some("  \t "), " NZBGet ", " 10010 ").client_config_id,
+            None
+        );
+    }
 }

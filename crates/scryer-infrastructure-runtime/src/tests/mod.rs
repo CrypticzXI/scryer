@@ -31,6 +31,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+mod canonical_download_registry;
 mod discovery_pending_context_changes;
 mod emby_media_servers;
 mod external_import_setup_secret_drafts;
@@ -173,6 +174,7 @@ async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, I
             result_json TEXT,
             rename_plan_json TEXT,
             download_id TEXT,
+            canonical_download_id TEXT,
             started_at TEXT,
             finished_at TEXT,
             created_at TEXT NOT NULL,
@@ -215,6 +217,7 @@ async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, I
 
 fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmission {
     DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: String::new(),
         purpose: scryer_application::DownloadSubmissionPurpose::Standard,
         facet: String::new(),
@@ -234,6 +237,7 @@ fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmissi
 
 fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
     DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: "title-managed".to_string(),
         purpose: scryer_application::DownloadSubmissionPurpose::AdditionalFile,
         facet: "anime".to_string(),

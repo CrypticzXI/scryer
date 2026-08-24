@@ -463,6 +463,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
     completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
 ) -> AppResult<bool> {
     if matches!(
         resolution,
@@ -491,7 +492,11 @@ async fn completed_download_already_imported_for_current_attempt(
                     .services
                     .workflow
                     .imports
-                    .is_already_imported_by_download_id(&source_identity, identity)
+                    .is_already_imported_by_download_id_for_download(
+                        canonical_download_id,
+                        &source_identity,
+                        identity,
+                    )
                     .await;
             }
             source_identity
@@ -506,7 +511,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app.services
         .workflow
         .imports
-        .is_already_imported(&source_identity)
+        .is_already_imported_for_download(canonical_download_id, &source_identity)
         .await
 }
 

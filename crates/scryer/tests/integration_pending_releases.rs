@@ -617,6 +617,7 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -733,6 +734,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
             .to_string(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -784,6 +786,7 @@ async fn download_submission_roundtrips_episode_scope() {
 
     workflow_store
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-episode-scope".to_string(),
             facet: "series".to_string(),
             download_client_id: None,
@@ -859,7 +862,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
           source_hint, source_kind, request_signature, collection_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind("submission-legacy")
+    .bind("00000000-0000-4000-8000-000000000031")
     .bind("title-legacy-scope")
     .bind("series")
     .bind("nzbget")

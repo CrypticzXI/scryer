@@ -236,6 +236,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -825,6 +826,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
     ] {
         download_submissions
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id.clone(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
@@ -1001,6 +1003,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1020,6 +1023,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         .expect("record failed submission");
 
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: "nzbget:failed-job".to_string(),
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
@@ -1218,6 +1222,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1380,6 +1385,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1593,6 +1599,7 @@ async fn operator_client_failure_is_recorded_without_reopening_scope() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::OperatorQueued,
             facet: "movie".to_string(),
@@ -1700,6 +1707,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
     ] {
         download_submissions
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id.clone(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "series".to_string(),
@@ -1815,6 +1823,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -1834,6 +1843,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         .expect("record failed submission");
 
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: "weaver:job-1".to_string(),
         client_id: "primary".to_string(),
         client_type: "weaver".to_string(),
@@ -1966,6 +1976,7 @@ async fn parse_matched_observed_failed_download_does_not_blocklist_or_requeue() 
     );
     client_item.is_scryer_origin = false;
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: "nzbget:observed-failed-job".to_string(),
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
@@ -2167,6 +2178,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -2228,6 +2240,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
     }
 
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: "nzbget:failed-season-pack".to_string(),
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
@@ -2445,6 +2458,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -2623,6 +2637,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -2886,6 +2901,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -3124,6 +3140,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -4046,6 +4063,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -6008,6 +6026,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -6799,6 +6818,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -7439,6 +7459,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),

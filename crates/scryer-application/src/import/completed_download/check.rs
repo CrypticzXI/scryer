@@ -57,7 +57,13 @@ pub(crate) async fn check_with_lookup(
     let queue_identity = observed_queue_item_identity(&td.client_item);
     let queue_source_identity = queue_item_source_identity(&td.client_item);
     if let Some(state) =
-        download_id_tracked_state(app, &queue_identity, Some(&queue_source_identity)).await
+        download_id_tracked_state(
+            app,
+            td.canonical_download_id(),
+            &queue_identity,
+            Some(&queue_source_identity),
+        )
+        .await
         // `is_import_settled` rather than `is_terminal`: a torrent parked in
         // `ImportedSeeding` is already in the library and must not be offered
         // for import again while it works off its seeding goal.
@@ -141,8 +147,13 @@ pub(crate) async fn check_with_lookup(
 
     let completed_identity = observed_completed_download_identity(&completed);
     let completed_source_identity = completed_download_source_identity(&completed);
-    if let Some(state) =
-        download_id_tracked_state(app, &completed_identity, Some(&completed_source_identity)).await
+    if let Some(state) = download_id_tracked_state(
+        app,
+        td.canonical_download_id(),
+        &completed_identity,
+        Some(&completed_source_identity),
+    )
+    .await
         && state.is_import_settled()
     {
         apply_download_id_state(td, state);
@@ -732,7 +743,8 @@ async fn block_tracked_download_identity_for_manual_review(
         .services
         .workflow
         .download_submissions
-        .record_identity_tracked_state(
+        .record_identity_tracked_state_for_download(
+            td.canonical_download_id(),
             &observed_identity,
             Some(&source_identity),
             TrackedDownloadState::ImportBlocked.as_str(),

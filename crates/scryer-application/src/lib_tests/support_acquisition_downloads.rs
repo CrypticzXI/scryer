@@ -981,6 +981,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 && entry.download_client_item_id == identity.item_id.as_str()
         }) {
             entries.push(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: String::new(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: String::new(),
@@ -1593,6 +1594,7 @@ impl DownloadClient for StubDownloadClient {
             queue_items.push(queued);
         }
         Ok(DownloadGrabResult {
+            download_id: None,
             job_id,
             client_id: None,
             client_type: "nzbget".to_string(),

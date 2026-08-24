@@ -1254,10 +1254,7 @@ impl AppUseCase {
             "persisted candidate: grabbing"
         );
 
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
 
         // Season-pack detection for the seeding-goal resolver. The submission
         // scope this function derives later needs catalog lookups that only run
@@ -1324,6 +1321,10 @@ impl AppUseCase {
                 }
                 self.record_indexer_grab(pr.indexer_id.as_deref(), pr.indexer_source.as_deref());
 
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
@@ -1384,6 +1385,7 @@ impl AppUseCase {
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
@@ -1455,6 +1457,41 @@ impl AppUseCase {
                         source_password.clone(),
                     )
                     .await;
+
+                if err.is_download_submit_ambiguous()
+                    && let Some((client_id, client_type)) =
+                        err.ambiguous_download_submission_client()
+                {
+                    let facet = serde_json::to_string(&title.facet)
+                        .unwrap_or_else(|_| "\"other\"".to_string())
+                        .trim_matches('"')
+                        .to_string();
+                    if let Err(error) = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .record_ambiguous_submission(DownloadSubmission {
+                            download_id,
+                            title_id: title.id.clone(),
+                            facet,
+                            download_client_id: client_id.map(str::to_string),
+                            download_client_type: client_type.to_string(),
+                            download_client_item_id: String::new(),
+                            source_hint: None,
+                            source_provider_id: pr.indexer_id.clone(),
+                            source_provider_name: pr.indexer_source.clone(),
+                            source_kind: None,
+                            source_title: source_title.clone(),
+                            release_size_bytes: pr.release_size_bytes,
+                            request_signature: request_signature.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
+                            scope: pending_scope.clone(),
+                        })
+                        .await
+                    {
+                        warn!(error = %error, "ambiguous download submission persistence failed");
+                    }
+                }
 
                 if source_gone {
                     info!(
