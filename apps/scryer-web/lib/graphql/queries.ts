@@ -3070,6 +3070,33 @@ export const smgScryerUpdateNoticeQuery = `query SmgScryerUpdateNotice {
   }
 }`;
 
+export const applicationUpgradeStatusQuery = `query ApplicationUpgradeStatus {
+  applicationUpgradeStatus {
+    currentVersion
+    updateVersion
+    updateTag
+    updateAvailable
+    installationKind
+    managementOwner
+    eligible
+    eligibilityReason
+    activeRun {
+${JOB_RUN_FIELDS}
+    }
+    latestRun {
+${JOB_RUN_FIELDS}
+    }
+  }
+}`;
+
+export const startApplicationUpgradeMutation = `mutation StartApplicationUpgrade($input: StartApplicationUpgradeInput!) {
+  startApplicationUpgrade(input: $input) {
+    jobRun {
+${JOB_RUN_FIELDS}
+    }
+  }
+}`;
+
 export const scryerVersionQuery = `query ScryerVersion {
   scryerVersion
 }`;

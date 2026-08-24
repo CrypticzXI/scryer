@@ -25,7 +25,7 @@ pub(super) struct MockTitleRepo {
     pub(super) external_id_batch_lookup_calls: AtomicUsize,
 }
 #[derive(Default)]
-pub(super) struct RecordingJobRunRepo {
+pub(crate) struct RecordingJobRunRepo {
     pub(super) runs: Arc<Mutex<Vec<JobRunRecord>>>,
     pub(super) list_job_runs_calls: AtomicUsize,
     pub(super) list_job_runs_for_actor_calls: AtomicUsize,
@@ -33,7 +33,7 @@ pub(super) struct RecordingJobRunRepo {
 }
 
 impl RecordingJobRunRepo {
-    pub(super) async fn seed(&self, run: JobRunRecord) {
+    pub(crate) async fn seed(&self, run: JobRunRecord) {
         self.runs.lock().await.push(run);
     }
 }
@@ -118,11 +118,14 @@ impl JobRunRepository for RecordingJobRunRepo {
             .collect())
     }
 
-    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+    async fn reconcile_interrupted_job_runs(&self, excluded_run_ids: &[String]) -> AppResult<u64> {
         let now = chrono::Utc::now();
         let mut runs = self.runs.lock().await;
         let mut reconciled = 0u64;
-        for run in runs.iter_mut().filter(|run| !run.status.is_terminal()) {
+        for run in runs
+            .iter_mut()
+            .filter(|run| !run.status.is_terminal() && !excluded_run_ids.contains(&run.id))
+        {
             run.status = JobRunStatus::Failed;
             run.progress_json = None;
             run.error_text = Some("interrupted by restart".to_string());

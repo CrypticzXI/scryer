@@ -1,0 +1,131 @@
+{
+  "schema": "scryer.upgrade.manifest.v1",
+  "tag": "scryer-v9.8.7",
+  "version": "9.8.7",
+  "artifacts": [
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "channel": "portable",
+      "asset_name": "scryer-darwin-arm64-portable.tar.gz",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-darwin-arm64-portable.tar.gz",
+      "size": 134,
+      "blake3": "c4c86f105e1fdb570a5292df038ccf86d0212ee1d6734d0ee632a6b1770443f1",
+      "archive": "tar.gz",
+      "members": [
+        {
+          "path": "bin/scryer",
+          "size": 59,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "platform": "darwin",
+      "arch": "x86_64",
+      "channel": "portable",
+      "asset_name": "scryer-darwin-x86_64-portable.tar.gz",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-darwin-x86_64-portable.tar.gz",
+      "size": 135,
+      "blake3": "fc53ea23bd00dcdc414d2c12301e1f24fbfd71e5b52afdda22be9659499cc97e",
+      "archive": "tar.gz",
+      "members": [
+        {
+          "path": "bin/scryer",
+          "size": 60,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "channel": "portable",
+      "asset_name": "scryer-linux-arm64-portable.tar.gz",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-linux-arm64-portable.tar.gz",
+      "size": 131,
+      "blake3": "e8ed24e8789680008c7fd043ae028086e32359103d1404e95d4688296d21556a",
+      "archive": "tar.gz",
+      "members": [
+        {
+          "path": "bin/scryer",
+          "size": 58,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "platform": "linux",
+      "arch": "x86_64",
+      "channel": "portable",
+      "asset_name": "scryer-linux-x86_64-portable.tar.gz",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-linux-x86_64-portable.tar.gz",
+      "size": 134,
+      "blake3": "a80fa686492a83e8d0ee0751eae6cbc43a9f54842c99a41b3d5088fa0fe8cb31",
+      "archive": "tar.gz",
+      "members": [
+        {
+          "path": "bin/scryer",
+          "size": 59,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "platform": "windows",
+      "arch": "arm64",
+      "channel": "msi",
+      "asset_name": "scryer-windows-arm64.msi",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-windows-arm64.msi",
+      "size": 37,
+      "blake3": "b4d2ce69e6a4b0591dc1f41a2f1ac0079c66a6b29a026678c0765d37e07fcd68",
+      "archive": "msi",
+      "members": []
+    },
+    {
+      "platform": "windows",
+      "arch": "arm64",
+      "channel": "portable",
+      "asset_name": "scryer-windows-arm64.zip",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-windows-arm64.zip",
+      "size": 171,
+      "blake3": "ceca4cdd38ade4b929b78367e8cdfb185c080dc3462bf5d70726be63c1d6dd5b",
+      "archive": "zip",
+      "members": [
+        {
+          "path": "scryer.exe",
+          "size": 48,
+          "executable": true
+        }
+      ]
+    },
+    {
+      "platform": "windows",
+      "arch": "x86_64",
+      "channel": "msi",
+      "asset_name": "scryer-windows-x86_64.msi",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-windows-x86_64.msi",
+      "size": 38,
+      "blake3": "3b7d4d01f27923ca0de1de4d35cbdb0cd6e373692d5b2e7606cc79a3b0f27e38",
+      "archive": "msi",
+      "members": []
+    },
+    {
+      "platform": "windows",
+      "arch": "x86_64",
+      "channel": "portable",
+      "asset_name": "scryer-windows-x86_64.zip",
+      "url": "https://github.com/scryer-media/scryer/releases/download/scryer-v9.8.7/scryer-windows-x86_64.zip",
+      "size": 172,
+      "blake3": "a8440f93aece10dcfdb7fe57d6c387f3040b513478eca33e932d1d6347f4533d",
+      "archive": "zip",
+      "members": [
+        {
+          "path": "scryer.exe",
+          "size": 49,
+          "executable": true
+        }
+      ]
+    }
+  ]
+}

@@ -544,6 +544,114 @@ enum AppPermissionValue {
 }
 
 """
+Installation layout identified for the in-app upgrade surface.
+"""
+enum ApplicationInstallationKindValue {
+	"""
+	A writable standalone installation.
+	"""
+	PORTABLE
+	"""
+	A directly installed Windows MSI package.
+	"""
+	DIRECT_MSI
+	"""
+	A container-managed installation.
+	"""
+	DOCKER
+	"""
+	A Homebrew-managed installation.
+	"""
+	HOMEBREW
+	"""
+	A winget-managed Windows installation.
+	"""
+	WINGET
+	"""
+	A Windows service or session-zero installation.
+	"""
+	WINDOWS_SUPERVISED
+	"""
+	In-app upgrades disabled by the operator.
+	"""
+	DISABLED
+	"""
+	An installation layout that is not supported for in-app upgrades.
+	"""
+	UNSUPPORTED
+}
+
+"""
+Party responsible for managing application upgrades.
+"""
+enum ApplicationUpgradeOwnerValue {
+	"""
+	The application can manage its own upgrade.
+	"""
+	IN_APP
+	"""
+	The operator or an external package manager owns upgrades.
+	"""
+	OPERATOR
+}
+
+"""
+Durable job run accepted for an application upgrade.
+"""
+type ApplicationUpgradeStartPayload {
+	"""
+	The registered application-upgrade job.
+	"""
+	jobRun: JobRunPayload!
+}
+
+"""
+Current update availability and installation eligibility.
+"""
+type ApplicationUpgradeStatusPayload {
+	"""
+	Running application version.
+	"""
+	currentVersion: String!
+	"""
+	Available application version, or null when no update notice exists.
+	"""
+	updateVersion: String
+	"""
+	Available release tag, or null when no update notice exists.
+	"""
+	updateTag: String
+	"""
+	Whether the current update notice offers a newer version.
+	"""
+	updateAvailable: Boolean!
+	"""
+	Installation layout identified at startup.
+	"""
+	installationKind: ApplicationInstallationKindValue!
+	"""
+	Party responsible for managing application upgrades.
+	"""
+	managementOwner: ApplicationUpgradeOwnerValue!
+	"""
+	Whether this installation is eligible for an in-app upgrade.
+	"""
+	eligible: Boolean!
+	"""
+	Stable snake_case code explaining eligibility.
+	"""
+	eligibilityReason: String!
+	"""
+	In-memory application-upgrade job still running in this process, if any.
+	"""
+	activeRun: JobRunPayload
+	"""
+	Most recent persisted application-upgrade job, if any.
+	"""
+	latestRun: JobRunPayload
+}
+
+"""
 Approval choices for a media request.
 """
 input ApproveMediaRequestInput {
@@ -7489,6 +7597,10 @@ enum JobKeyValue {
 	Acquisition search.
 	"""
 	ACQUISITION_SEARCH
+	"""
+	Application upgrade.
+	"""
+	APPLICATION_UPGRADE
 }
 
 """
@@ -9923,6 +10035,15 @@ type MovieEntityPayload {
 }
 
 type MutationRoot {
+	"""
+	Begin a signed in-application upgrade for the currently advertised release.
+	"""
+	startApplicationUpgrade(
+		"""
+		The update tag and version currently advertised by SMG.
+		"""
+		input: StartApplicationUpgradeInput!
+	): ApplicationUpgradeStartPayload!
 	"""
 	Create or reuse a title in an accessible library and return its hydration state.
 	"""
@@ -14280,6 +14401,10 @@ type QueryRoot {
 	"""
 	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
 	"""
+	Return application update availability and installation eligibility; requires system-settings management permission.
+	"""
+	applicationUpgradeStatus: ApplicationUpgradeStatusPayload!
+	"""
 	List recycled media items in a bounded page, optionally restricted to library IDs.
 	"""
 	recycledItems(
@@ -16547,6 +16672,20 @@ enum SortDirectionValue {
 	Highest or latest values first.
 	"""
 	DESC
+}
+
+"""
+The exact update notice accepted by `startApplicationUpgrade`.
+"""
+input StartApplicationUpgradeInput {
+	"""
+	Release tag displayed by the current update notice.
+	"""
+	expectedTag: String!
+	"""
+	Release version displayed by the current update notice.
+	"""
+	expectedVersion: String!
 }
 
 """

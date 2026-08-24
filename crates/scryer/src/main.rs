@@ -1,6 +1,8 @@
 // async-graphql schema expansion exceeded the default macro recursion depth.
 #![recursion_limit = "256"]
 
+mod application_upgrade_evidence;
+mod application_upgrade_helper;
 mod backup_routes;
 mod base_path;
 #[cfg(any(debug_assertions, test))]
@@ -85,7 +87,9 @@ use scryer_interface::context::{
     RestoreDatastoreEngine, RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
     RestoreSqliteDatastoreRequest,
 };
-use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
+use scryer_interface::{
+    LogBuffer, build_schema_with_log_buffer_and_restore_and_application_upgrade,
+};
 use scryer_logging::{JsonContextFormatter, LogContextLayer, enable_context_spans};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -300,6 +304,20 @@ fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     Err(command.exec())
 }
 
+#[cfg(windows)]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+
+    // SAFETY: GetTickCount64 has no arguments and is safe to call for the current host.
+    let uptime_millis = unsafe { GetTickCount64() };
+    std::time::SystemTime::now().checked_sub(std::time::Duration::from_millis(uptime_millis))
+}
+
+#[cfg(not(windows))]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    None
+}
+
 #[cfg(not(unix))]
 fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     let mut command = Command::new(&spec.executable);
@@ -351,6 +369,17 @@ impl SelfRestartController {
         RestoreRestartHandle::new(move || controller.schedule_restart())
     }
 
+    fn application_upgrade_handle(
+        &self,
+    ) -> scryer_application::application_upgrade::ApplicationUpgradeRestartHandle {
+        let restart_controller = self.clone();
+        let exit_controller = self.clone();
+        scryer_application::application_upgrade::ApplicationUpgradeRestartHandle::new_with_exit(
+            move || restart_controller.schedule_restart(),
+            move || exit_controller.schedule_exit_only(),
+        )
+    }
+
     fn schedule_restart(&self) {
         if self.inner.scheduled.swap(true, Ordering::SeqCst) {
             tracing::info!("restore restart already scheduled");
@@ -364,6 +393,18 @@ impl SelfRestartController {
                 tracing::error!(error = %error, "failed to restart after restore");
                 inner.scheduled.store(false, Ordering::SeqCst);
             }
+        });
+    }
+
+    fn schedule_exit_only(&self) {
+        if self.inner.scheduled.swap(true, Ordering::SeqCst) {
+            tracing::info!("restart or exit already scheduled");
+            return;
+        }
+        let delay = self.inner.delay;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            std::process::exit(0);
         });
     }
 }
@@ -468,6 +509,15 @@ fn install_panic_logging_hook() {
 
 #[tokio::main]
 async fn main() {
+    match application_upgrade_helper::maybe_run_upgrade_helper() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+
     // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
     let data_dir_override = match extract_data_dir(&mut args) {
@@ -687,6 +737,13 @@ async fn main() {
 
     tracing::info!(version = VERSION, "starting scryer");
 
+    let application_upgrade_assessment =
+        application_upgrade_evidence::collect_installation_assessment();
+    tracing::info!(
+        kind = ?application_upgrade_assessment.kind,
+        "application upgrade installation assessment"
+    );
+
     // ValidateOnly mode: check for pending migrations and exit immediately (no server).
     if matches!(migration_mode, MigrationMode::ValidateOnly) {
         run_validate_only(datastore_config).await;
@@ -738,6 +795,7 @@ async fn main() {
                     metrics_handle,
                     data_dir,
                     bootstrap_base_path,
+                    application_upgrade_assessment,
                 )
                 .await
                 {
@@ -829,6 +887,7 @@ async fn bootstrap_application(
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     data_dir: PathBuf,
     base_path: BasePath,
+    application_upgrade_assessment: scryer_application::application_upgrade::InstallationAssessment,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
@@ -1440,9 +1499,29 @@ async fn bootstrap_application(
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
     spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
+    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
+        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
+    app_use_case.set_application_upgrade_restart_handle(
+        restore_restart_controller.application_upgrade_handle(),
+    );
+
+    let upgrade_reconcile_exclusions = match app_use_case
+        .finalize_application_upgrade_journal_with_boot_time(application_upgrade_boot_time())
+        .await
+    {
+        Ok(exclusions) => exclusions,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to finalize application upgrade journal on startup");
+            Vec::new()
+        }
+    };
+
     // A persisted running job run whose worker died in a previous process is
     // unfinishable; fail those rows before any poller can wait on them forever.
-    if let Err(e) = app_use_case.reconcile_interrupted_job_runs().await {
+    if let Err(e) = app_use_case
+        .reconcile_interrupted_job_runs(&upgrade_reconcile_exclusions)
+        .await
+    {
         tracing::warn!(error = %e, "failed to reconcile interrupted job runs on startup");
     }
 
@@ -1498,9 +1577,6 @@ async fn bootstrap_application(
             "failed to build download-client category admission snapshot on startup; untracked observations will be deferred"
         );
     }
-    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
-        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
-
     let auth_mode = resolve_auth_mode_from_env()?;
     app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
     if auth_mode.recovery_active() {
@@ -1540,7 +1616,7 @@ async fn bootstrap_application(
     });
     let log_buf_snapshot = log_ring_buffer.clone();
     let log_buf_subscribe = log_ring_buffer.clone();
-    let schema = build_schema_with_log_buffer_and_restore(
+    let schema = build_schema_with_log_buffer_and_restore_and_application_upgrade(
         app_use_case.clone(),
         auth_runtime.clone(),
         Some(LogBuffer::new(
@@ -1553,6 +1629,7 @@ async fn bootstrap_application(
             datastore: restore_datastore_handle(),
             restart: restore_restart_controller.handle(),
         }),
+        application_upgrade_assessment,
     );
     let authless_access_allowlist_raw =
         normalize_env_option(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV).unwrap_or_default();

@@ -3540,9 +3540,9 @@ pub trait JobRunRepository: Send + Sync {
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>>;
 
     /// Fail every persisted run still in a non-terminal state and return the
-    /// count. A persisted running run whose in-memory worker died (e.g. a
-    /// restart) is unfinishable; this reconciles those ghosts at boot.
-    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64>;
+    /// count. Runs named in `excluded_run_ids` remain running because an
+    /// operating-system-owned completion step is still pending.
+    async fn reconcile_interrupted_job_runs(&self, excluded_run_ids: &[String]) -> AppResult<u64>;
 }
 
 #[async_trait]

@@ -348,6 +348,7 @@ impl IntoApplication<AppJobKey> for JobKeyValue {
             Self::RecycleBinRestore => AppJobKey::RecycleBinRestore,
             Self::RecycleBinPurge => AppJobKey::RecycleBinPurge,
             Self::AcquisitionSearch => AppJobKey::AcquisitionSearch,
+            Self::ApplicationUpgrade => AppJobKey::ApplicationUpgrade,
         }
     }
 }
@@ -378,6 +379,7 @@ impl FromApplication<AppJobKey> for JobKeyValue {
             AppJobKey::RecycleBinRestore => Self::RecycleBinRestore,
             AppJobKey::RecycleBinPurge => Self::RecycleBinPurge,
             AppJobKey::AcquisitionSearch => Self::AcquisitionSearch,
+            AppJobKey::ApplicationUpgrade => Self::ApplicationUpgrade,
         }
     }
 }

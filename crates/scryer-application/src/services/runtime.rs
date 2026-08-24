@@ -925,6 +925,13 @@ pub struct AppRuntimeJobState {
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub interactive_operation_guards: InteractiveOperationGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes destructive whole-system maintenance such as restore and
+    /// application upgrades for the lifetime of the operation.
+    pub system_maintenance_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The executable host installs this callback once it has assembled its
+    /// restart controller.
+    pub application_upgrade_restart:
+        Arc<std::sync::RwLock<Option<crate::application_upgrade::ApplicationUpgradeRestartHandle>>>,
     /// Single-flight guard for the interactive acquisition-search job — mirrors `title_deletion_lock`.
     pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -1158,6 +1165,8 @@ impl AppRuntimeState {
                 backup_execution_guards: BackupExecutionGuardTable::default(),
                 interactive_operation_guards: InteractiveOperationGuardTable::default(),
                 title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
+                system_maintenance_lock: Arc::new(tokio::sync::Mutex::new(())),
+                application_upgrade_restart: Arc::new(std::sync::RwLock::new(None)),
                 acquisition_search_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
@@ -1181,5 +1190,47 @@ impl Default for AppRuntimeState {
             PathBuf::from("."),
             Vec::<String>::new(),
         )
+    }
+}
+
+#[cfg(test)]
+mod system_maintenance_coordinator_tests {
+    use super::AppRuntimeState;
+
+    #[tokio::test]
+    async fn upgrade_and_restore_share_one_nonblocking_maintenance_guard() {
+        let runtime = AppRuntimeState::default();
+        let upgrade_guard = runtime
+            .jobs
+            .system_maintenance_lock
+            .clone()
+            .try_lock_owned()
+            .expect("upgrade should acquire idle coordinator");
+        assert!(
+            runtime
+                .jobs
+                .system_maintenance_lock
+                .clone()
+                .try_lock_owned()
+                .is_err(),
+            "restore must be rejected while an upgrade owns maintenance"
+        );
+        drop(upgrade_guard);
+        let restore_guard = runtime
+            .jobs
+            .system_maintenance_lock
+            .clone()
+            .try_lock_owned()
+            .expect("restore should acquire after upgrade releases coordinator");
+        assert!(
+            runtime
+                .jobs
+                .system_maintenance_lock
+                .clone()
+                .try_lock_owned()
+                .is_err(),
+            "upgrade must be rejected while a restore owns maintenance"
+        );
+        drop(restore_guard);
     }
 }

@@ -5,7 +5,7 @@ use std::time::Instant;
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, value};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
-    OAuthAuthorizationSource,
+    OAuthAuthorizationSource, application_upgrade::InstallationAssessment,
 };
 use scryer_domain::{AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
@@ -154,6 +154,7 @@ pub struct ApiContext {
     pub app: AppUseCase,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub restore: Option<RestoreContext>,
+    pub application_upgrade_assessment: InstallationAssessment,
 }
 
 /// Per-HTTP-request session persistence policy. This is intentionally absent
@@ -280,6 +281,11 @@ pub struct RestoreContext {
 
 pub fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
     Ok(ctx.data_unchecked::<ApiContext>().app.clone())
+}
+
+pub fn application_upgrade_assessment_from_ctx(ctx: &Context<'_>) -> InstallationAssessment {
+    ctx.data_unchecked::<ApiContext>()
+        .application_upgrade_assessment
 }
 
 pub fn auth_runtime_from_ctx(ctx: &Context<'_>) -> AuthRuntimeStateHandle {
