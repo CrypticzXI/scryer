@@ -1,7 +1,7 @@
 use super::*;
 use crate::types::{
-    EpisodeMediaAvailability, LoginVerificationChallengeRecord, OAuthClientRegistrationRecord,
-    TitleCatalogFilterCounts,
+    ApiKeyRecord, EpisodeMediaAvailability, LoginVerificationChallengeRecord,
+    OAuthClientRegistrationRecord, TitleCatalogFilterCounts,
 };
 use async_trait::async_trait;
 use scryer_domain::{
@@ -2109,6 +2109,22 @@ pub trait UserUiSettingsRepository: Send + Sync {
 
 #[async_trait]
 pub trait OAuthRepository: Send + Sync {
+    async fn create_api_key(&self, record: ApiKeyRecord) -> AppResult<ApiKeyRecord>;
+    async fn get_api_key_by_lookup_id(&self, lookup_id: &str) -> AppResult<Option<ApiKeyRecord>>;
+    async fn list_api_keys(&self, user_id: &str) -> AppResult<Vec<ApiKeyRecord>>;
+    async fn list_environment_api_keys(&self) -> AppResult<Vec<ApiKeyRecord>>;
+    async fn upsert_environment_api_key(&self, record: ApiKeyRecord) -> AppResult<ApiKeyRecord>;
+    async fn revoke_api_key(
+        &self,
+        id: &str,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
+    async fn touch_api_key_last_used(
+        &self,
+        id: &str,
+        used_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool>;
     async fn create_client_registration(
         &self,
         record: OAuthClientRegistrationRecord,

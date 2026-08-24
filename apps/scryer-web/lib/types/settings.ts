@@ -93,6 +93,7 @@ export type SecuritySettings = {
   formLoginEnabled: boolean;
   passwordMinLength: number;
   skipLoginForLocalIps: boolean;
+  apiKeysRestrictToSystemSettingsUsers: boolean;
   mfaRequireConfigStepUp: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireJellyfinLogin: boolean;
@@ -280,6 +281,17 @@ export type OAuthConnectedApp = {
   clientName: string;
   authorizedAt: string;
   lastUsedAt: string | null;
+};
+
+export type ApiKeySummary = {
+  id: string;
+  label: string;
+  actor: string;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  provisioningSource: "user" | "environment";
 };
 
 export type TotpStatus = {

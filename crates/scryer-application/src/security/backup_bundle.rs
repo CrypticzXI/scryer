@@ -803,6 +803,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "api_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "oauth_client_redirect_uris",
         classification: BackupTableClassification::Export,
     },
@@ -1827,6 +1831,7 @@ mod tests {
     #[test]
     fn backup_table_catalog_preserves_oauth_grants_but_not_codes() {
         for (table, expected) in [
+            ("api_keys", BackupTableClassification::Export),
             (
                 "oauth_authorization_codes",
                 BackupTableClassification::Ignore,

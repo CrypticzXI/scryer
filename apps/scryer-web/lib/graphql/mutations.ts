@@ -131,6 +131,17 @@ export const revokeMyOauthAppMutation = `mutation RevokeMyOauthApp($grantId: ID!
   }
 }`;
 
+export const createMyApiKeyMutation = `mutation CreateMyApiKey($input: CreateMyApiKeyInput!) {
+  createMyApiKey(input: $input) {
+    apiKey
+    key { id label actor expiresAt revokedAt lastUsedAt createdAt provisioningSource }
+  }
+}`;
+
+export const revokeMyApiKeyMutation = `mutation RevokeMyApiKey($id: ID!) {
+  revokeMyApiKey(id: $id) { id revoked }
+}`;
+
 export const totpEnrollmentStartMutation = `mutation TotpEnrollmentStart {
   totpEnrollmentStart {
     challengeId
@@ -866,6 +877,7 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
+    apiKeysRestrictToSystemSettingsUsers
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     mfaRequireJellyfinLogin
