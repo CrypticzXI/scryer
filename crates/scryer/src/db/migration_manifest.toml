@@ -1293,6 +1293,23 @@ file = "postgres/migrations/0182_media_server_playback_links.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 183
+description = "manual import selection durable identity"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0183_manual_import_selection_durable_identity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0183_manual_import_selection_durable_identity.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

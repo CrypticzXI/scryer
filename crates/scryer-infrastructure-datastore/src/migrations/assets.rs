@@ -878,6 +878,30 @@ mod tests {
     }
 
     #[test]
+    fn migration_0183_adds_manual_import_canonical_identity_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 183"));
+        assert!(manifest.contains("migrations/0183_manual_import_selection_durable_identity.sql"));
+        assert!(
+            manifest
+                .contains("postgres/migrations/0183_manual_import_selection_durable_identity.sql")
+        );
+
+        for relative_path in [
+            "migrations/0183_manual_import_selection_durable_identity.sql",
+            "postgres/migrations/0183_manual_import_selection_durable_identity.sql",
+        ] {
+            let sql = fs::read_to_string(db_root.join(relative_path))
+                .expect("0183 migration should be readable");
+            assert!(sql.contains("ALTER TABLE manual_import_selections"));
+            assert!(sql.contains("ADD COLUMN canonical_download_id"));
+            assert!(sql.contains("idx_manual_import_selections_canonical_download"));
+        }
+    }
+
+    #[test]
     fn source_manifest_defaults_missing_step_engine_to_all() {
         let manifest = r#"
 format_version = 1
