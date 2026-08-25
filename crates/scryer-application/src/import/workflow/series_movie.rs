@@ -632,6 +632,23 @@ async fn resolve_completed_import_target(
         if extraction_destination.is_some() {
             mark_import_extracting(app, import_id).await?;
         }
+        let extraction_stream = if let Some(destination) = extraction_destination.as_ref() {
+            Some(
+                app.runtime
+                    .imports
+                    .active_streams
+                    .register(
+                        import_id,
+                        &title.library_id,
+                        title.facet.clone(),
+                        dest_dir,
+                        destination.staging_parent(),
+                    )
+                    .await,
+            )
+        } else {
+            None
+        };
         drop(preparation_permit.take());
         let extraction = {
             let _archive_extraction_permit = app
@@ -640,6 +657,9 @@ async fn resolve_completed_import_target(
                 .execution_coordinator
                 .acquire_archive_extraction()
                 .await;
+            if let Some(stream) = &extraction_stream {
+                stream.mark_extracting().await;
+            }
             crate::archive_extractor::extract_archives_if_needed(
                 dest_dir,
                 extraction_destination,
@@ -652,6 +672,9 @@ async fn resolve_completed_import_target(
             )
             .await
         };
+        if let Some(stream) = extraction_stream {
+            stream.finish().await;
+        }
         *preparation_permit = Some(
             app.runtime
                 .imports

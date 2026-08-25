@@ -1204,6 +1204,10 @@ impl ImportCopyAttemptError {
     fn is_transient_file_handle_error(&self) -> bool {
         self.error.raw_os_error() == Some(TRANSIENT_BAD_FILE_DESCRIPTOR_ERRNO)
     }
+
+    fn is_cancellation(&self) -> bool {
+        self.stage == "copy cancelled"
+    }
 }
 
 impl fmt::Display for ImportCopyAttemptError {
@@ -1257,6 +1261,7 @@ struct ImportCopyAttempt<'a> {
     source_fingerprint: &'a ImportSourceFingerprint,
     size: u64,
     progress: Option<&'a ImportFileTransferProgressSender>,
+    cancellation: Option<&'a scryer_application::ImportCancellation>,
 }
 
 fn copy_regular_source_to_destination_once(
@@ -1271,7 +1276,15 @@ fn copy_regular_source_to_destination_once(
         source_fingerprint,
         size,
         progress,
+        cancellation,
     } = attempt_context;
+
+    if cancellation.is_some_and(scryer_application::ImportCancellation::is_cancelled) {
+        return Err(ImportCopyAttemptError::new(
+            "copy cancelled",
+            io_other("import copy was cancelled before it started"),
+        ));
+    }
 
     ensure_same_source(source, source_fingerprint)
         .map_err(io_other)
@@ -1300,6 +1313,12 @@ fn copy_regular_source_to_destination_once(
     let mut copied = 0u64;
     let mut buffer = vec![0u8; IMPORT_COPY_BUFFER_BYTES];
     loop {
+        if cancellation.is_some_and(scryer_application::ImportCancellation::is_cancelled) {
+            return Err(ImportCopyAttemptError::new(
+                "copy cancelled",
+                io_other("import copy was cancelled"),
+            ));
+        }
         let read = source_file
             .read(&mut buffer)
             .map_err(|error| ImportCopyAttemptError::new("copy", error))?;
@@ -1338,6 +1357,7 @@ fn copy_regular_source_to_destination(
     size: u64,
     options: ImportFileOptions,
     progress: Option<&ImportFileTransferProgressSender>,
+    cancellation: Option<&scryer_application::ImportCancellation>,
 ) -> AppResult<()> {
     let temp_dest = dest.with_extension("tmp_import");
     let mut attempt = 1usize;
@@ -1362,15 +1382,24 @@ fn copy_regular_source_to_destination(
                 source_fingerprint,
                 size,
                 progress,
+                cancellation,
             },
             options,
             attempt,
         ) {
             Ok(()) => break,
             Err(error) => {
+                let cancelled = error.is_cancellation();
                 let should_retry =
                     error.is_transient_file_handle_error() && attempt < IMPORT_COPY_MAX_ATTEMPTS;
                 let _ = remove_import_temp_file(&temp_dest);
+                if cancelled {
+                    return Err(AppError::canceled(format!(
+                        "filesystem copy was cancelled: {} -> {}",
+                        source.display(),
+                        dest.display()
+                    )));
+                }
                 if should_retry {
                     sleep_before_import_copy_retry(import_copy_retry_delay(attempt));
                     attempt += 1;
@@ -1507,6 +1536,8 @@ struct PreparedImportPlacement {
     source_cleanup_required: bool,
     #[serde(skip)]
     progress: Option<ImportFileTransferProgressSender>,
+    #[serde(skip)]
+    cancellation: Option<scryer_application::ImportCancellation>,
     permissions: ImportFilePermissions,
     source_fingerprint: ImportSourceFingerprint,
     size: u64,
@@ -1538,6 +1569,7 @@ fn prepare_import_placement_blocking(
         options,
         source_cleanup_required,
         progress,
+        cancellation: None,
         permissions,
         source_fingerprint,
         size,
@@ -1695,6 +1727,7 @@ fn copy_prepared_import_blocking(prepared: PreparedImportPlacement) -> AppResult
         prepared.size,
         prepared.options,
         prepared.progress.as_ref(),
+        prepared.cancellation.as_ref(),
     )?;
     validate_import_destination_guard_after_placement(&prepared.destination_guard, &prepared.dest)?;
     finalize_imported_regular_destination(
@@ -1825,6 +1858,7 @@ fn import_hardlink_or_copy_blocking(
         size,
         options,
         progress.as_ref(),
+        None,
     )?;
     validate_import_destination_guard_after_placement(&destination_guard, &dest)?;
     finalize_imported_regular_destination(&dest, &options, &permissions)?;
@@ -2332,6 +2366,58 @@ async fn cancel_stalled_import_worker(session: &mut ImportFileWorkerSession) -> 
     }
 }
 
+async fn cancel_import_worker(session: &mut ImportFileWorkerSession) -> AppError {
+    let mut child = session
+        .child
+        .take()
+        .expect("active import worker session owns its child process");
+    let pid = child.id();
+    if let Err(error) = child.start_kill() {
+        return hold_unconfirmed_import_worker(
+            child,
+            format!("failed to signal cancelled worker {pid:?}: {error}"),
+        )
+        .await;
+    }
+    match tokio::time::timeout(Duration::from_secs(30), child.wait()).await {
+        Ok(Ok(status)) => AppError::canceled(format!(
+            "filesystem worker {pid:?} was cancelled ({status})"
+        )),
+        other => hold_unconfirmed_import_worker(
+            child,
+            format!("cancelled worker {pid:?} stop could not be confirmed: {other:?}"),
+        )
+        .await,
+    }
+}
+
+async fn next_import_worker_event_or_cancel(
+    session: &mut ImportFileWorkerSession,
+    cancellation: Option<&scryer_application::ImportCancellation>,
+) -> AppResult<ImportFileWorkerEvent> {
+    let Some(cancellation) = cancellation else {
+        return next_import_worker_event(session).await;
+    };
+    tokio::select! {
+        biased;
+        event = next_import_worker_event(session) => event,
+        _ = cancellation.cancelled() => Err(cancel_import_worker(session).await),
+    }
+}
+
+async fn wait_for_import_operation_or_cancel<T>(
+    cancellation: Option<&scryer_application::ImportCancellation>,
+    operation: impl std::future::Future<Output = T>,
+) -> AppResult<T> {
+    let Some(cancellation) = cancellation else {
+        return Ok(operation.await);
+    };
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(AppError::canceled("import was cancelled before it started")),
+        result = operation => Ok(result),
+    }
+}
+
 async fn wait_for_import_worker_exit(
     session: &mut ImportFileWorkerSession,
     context: &str,
@@ -2524,8 +2610,13 @@ impl FileImporter for FsFileImporter {
         permissions: &ImportFilePermissions,
         context: &ImportFileExecutionContext,
     ) -> AppResult<ImportFileResult> {
+        let cancellation = context.cancellation_token();
         if let Some(executable) = &self.worker_executable {
-            let preparation_permit = self.placement.acquire_preparation().await;
+            let preparation_permit = wait_for_import_operation_or_cancel(
+                cancellation.as_ref(),
+                self.placement.acquire_preparation(),
+            )
+            .await?;
             let prepare_request = ImportFileWorkerRequest::Prepare {
                 version: IMPORT_FILE_WORKER_PROTOCOL_VERSION,
                 nonce: IMPORT_FILE_WORKER_NONCE.fetch_add(1, Ordering::Relaxed),
@@ -2537,7 +2628,7 @@ impl FileImporter for FsFileImporter {
             };
             let mut session = spawn_import_file_worker(executable, &prepare_request).await?;
             let prepared = loop {
-                match next_import_worker_event(&mut session).await? {
+                match next_import_worker_event_or_cancel(&mut session, cancellation.as_ref()).await? {
                     ImportFileWorkerEvent::Stage { .. } => {}
                     ImportFileWorkerEvent::Prepared { prepared, .. } => {
                         wait_for_import_worker_exit(&mut session, "after preparing import").await?;
@@ -2557,7 +2648,14 @@ impl FileImporter for FsFileImporter {
             drop(preparation_permit);
 
             let client_key = context.client_lane_key().to_string();
-            let mut fast_permit = Some(self.placement.fast.acquire(&client_key, "fast").await);
+            let mut fast_permit = Some(
+                wait_for_import_operation_or_cancel(
+                    cancellation.as_ref(),
+                    self.placement.fast.acquire(&client_key, "fast"),
+                )
+                .await?,
+            );
+            context.mark_active_import_placing().await;
             let volume_key = prepared.volume_key.clone();
             let mut prepared = Some(prepared);
             let fast_request = ImportFileWorkerRequest::FastPlacement {
@@ -2570,8 +2668,18 @@ impl FileImporter for FsFileImporter {
             };
             let mut session = spawn_import_file_worker(executable, &fast_request).await?;
             let mut copy_permit = None;
+            let mut copy_finalizing = false;
             loop {
-                match next_import_worker_event(&mut session).await? {
+                match next_import_worker_event_or_cancel(
+                    &mut session,
+                    if copy_finalizing {
+                        None
+                    } else {
+                        cancellation.as_ref()
+                    },
+                )
+                .await?
+                {
                     ImportFileWorkerEvent::Stage { .. } => {}
                     ImportFileWorkerEvent::Progress {
                         phase,
@@ -2579,6 +2687,10 @@ impl FileImporter for FsFileImporter {
                         total_bytes,
                         ..
                     } => {
+                        if phase == ImportTransferPhase::Finalizing && copy_permit.is_some() {
+                            copy_finalizing = true;
+                            context.mark_active_import_finalizing().await;
+                        }
                         if let Some(progress) = &progress {
                             let _ = progress.send(ImportFileTransferProgress {
                                 phase,
@@ -2604,7 +2716,15 @@ impl FileImporter for FsFileImporter {
                             volume_key = %opaque_lane_key(&volume_key),
                             "released fast import lane before copy fallback"
                         );
-                        copy_permit = Some(self.placement.copy.acquire(&volume_key, "copy").await);
+                        copy_permit = Some(
+                            wait_for_import_operation_or_cancel(
+                                cancellation.as_ref(),
+                                self.placement.copy.acquire(&volume_key, "copy"),
+                            )
+                            .await?,
+                        );
+                        copy_finalizing = false;
+                        context.mark_active_import_copying().await;
                         let copy_request = ImportFileWorkerRequest::Copy {
                             version: IMPORT_FILE_WORKER_PROTOCOL_VERSION,
                             nonce: IMPORT_FILE_WORKER_NONCE.fetch_add(1, Ordering::Relaxed),
@@ -2635,8 +2755,12 @@ impl FileImporter for FsFileImporter {
         let expected_source = expected_source.cloned();
         let permissions = permissions.clone();
         let source_cleanup_required = mode == ImportMode::Move;
-        let preparation_permit = self.placement.acquire_preparation().await;
-        let prepared = tokio::task::spawn_blocking(move || {
+        let preparation_permit = wait_for_import_operation_or_cancel(
+            cancellation.as_ref(),
+            self.placement.acquire_preparation(),
+        )
+        .await?;
+        let mut prepared = tokio::task::spawn_blocking(move || {
             prepare_import_placement_blocking(
                 source,
                 dest,
@@ -2654,7 +2778,13 @@ impl FileImporter for FsFileImporter {
         drop(preparation_permit);
 
         let client_key = context.client_lane_key().to_string();
-        let fast_permit = self.placement.fast.acquire(&client_key, "fast").await;
+        let fast_permit = wait_for_import_operation_or_cancel(
+            cancellation.as_ref(),
+            self.placement.fast.acquire(&client_key, "fast"),
+        )
+        .await?;
+        context.mark_active_import_placing().await;
+        prepared.cancellation = cancellation.clone();
         let fast_result =
             tokio::task::spawn_blocking(move || try_fast_import_placement_blocking(prepared))
                 .await
@@ -2672,7 +2802,12 @@ impl FileImporter for FsFileImporter {
                     volume_key = %opaque_lane_key(&volume_key),
                     "released fast import lane before copy fallback"
                 );
-                let _copy_permit = self.placement.copy.acquire(&volume_key, "copy").await;
+                let _copy_permit = wait_for_import_operation_or_cancel(
+                    cancellation.as_ref(),
+                    self.placement.copy.acquire(&volume_key, "copy"),
+                )
+                .await?;
+                context.mark_active_import_copying().await;
                 tokio::task::spawn_blocking(move || copy_prepared_import_blocking(prepared))
                     .await
                     .map_err(|error| {

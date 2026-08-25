@@ -176,10 +176,10 @@ pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
 pub use quality::release_dedup;
 pub use services::{
-    DownloadClientCategoryAdmissionSnapshot, DownloadClientCategorySnapshotStore,
-    DownloadQueueSync, PluginInstallInProgressError, PluginInstallOperationKind,
-    PluginInstallProgressSnapshot, PluginInstallState, RuntimeFeature, RuntimePerformanceClass,
-    RuntimePerformanceSnapshot,
+    ActiveImportStream, ActiveImportStreamHandle, ActiveImportStreamPhase, ActiveImportStreamSync,
+    DownloadClientCategoryAdmissionSnapshot, DownloadClientCategorySnapshotStore, DownloadQueueSync,
+    ImportCancellation, PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
+    PluginInstallState, RuntimeFeature, RuntimePerformanceClass, RuntimePerformanceSnapshot,
 };
 pub use upstream_scheduler::{
     AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,

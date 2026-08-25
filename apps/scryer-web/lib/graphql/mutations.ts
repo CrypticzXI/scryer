@@ -2417,6 +2417,10 @@ export const retryImportMutation = `mutation RetryImport($input: RetryImportInpu
   }
 }`;
 
+export const cancelActiveImportMutation = `mutation CancelActiveImport($streamId: ID!) {
+  cancelActiveImport(streamId: $streamId)
+}`;
+
 export const ignoreTrackedDownloadMutation = `mutation IgnoreTrackedDownload($input: IgnoreTrackedDownloadInput!) {
   ignoreTrackedDownload(input: $input) {
     kind

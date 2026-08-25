@@ -4341,9 +4341,10 @@ pub struct ImportFilePermissions {
     pub chown_group: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ImportFileExecutionContext {
     client_lane_key: String,
+    active_import_stream: Option<crate::ActiveImportStreamHandle>,
 }
 
 impl ImportFileExecutionContext {
@@ -4354,11 +4355,46 @@ impl ImportFileExecutionContext {
             .find(|value| !value.is_empty())
             .unwrap_or("unknown-client")
             .to_ascii_lowercase();
-        Self { client_lane_key }
+        Self {
+            client_lane_key,
+            active_import_stream: None,
+        }
     }
 
     pub fn client_lane_key(&self) -> &str {
         &self.client_lane_key
+    }
+
+    pub fn with_active_import_stream(
+        mut self,
+        active_import_stream: crate::ActiveImportStreamHandle,
+    ) -> Self {
+        self.active_import_stream = Some(active_import_stream);
+        self
+    }
+
+    pub fn cancellation_token(&self) -> Option<crate::ImportCancellation> {
+        self.active_import_stream
+            .as_ref()
+            .map(crate::ActiveImportStreamHandle::cancellation_token)
+    }
+
+    pub async fn mark_active_import_placing(&self) {
+        if let Some(stream) = &self.active_import_stream {
+            stream.mark_placing().await;
+        }
+    }
+
+    pub async fn mark_active_import_copying(&self) {
+        if let Some(stream) = &self.active_import_stream {
+            stream.mark_copying().await;
+        }
+    }
+
+    pub async fn mark_active_import_finalizing(&self) {
+        if let Some(stream) = &self.active_import_stream {
+            stream.mark_finalizing().await;
+        }
     }
 }
 

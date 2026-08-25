@@ -14,6 +14,7 @@ import {
   ignoreTrackedDownloadMutation,
   markTrackedDownloadFailedMutation,
   beginManualImportSelectionMutation,
+  cancelActiveImportMutation,
   queueManualImportMutation,
   pauseDownloadMutation,
   resumeDownloadMutation,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/graphql/mutations";
 import { downloadClientsQuery } from "@/lib/graphql/queries";
 import { useDownloadImport } from "@/lib/hooks/use-download-import";
+import { useActiveImportStreams } from "@/lib/hooks/use-active-import-streams";
 import { useDownloadQueuePage } from "@/lib/hooks/use-download-queue-page";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
@@ -28,6 +30,7 @@ import type { ActivitySection } from "@/components/root/types";
 import type {
   DownloadClientRecord,
   DownloadActivityStatus,
+  ActiveImportStream,
   DownloadClientFilterOption,
   DownloadImportStatus,
   DownloadQueueItem,
@@ -128,10 +131,12 @@ export const ActivityContainer = memo(function ActivityContainer({
   const [, executePauseDownload] = useMutation(pauseDownloadMutation);
   const [, executeResumeDownload] = useMutation(resumeDownloadMutation);
   const [, executeDeleteDownload] = useMutation(deleteDownloadMutation);
+  const [, executeCancelActiveImport] = useMutation(cancelActiveImportMutation);
 
   const activeTab = activitySection;
   const importTabActive = activeTab === "import";
   const activityTabActive = activeTab === "activity";
+  const { streams: activeImportStreams } = useActiveImportStreams(activityTabActive);
   const [selectedImportStatuses, setSelectedImportStatuses] = useState<DownloadImportStatus[]>([
     ...IMPORT_STATUS_OPTIONS,
   ]);
@@ -703,6 +708,19 @@ export const ActivityContainer = memo(function ActivityContainer({
     ],
   );
 
+  const requestCancelActiveImport = useCallback(
+    async (stream: ActiveImportStream) => {
+      const result = await executeCancelActiveImport({ streamId: stream.id });
+      if (result.error) {
+        const message = result.error.message ?? "Unable to cancel import.";
+        setGlobalStatus(message);
+        throw result.error;
+      }
+      setGlobalStatus("Import cancellation requested.");
+    },
+    [executeCancelActiveImport, setGlobalStatus],
+  );
+
   return (
     <>
       <ActivityView
@@ -712,6 +730,7 @@ export const ActivityContainer = memo(function ActivityContainer({
           queueLoadingMore: visibleLoadingMore,
           queueError: visibleError,
           queueStale: activeTab === "activity" && queueStale,
+          activeImportStreams,
           onVisibleQueueOffsetChange:
             activeTab === "activity" ? setVisibleQueueOffset : undefined,
           requestManualImport,
@@ -725,6 +744,7 @@ export const ActivityContainer = memo(function ActivityContainer({
           requestResume,
           requestDelete,
           requestDeleteItems,
+          requestCancelActiveImport,
           activeTab,
           sortConfigByTab,
           toggleSort: (tab, nextKey) => {

@@ -154,6 +154,23 @@ export type DownloadQueueItem = {
   queueScope: ReleaseQueueScope | null;
 };
 
+export type ActiveImportStream = {
+  id: string;
+  importId: string;
+  libraryId: string;
+  facet: string;
+  sourcePath: string;
+  destinationPath: string;
+  phase: "QUEUED" | "EXTRACTING" | "PLACING" | "COPYING" | "FINALIZING";
+  bytes: number;
+  totalBytes: number;
+  queuedAt: string;
+  startedAt: string | null;
+  updatedAt: string;
+  cancellable: boolean;
+  cancellationRequested: boolean;
+};
+
 export type DownloadHistoryPage = {
   items: DownloadQueueItem[];
   hasMore: boolean;

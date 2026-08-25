@@ -608,6 +608,7 @@ async fn finalize_completed_import_error(
     error: AppError,
 ) -> AppResult<ImportResult> {
     let requires_reconciliation = matches!(&error, AppError::ManualReconciliationRequired(_));
+    let cancelled = matches!(&error, AppError::Canceled(_));
     let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
         Some(ImportSkipReason::PasswordRequired)
     } else if crate::archive_extractor::is_timeout_error(&error) {
@@ -616,9 +617,17 @@ async fn finalize_completed_import_error(
         None
     };
     let result = ImportResult {
-        decision: ImportDecision::Failed,
+        decision: if cancelled {
+            ImportDecision::Skipped
+        } else {
+            ImportDecision::Failed
+        },
         skip_reason,
-        error_message: Some(error.to_string()),
+        error_message: Some(if cancelled {
+            "Import was cancelled. Use Manual Import to resume it.".to_string()
+        } else {
+            error.to_string()
+        }),
         release_burned: false,
         ..base_completed_import_result(
             &request.import_id,
@@ -631,7 +640,11 @@ async fn finalize_completed_import_error(
     // Decide retryability BEFORE the status write: a `Failed` write emits an
     // `ImportRejected` domain event (history + notifications), which must not
     // fire for an attempt the tracked layer is about to re-run automatically.
-    let status = completed_import_status_for_result(&result, ImportStatus::Failed);
+    let status = if cancelled {
+        ImportStatus::Skipped
+    } else {
+        completed_import_status_for_result(&result, ImportStatus::Failed)
+    };
     let _ = app
         .update_import_status_and_notify(&request.import_id, status, result_json)
         .await;
