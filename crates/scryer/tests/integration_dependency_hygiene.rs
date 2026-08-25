@@ -1,14 +1,4 @@
-// `zip` is deliberately absent from this list: scryer-application depends on
-// it directly (introduced with the in-app upgrade engine, 2488ee601) solely to
-// validate and extract the SIGNED APPLICATION UPGRADE ARTIFACT in
-// application_upgrade/engine.rs (`validate_zip_members` / `extract_zip`).
-// That is not media-release archive extraction — RAR/ZIP/7z handling for
-// downloaded releases must still live behind the optional archive plugin,
-// which is what this guard exists to enforce. If `zip` ever gains a second
-// consumer in core, move that consumer behind the plugin instead of relying
-// on this exemption (`cargo tree -i zip` should list scryer-application's
-// upgrade engine and build tooling only).
-const FORBIDDEN_ARCHIVE_CORE_DEPENDENCIES: &[&str] = &["sevenz-rust2", "unrar-rs"];
+const FORBIDDEN_ARCHIVE_CORE_DEPENDENCIES: &[&str] = &["sevenz-rust2", "unrar-rs", "zip"];
 const FORBIDDEN_BUILTIN_ARCHIVE_PLUGIN_NAMES: &[&str] =
     &["archive-extraction", "archive_extraction"];
 
