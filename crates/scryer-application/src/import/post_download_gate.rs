@@ -348,12 +348,13 @@ pub(crate) fn build_import_profile_decision(
         &weights,
         Some(category_hint),
     );
-    crate::quality_profile::apply_size_scoring_for_category(
+    crate::quality_profile::apply_size_scoring_for_category_with_remux_preference(
         &mut decision,
         parsed,
         size_bytes,
         Some(category_hint),
         runtime_minutes,
+        profile.criteria.prefer_remux,
         &weights,
     );
     decision

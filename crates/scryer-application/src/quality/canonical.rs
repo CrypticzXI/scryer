@@ -50,7 +50,8 @@
 
 use crate::quality_profile::{
     BLOCK_SCORE, QualityProfileDecision, ScoringEntry, ScoringSource, apply_min_score_gate,
-    apply_size_scoring_for_category, evaluate_against_profile_for_category, normalize_quality_tier,
+    apply_size_scoring_for_category_with_remux_preference, evaluate_against_profile_for_category,
+    normalize_quality_tier,
 };
 use crate::scoring_weights::ScoringWeights;
 use crate::{MediaFileAnalysis, ParsedReleaseMetadata, QualityProfile};
@@ -377,12 +378,13 @@ fn run_term_pipeline(
         Some(ctx.category),
     );
 
-    apply_size_scoring_for_category(
+    apply_size_scoring_for_category_with_remux_preference(
         &mut decision,
         parsed,
         size_bytes,
         Some(ctx.category),
         ctx.runtime_minutes,
+        resolved_profile.criteria.prefer_remux,
         ctx.weights,
     );
 

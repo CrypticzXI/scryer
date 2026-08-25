@@ -897,15 +897,17 @@ pub fn evaluate_against_profile_for_category(
     }
 
     // ── Remux preference ─────────────────────────────────────────────────────
-    if c.prefer_remux {
-        let (code, delta) = if release.is_remux {
+    if release.is_remux {
+        let (code, delta) = if c.prefer_remux {
             ("prefer_remux_match", weights.remux_bonus)
         } else {
-            ("prefer_remux_missing", weights.remux_missing_penalty)
+            ("remux_not_preferred", weights.remux_not_preferred_penalty)
         };
         if delta != 0 {
             d.log(code, delta);
         }
+    } else if c.prefer_remux && weights.remux_missing_penalty != 0 {
+        d.log("prefer_remux_missing", weights.remux_missing_penalty);
     }
 
     // ── Atmos preference ─────────────────────────────────────────────────────
@@ -1143,11 +1145,15 @@ fn normalize_media_size_category(category_hint: Option<&str>) -> MediaSizeCatego
 /// values produce expected GiB equivalent to the previous hardcoded table.
 /// 2160P values were intentionally recalibrated upward based on real remux and
 /// WEB-DL sizes (e.g. movie 2160P: old 22 GiB → new ~50 GiB at 120 min).
-fn expected_bitrate_mbps(quality: Option<&str>, media_category: MediaSizeCategory) -> f64 {
+fn expected_bitrate_mbps(
+    quality: Option<&str>,
+    media_category: MediaSizeCategory,
+    movie_2160p_bitrate_mbps: f64,
+) -> f64 {
     match media_category {
         MediaSizeCategory::Movie => match quality {
             Some("4320P") => 142.5,
-            Some("2160P") => 57.0,
+            Some("2160P") => movie_2160p_bitrate_mbps,
             Some("1080P") => 9.1,
             Some("720P") => 3.4,
             Some("480P") => 1.4,
@@ -1194,13 +1200,14 @@ fn source_size_factor(
     is_remux: bool,
     is_bd_disk: bool,
     is_anime: bool,
+    remux_size_factor: f64,
 ) -> f64 {
     let mut factor = 1.0;
     if matches!(source, Some(ReleaseSource::BluRay | ReleaseSource::BrDisk)) {
         factor *= 1.35;
     }
     if is_remux && !is_anime {
-        factor *= 1.45;
+        factor *= remux_size_factor;
     }
     if is_bd_disk {
         factor *= 1.8;
@@ -1486,6 +1493,26 @@ pub fn apply_size_scoring_for_category(
     runtime_minutes: Option<i32>,
     weights: &ScoringWeights,
 ) {
+    apply_size_scoring_for_category_with_remux_preference(
+        decision,
+        release,
+        size_bytes,
+        category_hint,
+        runtime_minutes,
+        false,
+        weights,
+    );
+}
+
+pub(crate) fn apply_size_scoring_for_category_with_remux_preference(
+    decision: &mut QualityProfileDecision,
+    release: &ParsedReleaseMetadata,
+    size_bytes: Option<i64>,
+    category_hint: Option<&str>,
+    runtime_minutes: Option<i32>,
+    prefer_remux: bool,
+    weights: &ScoringWeights,
+) {
     let Some(raw_size_bytes) = size_bytes else {
         return;
     };
@@ -1500,13 +1527,25 @@ pub fn apply_size_scoring_for_category(
     let media_category = normalize_media_size_category(category_hint);
     let is_anime = media_category == MediaSizeCategory::Anime;
 
-    let bitrate = expected_bitrate_mbps(quality.as_deref(), media_category);
+    const PREFERRED_REMUX_SIZE_FACTOR: f64 = 1.45;
+
+    let bitrate = expected_bitrate_mbps(
+        quality.as_deref(),
+        media_category,
+        weights.movie_2160p_bitrate_mbps,
+    );
     let codec_factor = codec_efficiency_factor(release.video_codec.as_ref());
+    let remux_size_factor = if prefer_remux {
+        PREFERRED_REMUX_SIZE_FACTOR
+    } else {
+        weights.remux_size_factor_when_not_preferred
+    };
     let source_factor = source_size_factor(
         release.source.as_ref(),
         release.is_remux,
         release.is_bd_disk,
         is_anime,
+        remux_size_factor,
     );
 
     let runtime_min = runtime_minutes
@@ -1593,6 +1632,26 @@ mod tests {
     use scryer_release_parser::{
         ContextEpisode, ContextFacetHint, ContextTitle, ReleaseParseContext,
     };
+
+    fn apply_size_scoring_for_category(
+        decision: &mut QualityProfileDecision,
+        release: &ParsedReleaseMetadata,
+        size_bytes: Option<i64>,
+        category_hint: Option<&str>,
+        runtime_minutes: Option<i32>,
+        prefer_remux: bool,
+        weights: &ScoringWeights,
+    ) {
+        super::apply_size_scoring_for_category_with_remux_preference(
+            decision,
+            release,
+            size_bytes,
+            category_hint,
+            runtime_minutes,
+            prefer_remux,
+            weights,
+        );
+    }
 
     #[test]
     fn parse_profile_json() {
@@ -1964,7 +2023,7 @@ mod tests {
     }
 
     #[test]
-    fn size_scoring_heavily_prefers_larger_release_for_same_metadata() {
+    fn balanced_size_scoring_prefers_a_plausible_release_for_same_metadata() {
         let profile = builtin_4k_profile();
         let w = balanced_weights();
         let release = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD.Atmos");
@@ -1976,6 +2035,7 @@ mod tests {
             Some(7 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
@@ -1983,14 +2043,170 @@ mod tests {
         apply_size_scoring_for_category(
             &mut large,
             &release,
-            Some(45 * 1024 * 1024 * 1024),
+            Some(35 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
         assert!(large.preference_score > small.preference_score);
-        assert!(large.preference_score - small.preference_score >= 900);
+    }
+
+    #[test]
+    fn balanced_nonpreferred_uhd_remux_loses_to_a_sensible_release() {
+        let profile = builtin_4k_profile();
+        let weights = balanced_weights();
+        let sensible = parse_release_metadata("Movie.2021.2160p.BluRay.H.265.DTSHD");
+        let remux = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD");
+
+        let mut sensible_decision = evaluate_against_profile(&profile, &sensible, false, &weights);
+        apply_size_scoring_for_category(
+            &mut sensible_decision,
+            &sensible,
+            Some(35 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            false,
+            &weights,
+        );
+
+        let mut remux_decision = evaluate_against_profile(&profile, &remux, false, &weights);
+        apply_size_scoring_for_category(
+            &mut remux_decision,
+            &remux,
+            Some(78 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            false,
+            &weights,
+        );
+
+        assert!(remux_decision.allowed);
+        assert!(sensible_decision.preference_score > remux_decision.preference_score);
+        assert!(
+            remux_decision
+                .scoring_log
+                .iter()
+                .any(|entry| entry.code == "remux_not_preferred" && entry.delta == -400)
+        );
+        assert!(
+            remux_decision
+                .scoring_log
+                .iter()
+                .any(|entry| entry.code == "size_massive_for_quality")
+        );
+    }
+
+    #[test]
+    fn balanced_remux_preference_restores_its_size_tolerance() {
+        let mut profile = builtin_4k_profile();
+        let weights = balanced_weights();
+        let remux = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD");
+
+        let mut not_preferred = evaluate_against_profile(&profile, &remux, false, &weights);
+        apply_size_scoring_for_category(
+            &mut not_preferred,
+            &remux,
+            Some(78 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            false,
+            &weights,
+        );
+
+        profile.criteria.prefer_remux = true;
+        let mut preferred = evaluate_against_profile(&profile, &remux, false, &weights);
+        apply_size_scoring_for_category(
+            &mut preferred,
+            &remux,
+            Some(78 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            true,
+            &weights,
+        );
+
+        assert!(preferred.preference_score > not_preferred.preference_score);
+        assert!(
+            preferred
+                .scoring_log
+                .iter()
+                .any(|entry| entry.code == "prefer_remux_match" && entry.delta == 250)
+        );
+        assert!(
+            !preferred
+                .scoring_log
+                .iter()
+                .any(|entry| entry.code == "remux_not_preferred")
+        );
+    }
+
+    #[test]
+    fn balanced_1080p_remuxes_are_penalized_when_not_preferred() {
+        let profile = builtin_4k_profile();
+        let weights = balanced_weights();
+        let standard = parse_release_metadata("Movie.2021.1080p.BluRay.H.265.DTSHD");
+        let remux = parse_release_metadata("Movie.2021.1080p.BluRay.Remux.H.265.DTSHD");
+
+        let mut standard_decision = evaluate_against_profile(&profile, &standard, false, &weights);
+        apply_size_scoring_for_category(
+            &mut standard_decision,
+            &standard,
+            Some(10 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            false,
+            &weights,
+        );
+
+        let mut remux_decision = evaluate_against_profile(&profile, &remux, false, &weights);
+        apply_size_scoring_for_category(
+            &mut remux_decision,
+            &remux,
+            Some(25 * 1024 * 1024 * 1024),
+            Some("movie"),
+            Some(120),
+            false,
+            &weights,
+        );
+
+        assert!(remux_decision.allowed);
+        assert!(standard_decision.preference_score > remux_decision.preference_score);
+        assert!(
+            remux_decision
+                .scoring_log
+                .iter()
+                .any(|entry| entry.code == "remux_not_preferred" && entry.delta == -400)
+        );
+    }
+
+    #[test]
+    fn balanced_size_budget_scales_with_runtime() {
+        let profile = builtin_4k_profile();
+        let weights = balanced_weights();
+        let remux = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD");
+
+        let decision_for_runtime = |runtime_minutes| {
+            let mut decision = evaluate_against_profile(&profile, &remux, false, &weights);
+            apply_size_scoring_for_category(
+                &mut decision,
+                &remux,
+                Some(78 * 1024 * 1024 * 1024),
+                Some("movie"),
+                Some(runtime_minutes),
+                false,
+                &weights,
+            );
+            decision
+        };
+
+        let short = decision_for_runtime(120);
+        let long = decision_for_runtime(240);
+
+        assert!(short.allowed);
+        assert!(long.allowed);
+        assert!(long.preference_score > short.preference_score);
     }
 
     #[test]
@@ -2005,6 +2221,7 @@ mod tests {
             Some(77_514_027),
             Some("movie"),
             Some(7),
+            false,
             &weights,
         );
 
@@ -2027,6 +2244,7 @@ mod tests {
                 Some(size_bytes),
                 Some("anime"),
                 Some(24),
+                false,
                 &weights,
             );
             decision
@@ -2074,6 +2292,7 @@ mod tests {
                 Some(2 * 1024 * 1024 * 1024),
                 Some("anime"),
                 Some(24),
+                false,
                 &weights,
             );
             decision
@@ -2105,6 +2324,7 @@ mod tests {
             Some(5 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
@@ -2116,6 +2336,7 @@ mod tests {
             Some(18 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
@@ -2127,7 +2348,7 @@ mod tests {
         let profile = builtin_4k_profile();
         let w = balanced_weights();
 
-        let plausible_uhd = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD");
+        let plausible_uhd = parse_release_metadata("Movie.2021.2160p.BluRay.H.265.DTSHD");
         let mut plausible_uhd_decision =
             evaluate_against_profile(&profile, &plausible_uhd, false, &w);
         apply_size_scoring_for_category(
@@ -2136,6 +2357,7 @@ mod tests {
             Some(35 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
@@ -2147,6 +2369,7 @@ mod tests {
             Some(18 * 1024 * 1024 * 1024),
             None,
             None,
+            false,
             &w,
         );
 
