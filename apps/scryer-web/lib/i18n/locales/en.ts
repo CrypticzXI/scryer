@@ -3059,6 +3059,48 @@ const en: LocaleDictionary = {
   "history.noMore": "No more events",
   "history.loadMore": "Load more",
 
+  // Indexer error diagnostics
+  "indexerErrors.title": "Indexer error history",
+  "indexerErrors.scopedTitle": "{{indexer}} — error history",
+  "indexerErrors.history": "Error history",
+  "indexerErrors.refresh": "Refresh",
+  "indexerErrors.retry": "Retry",
+  "indexerErrors.loading": "Loading indexer errors…",
+  "indexerErrors.loadingResponse": "Loading the captured response…",
+  "indexerErrors.loadMore": "Load more",
+  "indexerErrors.noMore": "No more captured responses",
+  "indexerErrors.loadError": "Indexer error history could not be loaded.",
+  "indexerErrors.detailLoadError": "The captured response could not be loaded.",
+  "indexerErrors.detailMissing": "This captured response is no longer available.",
+  "indexerErrors.empty":
+    "No HTTP error responses were captured in the last 30 days. Transport failures without an HTTP response are not retained.",
+  "indexerErrors.retentionNotice":
+    "Captured HTTP responses are retained for 30 days. Expand a row to inspect headers and the response body.",
+  "indexerErrors.occurred": "Occurred",
+  "indexerErrors.indexer": "Indexer",
+  "indexerErrors.operation": "Operation",
+  "indexerErrors.http": "HTTP",
+  "indexerErrors.classification": "Classification",
+  "indexerErrors.message": "Message",
+  "indexerErrors.contentType": "Content type",
+  "indexerErrors.providerCode": "Provider code {{code}}",
+  "indexerErrors.expand": "Expand captured response",
+  "indexerErrors.collapse": "Collapse captured response",
+  "indexerErrors.response": "Captured HTTP response",
+  "indexerErrors.headers": "Response headers",
+  "indexerErrors.noHeaders": "No response headers were captured.",
+  "indexerErrors.body": "Response body",
+  "indexerErrors.formatted": "Formatted",
+  "indexerErrors.raw": "Raw",
+  "indexerErrors.redacted": "[redacted before storage]",
+  "indexerErrors.base64Value": "Base64",
+  "indexerErrors.previewTruncated":
+    "Preview limited to the first 1 MiB of {{size}}. Download the full body to inspect all captured bytes.",
+  "indexerErrors.emptyBody": "The response body is empty.",
+  "indexerErrors.binaryBody":
+    "This {{size}} response is not valid UTF-8. Download it to inspect the captured bytes.",
+  "indexerErrors.downloadFullBody": "Download full body",
+
   // ── Convenience Rules ─────────────────────────────────────────────────
 
   // Recycle Bin

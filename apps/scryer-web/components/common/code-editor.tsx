@@ -17,6 +17,7 @@ import {
 } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { xml } from "@codemirror/legacy-modes/mode/xml";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
@@ -25,7 +26,7 @@ import "@fontsource-variable/jetbrains-mono";
 import { CODE_FONT } from "@/lib/fonts";
 import { isDarkTheme } from "@/lib/theme";
 
-export type CodeEditorLanguage = "plain" | "javascript" | "rego" | "shell";
+export type CodeEditorLanguage = "plain" | "javascript" | "rego" | "shell" | "xml";
 
 export type CodeEditorDiagnostic = {
   line: number;
@@ -357,6 +358,10 @@ function languageExtensions(language: CodeEditorLanguage): Extension[] {
 
   if (language === "shell") {
     return [StreamLanguage.define(shell)];
+  }
+
+  if (language === "xml") {
+    return [StreamLanguage.define(xml)];
   }
 
   return [];
