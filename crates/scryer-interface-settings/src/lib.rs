@@ -3,8 +3,8 @@ mod mutation;
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_interface_core::{
-    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx,
-    default_persist_session_from_ctx, interactive_session_actor_from_ctx, to_gql_error,
+    AuthRuntimeStateSnapshot, actor_from_ctx, api_key_management_actor_from_ctx, app_from_ctx,
+    auth_runtime_from_ctx, default_persist_session_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
@@ -826,7 +826,7 @@ impl SettingsQueries {
     /// Lists the interactive actor's API keys without returning their secrets.
     async fn my_api_keys(&self, ctx: &Context<'_>) -> GqlResult<Vec<ApiKeyPayload>> {
         let app = app_from_ctx(ctx)?;
-        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let actor = api_key_management_actor_from_ctx(ctx)?;
         let owner_username = actor.username.clone();
         app.list_api_keys(&actor)
             .await
@@ -841,7 +841,7 @@ impl SettingsQueries {
     /// Whether the interactive actor may create API keys under the active security policy.
     async fn can_create_my_api_keys(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let app = app_from_ctx(ctx)?;
-        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let actor = api_key_management_actor_from_ctx(ctx)?;
         app.can_create_api_key(&actor).await.map_err(to_gql_error)
     }
 

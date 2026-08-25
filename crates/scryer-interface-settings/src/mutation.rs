@@ -22,8 +22,8 @@ use super::{
     from_ui_settings, ui_settings_update_from_input,
 };
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
-    interactive_session_actor_from_ctx, login_verification_required_gql_error,
+    actor_from_ctx, api_key_management_actor_from_ctx, app_from_ctx, auth_runtime_from_ctx,
+    default_persist_session_from_ctx, login_verification_required_gql_error,
     mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx,
     password_change_required_actor_from_ctx, persist_session_or_default,
     require_config_app_permission, to_gql_error, to_login_gql_error,
@@ -2101,7 +2101,7 @@ impl SettingsMutations {
         input: CreateMyApiKeyInput,
     ) -> GqlResult<CreateMyApiKeyPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let actor = api_key_management_actor_from_ctx(ctx)?;
         let expiry = match input.expiry.unwrap_or(ApiKeyExpiryPresetValue::Days90) {
             ApiKeyExpiryPresetValue::Days30 => AppApiKeyExpiryPreset::Days30,
             ApiKeyExpiryPresetValue::Days90 => AppApiKeyExpiryPreset::Days90,
@@ -2131,7 +2131,7 @@ impl SettingsMutations {
         #[graphql(desc = "API-key record ID to revoke.")] id: ID,
     ) -> GqlResult<RevokeMyApiKeyPayload> {
         let app = app_from_ctx(ctx)?;
-        let actor = interactive_session_actor_from_ctx(ctx)?;
+        let actor = api_key_management_actor_from_ctx(ctx)?;
         let id_string = id.to_string();
         let revoked = app
             .revoke_api_key(&actor, &id_string)

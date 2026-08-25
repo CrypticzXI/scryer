@@ -538,6 +538,19 @@ pub struct OAuthActorSession {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InteractiveSession;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ApiKeyManagementSession;
+
+/// Returns the actor only when the request may manage its own API keys.
+pub fn api_key_management_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if ctx.data_opt::<ApiKeyManagementSession>().is_none() {
+        return Err(to_gql_error(AppError::Unauthorized(
+            "an interactive session is required for this operation".into(),
+        )));
+    }
+    actor_from_ctx(ctx)
+}
+
 /// Returns the actor only when the request was authenticated by an interactive session.
 pub fn interactive_session_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
     if ctx.data_opt::<InteractiveSession>().is_none() {

@@ -23,8 +23,8 @@ use scryer_application::{
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::RequestLoaders;
 use scryer_interface::context::{
-    AuthRuntimeStateHandle, ConnectionAuthEpoch, InteractiveSession, MfaVerification,
-    OAuthActorSession, RequestSessionPersistence,
+    ApiKeyManagementSession, AuthRuntimeStateHandle, ConnectionAuthEpoch, InteractiveSession,
+    MfaVerification, OAuthActorSession, RequestSessionPersistence,
 };
 use scryer_logging::{ActorContext, LogContext, RequestContext, context_span, update_context};
 use std::collections::HashMap;
@@ -1420,6 +1420,7 @@ pub(crate) async fn graphql_handler(
     let batch = if let Some(actor) = actor {
         let oauth_session = actor.oauth_session();
         let interactive_session = actor.is_interactive_session();
+        let api_key_management_session = actor.can_manage_api_keys();
         // Request-scoped dataloaders: the batch cache lives for exactly this
         // HTTP request (shared across a batched request's entries — same actor,
         // same snapshot). The WebSocket path intentionally gets none; resolvers
@@ -1433,6 +1434,9 @@ pub(crate) async fn graphql_handler(
                     .data(loaders);
                 if interactive_session {
                     req = req.data(InteractiveSession);
+                }
+                if api_key_management_session {
+                    req = req.data(ApiKeyManagementSession);
                 }
                 if let Some(oauth_session) = oauth_session {
                     req = req.data(oauth_session);
@@ -1448,6 +1452,9 @@ pub(crate) async fn graphql_handler(
                             .data(loaders.clone());
                         if interactive_session {
                             req = req.data(InteractiveSession);
+                        }
+                        if api_key_management_session {
+                            req = req.data(ApiKeyManagementSession);
                         }
                         if let Some(oauth_session) = actor.oauth_session() {
                             req = req.data(oauth_session);
@@ -1826,6 +1833,10 @@ impl ResolvedActor {
             && !self.token_claims.is_oauth_access_token()
     }
 
+    fn can_manage_api_keys(&self) -> bool {
+        self.is_interactive_session() || self.source == ResolvedActorSource::AuthlessDefault
+    }
+
     fn audit_display_name(&self) -> String {
         self.user.username.clone()
     }
@@ -1862,6 +1873,9 @@ fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<ResolvedActor
         data.insert(actor.mfa_verification());
         if actor.is_interactive_session() {
             data.insert(InteractiveSession);
+        }
+        if actor.can_manage_api_keys() {
+            data.insert(ApiKeyManagementSession);
         }
         if let Some(oauth_session) = actor.oauth_session() {
             data.insert(oauth_session);
@@ -3135,7 +3149,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authless_browser_session_cannot_create_an_api_key() {
+    async fn authless_browser_session_can_create_an_admin_api_key() {
         let context = common::TestContext::new().await;
         let proof_state = AuthlessWebClientProofState::new();
         let state = AuthState {
@@ -3169,13 +3183,21 @@ mod tests {
             .await
             .expect("GraphQL response body");
         let body: Value = serde_json::from_slice(&body).expect("GraphQL JSON response");
-        assert!(body["data"]["createMyApiKey"].is_null());
-        assert!(
-            body["errors"][0]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("interactive session is required")),
-            "unexpected authless API-key response: {body}"
-        );
+        let raw_key = body["data"]["createMyApiKey"]["apiKey"]
+            .as_str()
+            .unwrap_or_else(|| panic!("unexpected authless API-key response: {body}"));
+        let authenticated = context
+            .app
+            .authenticate_api_key(raw_key)
+            .await
+            .expect("created API key authenticates");
+        let admin = context
+            .app
+            .find_or_create_default_user()
+            .await
+            .expect("default administrator");
+        assert_eq!(authenticated.user.id, admin.id);
+        assert_eq!(authenticated.user.username, admin.username);
     }
 
     #[tokio::test]
