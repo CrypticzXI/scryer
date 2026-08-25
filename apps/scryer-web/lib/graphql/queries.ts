@@ -2614,6 +2614,7 @@ export const securitySettingsQuery = `query SecuritySettings {
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
+    apiKeysRestrictToSystemSettingsUsers
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     mfaRequireJellyfinLogin
@@ -2850,6 +2851,13 @@ export const myOauthAppsQuery = `query MyOauthApps {
   }
 }`;
 
+export const myApiKeysQuery = `query MyApiKeys {
+  canCreateMyApiKeys
+  myApiKeys {
+    id label actor expiresAt revokedAt lastUsedAt createdAt provisioningSource
+  }
+}`;
+
 export const myTotpQuery = `query MyTotp {
   myTotp {
     enabled
@@ -3059,6 +3067,33 @@ export const smgScryerUpdateNoticeQuery = `query SmgScryerUpdateNotice {
     releaseUrl
     publishedAt
     checkedAt
+  }
+}`;
+
+export const applicationUpgradeStatusQuery = `query ApplicationUpgradeStatus {
+  applicationUpgradeStatus {
+    currentVersion
+    updateVersion
+    updateTag
+    updateAvailable
+    installationKind
+    managementOwner
+    eligible
+    eligibilityReason
+    activeRun {
+${JOB_RUN_FIELDS}
+    }
+    latestRun {
+${JOB_RUN_FIELDS}
+    }
+  }
+}`;
+
+export const startApplicationUpgradeMutation = `mutation StartApplicationUpgrade($input: StartApplicationUpgradeInput!) {
+  startApplicationUpgrade(input: $input) {
+    jobRun {
+${JOB_RUN_FIELDS}
+    }
   }
 }`;
 

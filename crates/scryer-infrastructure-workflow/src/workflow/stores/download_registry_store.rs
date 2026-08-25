@@ -596,7 +596,7 @@ fn optional_timestamp_from_row(row: &SqlRow, column: &str) -> AppResult<Option<D
 }
 
 fn parse_stored_timestamp(value: &str, column: &str) -> AppResult<DateTime<Utc>> {
-    // 0178's hook writes RFC3339 offsets, while legacy-copied SQLite timestamps
+    // 0179's hook writes RFC3339 offsets, while legacy-copied SQLite timestamps
     // use strftime's `...Z` form; RFC3339 parsing deliberately accepts both.
     DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))

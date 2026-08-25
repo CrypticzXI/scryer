@@ -1,4 +1,4 @@
-CREATE TEMP TABLE _0179_download_submission_episode_links AS
+CREATE TEMP TABLE _0180_download_submission_episode_links AS
 SELECT
     download_client_id,
     download_client_type,
@@ -6,7 +6,7 @@ SELECT
     episode_id
 FROM download_submission_episode_links;
 
-CREATE TEMP TABLE _0179_download_import_artifacts AS
+CREATE TEMP TABLE _0180_download_import_artifacts AS
 SELECT
     id,
     source_system,
@@ -30,7 +30,7 @@ FROM download_import_artifacts;
 DROP TABLE download_submission_episode_links;
 DROP TABLE download_import_artifacts;
 
-CREATE TABLE download_submissions_0179 (
+CREATE TABLE download_submissions_0180 (
     id TEXT PRIMARY KEY,
     title_id TEXT NOT NULL,
     facet TEXT NOT NULL,
@@ -66,7 +66,7 @@ CREATE TABLE download_submissions_0179 (
     FOREIGN KEY (id) REFERENCES downloads(id)
 );
 
-INSERT INTO download_submissions_0179 (
+INSERT INTO download_submissions_0180 (
     id,
     title_id,
     facet,
@@ -136,7 +136,7 @@ SELECT
 FROM download_submissions;
 
 DROP TABLE download_submissions;
-ALTER TABLE download_submissions_0179 RENAME TO download_submissions;
+ALTER TABLE download_submissions_0180 RENAME TO download_submissions;
 
 CREATE INDEX idx_download_submissions_title_request_signature
     ON download_submissions(title_id, request_signature);
@@ -154,13 +154,13 @@ CREATE TABLE download_submission_episode_links (
 
 INSERT INTO download_submission_episode_links (download_id, episode_id)
 SELECT submissions.id, links.episode_id
-FROM _0179_download_submission_episode_links links
+FROM _0180_download_submission_episode_links links
 JOIN download_submissions submissions
     ON submissions.download_client_id = links.download_client_id
    AND submissions.download_client_type = links.download_client_type
    AND submissions.download_client_item_id = links.download_client_item_id;
 
-DROP TABLE _0179_download_submission_episode_links;
+DROP TABLE _0180_download_submission_episode_links;
 
 CREATE INDEX idx_download_submission_episode_links_episode
     ON download_submission_episode_links(episode_id);
@@ -362,9 +362,9 @@ SELECT
     created_at,
     source_client_id,
     canonical_download_id
-FROM _0179_download_import_artifacts;
+FROM _0180_download_import_artifacts;
 
-DROP TABLE _0179_download_import_artifacts;
+DROP TABLE _0180_download_import_artifacts;
 
 CREATE INDEX idx_download_import_artifacts_episode
     ON download_import_artifacts (episode_id, result);

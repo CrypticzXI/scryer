@@ -1204,18 +1204,35 @@ scope = "all"
 
 [[migration]]
 version = 178
-description = "canonical download identity registry"
+description = "persist user API keys"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0178_canonical_download_identity.sql"
+file = "migrations/0178_api_keys.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0178_canonical_download_identity.sql"
+file = "postgres/migrations/0178_api_keys.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 179
+description = "canonical download identity registry"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0179_canonical_download_identity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0179_canonical_download_identity.sql"
 engine = "postgres"
 scope = "all"
 
@@ -1226,19 +1243,19 @@ engine = "all"
 scope = "all"
 
 [[migration]]
-version = 179
+version = 180
 description = "canonical download identity finalization"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0179_canonical_download_identity_finalization.sql"
+file = "migrations/0180_canonical_download_identity_finalization.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0179_canonical_download_identity_finalization.sql"
+file = "postgres/migrations/0180_canonical_download_identity_finalization.sql"
 engine = "postgres"
 scope = "all"
 

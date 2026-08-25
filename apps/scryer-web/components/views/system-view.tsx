@@ -3,6 +3,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
+import { ApplicationUpgradeSection } from "@/components/common/application-upgrade";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -709,6 +710,7 @@ export function SystemView({
 
   return (
     <div className="space-y-4 text-sm">
+      <ApplicationUpgradeSection />
       <section className={SYSTEM_PANEL_CLASS}>
         <div className={SYSTEM_PANEL_HEADER_CLASS}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

@@ -161,6 +161,7 @@ pub enum JobKey {
     RecycleBinRestore,
     RecycleBinPurge,
     AcquisitionSearch,
+    ApplicationUpgrade,
 }
 
 impl JobKey {
@@ -189,6 +190,7 @@ impl JobKey {
             Self::RecycleBinRestore => "recycle_bin_restore",
             Self::RecycleBinPurge => "recycle_bin_purge",
             Self::AcquisitionSearch => "acquisition_search",
+            Self::ApplicationUpgrade => "application_upgrade",
         }
     }
 
@@ -217,6 +219,7 @@ impl JobKey {
             "recycle_bin_restore" => Some(Self::RecycleBinRestore),
             "recycle_bin_purge" => Some(Self::RecycleBinPurge),
             "acquisition_search" => Some(Self::AcquisitionSearch),
+            "application_upgrade" => Some(Self::ApplicationUpgrade),
             _ => None,
         }
     }
@@ -246,6 +249,7 @@ impl JobKey {
             Self::RecycleBinRestore => "Recycle Bin Restore",
             Self::RecycleBinPurge => "Recycle Bin Purge",
             Self::AcquisitionSearch => "Acquisition Search",
+            Self::ApplicationUpgrade => "Application Upgrade",
         }
     }
 
@@ -292,6 +296,7 @@ impl JobKey {
             Self::AcquisitionSearch => {
                 "Interactive acquisition search over the selected wanted/upgrade scopes."
             }
+            Self::ApplicationUpgrade => "Download, verify, and apply a signed application upgrade.",
         }
     }
 
@@ -316,7 +321,8 @@ impl JobKey {
             | Self::TitleRename
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
-            | Self::RecycleBinPurge => JobCategory::System,
+            | Self::RecycleBinPurge
+            | Self::ApplicationUpgrade => JobCategory::System,
             Self::Housekeeping | Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
                 JobCategory::Maintenance
             }
@@ -354,7 +360,8 @@ impl JobKey {
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge
-            | Self::AcquisitionSearch => JobScheduleKind::Manual,
+            | Self::AcquisitionSearch
+            | Self::ApplicationUpgrade => JobScheduleKind::Manual,
         }
     }
 
@@ -382,7 +389,8 @@ impl JobKey {
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge
-            | Self::AcquisitionSearch => "Manual only",
+            | Self::AcquisitionSearch
+            | Self::ApplicationUpgrade => "Manual only",
         }
     }
 
@@ -425,6 +433,7 @@ impl JobKey {
                 | Self::RecycleBinRestore
                 | Self::RecycleBinPurge
                 | Self::AcquisitionSearch
+                | Self::ApplicationUpgrade
         )
     }
 

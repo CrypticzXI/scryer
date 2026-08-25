@@ -1290,7 +1290,7 @@ async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -
 }
 
 #[tokio::test]
-async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes() -> AppResult<()> {
+async fn migration_0180_postgres_rekeys_constraints_and_compares_fresh_indexes() -> AppResult<()> {
     let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
         .ok()
         .map(|value| value.trim().to_string())
@@ -1302,7 +1302,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
         .await
         .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
     let schema = format!(
-        "scryer_0179_migration_{}",
+        "scryer_0180_migration_{}",
         chrono::Utc::now().timestamp_micros()
     );
     let fresh_schema = format!("{schema}_fresh");
@@ -1340,7 +1340,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
         })?;
 
     let result = async {
-        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(178)).await?;
+        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(179)).await?;
         let now = "2026-08-24T12:00:00Z";
         let first_id = "00000000-0000-4000-8000-000000000001";
         sqlx::query(
@@ -1356,7 +1356,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_submissions (
                 id, title_id, facet, download_client_id, download_client_type,
                 download_client_item_id, submitted_at
-             ) VALUES ($1, 'pg-title-0179', 'series', 'pg-client-0179', 'qbittorrent',
+             ) VALUES ($1, 'pg-title-0180', 'series', 'pg-client-0180', 'qbittorrent',
                        'reused-native', ($2::text)::timestamptz)",
         )
         .bind(first_id)
@@ -1367,7 +1367,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
         sqlx::query(
             "INSERT INTO download_submission_episode_links (
                 download_client_id, download_client_type, download_client_item_id, episode_id
-             ) VALUES ('pg-client-0179', 'qbittorrent', 'reused-native', 'pg-episode-0179')",
+             ) VALUES ('pg-client-0180', 'qbittorrent', 'reused-native', 'pg-episode-0180')",
         )
         .execute(&pool)
         .await
@@ -1376,7 +1376,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_client_bindings (
                 download_id, client_config_id, client_type_snapshot, client_name_snapshot,
                 native_item_id, created_at
-             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+             ) VALUES ($1, 'pg-client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
         )
         .bind(first_id)
         .bind(now)
@@ -1387,8 +1387,8 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_identity_states (
                 id, identity_key, canonical_download_id, download_id, client_id, client_type,
                 download_client_item_id, tracked_state, created_at, updated_at
-             ) VALUES ('pg-state-0179', 'download:pg-0179', $1, 'legacy-pg-0179',
-                       'pg-client-0179', 'qbittorrent', 'reused-native', 'queued', ($2::text)::timestamptz, ($2::text)::timestamptz)",
+             ) VALUES ('pg-state-0180', 'download:pg-0180', $1, 'legacy-pg-0180',
+                       'pg-client-0180', 'qbittorrent', 'reused-native', 'queued', ($2::text)::timestamptz, ($2::text)::timestamptz)",
         )
         .bind(first_id)
         .bind(now)
@@ -1399,7 +1399,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO imports (
                 id, source_system, source_ref, import_type, payload_json, created_at, updated_at,
                 canonical_download_id
-             ) VALUES ('pg-import-0179', 'qbittorrent', 'reused-native', 'series_download',
+             ) VALUES ('pg-import-0180', 'qbittorrent', 'reused-native', 'series_download',
                        '{}', ($1::text)::timestamptz, ($1::text)::timestamptz, $2)",
         )
         .bind(now)
@@ -1411,7 +1411,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_import_artifacts (
                 id, source_system, source_ref, normalized_file_name, media_kind, result, created_at,
                 canonical_download_id
-             ) VALUES ('pg-artifact-0179', 'qbittorrent', 'reused-native', 'episode.mkv',
+             ) VALUES ('pg-artifact-0180', 'qbittorrent', 'reused-native', 'episode.mkv',
                        'episode', 'imported', ($1::text)::timestamptz, $2)",
         )
         .bind(now)
@@ -1423,7 +1423,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_queue_commands (
                 id, action, client_type, download_client_item_id, status, created_at, updated_at,
                 canonical_download_id
-             ) VALUES ('pg-queue-0179', 'remove', 'qbittorrent', 'reused-native', 'queued',
+             ) VALUES ('pg-queue-0180', 'remove', 'qbittorrent', 'reused-native', 'queued',
                        ($1::text)::timestamptz, ($1::text)::timestamptz, $2)",
         )
         .bind(now)
@@ -1442,7 +1442,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
         assert_eq!(
             sqlx::query_scalar::<_, String>(
                 "SELECT download_id FROM download_submission_episode_links
-                  WHERE episode_id = 'pg-episode-0179'",
+                  WHERE episode_id = 'pg-episode-0180'",
             )
             .fetch_one(&pool)
             .await
@@ -1489,7 +1489,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_client_bindings (
                 download_id, client_config_id, client_type_snapshot, client_name_snapshot,
                 native_item_id, created_at
-             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+             ) VALUES ($1, 'pg-client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
         )
         .bind(second_id)
         .bind(now)
@@ -1506,7 +1506,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_client_bindings (
                 download_id, client_config_id, client_type_snapshot, client_name_snapshot,
                 native_item_id, created_at
-             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+             ) VALUES ($1, 'pg-client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
         )
         .bind(second_id)
         .bind(now)
@@ -1517,7 +1517,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_submissions (
                 id, title_id, facet, download_client_id, download_client_type,
                 download_client_item_id, submitted_at
-             ) VALUES ($1, 'pg-title-0179-readd', 'series', 'pg-client-0179', 'qbittorrent',
+             ) VALUES ($1, 'pg-title-0180-readd', 'series', 'pg-client-0180', 'qbittorrent',
                        'reused-native', '2026-08-24T12:00:01Z')",
         )
         .bind(second_id)
@@ -1528,7 +1528,7 @@ async fn migration_0179_postgres_rekeys_constraints_and_compares_fresh_indexes()
             "INSERT INTO download_client_bindings (
                 download_id, client_config_id, client_type_snapshot, client_name_snapshot,
                 native_item_id, created_at
-             ) VALUES ($1, 'pg-client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
+             ) VALUES ($1, 'pg-client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ($2::text)::timestamptz)",
         )
         .bind(third_id)
         .bind(now)
@@ -3201,18 +3201,18 @@ async fn migration_0173_requeues_only_unhydrated_movie_titles_without_tvdb_ids()
 }
 
 #[tokio::test]
-async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_identity() {
+async fn migrations_0179_and_0180_backfill_and_finalize_canonical_download_identity() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");
     let db = std::env::temp_dir().join(format!(
-        "scryer_migration_0178_{}.db",
+        "scryer_migration_0179_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
         .await
-        .expect("pre-0178 database should open");
+        .expect("pre-0179 database should open");
     crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(177), true)
         .await
         .expect("migrations through 0177 should apply");
@@ -3389,7 +3389,7 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
 
     crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect("0178 and 0179 upgrade should apply");
+        .expect("0179 and 0180 upgrade should apply");
 
     let token_submission_id: String = sqlx::query_scalar(
         "SELECT id FROM download_submissions WHERE download_client_item_id = 'native-token'",
@@ -3531,7 +3531,7 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
         &mut transaction,
     )
     .await
-    .expect("completed 0178 hook should be idempotent");
+    .expect("completed 0179 hook should be idempotent");
     let changes_after: i64 = sqlx::query_scalar("SELECT total_changes()")
         .fetch_one(&mut *transaction)
         .await
@@ -3597,7 +3597,7 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
         .bind(id)
         .execute(&pool)
         .await
-        .expect("reused native tuple should coexist after 0179");
+        .expect("reused native tuple should coexist after 0180");
     }
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -3677,34 +3677,34 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
         .expect("foreign-key check should run");
     assert!(
         foreign_key_violations.is_empty(),
-        "0179 foreign keys must validate existing rows"
+        "0180 foreign keys must validate existing rows"
     );
 
     crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect("0179 rerun should be idempotently skipped by the manifest ledger");
+        .expect("0180 rerun should be idempotently skipped by the manifest ledger");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 179 AND success = 1",
         )
         .fetch_one(&pool)
         .await
-        .expect("0179 migration ledger entry should load"),
+        .expect("0180 migration ledger entry should load"),
         1
     );
 
     let fresh_db = std::env::temp_dir().join(format!(
-        "scryer_migration_0179_fresh_{}.db",
+        "scryer_migration_0180_fresh_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let fresh_pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_with_create(fresh_db.to_string_lossy().as_ref()))
         .await
-        .expect("fresh 0179 database should open");
+        .expect("fresh 0180 database should open");
     crate::migrations::replay_source_catalog_for_fresh_install(&fresh_pool, None, true)
         .await
-        .expect("fresh install through 0179 should apply");
+        .expect("fresh install through 0180 should apply");
     let schema_query = "SELECT type, name, sql FROM sqlite_master
                          WHERE type IN ('table', 'index')
                            AND tbl_name IN (
@@ -3716,11 +3716,11 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
     let upgraded_schema: Vec<(String, String, Option<String>)> = sqlx::query_as(schema_query)
         .fetch_all(&pool)
         .await
-        .expect("upgraded 0179 schema and indexes should load");
+        .expect("upgraded 0180 schema and indexes should load");
     let fresh_schema: Vec<(String, String, Option<String>)> = sqlx::query_as(schema_query)
         .fetch_all(&fresh_pool)
         .await
-        .expect("fresh 0179 schema and indexes should load");
+        .expect("fresh 0180 schema and indexes should load");
     assert_eq!(fresh_schema, upgraded_schema);
 
     drop(fresh_pool);
@@ -3730,21 +3730,21 @@ async fn migrations_0178_and_0179_backfill_and_finalize_canonical_download_ident
 }
 
 #[tokio::test]
-async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constraints() {
+async fn migration_0180_rekeys_a_populated_0179_database_and_validates_constraints() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");
     let db = std::env::temp_dir().join(format!(
-        "scryer_migration_0179_{}.db",
+        "scryer_migration_0180_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
         .await
-        .expect("0178 database should open");
-    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(178), true)
+        .expect("0179 database should open");
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(179), true)
         .await
-        .expect("fresh 0178 fixture should apply");
+        .expect("fresh 0179 fixture should apply");
 
     let now = "2026-08-24T12:00:00Z";
     let first_id = "00000000-0000-4000-8000-000000000001";
@@ -3756,95 +3756,95 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
     .bind(now)
     .execute(&pool)
     .await
-    .expect("post-0178 canonical parent should insert");
+    .expect("post-0179 canonical parent should insert");
     sqlx::query(
         "INSERT INTO download_submissions (
             id, title_id, facet, download_client_id, download_client_type,
             download_client_item_id, submitted_at
-         ) VALUES (?1, 'title-0179', 'series', 'client-0179', 'qbittorrent',
+         ) VALUES (?1, 'title-0180', 'series', 'client-0180', 'qbittorrent',
                    'reused-native', ?2)",
     )
     .bind(first_id)
     .bind(now)
     .execute(&pool)
     .await
-    .expect("post-0178 submission should insert");
+    .expect("post-0179 submission should insert");
     sqlx::query(
         "INSERT INTO download_submission_episode_links (
             download_client_id, download_client_type, download_client_item_id, episode_id
-         ) VALUES ('client-0179', 'qbittorrent', 'reused-native', 'episode-0179')",
+         ) VALUES ('client-0180', 'qbittorrent', 'reused-native', 'episode-0180')",
     )
     .execute(&pool)
     .await
-    .expect("post-0178 tuple link should insert");
+    .expect("post-0179 tuple link should insert");
     sqlx::query(
         "INSERT INTO download_client_bindings (
             download_id, client_config_id, client_type_snapshot, client_name_snapshot,
             native_item_id, created_at
-         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+         ) VALUES (?1, 'client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
     )
     .bind(first_id)
     .bind(now)
     .execute(&pool)
     .await
-    .expect("post-0178 active binding should insert");
+    .expect("post-0179 active binding should insert");
     sqlx::query(
         "INSERT INTO download_identity_states (
             id, identity_key, canonical_download_id, download_id, client_id, client_type,
             download_client_item_id, tracked_state, created_at, updated_at
-         ) VALUES ('state-0179', 'download:0179', ?1, 'legacy-0179', 'client-0179',
+         ) VALUES ('state-0180', 'download:0180', ?1, 'legacy-0180', 'client-0180',
                    'qbittorrent', 'reused-native', 'queued', ?2, ?2)",
     )
     .bind(first_id)
     .bind(now)
     .execute(&pool)
     .await
-    .expect("post-0178 identity state should insert");
+    .expect("post-0179 identity state should insert");
     sqlx::query(
         "INSERT INTO imports (
             id, source_system, source_ref, import_type, payload_json, created_at, updated_at,
             canonical_download_id
-         ) VALUES ('import-0179', 'qbittorrent', 'reused-native', 'series_download', '{}',
+         ) VALUES ('import-0180', 'qbittorrent', 'reused-native', 'series_download', '{}',
                    ?1, ?1, ?2)",
     )
     .bind(now)
     .bind(first_id)
     .execute(&pool)
     .await
-    .expect("post-0178 import should insert");
+    .expect("post-0179 import should insert");
     sqlx::query(
         "INSERT INTO download_import_artifacts (
             id, source_system, source_ref, normalized_file_name, media_kind, result, created_at,
             canonical_download_id
-         ) VALUES ('artifact-0179', 'qbittorrent', 'reused-native', 'episode.mkv', 'episode',
+         ) VALUES ('artifact-0180', 'qbittorrent', 'reused-native', 'episode.mkv', 'episode',
                    'imported', ?1, ?2)",
     )
     .bind(now)
     .bind(first_id)
     .execute(&pool)
     .await
-    .expect("post-0178 artifact should insert");
+    .expect("post-0179 artifact should insert");
     sqlx::query(
         "INSERT INTO download_queue_commands (
             id, action, client_type, download_client_item_id, status, created_at, updated_at,
             canonical_download_id
-         ) VALUES ('queue-0179', 'remove', 'qbittorrent', 'reused-native', 'queued', ?1, ?1,
+         ) VALUES ('queue-0180', 'remove', 'qbittorrent', 'reused-native', 'queued', ?1, ?1,
                    ?2)",
     )
     .bind(now)
     .bind(first_id)
     .execute(&pool)
     .await
-    .expect("post-0178 queue command should insert");
+    .expect("post-0179 queue command should insert");
 
     crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect("0179 upgrade should apply");
+        .expect("0180 upgrade should apply");
 
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             "SELECT download_id FROM download_submission_episode_links
-              WHERE episode_id = 'episode-0179'",
+              WHERE episode_id = 'episode-0180'",
         )
         .fetch_one(&pool)
         .await
@@ -3865,7 +3865,7 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
         .expect("foreign-key check should run");
     assert!(
         foreign_key_violations.is_empty(),
-        "0179 foreign keys must validate fixture rows"
+        "0180 foreign keys must validate fixture rows"
     );
 
     let second_id = "00000000-0000-4000-8000-000000000002";
@@ -3884,7 +3884,7 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
         "INSERT INTO download_client_bindings (
             download_id, client_config_id, client_type_snapshot, client_name_snapshot,
             native_item_id, created_at
-         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+         ) VALUES (?1, 'client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
     )
     .bind(second_id)
     .bind(now)
@@ -3904,7 +3904,7 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
         "INSERT INTO download_client_bindings (
             download_id, client_config_id, client_type_snapshot, client_name_snapshot,
             native_item_id, created_at
-         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+         ) VALUES (?1, 'client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
     )
     .bind(second_id)
     .bind(now)
@@ -3915,7 +3915,7 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
         "INSERT INTO download_submissions (
             id, title_id, facet, download_client_id, download_client_type,
             download_client_item_id, submitted_at
-         ) VALUES (?1, 'title-0179-readd', 'series', 'client-0179', 'qbittorrent',
+         ) VALUES (?1, 'title-0180-readd', 'series', 'client-0180', 'qbittorrent',
                    'reused-native', '2026-08-24T12:00:01Z')",
     )
     .bind(second_id)
@@ -3936,7 +3936,7 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
         "INSERT INTO download_client_bindings (
             download_id, client_config_id, client_type_snapshot, client_name_snapshot,
             native_item_id, created_at
-         ) VALUES (?1, 'client-0179', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
+         ) VALUES (?1, 'client-0180', 'qbittorrent', 'qBittorrent', 'reused-native', ?2)",
     )
     .bind(third_id)
     .bind(now)
@@ -3949,14 +3949,14 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
 
     crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect("0179 rerun should be skipped by the manifest ledger");
+        .expect("0180 rerun should be skipped by the manifest ledger");
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 179 AND success = 1",
         )
         .fetch_one(&pool)
         .await
-        .expect("0179 migration ledger should load"),
+        .expect("0180 migration ledger should load"),
         1
     );
 
@@ -3965,18 +3965,18 @@ async fn migration_0179_rekeys_a_populated_0178_database_and_validates_constrain
 }
 
 #[tokio::test]
-async fn migration_0178_rejects_duplicate_adopted_token_ids_without_partial_writes() {
+async fn migration_0179_rejects_duplicate_adopted_token_ids_without_partial_writes() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");
     let db = std::env::temp_dir().join(format!(
-        "scryer_migration_0178_collision_{}.db",
+        "scryer_migration_0179_collision_{}.db",
         chrono::Utc::now().timestamp_micros()
     ));
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
         .await
-        .expect("pre-0178 collision database should open");
+        .expect("pre-0179 collision database should open");
     crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(177), true)
         .await
         .expect("migrations through 0177 should apply");
@@ -4001,7 +4001,7 @@ async fn migration_0178_rejects_duplicate_adopted_token_ids_without_partial_writ
 
     let error = crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
         .await
-        .expect_err("duplicate adopted token IDs must abort 0178");
+        .expect_err("duplicate adopted token IDs must abort 0179");
     let message = error.to_string();
     assert!(message.contains("collision-row-one"));
     assert!(message.contains("collision-row-two"));
@@ -4028,7 +4028,7 @@ async fn migration_0178_rejects_duplicate_adopted_token_ids_without_partial_writ
 }
 
 #[tokio::test]
-async fn migration_0178_postgres_backfills_token_identity_from_env() -> AppResult<()> {
+async fn migration_0179_postgres_backfills_token_identity_from_env() -> AppResult<()> {
     let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
         .ok()
         .map(|value| value.trim().to_string())
@@ -4040,7 +4040,7 @@ async fn migration_0178_postgres_backfills_token_identity_from_env() -> AppResul
         .await
         .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
     let schema = format!(
-        "scryer_0178_migration_{}",
+        "scryer_0179_migration_{}",
         chrono::Utc::now().timestamp_micros()
     );
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))

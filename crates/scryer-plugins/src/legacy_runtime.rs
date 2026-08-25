@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
 use wasmtime::{Caller, ExternType, Instance, Linker, Store, ValType};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
+use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::plugin_http_host::{
     HTTP_ENV_NAMESPACE, IndexerErrorCaptureContext, IndexerProxyPolicy, PluginHttpHost,
@@ -224,21 +224,13 @@ fn build_legacy_wasi(preopens: &[PreopenSpec]) -> AppResult<wasmtime_wasi::p1::W
     let mut builder = WasiCtxBuilder::new();
     builder.args(&[GUEST_ARGV0]);
     for preopen in preopens {
-        let (dir_perms, file_perms) = if preopen.writable {
-            (
-                DirPerms::READ | DirPerms::MUTATE,
-                FilePerms::READ | FilePerms::WRITE,
-            )
+        let perms = if preopen.writable {
+            FsPerms::ReadWrite
         } else {
-            (DirPerms::READ, FilePerms::READ)
+            FsPerms::ReadOnly
         };
         builder
-            .preopened_dir(
-                &preopen.host_path,
-                &preopen.guest_path,
-                dir_perms,
-                file_perms,
-            )
+            .preopened_dir(&preopen.host_path, &preopen.guest_path, perms)
             .map_err(|error| {
                 AppError::Repository(format!(
                     "failed to preopen '{}' as '{}' for legacy plugin: {error}",

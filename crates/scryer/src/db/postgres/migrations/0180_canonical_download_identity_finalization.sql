@@ -1,11 +1,11 @@
-CREATE TABLE download_submission_episode_links_0179 (
+CREATE TABLE download_submission_episode_links_0180 (
     download_id TEXT NOT NULL,
     episode_id TEXT NOT NULL,
     PRIMARY KEY (download_id, episode_id),
     FOREIGN KEY (download_id) REFERENCES download_submissions(id) ON DELETE CASCADE
 );
 
-INSERT INTO download_submission_episode_links_0179 (download_id, episode_id)
+INSERT INTO download_submission_episode_links_0180 (download_id, episode_id)
 SELECT submissions.id, links.episode_id
 FROM download_submission_episode_links links
 JOIN download_submissions submissions
@@ -14,7 +14,7 @@ JOIN download_submissions submissions
    AND submissions.download_client_item_id = links.download_client_item_id;
 
 DROP TABLE download_submission_episode_links;
-ALTER TABLE download_submission_episode_links_0179
+ALTER TABLE download_submission_episode_links_0180
     RENAME TO download_submission_episode_links;
 
 CREATE INDEX idx_download_submission_episode_links_episode

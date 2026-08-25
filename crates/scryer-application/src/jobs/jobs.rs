@@ -587,12 +587,15 @@ impl AppUseCase {
     /// run the tracker still holds that the store just failed is a ghost, so we
     /// push it through `upsert_active_run` (which drops terminal runs from the
     /// active registry) to evict it. Returns the number of runs reconciled.
-    pub async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+    pub async fn reconcile_interrupted_job_runs(
+        &self,
+        excluded_run_ids: &[String],
+    ) -> AppResult<u64> {
         let reconciled = self
             .services
             .events
             .job_runs
-            .reconcile_interrupted_job_runs()
+            .reconcile_interrupted_job_runs(excluded_run_ids)
             .await?;
         if reconciled == 0 {
             return Ok(0);
@@ -603,7 +606,7 @@ impl AppUseCase {
         );
         // Evict any tracker entry the store no longer considers active.
         for mut run in self.runtime.jobs.job_run_tracker.list_active().await {
-            if !run.status.is_terminal() {
+            if !run.status.is_terminal() && !excluded_run_ids.contains(&run.id) {
                 run.status = JobRunStatus::Failed;
                 run.completed_at = Some(Utc::now());
                 self.runtime
@@ -1639,6 +1642,10 @@ impl AppUseCase {
             )),
             JobKey::AcquisitionSearch => Err(AppError::Validation(
                 "acquisition search jobs must be started from the acquisition search mutation"
+                    .into(),
+            )),
+            JobKey::ApplicationUpgrade => Err(AppError::Validation(
+                "application upgrade jobs must be started from the application upgrade mutation"
                     .into(),
             )),
         }

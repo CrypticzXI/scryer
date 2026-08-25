@@ -1,4 +1,4 @@
-//! 0178 — establish the first durable, canonical download identity.
+//! 0179 — establish the first durable, canonical download identity.
 //!
 //! This hook deliberately works from the legacy submission/client tuple.  The
 //! application still reads and writes those columns until the follow-up

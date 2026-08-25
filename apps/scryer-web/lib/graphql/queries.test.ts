@@ -12,6 +12,7 @@ import {
   globalSearchInitQuery,
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
+  myApiKeysQuery,
   seriesCollectionEpisodesQuery,
   seriesSidePanelOverviewQuery,
   TITLE_CAST_CREDIT_KINDS,
@@ -19,6 +20,17 @@ import {
   titleMoreLikeThisQuery,
   wantedNavigationCountsQuery,
 } from "./queries.ts";
+
+test("API key list query includes lifecycle status fields", () => {
+  const fields = ["createdAt", "expiresAt", "revokedAt", "lastUsedAt", "provisioningSource"];
+  for (const field of fields) {
+    assert.equal(
+      myApiKeysQuery.includes(field),
+      true,
+      `${field} is required for API-key status`,
+    );
+  }
+});
 
 test("calendar hover query includes its artwork and synopsis fields", () => {
   assert.equal(calendarEpisodesQuery.includes("overview"), true);

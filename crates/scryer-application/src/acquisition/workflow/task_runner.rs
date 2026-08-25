@@ -138,6 +138,7 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     let mut attempted_urls_by_route: Vec<(DownloadRouteKey, String)> = Vec::new();
     // A transiently unavailable route is suppressed across every target in this cycle.
     let mut failed_routes: Vec<DownloadRouteKey> = Vec::new();
+    let mut series_pack_state = SeriesPackCycleState::default();
     // Track (title_id, season_num) for which a season pack search was attempted this cycle.
     let mut season_pack_attempted: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
@@ -183,6 +184,7 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
             &mut grabbed_urls,
             &mut attempted_urls_by_route,
             &mut failed_routes,
+            &mut series_pack_state,
             &mut season_pack_attempted,
             &mut season_pack_grabbed,
             &mut season_pack_viable,
@@ -270,6 +272,604 @@ impl AppUseCase {
         run_convergence_cycle(self).await;
     }
 }
+
+#[derive(Default)]
+struct SeriesPackCycleState {
+    attempted_titles: HashSet<String>,
+    claimed_episode_ids: HashSet<String>,
+}
+
+fn episode_ids_for_scope(scope: &SubmissionScope) -> Option<&[String]> {
+    match scope {
+        SubmissionScope::EpisodeSet { episode_ids } => Some(episode_ids),
+        _ => None,
+    }
+}
+
+async fn recovered_scope_episode_ids(app: &AppUseCase, scope: &SubmissionScope) -> Vec<String> {
+    match scope {
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+        SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+        SubmissionScope::Collection { collection_id } => match app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(collection_id)
+            .await
+        {
+            Ok(episodes) => episodes.into_iter().map(|episode| episode.id).collect(),
+            Err(error) => {
+                warn!(
+                    collection_id,
+                    error = %error,
+                    "series-pack search: failed to expand recovered collection coverage"
+                );
+                Vec::new()
+            }
+        },
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => {
+            Vec::new()
+        }
+    }
+}
+
+async fn restore_anchor_standby_releases(
+    app: &AppUseCase,
+    anchor: &AcquisitionScopeState,
+    standby_releases: &[PendingRelease],
+) {
+    let _ = app
+        .services
+        .workflow
+        .pending_releases
+        .delete_standby_pending_releases_for_wanted_item(&anchor.id)
+        .await;
+    for standby in standby_releases {
+        if let Err(error) = app
+            .services
+            .workflow
+            .pending_releases
+            .insert_pending_release(standby)
+            .await
+        {
+            warn!(
+                wanted_item_id = anchor.id.as_str(),
+                release = standby.release_title.as_str(),
+                error = %error,
+                "series-pack search: failed to restore anchor standby candidate"
+            );
+        }
+    }
+}
+
+fn is_series_pack_candidate(candidate: &IndexerSearchResult) -> bool {
+    candidate
+        .parsed_release_metadata
+        .as_ref()
+        .and_then(|parsed| parsed.episode.as_ref())
+        .is_some_and(|episode| episode.is_series_pack)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the one-shot title lookup needs the cycle search state"
+)]
+async fn try_series_pack_for_title(
+    app: &AppUseCase,
+    title: &Title,
+    search_title: &Title,
+    target: &crate::acquisition::targets::AcquisitionTarget,
+    now: &DateTime<Utc>,
+    availability: &crate::acquisition::convergence::SchedulerAvailability,
+    indexer_hosts: &HashMap<String, String>,
+    dl_snapshot: &DownloadClientSnapshot,
+    failed_routes: &[DownloadRouteKey],
+    submissions: &[DownloadSubmission],
+    tracked_states: &HashMap<
+        crate::contracts::ClientJobLocator,
+        scryer_domain::TrackedDownloadState,
+    >,
+    claimed_episode_ids: &HashSet<String>,
+) -> AppResult<Option<Vec<String>>> {
+    let mut title_subject = app
+        .resolve_release_search_subject_for_title(search_title)
+        .await?;
+    title_subject.submission_scope = SubmissionScope::Title;
+    let episodes = match app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await
+    {
+        Ok(episodes) => episodes,
+        Err(error) => {
+            warn!(
+                title_id = title.id.as_str(),
+                error = %error,
+                "series-pack search: failed to load episodes"
+            );
+            return Ok(None);
+        }
+    };
+    let mut owned_episode_ids = match app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+    {
+        Ok(files) => files
+            .into_iter()
+            .filter(|file| file.role.is_primary())
+            .filter_map(|file| file.episode_id)
+            .collect::<HashSet<_>>(),
+        Err(error) => {
+            warn!(
+                title_id = title.id.as_str(),
+                error = %error,
+                "series-pack search: failed to load media ownership"
+            );
+            return Ok(None);
+        }
+    };
+    owned_episode_ids.extend(
+        crate::acquisition_coverage::in_flight_series_pack_episode_ids(
+            &episodes,
+            submissions,
+            tracked_states,
+            dl_snapshot,
+        ),
+    );
+    let eligible_collection_ids =
+        crate::acquisition_coverage::eligible_series_pack_collection_ids(&episodes);
+    if eligible_collection_ids.is_empty()
+        || crate::acquisition_coverage::eligible_missing_series_pack_episode_count(
+            &episodes,
+            &owned_episode_ids,
+        ) < 2
+        || !crate::acquisition_coverage::title_series_pack_missing_ratio_qualifies(
+            &episodes,
+            &owned_episode_ids,
+        )
+    {
+        return Ok(None);
+    }
+
+    let Some(convergence) = app
+        .resolve_series_pack_convergence(search_title, &title_subject, &eligible_collection_ids)
+        .await
+    else {
+        return Ok(None);
+    };
+    let uncovered = match app
+        .uncovered_indexers_for_scope(
+            &convergence.scope_key,
+            &convergence.facet,
+            &convergence.fingerprint,
+            &convergence.routed_indexer_ids,
+        )
+        .await
+    {
+        Ok(uncovered) => uncovered,
+        Err(error) => {
+            warn!(
+                title_id = title.id.as_str(),
+                scope_key = convergence.scope_key.as_str(),
+                error = %error,
+                "series-pack search: failed to read set coverage; searching all routed indexers"
+            );
+            convergence.routed_indexer_ids.clone()
+        }
+    };
+    if uncovered.is_empty()
+        || !uncovered.iter().any(|indexer_id| {
+            availability.indexer_available(
+                indexer_hosts.get(indexer_id).map(String::as_str),
+                indexer_id,
+            )
+        })
+    {
+        return Ok(None);
+    }
+    let (candidates, fired_indexer_ids) = app
+        .search_and_score_subject_restricted_with_fired_indexers(
+            search_title,
+            &title_subject,
+            "background_acquisition_series_pack",
+            SearchMode::Auto,
+            tokio_util::sync::CancellationToken::new(),
+            Some(uncovered.into_iter().collect()),
+            Some(if target.is_hot {
+                BACKGROUND_HOT_TARGET_VALUE
+            } else {
+                BACKGROUND_COLD_TARGET_VALUE
+            }),
+        )
+        .await?;
+
+    let (evaluated_candidates, qualifying_collection_ids) =
+        evaluate_series_pack_candidates(
+            app,
+            title,
+            &title_subject,
+            candidates,
+            &episodes,
+            &owned_episode_ids,
+            claimed_episode_ids,
+        )
+        .await;
+
+    if evaluated_candidates.is_empty() {
+        record_series_pack_search_coverage(
+            app,
+            &convergence,
+            &fired_indexer_ids,
+            &qualifying_collection_ids,
+        )
+        .await;
+        return Ok(None);
+    }
+
+    let anchors =
+        series_pack_candidate_anchors(app, title, &evaluated_candidates, &episodes).await?;
+    record_series_pack_search_coverage(
+        app,
+        &convergence,
+        &fired_indexer_ids,
+        &qualifying_collection_ids,
+    )
+    .await;
+    let blocklist = app
+        .load_title_release_blocklist_signatures(&title.id)
+        .await
+        .source_titles;
+
+    for (candidate_index, candidate) in evaluated_candidates.iter().enumerate() {
+        let key = crate::app_usecase_discovery::release_search_key(candidate);
+        let Some(anchor) = anchors.get(&key) else {
+            continue;
+        };
+        let preserved_standby = match app
+            .services
+            .workflow
+            .pending_releases
+            .list_standby_pending_releases_for_wanted_item(&anchor.id)
+            .await
+        {
+            Ok(standby) => standby,
+            Err(error) => {
+                warn!(
+                    wanted_item_id = anchor.id.as_str(),
+                    error = %error,
+                    "series-pack search: failed to snapshot anchor standby candidates"
+                );
+                continue;
+            }
+        };
+        if !persist_standby_candidates(
+            app,
+            anchor,
+            title,
+            &evaluated_candidates,
+            candidate_index,
+            now,
+            failed_routes,
+            &blocklist,
+            |saved| crate::app_usecase_discovery::release_search_key(saved) == key,
+        )
+        .await
+        {
+            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+            continue;
+        }
+
+        let Some(candidate_scope) = candidate
+            .parsed_release_metadata
+            .as_ref()
+            .map(|parsed| {
+                crate::acquisition_coverage::resolve_release_coverage(
+                    parsed,
+                    &episodes,
+                    &[],
+                    None,
+                )
+                .submission_scope()
+            })
+        else {
+            warn!(
+                release = candidate.title.as_str(),
+                "series-pack search: evaluated candidate lost parsed metadata"
+            );
+            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+            continue;
+        };
+        let outcome = try_saved_candidates(
+            app,
+            anchor,
+            None,
+            Some(claimed_episode_ids),
+            dl_snapshot,
+            now,
+        )
+        .await;
+        let (scope, standby_start, recovered) = match outcome {
+            StandbyRecoveryOutcome::Recovered { scope } => (Some(scope), candidate_index + 1, true),
+            StandbyRecoveryOutcome::Active { scope } => (Some(scope), candidate_index + 1, false),
+            StandbyRecoveryOutcome::Deferred { scope } => (scope, candidate_index, false),
+            StandbyRecoveryOutcome::Parked { scope } => {
+                let candidate_is_parked = scope.as_ref() == Some(&candidate_scope);
+                (
+                    scope,
+                    if candidate_is_parked {
+                        candidate_index + 1
+                    } else {
+                        candidate_index
+                    },
+                    false,
+                )
+            }
+            StandbyRecoveryOutcome::Exhausted { .. } => {
+                restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+                continue;
+            }
+        };
+        if recovered {
+            persist_series_pack_runner_ups(
+                app,
+                title,
+                &evaluated_candidates,
+                standby_start,
+                &anchors,
+                now,
+                failed_routes,
+                &blocklist,
+            )
+            .await;
+        } else {
+            restore_anchor_standby_releases(app, anchor, &preserved_standby).await;
+        }
+        return Ok(match scope {
+            Some(scope) => {
+                let episode_ids = recovered_scope_episode_ids(app, &scope).await;
+                (!episode_ids.is_empty()).then_some(episode_ids)
+            }
+            None => None,
+        });
+    }
+
+    Ok(None)
+}
+
+async fn evaluate_series_pack_candidates(
+    app: &AppUseCase,
+    title: &Title,
+    title_subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+    candidates: Vec<IndexerSearchResult>,
+    episodes: &[Episode],
+    owned_episode_ids: &HashSet<String>,
+    claimed_episode_ids: &HashSet<String>,
+) -> (Vec<IndexerSearchResult>, HashSet<String>) {
+    let mut groups = HashMap::<Vec<String>, Vec<(usize, IndexerSearchResult)>>::new();
+    let mut collection_ids = HashSet::new();
+
+    for (rank, candidate) in candidates.into_iter().enumerate() {
+        if !is_series_pack_candidate(&candidate) {
+            continue;
+        }
+        let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
+            continue;
+        };
+        if !crate::acquisition_coverage::series_pack_missing_ratio_qualifies(
+            parsed,
+            episodes,
+            owned_episode_ids,
+        ) {
+            continue;
+        }
+
+        collection_ids.extend(
+            crate::acquisition_coverage::series_pack_collection_ids(parsed, episodes),
+        );
+        let scope =
+            crate::acquisition_coverage::resolve_release_coverage(parsed, episodes, &[], None)
+                .submission_scope();
+        let Some(mut episode_ids) = episode_ids_for_scope(&scope).map(<[String]>::to_vec) else {
+            continue;
+        };
+        episode_ids.sort();
+        episode_ids.dedup();
+        if episode_ids
+            .iter()
+            .any(|episode_id| claimed_episode_ids.contains(episode_id))
+        {
+            continue;
+        }
+        groups
+            .entry(episode_ids)
+            .or_default()
+            .push((rank, candidate));
+    }
+
+    let mut evaluated = Vec::new();
+    for (episode_ids, ranked_candidates) in groups {
+        let mut ranks_by_key = HashMap::new();
+        let mut candidates = Vec::with_capacity(ranked_candidates.len());
+        for (rank, candidate) in ranked_candidates {
+            ranks_by_key.insert(
+                crate::app_usecase_discovery::release_search_key(&candidate),
+                rank,
+            );
+            candidates.push(candidate);
+        }
+
+        let mut scoped_subject = title_subject.clone();
+        scoped_subject.submission_scope = SubmissionScope::EpisodeSet { episode_ids };
+        for candidate in app
+            .evaluate_search_results_for_subject(title, &scoped_subject, candidates)
+            .await
+        {
+            let key = crate::app_usecase_discovery::release_search_key(&candidate);
+            if let Some(rank) = ranks_by_key.remove(&key) {
+                evaluated.push((rank, candidate));
+            }
+        }
+    }
+
+    evaluated.sort_by_key(|(rank, _)| *rank);
+    (
+        evaluated
+            .into_iter()
+            .filter(|(_, candidate)| {
+                matches!(
+                    annotated_auto_decision_code(candidate),
+                    ReleaseAutoDecisionCode::Eligible
+                        | ReleaseAutoDecisionCode::PendingDelay
+                        | ReleaseAutoDecisionCode::AlreadyActive
+                )
+            })
+            .map(|(_, candidate)| candidate)
+            .collect(),
+        collection_ids,
+    )
+}
+
+async fn series_pack_candidate_anchors(
+    app: &AppUseCase,
+    title: &Title,
+    candidates: &[IndexerSearchResult],
+    episodes: &[Episode],
+) -> AppResult<HashMap<String, AcquisitionScopeState>> {
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await?;
+    let mut states_by_episode = states
+        .into_iter()
+        .filter_map(|state| state.episode_id.clone().map(|episode_id| (episode_id, state)))
+        .collect::<HashMap<_, _>>();
+    let mut anchors = HashMap::new();
+
+    for candidate in candidates {
+        let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
+            continue;
+        };
+        let scope =
+            crate::acquisition_coverage::resolve_release_coverage(parsed, episodes, &[], None)
+                .submission_scope();
+        let Some(anchor_episode_id) =
+            episode_ids_for_scope(&scope).and_then(|episode_ids| episode_ids.first())
+        else {
+            continue;
+        };
+        let anchor = if let Some(anchor) = states_by_episode.get(anchor_episode_id).cloned() {
+            anchor
+        } else {
+            let Some(anchor_episode) = episodes
+                .iter()
+                .find(|episode| episode.id == *anchor_episode_id)
+            else {
+                continue;
+            };
+            let mut anchor = app.new_wanted_state_view(
+                title,
+                "episode",
+                Some(anchor_episode.id.clone()),
+                anchor_episode.collection_id.clone(),
+                None,
+                anchor_episode.season_number.clone(),
+            );
+            anchor.id = app
+                .services
+                .workflow
+                .acquisition_scope_states
+                .ensure_acquisition_scope_state(&anchor)
+                .await?;
+            states_by_episode.insert(anchor_episode.id.clone(), anchor.clone());
+            anchor
+        };
+        anchors.insert(
+            crate::app_usecase_discovery::release_search_key(candidate),
+            anchor,
+        );
+    }
+
+    Ok(anchors)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series-pack runner-ups retain their exact covered anchor and global rank"
+)]
+async fn persist_series_pack_runner_ups(
+    app: &AppUseCase,
+    title: &Title,
+    candidates: &[IndexerSearchResult],
+    start_index: usize,
+    anchors: &HashMap<String, AcquisitionScopeState>,
+    now: &DateTime<Utc>,
+    failed_routes: &[DownloadRouteKey],
+    blocklist: &HashSet<String>,
+) {
+    let mut anchor_ids = candidates
+        .iter()
+        .skip(start_index)
+        .filter_map(|candidate| {
+            anchors
+                .get(&crate::app_usecase_discovery::release_search_key(candidate))
+        })
+        .map(|anchor| anchor.id.clone())
+        .collect::<Vec<_>>();
+    anchor_ids.sort();
+    anchor_ids.dedup();
+
+    for anchor_id in anchor_ids {
+        let Some(anchor) = anchors.values().find(|anchor| anchor.id == anchor_id) else {
+            continue;
+        };
+        persist_standby_candidates(
+            app,
+            anchor,
+            title,
+            candidates,
+            start_index,
+            now,
+            failed_routes,
+            blocklist,
+            |candidate| {
+                anchors
+                    .get(&crate::app_usecase_discovery::release_search_key(candidate))
+                    .is_some_and(|candidate_anchor| candidate_anchor.id == anchor_id)
+            },
+        )
+        .await;
+    }
+}
+
+async fn record_series_pack_search_coverage(
+    app: &AppUseCase,
+    convergence: &crate::acquisition::convergence::ScopeConvergence,
+    fired_indexer_ids: &[String],
+    collection_ids: &HashSet<String>,
+) {
+    app.record_convergence_coverage(convergence, fired_indexer_ids)
+        .await;
+    for collection_id in collection_ids {
+        let Some(scope_key) =
+            crate::acquisition::convergence::series_pack_collection_scope_key(collection_id)
+        else {
+            continue;
+        };
+        let mut collection_convergence = convergence.clone();
+        collection_convergence.scope_key = scope_key;
+        app.record_convergence_coverage(&collection_convergence, fired_indexer_ids)
+            .await;
+    }
+}
+
+
 #[expect(
     clippy::too_many_arguments,
     reason = "target processing coordinates shared acquisition state across a single cycle"
@@ -283,6 +883,7 @@ async fn process_single_target(
     grabbed_urls: &mut std::collections::HashSet<String>,
     attempted_urls_by_route: &mut Vec<(DownloadRouteKey, String)>,
     failed_routes: &mut Vec<DownloadRouteKey>,
+    series_pack_state: &mut SeriesPackCycleState,
     season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
     season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
     season_pack_viable: &mut std::collections::HashSet<(String, u32)>,
@@ -328,6 +929,11 @@ async fn process_single_target(
         .collection_id
         .clone()
         .or_else(|| episode.as_ref().and_then(|ep| ep.collection_id.clone()));
+    if episode.as_ref().is_some_and(|episode| {
+        series_pack_state.claimed_episode_ids.contains(&episode.id)
+    }) {
+        return Ok(());
+    }
 
     // The scope's acquisition-state row, or an unpersisted view when nothing
     // has happened to the scope yet — persisted the moment it is actually
@@ -441,16 +1047,43 @@ async fn process_single_target(
     // exhausted list (or a scope that never saved one) reaches the convergence
     // gate below.
     let stale_standby_indexer_ids = if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
-        match try_saved_candidates(app, item, None, dl_snapshot, now).await {
-            StandbyRecoveryOutcome::Recovered { season_pack } => {
-                if season_pack
-                    && let Some(season) = target
+        match try_saved_candidates(
+            app,
+            item,
+            None,
+            Some(&series_pack_state.claimed_episode_ids),
+            dl_snapshot,
+            now,
+        )
+        .await
+        {
+            StandbyRecoveryOutcome::Recovered { scope }
+            | StandbyRecoveryOutcome::Active { scope } => {
+                if let Some(episode_ids) = episode_ids_for_scope(&scope) {
+                    series_pack_state
+                        .claimed_episode_ids
+                        .extend(episode_ids.iter().cloned());
+                }
+                if let SubmissionScope::Collection { collection_id } = &scope {
+                    if let Ok(episodes) = app
+                        .services
+                        .catalog
+                        .shows
+                        .list_episodes_for_collection(collection_id)
+                        .await
+                    {
+                        series_pack_state
+                            .claimed_episode_ids
+                            .extend(episodes.into_iter().map(|episode| episode.id));
+                    }
+                    if let Some(season) = target
                         .season_number
                         .as_deref()
                         .or(episode.as_ref().and_then(|episode| episode.season_number.as_deref()))
                         .and_then(|season| season.parse::<u32>().ok())
-                {
-                    season_pack_grabbed.insert((title.id.clone(), season));
+                    {
+                        season_pack_grabbed.insert((title.id.clone(), season));
+                    }
                 }
                 info!(
                     title = title.name.as_str(),
@@ -459,7 +1092,7 @@ async fn process_single_target(
                 );
                 return Ok(());
             }
-            StandbyRecoveryOutcome::Deferred => {
+            StandbyRecoveryOutcome::Deferred { .. } => {
                 info!(
                     title = title.name.as_str(),
                     scope_key = target.scope_key.as_str(),
@@ -467,7 +1100,7 @@ async fn process_single_target(
                 );
                 return Ok(());
             }
-            StandbyRecoveryOutcome::Parked => {
+            StandbyRecoveryOutcome::Parked { .. } => {
                 info!(
                     title = title.name.as_str(),
                     scope_key = target.scope_key.as_str(),
@@ -495,6 +1128,68 @@ async fn process_single_target(
         .await;
     let search_season = subject.season;
 
+    // Exhausting saved results is a recovery action, not a new search. Preserve
+    // that contract before either the title or episode lane spends an indexer
+    // query.
+    if !stale_standby_indexer_ids.is_empty() {
+        if let Some(convergence) = app.resolve_scope_convergence(&search_title, &subject).await {
+            info!(
+                title_id = title.id.as_str(),
+                scope_key = convergence.scope_key.as_str(),
+                stale_indexer_ids = ?stale_standby_indexer_ids,
+                "background acquisition: pruned stale standby coverage; the next cycle will refresh these indexers"
+            );
+            for indexer_id in stale_standby_indexer_ids {
+                app.prune_scope_key_coverage(&convergence.scope_key, Some(&indexer_id))
+                    .await;
+            }
+        }
+        return Ok(());
+    }
+
+    // One title lookup per cycle discovers a qualifying whole-series or
+    // multi-season release before the established season and episode paths.
+    if target.media_type == "episode"
+        && title.facet != MediaFacet::Movie
+        && let Some(target_episode) = episode.as_ref()
+        && series_pack_state.attempted_titles.insert(title.id.clone())
+    {
+        match try_series_pack_for_title(
+            app,
+            &title,
+            &search_title,
+            target,
+            now,
+            availability,
+            indexer_hosts,
+            dl_snapshot,
+            failed_routes,
+            &submissions,
+            &tracked_states,
+            &series_pack_state.claimed_episode_ids,
+        )
+        .await
+        {
+            Ok(Some(episode_ids)) => {
+                let claims_target = episode_ids.contains(&target_episode.id);
+                series_pack_state
+                    .claimed_episode_ids
+                    .extend(episode_ids);
+                if claims_target {
+                    return Ok(());
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "series-pack title search failed"
+                );
+            }
+        }
+    }
+
     // Convergence gate: a converged scope rides RSS; an
     // unconverged one is searched against exactly its uncovered indexer subset.
     // Resolved once here and reused for the restricted search below.
@@ -506,21 +1201,6 @@ async fn process_single_target(
         );
         return Ok(());
     };
-    if !stale_standby_indexer_ids.is_empty() {
-        info!(
-            title_id = title.id.as_str(),
-            scope_key = convergence.scope_key.as_str(),
-            stale_indexer_ids = ?stale_standby_indexer_ids,
-            "background acquisition: pruned stale standby coverage; the next cycle will refresh these indexers"
-        );
-        for indexer_id in stale_standby_indexer_ids {
-            app.prune_scope_key_coverage(&convergence.scope_key, Some(&indexer_id))
-                .await;
-        }
-        // A stale standby list earns a fresh view from only the affected
-        // indexer, but never within the same walk that exhausted it.
-        return Ok(());
-    }
     let uncovered = match app
         .uncovered_indexers_for_scope(
             &convergence.scope_key,

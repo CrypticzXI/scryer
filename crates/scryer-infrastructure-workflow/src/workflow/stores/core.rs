@@ -782,8 +782,18 @@ pub async fn recover_stale_processing_imports(
 /// acquisition-search view both surface these), so at boot we fail them and
 /// clear `progress_json` so any state derived from it (e.g. the
 /// acquisition-search view) falls back to the now-terminal `failed` status.
-pub async fn reconcile_interrupted_job_runs(datastore: &StoreDatastore) -> AppResult<u64> {
+pub async fn reconcile_interrupted_job_runs(
+    datastore: &StoreDatastore,
+    excluded_run_ids: &[String],
+) -> AppResult<u64> {
     let now = Utc::now();
+    let excluded_clause = if excluded_run_ids.is_empty() {
+        String::new()
+    } else {
+        format!(" AND id NOT IN ({})", placeholders(excluded_run_ids.len()))
+    };
+    let mut args = vec![SqlArg::Timestamp(now), SqlArg::Timestamp(now)];
+    args.extend(excluded_run_ids.iter().cloned().map(SqlArg::Text));
     let rows = execute_write(
         datastore,
         "reconcile_interrupted_job_runs",
@@ -795,13 +805,13 @@ pub async fn reconcile_interrupted_job_runs(datastore: &StoreDatastore) -> AppRe
                  completed_at = {{}},
                  updated_at = {{}}
              WHERE job_key IS NOT NULL
-               AND status IN ('{}', '{}', '{}')",
+               AND status IN ('{}', '{}', '{}'){excluded_clause}",
             JobRunStatus::Failed.as_str(),
             JobRunStatus::Queued.as_str(),
             JobRunStatus::Running.as_str(),
             JobRunStatus::Discovering.as_str(),
         ),
-        vec![SqlArg::Timestamp(now), SqlArg::Timestamp(now)],
+        args,
     )
     .await?;
     Ok(rows)

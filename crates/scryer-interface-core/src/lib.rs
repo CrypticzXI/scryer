@@ -5,9 +5,9 @@ use std::time::Instant;
 use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, value};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
-    OAuthAuthorizationSource,
+    OAuthAuthorizationSource, application_upgrade::InstallationAssessment,
 };
-use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
+use scryer_domain::{AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
 pub mod loaders;
@@ -154,6 +154,7 @@ pub struct ApiContext {
     pub app: AppUseCase,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub restore: Option<RestoreContext>,
+    pub application_upgrade_assessment: InstallationAssessment,
 }
 
 /// Per-HTTP-request session persistence policy. This is intentionally absent
@@ -280,6 +281,11 @@ pub struct RestoreContext {
 
 pub fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
     Ok(ctx.data_unchecked::<ApiContext>().app.clone())
+}
+
+pub fn application_upgrade_assessment_from_ctx(ctx: &Context<'_>) -> InstallationAssessment {
+    ctx.data_unchecked::<ApiContext>()
+        .application_upgrade_assessment
 }
 
 pub fn auth_runtime_from_ctx(ctx: &Context<'_>) -> AuthRuntimeStateHandle {
@@ -522,6 +528,20 @@ pub struct OAuthActorSession {
     pub grant_id: String,
 }
 
+/// Marker added only for browser or native interactive sessions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InteractiveSession;
+
+/// Returns the actor only when the request was authenticated by an interactive session.
+pub fn interactive_session_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if ctx.data_opt::<InteractiveSession>().is_none() {
+        return Err(to_gql_error(AppError::Unauthorized(
+            "an interactive session is required for this operation".into(),
+        )));
+    }
+    actor_from_ctx(ctx)
+}
+
 pub fn oauth_actor_session_from_ctx(ctx: &Context<'_>) -> Option<OAuthActorSession> {
     ctx.data_opt::<OAuthActorSession>().cloned()
 }
@@ -577,16 +597,10 @@ pub async fn require_config_app_permission(
     {
         return Ok(actor);
     }
-    if actor
-        .authorization
-        .actor_capabilities
-        .contains(ActorCapabilityMask::MANAGE_OWN_ACCOUNT)
-    {
-        let mfa = mfa_verification_from_ctx(ctx);
-        app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
-            .await
-            .map_err(to_gql_error)?;
-    }
+    let mfa = mfa_verification_from_ctx(ctx);
+    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+        .await
+        .map_err(to_gql_error)?;
     Ok(actor)
 }
 

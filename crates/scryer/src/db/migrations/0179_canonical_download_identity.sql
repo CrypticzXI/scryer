@@ -22,7 +22,7 @@ CREATE TABLE download_client_bindings (
 CREATE INDEX idx_download_client_bindings_locator
     ON download_client_bindings(client_config_id, client_type_snapshot, native_item_id);
 
-CREATE TEMP TABLE _0178_download_submission_episode_links AS
+CREATE TEMP TABLE _0179_download_submission_episode_links AS
 SELECT
     download_client_id,
     download_client_type,
@@ -32,7 +32,7 @@ FROM download_submission_episode_links;
 
 DROP TABLE download_submission_episode_links;
 
-CREATE TABLE download_submissions_0178 (
+CREATE TABLE download_submissions_0179 (
     id TEXT PRIMARY KEY,
     title_id TEXT NOT NULL,
     facet TEXT NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE download_submissions_0178 (
     UNIQUE(download_client_id, download_client_type, download_client_item_id)
 );
 
-INSERT INTO download_submissions_0178 (
+INSERT INTO download_submissions_0179 (
     id,
     title_id,
     facet,
@@ -138,7 +138,7 @@ SELECT
 FROM download_submissions;
 
 DROP TABLE download_submissions;
-ALTER TABLE download_submissions_0178 RENAME TO download_submissions;
+ALTER TABLE download_submissions_0179 RENAME TO download_submissions;
 
 CREATE INDEX idx_download_submissions_title_request_signature
     ON download_submissions(title_id, request_signature);
@@ -174,9 +174,9 @@ SELECT
     download_client_type,
     download_client_item_id,
     episode_id
-FROM _0178_download_submission_episode_links;
+FROM _0179_download_submission_episode_links;
 
-DROP TABLE _0178_download_submission_episode_links;
+DROP TABLE _0179_download_submission_episode_links;
 
 CREATE INDEX idx_download_submission_episode_links_episode
     ON download_submission_episode_links(episode_id);

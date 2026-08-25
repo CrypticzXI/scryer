@@ -326,7 +326,7 @@ async fn ambiguous_submissions_attach_only_when_the_observation_is_unambiguous()
     ));
     let services = SqliteServices::new(db.to_string_lossy())
         .await
-        .expect("database should migrate through 0178");
+        .expect("database should migrate through 0179");
     sqlx::query(
         "INSERT INTO download_clients (
             id, name, client_type, config_json, created_at, updated_at
@@ -443,7 +443,7 @@ async fn readding_a_completed_delete_locator_creates_a_new_canonical_submission(
     ));
     let services = SqliteServices::new(db.to_string_lossy())
         .await
-        .expect("database should migrate through 0179");
+        .expect("database should migrate through 0180");
     sqlx::query(
         "INSERT INTO download_clients (
             id, name, client_type, config_json, created_at, updated_at

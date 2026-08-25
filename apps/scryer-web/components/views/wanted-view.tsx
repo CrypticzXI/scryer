@@ -142,6 +142,7 @@ function formatWantedDecisionCode(code: string, t: Translate) {
     ambiguous_identity: "wanted.decision.ambiguousIdentity",
     quality_blocked: "wanted.decision.qualityBlocked",
     minimum_seeders: "wanted.decision.minimumSeeders",
+    pack_below_missing_threshold: "wanted.decision.packBelowMissingThreshold",
     upgrade_rejected: "wanted.decision.upgradeRejected",
     pending_delay: "wanted.decision.pendingDelay",
     already_active: "wanted.decision.alreadyActive",

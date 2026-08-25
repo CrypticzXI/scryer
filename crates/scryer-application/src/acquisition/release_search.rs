@@ -173,6 +173,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     DownloadClientUnavailable,
     RepackGroupMismatch,
     MinimumSeeders,
+    PackBelowMissingThreshold,
 }
 
 impl ReleaseAutoDecisionCode {
@@ -200,6 +201,7 @@ impl ReleaseAutoDecisionCode {
             "download_client_unavailable" => Some(Self::DownloadClientUnavailable),
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
             "minimum_seeders" => Some(Self::MinimumSeeders),
+            "pack_below_missing_threshold" => Some(Self::PackBelowMissingThreshold),
             _ => None,
         }
     }
@@ -226,6 +228,7 @@ impl ReleaseAutoDecisionCode {
             Self::DownloadClientUnavailable => "download_client_unavailable",
             Self::RepackGroupMismatch => "repack_group_mismatch",
             Self::MinimumSeeders => "minimum_seeders",
+            Self::PackBelowMissingThreshold => "pack_below_missing_threshold",
         }
     }
 
@@ -265,6 +268,9 @@ impl ReleaseAutoDecisionCode {
             Self::DownloadClientUnavailable => "matching download clients are unavailable",
             Self::RepackGroupMismatch => "repack group does not match the existing file",
             Self::MinimumSeeders => "too few seeders for this indexer's seeding profile",
+            Self::PackBelowMissingThreshold => {
+                "series pack does not meet the missing-episode threshold"
+            }
         }
     }
 
@@ -1788,6 +1794,11 @@ impl AppUseCase {
         };
 
         for candidate in &mut results {
+            if candidate.auto_decision_code.as_deref()
+                == Some(ReleaseAutoDecisionCode::PackBelowMissingThreshold.as_str())
+            {
+                continue;
+            }
             let code = evaluate_auto_candidate(candidate, &evaluation_context);
             annotate_auto_decision(candidate, code);
         }

@@ -462,6 +462,66 @@ type AddTitleResult {
 }
 
 """
+Expiration choices available when creating an API key.
+"""
+enum ApiKeyExpiryPresetValue {
+	"""
+	Expires in 30 days.
+	"""
+	DAYS_30
+	"""
+	Expires in 90 days.
+	"""
+	DAYS_90
+	"""
+	Expires in one year.
+	"""
+	DAYS_365
+	"""
+	Does not expire automatically.
+	"""
+	NEVER
+}
+
+"""
+Non-secret API-key metadata.
+"""
+type ApiKeyPayload {
+	"""
+	API-key record ID.
+	"""
+	id: ID!
+	"""
+	Human-readable label.
+	"""
+	label: String!
+	"""
+	Auditable identity used for requests made with this key.
+	"""
+	actor: String!
+	"""
+	UTC expiry time, or null when the key does not expire.
+	"""
+	expiresAt: DateTime
+	"""
+	UTC revocation time, or null while active.
+	"""
+	revokedAt: DateTime
+	"""
+	UTC last successful-use time, or null when unused.
+	"""
+	lastUsedAt: DateTime
+	"""
+	UTC creation time.
+	"""
+	createdAt: DateTime!
+	"""
+	Provisioning source (`user` or `environment`).
+	"""
+	provisioningSource: String!
+}
+
+"""
 Application-wide permission independent of a library.
 """
 enum AppPermissionValue {
@@ -481,6 +541,114 @@ enum AppPermissionValue {
 	Allows changing catalog settings.
 	"""
 	MANAGE_CATALOG_SETTINGS
+}
+
+"""
+Installation layout identified for the in-app upgrade surface.
+"""
+enum ApplicationInstallationKindValue {
+	"""
+	A writable standalone installation.
+	"""
+	PORTABLE
+	"""
+	A directly installed Windows MSI package.
+	"""
+	DIRECT_MSI
+	"""
+	A container-managed installation.
+	"""
+	DOCKER
+	"""
+	A Homebrew-managed installation.
+	"""
+	HOMEBREW
+	"""
+	A winget-managed Windows installation.
+	"""
+	WINGET
+	"""
+	A Windows service or session-zero installation.
+	"""
+	WINDOWS_SUPERVISED
+	"""
+	In-app upgrades disabled by the operator.
+	"""
+	DISABLED
+	"""
+	An installation layout that is not supported for in-app upgrades.
+	"""
+	UNSUPPORTED
+}
+
+"""
+Party responsible for managing application upgrades.
+"""
+enum ApplicationUpgradeOwnerValue {
+	"""
+	The application can manage its own upgrade.
+	"""
+	IN_APP
+	"""
+	The operator or an external package manager owns upgrades.
+	"""
+	OPERATOR
+}
+
+"""
+Durable job run accepted for an application upgrade.
+"""
+type ApplicationUpgradeStartPayload {
+	"""
+	The registered application-upgrade job.
+	"""
+	jobRun: JobRunPayload!
+}
+
+"""
+Current update availability and installation eligibility.
+"""
+type ApplicationUpgradeStatusPayload {
+	"""
+	Running application version.
+	"""
+	currentVersion: String!
+	"""
+	Available application version, or null when no update notice exists.
+	"""
+	updateVersion: String
+	"""
+	Available release tag, or null when no update notice exists.
+	"""
+	updateTag: String
+	"""
+	Whether the current update notice offers a newer version.
+	"""
+	updateAvailable: Boolean!
+	"""
+	Installation layout identified at startup.
+	"""
+	installationKind: ApplicationInstallationKindValue!
+	"""
+	Party responsible for managing application upgrades.
+	"""
+	managementOwner: ApplicationUpgradeOwnerValue!
+	"""
+	Whether this installation is eligible for an in-app upgrade.
+	"""
+	eligible: Boolean!
+	"""
+	Stable snake_case code explaining eligibility.
+	"""
+	eligibilityReason: String!
+	"""
+	In-memory application-upgrade job still running in this process, if any.
+	"""
+	activeRun: JobRunPayload
+	"""
+	Most recent persisted application-upgrade job, if any.
+	"""
+	latestRun: JobRunPayload
 }
 
 """
@@ -1601,6 +1769,34 @@ input CreateMediaServerConnectionInput {
 	External-to-local filesystem path mappings.
 	"""
 	pathMappings: [MediaServerPathMappingInput!]
+}
+
+"""
+Input for creating an API key owned by the interactive actor.
+"""
+input CreateMyApiKeyInput {
+	"""
+	A human-readable label to distinguish the integration.
+	"""
+	label: String!
+	"""
+	Expiration policy. Omission uses 90 days.
+	"""
+	expiry: ApiKeyExpiryPresetValue
+}
+
+"""
+Creation result. `apiKey` is shown once and must be stored by the caller.
+"""
+type CreateMyApiKeyPayload {
+	"""
+	Generated raw API key. This is never returned again.
+	"""
+	apiKey: String!
+	"""
+	Non-secret metadata for the generated key.
+	"""
+	key: ApiKeyPayload!
 }
 
 """
@@ -6595,6 +6791,256 @@ type IndexerDownloadClientProviderCompatibilityPayload {
 }
 
 """
+A normalized, safe classification for an indexer HTTP error.
+"""
+enum IndexerErrorClassificationValue {
+	"""
+	Newznab reported an invalid API key.
+	"""
+	NEWZNAB_INVALID_API_KEY
+	"""
+	Newznab reported a suspended account.
+	"""
+	NEWZNAB_ACCOUNT_SUSPENDED
+	"""
+	Newznab reported insufficient account privileges.
+	"""
+	NEWZNAB_INSUFFICIENT_PRIVILEGES
+	"""
+	Newznab denied registration.
+	"""
+	NEWZNAB_REGISTRATION_DENIED
+	"""
+	Newznab has closed registrations.
+	"""
+	NEWZNAB_REGISTRATIONS_CLOSED
+	"""
+	Newznab rejected registration data.
+	"""
+	NEWZNAB_INVALID_REGISTRATION
+	"""
+	Newznab rejected the registration email address.
+	"""
+	NEWZNAB_INVALID_REGISTRATION_EMAIL
+	"""
+	Newznab registration failed.
+	"""
+	NEWZNAB_REGISTRATION_FAILED
+	"""
+	Newznab reported a missing request parameter.
+	"""
+	NEWZNAB_MISSING_PARAMETER
+	"""
+	Newznab reported an incorrect request parameter.
+	"""
+	NEWZNAB_INCORRECT_PARAMETER
+	"""
+	Newznab reported an unsupported function.
+	"""
+	NEWZNAB_NO_SUCH_FUNCTION
+	"""
+	Newznab reported a function that is unavailable.
+	"""
+	NEWZNAB_FUNCTION_NOT_AVAILABLE
+	"""
+	Newznab reported that no matching item exists.
+	"""
+	NEWZNAB_NO_SUCH_ITEM
+	"""
+	Newznab reported that the request limit was reached.
+	"""
+	NEWZNAB_REQUEST_LIMIT_REACHED
+	"""
+	Newznab reported that the download limit was reached.
+	"""
+	NEWZNAB_DOWNLOAD_LIMIT_REACHED
+	"""
+	Newznab reported its generic unknown error.
+	"""
+	NEWZNAB_UNKNOWN_ERROR
+	"""
+	Newznab reported that its API is disabled.
+	"""
+	NEWZNAB_API_DISABLED
+	"""
+	The server rejected the request as invalid.
+	"""
+	HTTP_BAD_REQUEST
+	"""
+	The server rejected authentication.
+	"""
+	HTTP_UNAUTHORIZED
+	"""
+	The server forbade access to the resource.
+	"""
+	HTTP_FORBIDDEN
+	"""
+	The requested endpoint was not found.
+	"""
+	HTTP_NOT_FOUND
+	"""
+	The server timed out the request.
+	"""
+	HTTP_REQUEST_TIMEOUT
+	"""
+	The server rate limited the request.
+	"""
+	HTTP_RATE_LIMITED
+	"""
+	The server returned a 5xx response.
+	"""
+	HTTP_SERVER_ERROR
+	"""
+	The accepted response did not match a known error shape.
+	"""
+	UNKNOWN
+}
+
+"""
+A newest-first page of persisted indexer HTTP errors.
+"""
+type IndexerErrorConnectionPayload {
+	"""
+	Error events in newest-first order.
+	"""
+	items: [IndexerErrorSummaryPayload!]!
+	"""
+	Cursor for the following page, or null at the end of the result set.
+	"""
+	nextCursor: String
+}
+
+"""
+A persisted error event together with its complete HTTP response.
+"""
+type IndexerErrorDetailPayload {
+	"""
+	List-safe metadata for the error event.
+	"""
+	error: IndexerErrorSummaryPayload!
+	"""
+	Complete response data available only through this detail query.
+	"""
+	response: IndexerErrorResponsePayload!
+}
+
+"""
+One raw response header retained for privileged diagnostics.
+"""
+type IndexerErrorHeaderPayload {
+	"""
+	Original response header name.
+	"""
+	name: String!
+	"""
+	Raw header value encoded as base64.
+	"""
+	valueBase64: String!
+	"""
+	Raw header value when it is valid UTF-8.
+	"""
+	value: String
+}
+
+"""
+Identifies the indexer operation that produced a persisted HTTP error.
+"""
+enum IndexerErrorOperationValue {
+	"""
+	Connection validation against the configured indexer.
+	"""
+	CONNECTION_TEST
+	"""
+	An operator-initiated release search.
+	"""
+	INTERACTIVE_SEARCH
+	"""
+	A scheduled or automated release search.
+	"""
+	AUTOMATIC_SEARCH
+	"""
+	A periodic RSS synchronization.
+	"""
+	RSS_SYNC
+	"""
+	A plugin-defined indexer action.
+	"""
+	INDEXER_ACTION
+	"""
+	Synchronization with an indexer management service.
+	"""
+	MANAGEMENT_SYNC
+	"""
+	Refreshing a managed indexer's capabilities document.
+	"""
+	CAPS_REFRESH
+}
+
+"""
+Complete persisted HTTP response retained for privileged diagnostics.
+"""
+type IndexerErrorResponsePayload {
+	"""
+	Original HTTP status code.
+	"""
+	status: Int!
+	"""
+	Repeated raw response headers in their retained order.
+	"""
+	headers: [IndexerErrorHeaderPayload!]!
+	"""
+	Raw response body encoded as base64.
+	"""
+	bodyBase64: String!
+}
+
+"""
+List-safe metadata for a persisted indexer HTTP error.
+"""
+type IndexerErrorSummaryPayload {
+	"""
+	Stable error-event identifier.
+	"""
+	id: ID!
+	"""
+	Configured indexer identifier captured with the event.
+	"""
+	indexerId: ID!
+	"""
+	Indexer name captured when the event occurred.
+	"""
+	indexerName: String!
+	"""
+	Operation that received the failed response.
+	"""
+	operation: IndexerErrorOperationValue!
+	"""
+	RFC 3339 time at which the response was accepted.
+	"""
+	occurredAt: String!
+	"""
+	HTTP response status code.
+	"""
+	httpStatus: Int!
+	"""
+	Safe error classification derived from the response.
+	"""
+	classification: IndexerErrorClassificationValue!
+	"""
+	Newznab provider code when a known Newznab error was recognized.
+	"""
+	providerErrorCode: Int
+	"""
+	Canonical safe error message that excludes response-body text.
+	"""
+	message: String!
+	"""
+	Response Content-Type header when it was valid UTF-8.
+	"""
+	contentType: String
+}
+
+"""
 Indexer proxy configuration and latest health state.
 """
 type IndexerProxyConfigPayload {
@@ -7151,6 +7597,10 @@ enum JobKeyValue {
 	Acquisition search.
 	"""
 	ACQUISITION_SEARCH
+	"""
+	Application upgrade.
+	"""
+	APPLICATION_UPGRADE
 }
 
 """
@@ -9586,6 +10036,15 @@ type MovieEntityPayload {
 
 type MutationRoot {
 	"""
+	Begin a signed in-application upgrade for the currently advertised release.
+	"""
+	startApplicationUpgrade(
+		"""
+		The update tag and version currently advertised by SMG.
+		"""
+		input: StartApplicationUpgradeInput!
+	): ApplicationUpgradeStartPayload!
+	"""
 	Create or reuse a title in an accessible library and return its hydration state.
 	"""
 	addTitle(
@@ -10444,6 +10903,24 @@ type MutationRoot {
 		"""
 		grantId: ID!
 	): RevokeMyOauthAppPayload!
+	"""
+	Creates an API key for the interactive actor and returns its secret once.
+	"""
+	createMyApiKey(
+		"""
+		Label and expiration policy for the new API key.
+		"""
+		input: CreateMyApiKeyInput!
+	): CreateMyApiKeyPayload!
+	"""
+	Revokes one user-created API key owned by the interactive actor.
+	"""
+	revokeMyApiKey(
+		"""
+		API-key record ID to revoke.
+		"""
+		id: ID!
+	): RevokeMyApiKeyPayload!
 	"""
 	Authenticates local credentials, optionally verifies required TOTP, and issues a session or MFA-enrollment token.
 	"""
@@ -13802,6 +14279,14 @@ type QueryRoot {
 	"""
 	myOauthApps: [OauthConnectedAppPayload!]!
 	"""
+	Lists the interactive actor's API keys without returning their secrets.
+	"""
+	myApiKeys: [ApiKeyPayload!]!
+	"""
+	Whether the interactive actor may create API keys under the active security policy.
+	"""
+	canCreateMyApiKeys: Boolean!
+	"""
 	Lists delay profiles with minute-based delays and their media-facet assignments.
 	"""
 	delayProfiles: [DelayProfilePayload!]!
@@ -13915,6 +14400,10 @@ type QueryRoot {
 	Return an available Scryer update notice from SMG, if one exists.
 	"""
 	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
+	"""
+	Return application update availability and installation eligibility; requires system-settings management permission.
+	"""
+	applicationUpgradeStatus: ApplicationUpgradeStatusPayload!
 	"""
 	List recycled media items in a bounded page, optionally restricted to library IDs.
 	"""
@@ -14260,24 +14749,24 @@ type QueryRoot {
 	"""
 	externalAccountInvites: [LinkedAccountPayload!]!
 	"""
-	List durable indexer HTTP errors newest first; requires system-settings permission.
+	List persisted indexer HTTP errors; requires system-settings management permission.
 	"""
 	indexerErrors(
 		"""
 		Restrict results to one configured indexer.
 		"""
-		indexerId: ID
+		indexerId: ID,
 		"""
 		Requested page size from 1 through 100; defaults to 50.
 		"""
-		first: Int = 50
+		first: Int = 50,
 		"""
 		Opaque cursor returned by a prior indexerErrors page.
 		"""
 		after: String
 	): IndexerErrorConnectionPayload!
 	"""
-	Return a complete persisted indexer HTTP error response; requires system-settings permission.
+	Return one complete persisted indexer HTTP response; requires system-settings management permission.
 	"""
 	indexerError(
 		"""
@@ -15113,6 +15602,20 @@ input RetryImportInput {
 }
 
 """
+Revocation result for a user-owned API key.
+"""
+type RevokeMyApiKeyPayload {
+	"""
+	ID of the revoked key.
+	"""
+	id: ID!
+	"""
+	Whether the active key was revoked.
+	"""
+	revoked: Boolean!
+}
+
+"""
 Result of revoking an OAuth grant.
 """
 type RevokeMyOauthAppPayload {
@@ -15581,6 +16084,10 @@ type SecuritySettingsPayload {
 	Whether local IPs may skip login.
 	"""
 	skipLoginForLocalIps: Boolean!
+	"""
+	Whether API keys are restricted to users with system-settings permission.
+	"""
+	apiKeysRestrictToSystemSettingsUsers: Boolean!
 	"""
 	Whether configuration changes require MFA step-up.
 	"""
@@ -16165,6 +16672,20 @@ enum SortDirectionValue {
 	Highest or latest values first.
 	"""
 	DESC
+}
+
+"""
+The exact update notice accepted by `startApplicationUpgrade`.
+"""
+input StartApplicationUpgradeInput {
+	"""
+	Release tag displayed by the current update notice.
+	"""
+	expectedTag: String!
+	"""
+	Release version displayed by the current update notice.
+	"""
+	expectedVersion: String!
 }
 
 """
@@ -19209,6 +19730,10 @@ input UpdateSecuritySettingsInput {
 	"""
 	skipLoginForLocalIps: Boolean!
 	"""
+	Whether API keys are restricted to users with system-settings permission.
+	"""
+	apiKeysRestrictToSystemSettingsUsers: Boolean
+	"""
 	Whether sensitive configuration changes require MFA step-up.
 	"""
 	mfaRequireConfigStepUp: Boolean!
@@ -19856,256 +20381,6 @@ input WebauthnRegisterCompleteInput {
 	Optional display name for the new passkey; absent or null leaves it unset.
 	"""
 	friendlyName: String
-}
-
-"""
-Identifies the indexer operation that produced a persisted HTTP error.
-"""
-enum IndexerErrorOperationValue {
-	"""
-	Connection validation against the configured indexer.
-	"""
-	CONNECTION_TEST
-	"""
-	An operator-initiated release search.
-	"""
-	INTERACTIVE_SEARCH
-	"""
-	A scheduled or automated release search.
-	"""
-	AUTOMATIC_SEARCH
-	"""
-	A periodic RSS synchronization.
-	"""
-	RSS_SYNC
-	"""
-	A plugin-defined indexer action.
-	"""
-	INDEXER_ACTION
-	"""
-	Synchronization with an indexer management service.
-	"""
-	MANAGEMENT_SYNC
-	"""
-	Refreshing a managed indexer's capabilities document.
-	"""
-	CAPS_REFRESH
-}
-
-"""
-A normalized, safe classification for an indexer HTTP error.
-"""
-enum IndexerErrorClassificationValue {
-	"""
-	Newznab reported an invalid API key.
-	"""
-	NEWZNAB_INVALID_API_KEY
-	"""
-	Newznab reported a suspended account.
-	"""
-	NEWZNAB_ACCOUNT_SUSPENDED
-	"""
-	Newznab reported insufficient account privileges.
-	"""
-	NEWZNAB_INSUFFICIENT_PRIVILEGES
-	"""
-	Newznab denied registration.
-	"""
-	NEWZNAB_REGISTRATION_DENIED
-	"""
-	Newznab has closed registrations.
-	"""
-	NEWZNAB_REGISTRATIONS_CLOSED
-	"""
-	Newznab rejected registration data.
-	"""
-	NEWZNAB_INVALID_REGISTRATION
-	"""
-	Newznab rejected the registration email address.
-	"""
-	NEWZNAB_INVALID_REGISTRATION_EMAIL
-	"""
-	Newznab registration failed.
-	"""
-	NEWZNAB_REGISTRATION_FAILED
-	"""
-	Newznab reported a missing request parameter.
-	"""
-	NEWZNAB_MISSING_PARAMETER
-	"""
-	Newznab reported an incorrect request parameter.
-	"""
-	NEWZNAB_INCORRECT_PARAMETER
-	"""
-	Newznab reported an unsupported function.
-	"""
-	NEWZNAB_NO_SUCH_FUNCTION
-	"""
-	Newznab reported a function that is unavailable.
-	"""
-	NEWZNAB_FUNCTION_NOT_AVAILABLE
-	"""
-	Newznab reported that no matching item exists.
-	"""
-	NEWZNAB_NO_SUCH_ITEM
-	"""
-	Newznab reported that the request limit was reached.
-	"""
-	NEWZNAB_REQUEST_LIMIT_REACHED
-	"""
-	Newznab reported that the download limit was reached.
-	"""
-	NEWZNAB_DOWNLOAD_LIMIT_REACHED
-	"""
-	Newznab reported its generic unknown error.
-	"""
-	NEWZNAB_UNKNOWN_ERROR
-	"""
-	Newznab reported that its API is disabled.
-	"""
-	NEWZNAB_API_DISABLED
-	"""
-	The server rejected the request as invalid.
-	"""
-	HTTP_BAD_REQUEST
-	"""
-	The server rejected authentication.
-	"""
-	HTTP_UNAUTHORIZED
-	"""
-	The server forbade access to the resource.
-	"""
-	HTTP_FORBIDDEN
-	"""
-	The requested endpoint was not found.
-	"""
-	HTTP_NOT_FOUND
-	"""
-	The server timed out the request.
-	"""
-	HTTP_REQUEST_TIMEOUT
-	"""
-	The server rate limited the request.
-	"""
-	HTTP_RATE_LIMITED
-	"""
-	The server returned a 5xx response.
-	"""
-	HTTP_SERVER_ERROR
-	"""
-	The accepted response did not match a known error shape.
-	"""
-	UNKNOWN
-}
-
-"""
-List-safe metadata for a persisted indexer HTTP error.
-"""
-type IndexerErrorSummaryPayload {
-	"""
-	Stable error-event identifier.
-	"""
-	id: ID!
-	"""
-	Configured indexer identifier captured with the event.
-	"""
-	indexerId: ID!
-	"""
-	Indexer name captured when the event occurred.
-	"""
-	indexerName: String!
-	"""
-	Operation that received the failed response.
-	"""
-	operation: IndexerErrorOperationValue!
-	"""
-	RFC 3339 time at which the response was accepted.
-	"""
-	occurredAt: String!
-	"""
-	HTTP response status code.
-	"""
-	httpStatus: Int!
-	"""
-	Safe error classification derived from the response.
-	"""
-	classification: IndexerErrorClassificationValue!
-	"""
-	Newznab provider code when a known Newznab error was recognized.
-	"""
-	providerErrorCode: Int
-	"""
-	Canonical safe error message that excludes response-body text.
-	"""
-	message: String!
-	"""
-	Response Content-Type header when it was valid UTF-8.
-	"""
-	contentType: String
-}
-
-"""
-One raw response header retained for privileged diagnostics.
-"""
-type IndexerErrorHeaderPayload {
-	"""
-	Original response header name.
-	"""
-	name: String!
-	"""
-	Raw header value encoded as base64.
-	"""
-	valueBase64: String!
-	"""
-	Raw header value when it is valid UTF-8.
-	"""
-	value: String
-}
-
-"""
-Complete persisted HTTP response retained for privileged diagnostics.
-"""
-type IndexerErrorResponsePayload {
-	"""
-	Original HTTP status code.
-	"""
-	status: Int!
-	"""
-	Repeated raw response headers in their retained order.
-	"""
-	headers: [IndexerErrorHeaderPayload!]!
-	"""
-	Raw response body encoded as base64.
-	"""
-	bodyBase64: String!
-}
-
-"""
-A persisted error event together with its complete HTTP response.
-"""
-type IndexerErrorDetailPayload {
-	"""
-	List-safe metadata for the error event.
-	"""
-	error: IndexerErrorSummaryPayload!
-	"""
-	Complete response data available only through this detail query.
-	"""
-	response: IndexerErrorResponsePayload!
-}
-
-"""
-A newest-first page of persisted indexer HTTP errors.
-"""
-type IndexerErrorConnectionPayload {
-	"""
-	Error events in newest-first order.
-	"""
-	items: [IndexerErrorSummaryPayload!]!
-	"""
-	Cursor for the following page, or null at the end of the result set.
-	"""
-	nextCursor: String
 }
 
 """

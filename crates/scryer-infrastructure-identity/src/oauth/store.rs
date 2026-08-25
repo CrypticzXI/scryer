@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, OAuthAuthorizationCodeRecord, OAuthAuthorizationSource,
-    OAuthClientRegistrationRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
-    OAuthRefreshRotation, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository,
+    ApiKeyProvisioningSource, ApiKeyRecord, AppError, AppResult, OAuthAuthorizationCodeRecord,
+    OAuthAuthorizationSource, OAuthClientRegistrationRecord, OAuthConnectedAppRecord,
+    OAuthRefreshGrantRecord, OAuthRefreshRotation, OAuthRefreshRotationOutcome,
+    OAuthRefreshTokenRecord, OAuthRepository,
 };
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
@@ -20,6 +21,150 @@ impl OAuthStore {
 
 #[async_trait]
 impl OAuthRepository for OAuthStore {
+    async fn create_api_key(&self, record: ApiKeyRecord) -> AppResult<ApiKeyRecord> {
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "create_api_key",
+            "INSERT INTO api_keys
+                (id, user_id, lookup_id, secret_hash, label, expires_at, revoked_at,
+                 last_used_at, created_at, provisioning_source)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            vec![
+                SqlArg::Text(record.id.clone()),
+                SqlArg::Text(record.user_id.clone()),
+                SqlArg::Text(record.lookup_id.clone()),
+                SqlArg::Text(record.secret_hash.clone()),
+                SqlArg::Text(record.label.clone()),
+                SqlArg::OptTimestamp(record.expires_at),
+                SqlArg::OptTimestamp(record.revoked_at),
+                SqlArg::OptTimestamp(record.last_used_at),
+                SqlArg::Timestamp(record.created_at),
+                SqlArg::Text(record.provisioning_source.as_str().to_string()),
+            ],
+        )
+        .await?;
+        Ok(record)
+    }
+
+    async fn get_api_key_by_lookup_id(&self, lookup_id: &str) -> AppResult<Option<ApiKeyRecord>> {
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, lookup_id, secret_hash, label, expires_at, revoked_at,
+                    last_used_at, created_at, provisioning_source
+               FROM api_keys
+              WHERE lookup_id = {}",
+            &[SqlArg::Text(lookup_id.to_string())],
+        )
+        .await?;
+        row.as_ref().map(row_to_api_key).transpose()
+    }
+
+    async fn list_api_keys(&self, user_id: &str) -> AppResult<Vec<ApiKeyRecord>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, lookup_id, secret_hash, label, expires_at, revoked_at,
+                    last_used_at, created_at, provisioning_source
+               FROM api_keys
+              WHERE user_id = {}
+              ORDER BY created_at DESC",
+            &[SqlArg::Text(user_id.to_string())],
+        )
+        .await?;
+        rows.iter().map(row_to_api_key).collect()
+    }
+
+    async fn list_environment_api_keys(&self) -> AppResult<Vec<ApiKeyRecord>> {
+        let rows = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id, user_id, lookup_id, secret_hash, label, expires_at, revoked_at,
+                    last_used_at, created_at, provisioning_source
+               FROM api_keys
+              WHERE provisioning_source = 'environment'",
+            &[],
+        )
+        .await?;
+        rows.iter().map(row_to_api_key).collect()
+    }
+
+    async fn upsert_environment_api_key(&self, record: ApiKeyRecord) -> AppResult<ApiKeyRecord> {
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "upsert_environment_api_key",
+            "INSERT INTO api_keys
+                (id, user_id, lookup_id, secret_hash, label, expires_at, revoked_at,
+                 last_used_at, created_at, provisioning_source)
+             VALUES ({}, {}, {}, {}, {}, {}, NULL, NULL, {}, 'environment')
+             ON CONFLICT(lookup_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                secret_hash = excluded.secret_hash,
+                label = excluded.label,
+                expires_at = excluded.expires_at,
+                revoked_at = NULL,
+                provisioning_source = 'environment'
+              WHERE api_keys.provisioning_source = 'environment'",
+            vec![
+                SqlArg::Text(record.id.clone()),
+                SqlArg::Text(record.user_id.clone()),
+                SqlArg::Text(record.lookup_id.clone()),
+                SqlArg::Text(record.secret_hash.clone()),
+                SqlArg::Text(record.label.clone()),
+                SqlArg::OptTimestamp(record.expires_at),
+                SqlArg::Timestamp(record.created_at),
+            ],
+        )
+        .await?;
+        if rows == 0 {
+            return Err(AppError::Validation(
+                "an API key with this lookup ID is not environment-managed".into(),
+            ));
+        }
+        Ok(record)
+    }
+
+    async fn revoke_api_key(
+        &self,
+        id: &str,
+        user_id: &str,
+        revoked_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "revoke_api_key",
+            "UPDATE api_keys
+                SET revoked_at = COALESCE(revoked_at, {})
+              WHERE id = {} AND user_id = {} AND revoked_at IS NULL",
+            vec![
+                SqlArg::Timestamp(revoked_at),
+                SqlArg::Text(id.to_string()),
+                SqlArg::Text(user_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(rows > 0)
+    }
+
+    async fn touch_api_key_last_used(
+        &self,
+        id: &str,
+        used_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "touch_api_key_last_used",
+            "UPDATE api_keys SET last_used_at = {}
+              WHERE id = {}
+                AND revoked_at IS NULL
+                AND (expires_at IS NULL OR expires_at > {})",
+            vec![
+                SqlArg::Timestamp(used_at),
+                SqlArg::Text(id.to_string()),
+                SqlArg::Timestamp(used_at),
+            ],
+        )
+        .await?;
+        Ok(rows > 0)
+    }
+
     async fn create_client_registration(
         &self,
         record: OAuthClientRegistrationRecord,
@@ -537,6 +682,24 @@ impl OAuthRepository for OAuthStore {
         .await?;
         rows.iter().map(row_to_connected_app).collect()
     }
+}
+
+fn row_to_api_key(row: &SqlRow) -> AppResult<ApiKeyRecord> {
+    let provisioning_source = row.text("provisioning_source")?;
+    let provisioning_source = ApiKeyProvisioningSource::parse(&provisioning_source)
+        .ok_or_else(|| AppError::Repository("invalid API key provisioning source".into()))?;
+    Ok(ApiKeyRecord {
+        id: row.text("id")?,
+        user_id: row.text("user_id")?,
+        lookup_id: row.text("lookup_id")?,
+        secret_hash: row.text("secret_hash")?,
+        label: row.text("label")?,
+        expires_at: row.opt_timestamp("expires_at")?,
+        revoked_at: row.opt_timestamp("revoked_at")?,
+        last_used_at: row.opt_timestamp("last_used_at")?,
+        created_at: row.timestamp("created_at")?,
+        provisioning_source,
+    })
 }
 
 async fn revoke_client_grants_tx(

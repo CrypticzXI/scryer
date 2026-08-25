@@ -1060,3 +1060,178 @@ async fn graphql_smg_scryer_update_notice_reads_persisted_notice() {
         "2026-06-15T12:00:00+00:00"
     );
 }
+
+#[tokio::test]
+async fn graphql_application_upgrade_status_requires_system_settings_permission() {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("find default admin");
+    let denied_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_status_denied".to_string(),
+            "upgrade-status-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create actor without system settings permission");
+    let system_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_status_system".to_string(),
+            "upgrade-status-pass2".to_string(),
+            AppPermissionMask::from_permission(scryer_domain::AppPermission::ManageSystemSettings),
+            vec![],
+        )
+        .await
+        .expect("create actor with system settings permission");
+
+    let query = r#"
+        {
+          applicationUpgradeStatus {
+            currentVersion
+            updateVersion
+            updateTag
+            updateAvailable
+            installationKind
+            managementOwner
+            eligible
+            eligibilityReason
+            activeRun { id status }
+            latestRun { id status }
+          }
+        }
+    "#;
+
+    let denied = schema_exec(&ctx, query, Some(denied_actor)).await;
+    assert_graphql_field_denied(&denied, "applicationUpgradeStatus");
+
+    let allowed = schema_exec(&ctx, query, Some(system_actor)).await;
+    assert_no_errors(&allowed);
+    let status = &allowed["data"]["applicationUpgradeStatus"];
+    assert!(
+        status["currentVersion"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty()),
+        "currentVersion must be populated: {status}"
+    );
+    assert!(status["updateVersion"].is_null() || status["updateVersion"].is_string());
+    assert!(status["updateTag"].is_null() || status["updateTag"].is_string());
+    assert!(status["updateAvailable"].is_boolean());
+    assert!(matches!(
+        status["installationKind"].as_str(),
+        Some(
+            "PORTABLE"
+                | "DIRECT_MSI"
+                | "DOCKER"
+                | "HOMEBREW"
+                | "WINGET"
+                | "WINDOWS_SUPERVISED"
+                | "DISABLED"
+                | "UNSUPPORTED"
+        )
+    ));
+    assert!(matches!(
+        status["managementOwner"].as_str(),
+        Some("IN_APP" | "OPERATOR")
+    ));
+    assert!(status["eligible"].is_boolean());
+    assert!(status["activeRun"].is_null());
+    assert!(status["latestRun"].is_null());
+    assert!(matches!(
+        status["eligibilityReason"].as_str(),
+        Some(
+            "disabled_by_operator"
+                | "managed_by_docker"
+                | "managed_by_homebrew"
+                | "windows_supervised"
+                | "managed_by_winget"
+                | "eligible"
+                | "unsupported_layout"
+                | "install_dir_not_writable"
+        )
+    ));
+}
+
+#[tokio::test]
+async fn graphql_start_application_upgrade_requires_config_permission_and_rejects_ineligible_installations()
+ {
+    let ctx = TestContext::new().await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("find default admin");
+    let denied_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_start_denied".to_string(),
+            "upgrade-start-pass1".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create actor without system settings permission");
+    let system_actor = ctx
+        .app
+        .create_user(
+            &admin,
+            "upgrade_start_system".to_string(),
+            "upgrade-start-pass2".to_string(),
+            AppPermissionMask::from_permission(scryer_domain::AppPermission::ManageSystemSettings),
+            vec![],
+        )
+        .await
+        .expect("create actor with system settings permission");
+    let mutation = r#"
+        mutation {
+          startApplicationUpgrade(input: { expectedTag: "v999.0.0", expectedVersion: "999.0.0" }) {
+            jobRun { id }
+          }
+        }
+    "#;
+
+    let denied = schema_exec(&ctx, mutation, Some(denied_actor)).await;
+    assert_graphql_field_denied(&denied, "startApplicationUpgrade");
+
+    let ineligible = schema_exec(&ctx, mutation, Some(system_actor)).await;
+    assert!(
+        ineligible.get("errors").is_some(),
+        "expected ineligible error: {ineligible}"
+    );
+    assert!(
+        ineligible["errors"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message
+                .contains("application upgrade is not eligible: unsupported_layout")),
+        "unexpected ineligible response: {ineligible}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_start_application_upgrade_requires_mfa_step_up() {
+    let ctx = TestContext::new().await;
+    let (_admin, token, _totp_code) =
+        enable_form_login_with_config_step_up(&ctx, "admin", "admin-pass1").await;
+    let body = gql_with_token(
+        &ctx,
+        r#"
+            mutation {
+              startApplicationUpgrade(input: { expectedTag: "v999.0.0", expectedVersion: "999.0.0" }) {
+                jobRun { id }
+              }
+            }
+        "#,
+        json!({}),
+        &token,
+    )
+    .await;
+    assert_mfa_step_up_required(&body);
+}

@@ -247,7 +247,7 @@ async fn reconcile_interrupted_job_runs_fails_running_rows_and_leaves_terminal_u
         .id;
 
     let reconciled = store
-        .reconcile_interrupted_job_runs()
+        .reconcile_interrupted_job_runs(&[])
         .await
         .expect("reconcile interrupted job runs");
     assert_eq!(reconciled, 2);
@@ -282,10 +282,65 @@ async fn reconcile_interrupted_job_runs_fails_running_rows_and_leaves_terminal_u
 
     // Reconciliation is idempotent once everything is terminal.
     let second_pass = store
-        .reconcile_interrupted_job_runs()
+        .reconcile_interrupted_job_runs(&[])
         .await
         .expect("reconcile again");
     assert_eq!(second_pass, 0);
+}
+
+#[tokio::test]
+async fn reconcile_interrupted_job_runs_preserves_a_reboot_required_upgrade_run() {
+    let (services, _db) = temp_services("workflow_operation_reconcile_excluded").await;
+    let store = workflow_operation_store(&services);
+    let now = Utc::now();
+    let upgrade_id = store
+        .create_job_run(&test_job_run_record(
+            "reboot-required-upgrade",
+            JobKey::ApplicationUpgrade,
+            JobRunStatus::Running,
+            now,
+            now,
+            None,
+        ))
+        .await
+        .expect("create reboot-required upgrade run")
+        .id;
+    let interrupted_id = store
+        .create_job_run(&test_job_run_record(
+            "ordinary-interrupted-run",
+            JobKey::Housekeeping,
+            JobRunStatus::Running,
+            now,
+            now,
+            None,
+        ))
+        .await
+        .expect("create interrupted run")
+        .id;
+
+    let reconciled = store
+        .reconcile_interrupted_job_runs(std::slice::from_ref(&upgrade_id))
+        .await
+        .expect("reconcile interrupted job runs");
+    assert_eq!(reconciled, 1);
+    assert_eq!(
+        store
+            .get_job_run(&upgrade_id)
+            .await
+            .expect("load upgrade run")
+            .expect("upgrade run")
+            .status,
+        JobRunStatus::Running
+    );
+    assert_eq!(
+        store
+            .get_job_run(&interrupted_id)
+            .await
+            .expect("load interrupted run")
+            .expect("interrupted run")
+            .status,
+        JobRunStatus::Failed
+    );
 }
 
 #[tokio::test]

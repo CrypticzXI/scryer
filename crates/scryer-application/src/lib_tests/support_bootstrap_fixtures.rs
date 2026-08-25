@@ -1,5 +1,8 @@
 use super::*;
+use std::path::PathBuf;
+
 use async_trait::async_trait;
+use scryer_runtime_info::BinaryLane;
 use tokio::sync::Mutex;
 
 #[derive(Default)]
@@ -69,6 +72,19 @@ impl DownloadRegistryRepository for FixtureDownloadRegistry {
 
 pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
+}
+
+pub(crate) fn bootstrap_application_upgrade(
+    config_dir: PathBuf,
+) -> (AppUseCase, User, Arc<RecordingJobRunRepo>) {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let (app, user) = bootstrap();
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_runtime_environment(BinaryLane::Portable, config_dir, Vec::<String>::new())
+            .with_job_runs(job_runs.clone())
+    });
+    (app, user, job_runs)
 }
 
 pub(super) fn test_quality_profile(id: &str) -> QualityProfile {

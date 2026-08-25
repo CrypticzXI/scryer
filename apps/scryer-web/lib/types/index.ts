@@ -24,3 +24,4 @@ export * from "./title-history";
 export * from "./jobs";
 export * from "./pending-imports";
 export * from "./subtitle-providers";
+export * from "./application-upgrade";

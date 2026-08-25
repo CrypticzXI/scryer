@@ -171,6 +171,9 @@ pub(super) struct RecordedIndexerSearch {
 pub(super) struct TrackingIndexerClient {
     pub(super) searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
     pub(super) season_pack_titles: Vec<String>,
+    pub(super) title_pack_titles: Vec<String>,
+    pub(super) fail_scoped_queries: bool,
+    pub(super) report_routed_indexers_fired: bool,
 }
 
 impl TrackingIndexerClient {
@@ -179,6 +182,24 @@ impl TrackingIndexerClient {
         titles: impl IntoIterator<Item = String>,
     ) -> Self {
         self.season_pack_titles = titles.into_iter().collect();
+        self
+    }
+
+    pub(super) fn with_title_pack_titles(
+        mut self,
+        titles: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.title_pack_titles = titles.into_iter().collect();
+        self
+    }
+
+    pub(super) fn failing_scoped_queries(mut self) -> Self {
+        self.fail_scoped_queries = true;
+        self
+    }
+
+    pub(super) fn reporting_routed_indexers_fired(mut self) -> Self {
+        self.report_routed_indexers_fired = true;
         self
     }
 }
@@ -193,7 +214,7 @@ impl IndexerClient for TrackingIndexerClient {
         _facet: Option<String>,
         _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
-        _indexer_routing: Option<IndexerRoutingPlan>,
+        indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
         _operation: IndexerErrorOperation,
         season: Option<u32>,
@@ -208,6 +229,24 @@ impl IndexerClient for TrackingIndexerClient {
             season,
             episode,
         });
+        let indexer_outcomes = if self.report_routed_indexers_fired {
+            indexer_routing
+                .into_iter()
+                .flat_map(|plan| plan.entries)
+                .filter(|(_, entry)| entry.enabled)
+                .map(|(indexer_id, _)| crate::IndexerQueryOutcome {
+                    indexer_id,
+                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if self.fail_scoped_queries && (season.is_some() || episode.is_some()) {
+            return Err(AppError::Repository(
+                "tracking indexer scoped-query failure".to_string(),
+            ));
+        }
 
         let release_title = match (season, episode) {
             (Some(season), Some(episode)) => {
@@ -217,14 +256,16 @@ impl IndexerClient for TrackingIndexerClient {
             (None, _) => format!("{query}.2024.1080p.WEB-DL"),
         };
         let release_titles =
-            if season.is_some() && episode.is_none() && !self.season_pack_titles.is_empty() {
+            if season.is_none() && episode.is_none() && !self.title_pack_titles.is_empty() {
+                self.title_pack_titles.clone()
+            } else if season.is_some() && episode.is_none() && !self.season_pack_titles.is_empty() {
                 self.season_pack_titles.clone()
             } else {
                 vec![release_title]
             };
 
         Ok(IndexerSearchResponse {
-            indexer_outcomes: Vec::new(),
+            indexer_outcomes,
             results: release_titles
                 .into_iter()
                 .map(|release_title| {

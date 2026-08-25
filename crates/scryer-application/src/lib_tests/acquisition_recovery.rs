@@ -543,9 +543,13 @@ async fn standby_delay_parks_the_best_row_stops_the_walk_and_promotion_grabs_whe
     let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
 
     assert_eq!(
-        crate::acquisition_workflow::try_saved_candidates(&app, &wanted, None, &snapshot, &now,)
-            .await,
-        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked
+        crate::acquisition_workflow::try_saved_candidates(
+            &app, &wanted, None, None, &snapshot, &now,
+        )
+        .await,
+        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked {
+            scope: Some(SubmissionScope::Title)
+        }
     );
     let parked = pending_releases
         .get_pending_release(&best.id)
@@ -580,23 +584,28 @@ async fn standby_delay_parks_the_best_row_stops_the_walk_and_promotion_grabs_whe
             &app,
             &wanted,
             None,
+            None,
             &snapshot,
             &(now + chrono::Duration::minutes(1)),
         )
         .await,
-        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked,
+        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked { scope: None },
         "the waiting head owns subsequent standby cycles"
     );
-    assert_eq!(
-        app.try_grab_pending_release(
-            &wanted,
-            &parked,
-            &(now + chrono::Duration::minutes(11)),
-            crate::acquisition::pending::PendingGrabTrigger::Automatic,
-        )
-        .await
-        .expect("promotion should resolve"),
-        crate::acquisition::pending::PendingGrabOutcome::Grabbed,
+    assert!(
+        matches!(
+            app.try_grab_pending_release(
+                &wanted,
+                &parked,
+                &(now + chrono::Duration::minutes(11)),
+                crate::acquisition::pending::PendingGrabTrigger::Automatic,
+            )
+            .await
+            .expect("promotion should resolve"),
+            crate::acquisition::pending::PendingGrabOutcome::Grabbed {
+                scope: SubmissionScope::Title
+            }
+        ),
         "the unchanged profile must allow promotion after delay_until"
     );
 }
@@ -732,7 +741,7 @@ async fn operator_pending_grab_ignores_the_delay_profile() {
         .expect("load wanted")
         .expect("wanted exists");
 
-    assert_eq!(
+    assert!(matches!(
         app.try_grab_pending_release(
             &wanted,
             &pending,
@@ -741,8 +750,10 @@ async fn operator_pending_grab_ignores_the_delay_profile() {
         )
         .await
         .expect("operator grab should resolve"),
-        crate::acquisition::pending::PendingGrabOutcome::Grabbed
-    );
+        crate::acquisition::pending::PendingGrabOutcome::Grabbed {
+            scope: SubmissionScope::Title
+        }
+    ));
     assert_eq!(
         pending_releases
             .get_pending_release(&pending.id)
@@ -2349,7 +2360,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             && record
                 .failure_reason
                 .as_deref()
-                .is_some_and(|reason| reason.contains("re-opened season episodes"))
+                .is_some_and(|reason| reason.contains("re-opened covered episodes"))
     }));
     assert!(history.records.iter().any(|record| {
         record.event_type == TitleHistoryEventType::Blocklisted
@@ -2385,6 +2396,149 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             .as_deref(),
         Some("failed")
     );
+}
+
+#[tokio::test]
+async fn episode_set_pack_failure_reopens_only_its_covered_wanted_items() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Episode Set Failure Recovery".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let covered = (1..=501)
+        .map(|number| {
+            (
+                format!("covered-wanted-{number}"),
+                format!("covered-episode-{number}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let unrelated = (
+        "unrelated-wanted".to_string(),
+        "unrelated-episode".to_string(),
+    );
+    for (wanted_id, episode_id) in covered.iter().chain(std::iter::once(&unrelated)) {
+        wanted_items
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
+                id: wanted_id.clone(),
+                title_id: title.id.clone(),
+                title_name: Some(title.name.clone()),
+                title_slug: None,
+                title_facet: None,
+                library_id: None,
+                library_name: None,
+                library_slug: None,
+                episode_id: Some(episode_id.clone()),
+                collection_id: None,
+                series_movie_link_id: None,
+                season_number: Some("1".to_string()),
+                episode_number: None,
+                media_type: "episode".to_string(),
+                last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+                status: AcquisitionScopeStatus::Grabbed,
+                grabbed_release: Some(
+                    serde_json::json!({
+                        "title": "Episode.Set.Pack.Failure.S01.1080p.WEB-DL",
+                        "score": 100,
+                        "grabbed_at": Utc::now().to_rfc3339(),
+                    })
+                    .to_string(),
+                ),
+                landed_bar: None,
+                latest_release_decision: None,
+                mismatch_recovery_eligible: false,
+                created_at: Utc::now().to_rfc3339(),
+                updated_at: Utc::now().to_rfc3339(),
+            })
+            .await
+            .expect("seed grabbed wanted item");
+    }
+
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "anime".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "failed-episode-set-pack".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Episode.Set.Pack.Failure.S01.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::EpisodeSet {
+                episode_ids: covered
+                    .iter()
+                    .map(|(_, episode_id)| episode_id.clone())
+                    .collect(),
+            },
+        })
+        .await
+        .expect("record failed episode-set submission");
+
+    let outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: None,
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "failed-episode-set-pack".to_string(),
+            release_title: "Episode.Set.Pack.Failure.S01.1080p.WEB-DL".to_string(),
+            reason: "download failed".to_string(),
+            remove_from_client_if_configured: false,
+            skip_reacquire: false,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::Reopened
+    );
+    for (wanted_id, _) in &covered {
+        let wanted = wanted_items
+            .get_acquisition_scope_state_by_id(wanted_id)
+            .await
+            .expect("get covered wanted item")
+            .expect("covered wanted item exists");
+        assert_eq!(wanted.status, AcquisitionScopeStatus::Wanted);
+        assert!(wanted.grabbed_release.is_none());
+    }
+
+    let unaffected = wanted_items
+        .get_acquisition_scope_state_by_id(&unrelated.0)
+        .await
+        .expect("get unrelated wanted item")
+        .expect("unrelated wanted item exists");
+    assert_eq!(unaffected.status, AcquisitionScopeStatus::Grabbed);
+    assert!(unaffected.grabbed_release.is_some());
 }
 
 #[tokio::test]
@@ -2668,10 +2822,17 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
-    assert!(
+    assert!(searches.iter().all(|search| {
+        (search.season == Some(1) && search.episode.is_some())
+            || (search.season.is_none() && search.episode.is_none())
+    }));
+    assert_eq!(
         searches
             .iter()
-            .all(|search| search.season == Some(1) && search.episode.is_some())
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the show receives one title-level series-pack lookup"
     );
 
     let wanted_store = wanted_items.store.lock().await.clone();
@@ -3508,6 +3669,755 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
     }
 }
 
+async fn seed_series_pack_scope_fixture(
+    indexer_client: Arc<TrackingIndexerClient>,
+) -> (
+    AppUseCase,
+    Title,
+    Arc<TrackingIndexerClient>,
+    Vec<(u32, String)>,
+) {
+    seed_series_pack_scope_fixture_with_persisted_seasons(indexer_client, &[1, 2, 3, 4, 5]).await
+}
+
+async fn seed_series_pack_scope_fixture_with_persisted_seasons(
+    indexer_client: Arc<TrackingIndexerClient>,
+    persisted_seasons: &[u32],
+) -> (
+    AppUseCase,
+    Title,
+    Arc<TrackingIndexerClient>,
+    Vec<(u32, String)>,
+) {
+    seed_series_pack_scope_fixture_with_download_client(
+        indexer_client,
+        persisted_seasons,
+        Arc::new(StubDownloadClient::default().with_unique_job_ids()),
+    )
+    .await
+}
+
+async fn seed_series_pack_scope_fixture_with_download_client(
+    indexer_client: Arc<TrackingIndexerClient>,
+    persisted_seasons: &[u32],
+    download_client: Arc<StubDownloadClient>,
+) -> (
+    AppUseCase,
+    Title,
+    Arc<TrackingIndexerClient>,
+    Vec<(u32, String)>,
+) {
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking_and_indexer(
+        download_client,
+        Arc::new(TrackingDownloadSubmissionRepo::default()),
+        Arc::new(TrackingPendingReleaseRepo::default()),
+        wanted_items.clone(),
+        indexer_client.clone(),
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Series Pack Scope".into(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series-pack title");
+
+    let mut episode_ids = Vec::new();
+    for season_number in 1..=5 {
+        let season = app
+            .services
+            .catalog
+            .shows
+            .create_collection(Collection {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_type: CollectionType::Season,
+                collection_index: season_number.to_string(),
+                label: Some(format!("Season {season_number}")),
+                ordered_path: None,
+                narrative_order: Some(season_number.to_string()),
+                first_episode_number: Some("1".to_string()),
+                last_episode_number: Some("1".to_string()),
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create series-pack season");
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season.id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some("1".to_string()),
+                season_number: Some(season_number.to_string()),
+                episode_label: Some(format!("S{season_number:02}E01")),
+                title: Some(format!("S{season_number:02}E01")),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create series-pack episode");
+        if persisted_seasons.contains(&season_number) {
+            wanted_items
+                .upsert_acquisition_scope_state(&AcquisitionScopeState {
+                    id: Id::new().0,
+                    title_id: title.id.clone(),
+                    title_name: Some(title.name.clone()),
+                    title_slug: None,
+                    title_facet: None,
+                    library_id: None,
+                    library_name: None,
+                    library_slug: None,
+                    episode_id: Some(episode.id.clone()),
+                    collection_id: Some(season.id),
+                    series_movie_link_id: None,
+                    season_number: Some(season_number.to_string()),
+                    episode_number: Some("1".to_string()),
+                    media_type: "episode".to_string(),
+                    last_search_at: None,
+                    status: AcquisitionScopeStatus::Wanted,
+                    grabbed_release: None,
+                    landed_bar: None,
+                    latest_release_decision: None,
+                    mismatch_recovery_eligible: false,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                })
+                .await
+                .expect("seed series-pack wanted episode");
+        }
+        episode_ids.push((season_number, episode.id));
+    }
+
+    (app, title, indexer_client, episode_ids)
+}
+
+fn series_pack_anchor_standby(
+    title: &Title,
+    wanted_item_id: &str,
+    release_title: &str,
+) -> PendingRelease {
+    PendingRelease {
+        id: Id::new().0,
+        wanted_item_id: wanted_item_id.to_string(),
+        title_id: title.id.clone(),
+        release_title: release_title.to_string(),
+        release_url: Some("https://example.invalid/anchor-standby.nzb".to_string()),
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        release_size_bytes: None,
+        release_score: 100,
+        scoring_log_json: None,
+        indexer_source: Some("nzbgeek".to_string()),
+        indexer_id: None,
+        release_guid: Some("anchor-standby".to_string()),
+        added_at: "2026-01-01T00:00:00Z".to_string(),
+        delay_until: "2026-01-01T00:00:00Z".to_string(),
+        status: PendingReleaseStatus::Standby,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+        seed_minimums: Default::default(),
+        seeders: None,
+    }
+}
+
+#[tokio::test]
+async fn exhausted_series_pack_search_restores_anchor_episode_standby_rows() {
+    let download_client = Arc::new(StubDownloadClient::default().with_unique_job_ids());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "series pack unavailable".to_string(),
+        )))
+        .await;
+    let pack_title = "Series.Pack.Scope.S01-S04.1080p.WEB-DL-PACK".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_title_pack_titles([pack_title])
+            .failing_scoped_queries(),
+    );
+    let (app, title, _, _) = seed_series_pack_scope_fixture_with_download_client(
+        indexer_client,
+        &[1, 2, 3, 4, 5],
+        download_client,
+    )
+    .await;
+    let anchor_episode_id = app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await
+        .expect("list series-pack episodes")
+        .into_iter()
+        .find(|episode| {
+            episode.episode_type == scryer_domain::EpisodeType::Standard
+                && episode.monitored
+                && episode.air_date.as_deref() == Some("2024-01-01")
+        })
+        .map(|episode| episode.id)
+        .expect("series-pack anchor exists");
+    let mut anchor = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .get_acquisition_scope_state_for_title(&title.id, Some(&anchor_episode_id))
+        .await
+        .expect("load anchor state")
+        .expect("anchor state exists");
+    // The episode lane normally walks this row before the title lane. Keep it
+    // out of that first walk so this test exercises the pack lane's own
+    // delete-and-exhaust path.
+    anchor.status = AcquisitionScopeStatus::Grabbed;
+    app.services
+        .workflow
+        .acquisition_scope_states
+        .upsert_acquisition_scope_state(&anchor)
+        .await
+        .expect("hold anchor outside the episode standby walk");
+    let original = series_pack_anchor_standby(
+        &title,
+        &anchor.id,
+        "Series.Pack.Scope.S01E01.1080p.WEB-DL-ORIGINAL",
+    );
+    app.services
+        .workflow
+        .pending_releases
+        .insert_pending_release(&original)
+        .await
+        .expect("seed anchor standby");
+
+    app.run_convergence_cycle_once().await;
+
+    let standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_standby_pending_releases_for_wanted_item(&anchor.id)
+        .await
+        .expect("load restored anchor standby");
+    assert_eq!(standby.len(), 1);
+    let restored = standby.first().expect("restored standby exists");
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.release_title, original.release_title);
+    assert_eq!(restored.wanted_item_id, original.wanted_item_id);
+}
+
+#[tokio::test]
+async fn in_flight_series_episodes_count_as_owned_for_the_pack_ratio_gate() {
+    let pack_title = "Series.Pack.Scope.S01-S02.1080p.WEB-DL-PACK".to_string();
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles([pack_title.clone()]));
+    let (app, title, _, episode_ids) = seed_series_pack_scope_fixture(indexer_client).await;
+    let season_one_collection_id = app
+        .services
+        .catalog
+        .shows
+        .get_episode_by_id(
+            episode_ids
+                .iter()
+                .find(|(season, _)| *season == 1)
+                .map(|(_, episode_id)| episode_id)
+                .expect("season one episode exists"),
+        )
+        .await
+        .expect("load season one episode")
+        .and_then(|episode| episode.collection_id)
+        .expect("season one collection exists");
+    let mut season_one_episode_ids = episode_ids
+        .iter()
+        .filter(|(season, _)| *season == 1)
+        .map(|(_, episode_id)| episode_id.clone())
+        .collect::<Vec<_>>();
+    for episode_number in 2..=4 {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .create_episode(Episode {
+                id: Id::new().0,
+                title_id: title.id.clone(),
+                collection_id: Some(season_one_collection_id.clone()),
+                episode_type: scryer_domain::EpisodeType::Standard,
+                episode_number: Some(episode_number.to_string()),
+                season_number: Some("1".to_string()),
+                episode_label: Some(format!("S01E{episode_number:02}")),
+                title: Some(format!("S01E{episode_number:02}")),
+                air_date: Some("2024-01-01".to_string()),
+                duration_seconds: Some(1_440),
+                has_multi_audio: false,
+                has_subtitle: false,
+                is_filler: false,
+                is_recap: false,
+                absolute_number: None,
+                overview: None,
+                tvdb_id: None,
+                image_url: None,
+                monitored: true,
+                created_at: Utc::now(),
+            })
+            .await
+            .expect("create additional season one episode");
+        season_one_episode_ids.push(episode.id);
+    }
+    for (season, episode_id) in episode_ids.iter().filter(|(season, _)| *season >= 3) {
+        let file_id = app
+            .services
+            .library
+            .media_files
+            .insert_media_file(&crate::InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: format!("/library/Series Pack Scope/S{season:02}E01.mkv"),
+                size_bytes: 1_000_000,
+                role: crate::MediaFileRole::Primary,
+                ..Default::default()
+            })
+            .await
+            .expect("seed owned episode file");
+        app.services
+            .library
+            .media_files
+            .link_file_to_episode(&file_id, episode_id)
+            .await
+            .expect("link owned episode file");
+    }
+    let active_submission = DownloadSubmission {
+        title_id: title.id.clone(),
+        purpose: crate::DownloadSubmissionPurpose::Standard,
+        facet: "anime".to_string(),
+        download_client_id: Some("primary".to_string()),
+        download_client_type: "nzbget".to_string(),
+        download_client_item_id: "season-one-active".to_string(),
+        source_hint: None,
+        source_provider_id: None,
+        source_provider_name: None,
+        source_kind: Some(DownloadSourceKind::NzbUrl),
+        source_title: Some("Series.Pack.Scope.S01.1080p.WEB-DL".to_string()),
+        release_size_bytes: None,
+        request_signature: None,
+        scope: SubmissionScope::EpisodeSet {
+            episode_ids: season_one_episode_ids,
+        },
+    };
+    let active_identity = ClientJobLocator::from_submission(&active_submission);
+    app.services
+        .workflow
+        .download_submissions
+        .record_submission(active_submission)
+        .await
+        .expect("record active season one submission");
+    app.services
+        .workflow
+        .download_submissions
+        .update_tracked_state(
+            &active_identity,
+            TrackedDownloadState::ImportPending.as_str(),
+        )
+        .await
+        .expect("mark season one submission active");
+
+    app.run_convergence_cycle_once().await;
+
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("list title submissions");
+    assert!(
+        !submissions
+            .iter()
+            .any(|submission| submission.source_title.as_deref() == Some(pack_title.as_str())),
+        "the in-flight S01 scope leaves only one of eight episodes missing: {submissions:?}"
+    );
+}
+
+#[tokio::test]
+async fn series_pack_candidate_overlapping_an_earlier_cycle_claim_is_not_submitted() {
+    let pack_title = "Series.Pack.Scope.S01-S02.1080p.WEB-DL-PACK".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_title_pack_titles([pack_title.clone()])
+            .failing_scoped_queries(),
+    );
+    let (app, title, _, episode_ids) =
+        seed_series_pack_scope_fixture_with_persisted_seasons(indexer_client, &[1, 2]).await;
+    let mut recovered_releases = Vec::new();
+    for season in 1..=2 {
+        let episode_id = episode_ids
+            .iter()
+            .find(|(candidate_season, _)| *candidate_season == season)
+            .map(|(_, episode_id)| episode_id)
+            .expect("claimed season episode exists");
+        let wanted = app
+            .services
+            .workflow
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(&title.id, Some(episode_id))
+            .await
+            .expect("load claimed season wanted state")
+            .expect("claimed season wanted state exists");
+        let recovered = series_pack_anchor_standby(
+            &title,
+            &wanted.id,
+            &format!("Series.Pack.Scope.S{season:02}E01.1080p.WEB-DL-RECOVERY"),
+        );
+        app.services
+            .workflow
+            .pending_releases
+            .insert_pending_release(&recovered)
+            .await
+            .expect("seed recovered episode standby");
+        recovered_releases.push(recovered);
+    }
+
+    app.run_convergence_cycle_once().await;
+
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("list title submissions");
+    assert!(submissions.iter().any(|submission| {
+        submission
+            .source_title
+            .as_deref()
+            .is_some_and(|source_title| {
+                recovered_releases
+                    .iter()
+                    .any(|recovered| recovered.release_title == source_title)
+            })
+    }));
+    assert!(
+        !submissions
+            .iter()
+            .any(|submission| submission.source_title.as_deref() == Some(pack_title.as_str())),
+        "the S01-S02 pack overlaps S01 recovered earlier in this cycle"
+    );
+}
+
+#[tokio::test]
+async fn multi_season_series_pack_claims_only_its_episode_set_and_leaves_later_seasons_active() {
+    let pack_title = "Series.Pack.Scope.S01-S04.1080p.WEB-DL-PACK".to_string();
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles([pack_title.clone()]));
+    let (app, title, indexer_client, episode_ids) =
+        seed_series_pack_scope_fixture(indexer_client).await;
+
+    app.run_convergence_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the title pack lane must query a show only once per cycle"
+    );
+    assert!(
+        searches
+            .iter()
+            .any(|search| search.season == Some(5) && search.episode == Some(1)),
+        "S01-S04 may not suppress the uncovered S05 episode lane: {searches:?}"
+    );
+
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("list exact-scope submissions");
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("list exact-scope states");
+    let series_submission = submissions
+        .iter()
+        .find(|submission| submission.source_title.as_deref() == Some(pack_title.as_str()))
+        .unwrap_or_else(|| {
+            panic!("series pack submission exists: {submissions:#?}; states: {states:#?}")
+        });
+    let expected_pack_ids = episode_ids
+        .iter()
+        .filter(|(season, _)| *season <= 4)
+        .map(|(_, episode_id)| episode_id.clone())
+        .collect::<HashSet<_>>();
+    let SubmissionScope::EpisodeSet {
+        episode_ids: submitted_episode_ids,
+    } = &series_submission.scope
+    else {
+        panic!("series pack must submit an exact EpisodeSet scope");
+    };
+    assert_eq!(
+        submitted_episode_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>(),
+        expected_pack_ids
+    );
+    let season_five_episode_id = episode_ids
+        .iter()
+        .find(|(season, _)| *season == 5)
+        .map(|(_, episode_id)| episode_id)
+        .expect("season five episode exists");
+    assert!(submissions.iter().any(|submission| {
+        matches!(
+            &submission.scope,
+            SubmissionScope::Episode { episode_id } if episode_id == season_five_episode_id
+        )
+    }));
+}
+
+#[tokio::test]
+async fn a_disjoint_series_pack_is_anchored_inside_its_own_episode_set() {
+    let pack_title = "Series.Pack.Scope.S03-S04.1080p.WEB-DL-PACK".to_string();
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .with_title_pack_titles([pack_title])
+            .failing_scoped_queries(),
+    );
+    let (app, title, _, episode_ids) =
+        seed_series_pack_scope_fixture_with_persisted_seasons(indexer_client, &[1]).await;
+
+    app.run_convergence_cycle_once().await;
+
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("list exact-scope states");
+    let state_for_season = |season| {
+        let episode_id = episode_ids
+            .iter()
+            .find(|(candidate_season, _)| *candidate_season == season)
+            .map(|(_, episode_id)| episode_id)
+            .expect("fixture season exists");
+        states
+            .iter()
+            .find(|state| state.episode_id.as_ref() == Some(episode_id))
+    };
+
+    assert_eq!(
+        state_for_season(1).map(|state| state.status),
+        Some(AcquisitionScopeStatus::Wanted)
+    );
+    assert!(state_for_season(2).is_none());
+    assert_eq!(
+        state_for_season(3).map(|state| state.status),
+        Some(AcquisitionScopeStatus::Grabbed)
+    );
+    assert!(state_for_season(4).is_none());
+}
+
+#[tokio::test]
+async fn series_pack_grab_persists_the_ranked_runner_up_in_shared_standby() {
+    let pack_titles = [
+        "Series.Pack.Scope.S01-S04.1080p.WEB-DL-PACKA".to_string(),
+        "Series.Pack.Scope.S01-S04.1080p.WEB-DL-PACKB".to_string(),
+        "Series.Pack.Scope.S01-S04.1080p.WEB-DL-PACKC".to_string(),
+    ];
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles(pack_titles.clone()));
+    let (app, title, _, _) = seed_series_pack_scope_fixture(indexer_client).await;
+
+    app.run_convergence_cycle_once().await;
+
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("list series-pack submissions");
+    let submitted_pack = submissions
+        .iter()
+        .filter_map(|submission| submission.source_title.as_deref())
+        .find(|release_title| pack_titles.iter().any(|title| title == release_title))
+        .expect("one series pack should be submitted");
+    let mut standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_standby_pending_releases_for_title(&title.id)
+        .await
+        .expect("list saved series-pack candidates");
+    standby.sort_by(|left, right| left.added_at.cmp(&right.added_at));
+
+    assert_eq!(submitted_pack, pack_titles[0]);
+    assert_eq!(standby.len(), 2, "the untried runner-ups must be durable");
+    assert_eq!(standby[0].release_title, pack_titles[1]);
+    assert_eq!(standby[1].release_title, pack_titles[2]);
+}
+
+#[tokio::test]
+async fn overlapping_series_pack_standby_waits_while_a_disjoint_pack_can_run() {
+    let pack_titles = [
+        "Series.Pack.Scope.S01-S02.1080p.WEB-DL-PACKA".to_string(),
+        "Series.Pack.Scope.S02-S03.1080p.WEB-DL-PACKB".to_string(),
+        "Series.Pack.Scope.S03-S04.1080p.WEB-DL-PACKC".to_string(),
+    ];
+    let indexer_client =
+        Arc::new(TrackingIndexerClient::default().with_title_pack_titles(pack_titles.clone()));
+    let (app, title, _, _) = seed_series_pack_scope_fixture(indexer_client).await;
+
+    app.run_convergence_cycle_once().await;
+
+    let submissions = app
+        .services
+        .workflow
+        .download_submissions
+        .list_for_title(&title.id)
+        .await
+        .expect("list series-pack submissions");
+    let submitted_titles = submissions
+        .iter()
+        .filter_map(|submission| submission.source_title.as_deref())
+        .collect::<HashSet<_>>();
+    assert!(submitted_titles.contains(pack_titles[0].as_str()));
+    assert!(!submitted_titles.contains(pack_titles[1].as_str()));
+    assert!(submitted_titles.contains(pack_titles[2].as_str()));
+
+    let standby = app
+        .services
+        .workflow
+        .pending_releases
+        .list_standby_pending_releases_for_title(&title.id)
+        .await
+        .expect("list overlapping standby");
+    assert!(
+        standby
+            .iter()
+            .any(|pending| pending.release_title == pack_titles[1]),
+        "the overlapping candidate stays saved for failure recovery"
+    );
+}
+
+#[tokio::test]
+async fn one_missing_episode_does_not_trigger_the_series_pack_title_lane() {
+    let indexer_client = Arc::new(TrackingIndexerClient::default().with_title_pack_titles([
+        "Series.Pack.Scope.Complete.Series.1080p.WEB-DL-PACK".to_string(),
+    ]));
+    let (app, title, indexer_client, episode_ids) =
+        seed_series_pack_scope_fixture(indexer_client).await;
+
+    for (season, episode_id) in episode_ids.iter().take(4) {
+        let file_id = app
+            .services
+            .library
+            .media_files
+            .insert_media_file(&crate::InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: format!("/library/Series Pack Scope/S{season:02}E01.mkv"),
+                size_bytes: 1_000_000,
+                role: crate::MediaFileRole::Primary,
+                ..Default::default()
+            })
+            .await
+            .expect("seed owned episode file");
+        app.services
+            .library
+            .media_files
+            .link_file_to_episode(&file_id, episode_id)
+            .await
+            .expect("link owned episode file");
+    }
+
+    app.run_convergence_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        searches
+            .iter()
+            .all(|search| search.season.is_some() || search.episode.is_some()),
+        "one missing episode must not spend a bare-title pack query: {searches:?}"
+    );
+}
+
+#[tokio::test]
+async fn title_search_success_does_not_converge_an_episode_when_scoped_queries_fail() {
+    let indexer_client = Arc::new(
+        TrackingIndexerClient::default()
+            .failing_scoped_queries()
+            .reporting_routed_indexers_fired(),
+    );
+    let (app, title, indexer_client, _) =
+        seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
+
+    app.run_convergence_cycle_once().await;
+    let first_searches = indexer_client.searches.lock().await.clone();
+    assert_eq!(
+        first_searches
+            .iter()
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the successful bare-title lookup is independently converged"
+    );
+    let first_scoped_count = first_searches
+        .iter()
+        .filter(|search| search.season.is_some() || search.episode.is_some())
+        .count();
+    assert!(first_scoped_count > 0, "fixture must fail scoped queries");
+    let states = app
+        .services
+        .workflow
+        .acquisition_scope_states
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&title.id))
+        .await
+        .expect("load failed-query episode states");
+    assert!(
+        states
+            .iter()
+            .filter(|state| state.media_type == "episode")
+            .all(|state| state.last_search_at.is_none()),
+        "a title lookup may not mutate an episode's search state"
+    );
+
+    app.run_convergence_cycle_once().await;
+    let second_searches = indexer_client.searches.lock().await.clone();
+    assert!(
+        second_searches
+            .iter()
+            .filter(|search| search.season.is_some() || search.episode.is_some())
+            .count()
+            > first_scoped_count,
+        "failed episode and season queries must remain retryable"
+    );
+}
+
 /// Anime title with two due Season 7 episodes (so the cycle attempts a season
 /// pack first) and a tracking indexer that answers every query.
 async fn seed_recent_failed_season_pack_fixture() -> (AppUseCase, Title, Arc<TrackingIndexerClient>)
@@ -3817,10 +4727,18 @@ async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query()
     app.run_convergence_cycle_once().await;
     let searches_after_exhaustion = indexer_client.searches.lock().await.clone();
     assert!(
+        searches_after_exhaustion.iter().all(|search| {
+            search.episode.is_some() || (search.season.is_none() && search.episode.is_none())
+        }),
+        "the converged pack scope stays converged; only previously-uncovered episodes are searched: {searches_after_exhaustion:?}"
+    );
+    assert_eq!(
         searches_after_exhaustion
             .iter()
-            .all(|search| search.episode.is_some()),
-        "the converged pack scope stays converged; only previously-uncovered episodes are searched: {searches_after_exhaustion:?}"
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the show receives one title-level series-pack lookup"
     );
     assert!(
         !searches_after_exhaustion.is_empty(),
@@ -3860,16 +4778,19 @@ async fn a_waiting_season_pack_parks_a_covered_sibling_episode_walk() {
         .expect("seed waiting season pack");
     let snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(&app).await;
 
-    assert_eq!(
-        crate::acquisition_workflow::try_saved_candidates(
-            &app,
-            sibling,
-            None,
-            &snapshot,
-            &Utc::now(),
-        )
-        .await,
-        crate::acquisition_workflow::StandbyRecoveryOutcome::Parked,
+    assert!(
+        matches!(
+            crate::acquisition_workflow::try_saved_candidates(
+                &app,
+                sibling,
+                None,
+                None,
+                &snapshot,
+                &Utc::now(),
+            )
+            .await,
+            crate::acquisition_workflow::StandbyRecoveryOutcome::Parked { scope: Some(_) }
+        ),
         "a waiting pack covering this episode owns the sibling's standby walk"
     );
 }
@@ -3899,8 +4820,18 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
-    assert!(searches.iter().all(|search| search.season == Some(7)));
-    assert!(searches.iter().all(|search| search.episode.is_some()));
+    assert!(searches.iter().all(|search| {
+        (search.season == Some(7) && search.episode.is_some())
+            || (search.season.is_none() && search.episode.is_none())
+    }));
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the show receives one title-level series-pack lookup"
+    );
     assert!(
         !searches
             .iter()
@@ -4136,8 +5067,18 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
-    assert!(searches.iter().all(|search| search.season == Some(5)));
-    assert!(searches.iter().all(|search| search.episode.is_some()));
+    assert!(searches.iter().all(|search| {
+        (search.season == Some(5) && search.episode.is_some())
+            || (search.season.is_none() && search.episode.is_none())
+    }));
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        1,
+        "the show receives one title-level series-pack lookup"
+    );
     assert!(
         !searches
             .iter()
@@ -7240,6 +8181,14 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
                 && search.season == Some(1)
                 && search.episode == Some(1))
     );
+    assert_eq!(
+        searches
+            .iter()
+            .filter(|search| search.season.is_none() && search.episode.is_none())
+            .count(),
+        0,
+        "one missing episode must not trigger a title-level series-pack lookup"
+    );
 }
 
 #[tokio::test]
@@ -9781,7 +10730,7 @@ async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
         "Pending.Rescore.2024.1080p.WEB-DL.H.264-GRP",
         PendingReleaseStatus::Waiting,
     );
-    assert_eq!(
+    assert!(matches!(
         app.try_grab_pending_release(
             &wanted,
             &allowed,
@@ -9790,8 +10739,10 @@ async fn a_parked_release_the_profile_now_blocks_is_not_grabbed() {
         )
         .await
         .expect("pending grab should resolve"),
-        crate::acquisition::pending::PendingGrabOutcome::Grabbed
-    );
+        crate::acquisition::pending::PendingGrabOutcome::Grabbed {
+            scope: SubmissionScope::Title
+        }
+    ));
 
     // The same fixture, same generous stored `release_score`, but a quality the
     // profile does not list. Under the old code the stored number went straight
