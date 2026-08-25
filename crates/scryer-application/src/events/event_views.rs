@@ -1515,6 +1515,30 @@ mod tests {
     }
 
     #[test]
+    fn manually_grabbed_release_preserves_the_requesting_user_in_history() {
+        let mut event = event(
+            1,
+            Utc::now(),
+            DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
+                title: title_snapshot("Example", MediaFacet::Movie),
+                source_title: Some("Example.2026.1080p.WEB-DL".to_string()),
+                source_hint: Some("Indexer".to_string()),
+                source_provider: Some("Indexer".to_string()),
+                download_id: Some("download-1".to_string()),
+                episode_ids: Vec::new(),
+            }),
+        );
+        event.actor_kind = scryer_domain::DomainEventActorKind::User;
+        event.actor_user_id = Some("user-1".to_string());
+        event.actor_display_name = "Manual Grabber".to_string();
+
+        let history = title_history_record_from_domain_event(&event).expect("history record");
+        assert_eq!(history.actor_kind, Some(scryer_domain::DomainEventActorKind::User));
+        assert_eq!(history.actor_user_id.as_deref(), Some("user-1"));
+        assert_eq!(history.actor_display_name.as_deref(), Some("Manual Grabber"));
+    }
+
+    #[test]
     fn title_history_record_redacts_api_keys_before_reaching_ui() {
         let source_hint =
             "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=super-secret".to_string();

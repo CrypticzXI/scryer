@@ -65,6 +65,10 @@ function actorLabel(event: TitleHistoryEvent): string {
   return event.actorDisplayName ?? event.actorUserId ?? event.actorKind ?? "\u2014";
 }
 
+function historyTypeLabel(event: TitleHistoryEvent, t: ReturnType<typeof useTranslate>): string {
+  return event.eventType === "file_upgraded" ? t("history.upgrade") : t("history.initial");
+}
+
 function titleHistoryHref(event: TitleHistoryEvent): string | null {
   const viewByFacet: Record<string, ViewId> = {
     MOVIE: "movies",
@@ -122,12 +126,14 @@ function historyEpisodesQuery(episodeCount: number): string {
   return `query HistoryEventEpisodes($titleId: ID!, ${variables}) {${selections}\n}`;
 }
 
-function HistoryImportedEpisodes({
+function HistoryEpisodes({
   event,
   episodeIds,
+  label,
 }: {
   event: TitleHistoryEvent;
   episodeIds: string[];
+  label: string;
 }) {
   const t = useTranslate();
   const query = React.useMemo(
@@ -150,7 +156,7 @@ function HistoryImportedEpisodes({
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-      <span className="whitespace-nowrap text-muted-foreground">{t("history.imported")}</span>
+      <span className="whitespace-nowrap text-muted-foreground">{label}</span>
       <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
         {episodeIds.map((episodeId, index) => {
           const href = historyEpisodeHref(event, episodeId);
@@ -212,6 +218,7 @@ export function HistoryEventTable({
     (showTitle ? 1 : 0) +
     1 + // release name
     1 + // source
+    1 + // type
     (showActor ? 1 : 0) +
     1 + // date
     (showActions ? 1 : 0);
@@ -273,6 +280,7 @@ export function HistoryEventTable({
               {t("queue.releaseTitle")} {t("label.name")}
             </TableHead>
             <TableHead className="w-36 text-center">{t("queue.source")}</TableHead>
+            <TableHead className="w-24 text-center">{t("label.type")}</TableHead>
             {showActor ? (
               <TableHead className="w-32 text-center">{t("history.actor")}</TableHead>
             ) : null}
@@ -397,6 +405,9 @@ export function HistoryEventTable({
                       <span className="text-muted-foreground">\u2014</span>
                     )}
                   </TableCell>
+                  <TableCell className="align-top text-center text-sm text-muted-foreground">
+                    {historyTypeLabel(event, t)}
+                  </TableCell>
                   {showActor ? (
                     <TableCell
                       id={selectorId("history-event-actor", event.eventType, event.id)}
@@ -443,10 +454,16 @@ export function HistoryEventTable({
                         {detail.hasDetail ? (
                           <HistoryEventDetailContent event={event} />
                         ) : null}
-                        {event.eventType === "imported" && event.episodeIds.length > 0 ? (
-                          <HistoryImportedEpisodes
+                        {(event.eventType === "imported" || event.eventType === "grabbed") &&
+                        event.episodeIds.length > 0 ? (
+                          <HistoryEpisodes
                             event={event}
                             episodeIds={[...new Set(event.episodeIds)]}
+                            label={
+                              event.eventType === "grabbed"
+                                ? t("history.prospectiveEpisodes")
+                                : t("history.imported")
+                            }
                           />
                         ) : null}
                         {event.collectionId ? (
