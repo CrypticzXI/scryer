@@ -8775,6 +8775,10 @@ type ManualImportFilePreviewPayload {
 	"""
 	sizeBytes: Long!
 	"""
+	Media facts when the native content probe can identify the file.
+	"""
+	videoFacts: ManualImportVideoFactsPayload
+	"""
 	Parsed quality label, or null when unavailable.
 	"""
 	quality: String
@@ -8846,6 +8850,36 @@ type ManualImportSeriesMovieTargetPayload {
 	Runtime in minutes, or null when unavailable.
 	"""
 	runtimeMinutes: Int
+}
+
+"""
+Media facts obtained while qualifying a manual-import candidate.
+"""
+type ManualImportVideoFactsPayload {
+	"""
+	Detected container format, or null when unavailable.
+	"""
+	containerFormat: String
+	"""
+	Detected video codec, or null when unavailable.
+	"""
+	videoCodec: String
+	"""
+	Detected audio codec, or null when unavailable.
+	"""
+	audioCodec: String
+	"""
+	Detected video width in pixels, or null when unavailable.
+	"""
+	videoWidth: Int
+	"""
+	Detected video height in pixels, or null when unavailable.
+	"""
+	videoHeight: Int
+	"""
+	Detected runtime in seconds, or null when unavailable.
+	"""
+	durationSeconds: Int
 }
 
 """

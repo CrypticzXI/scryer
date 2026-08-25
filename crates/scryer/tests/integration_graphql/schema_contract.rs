@@ -561,9 +561,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Media-server playback links add one object behind existing title, episode,
     // and calendar payloads: OBJECT 314->315, public types 609->610.
     // Query, mutation, subscription, input-object, and enum counts are unchanged.
+    // Manual-import video facts add one object: OBJECT 315->316, public types 610->611.
     // Live import activity adds one query, one mutation, one subscription, two
     // payload objects, and one phase enum: query 132->133, mutation 193->194,
-    // subscription 13->14, OBJECT 315->317, ENUM 110->111, public types 610->613.
+    // subscription 13->14, OBJECT 316->318, ENUM 110->111, public types 611->614.
     assert_eq!(
         query_field_count, 133,
         "query fields: {query_field_names:?}"
@@ -573,8 +574,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 14);
-    assert_eq!(public_types.len(), 613);
-    assert_eq!(kind_count("OBJECT"), 317);
+    assert_eq!(public_types.len(), 614);
+    assert_eq!(kind_count("OBJECT"), 318);
     assert_eq!(kind_count("INPUT_OBJECT"), 173);
     assert_eq!(kind_count("ENUM"), 111);
     assert_eq!(kind_count("SCALAR"), 10);

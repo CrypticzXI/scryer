@@ -1120,11 +1120,17 @@ pub struct DeleteDownloadInput {
 #[derive(SimpleObject, Clone)]
 /// Media facts obtained while qualifying a manual-import candidate.
 pub struct ManualImportVideoFactsPayload {
+    /// Detected container format, or null when unavailable.
     pub container_format: Option<String>,
+    /// Detected video codec, or null when unavailable.
     pub video_codec: Option<String>,
+    /// Detected audio codec, or null when unavailable.
     pub audio_codec: Option<String>,
+    /// Detected video width in pixels, or null when unavailable.
     pub video_width: Option<i32>,
+    /// Detected video height in pixels, or null when unavailable.
     pub video_height: Option<i32>,
+    /// Detected runtime in seconds, or null when unavailable.
     pub duration_seconds: Option<i32>,
 }
 
