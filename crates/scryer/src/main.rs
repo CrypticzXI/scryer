@@ -1654,12 +1654,16 @@ async fn bootstrap_application(
     validate_authless_runtime_config(
         !cfg!(debug_assertions),
         development_mode,
-        &bind,
         auth_runtime.snapshot().effective_form_login_enabled,
         &auth_mode,
         authless_access_allowlist_env_configured,
     )
     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+    warn_about_deprecated_public_authless_release_bind(
+        !cfg!(debug_assertions),
+        &bind,
+        auth_runtime.snapshot().effective_form_login_enabled,
+    );
     if auth_mode.used_legacy_dev_auto_login {
         tracing::warn!(
             "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
@@ -2508,7 +2512,6 @@ fn resolve_development_mode(raw: Option<&str>, release_build: bool) -> Result<bo
 fn validate_authless_runtime_config(
     release_build: bool,
     development_mode: bool,
-    bind: &str,
     effective_form_login_enabled: bool,
     auth_mode: &AuthModeConfig,
     allowlist_env_configured: bool,
@@ -2533,17 +2536,6 @@ fn validate_authless_runtime_config(
         if development_mode {
             return Err("development mode is unavailable in release builds".to_string());
         }
-        if !effective_form_login_enabled {
-            let addr = bind
-                .parse::<SocketAddr>()
-                .map_err(|_| format!("invalid {bind:?} bind address"))?;
-            if !addr.ip().is_loopback() {
-                return Err(
-                    "release authless access requires SCRYER_BIND to use a loopback address"
-                        .to_string(),
-                );
-            }
-        }
         return Ok(());
     }
 
@@ -2557,6 +2549,35 @@ fn validate_authless_runtime_config(
         ));
     }
     Ok(())
+}
+
+fn warn_about_deprecated_public_authless_release_bind(
+    release_build: bool,
+    bind: &str,
+    effective_form_login_enabled: bool,
+) {
+    if should_warn_about_public_authless_release_bind(
+        release_build,
+        bind,
+        effective_form_login_enabled,
+    ) {
+        tracing::warn!(
+            bind,
+            "authless browser access on a non-loopback bind is deprecated and will be disabled in a future release; set SCRYER_BIND to a loopback address and place any reverse proxy in front of it, or enable authentication"
+        );
+    }
+}
+
+fn should_warn_about_public_authless_release_bind(
+    release_build: bool,
+    bind: &str,
+    effective_form_login_enabled: bool,
+) -> bool {
+    release_build
+        && !effective_form_login_enabled
+        && bind
+            .parse::<SocketAddr>()
+            .is_ok_and(|addr| !addr.ip().is_loopback())
 }
 
 fn resolve_auth_mode(
@@ -3238,7 +3259,8 @@ mod tests {
         extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
         load_runtime_plugin_state, resolve_auth_mode, resolve_development_mode,
         resolve_log_file_config, resolve_log_format, resolve_wasmtime_cache_dir,
-        restart_spec_from_parts, title_image_handler, validate_authless_runtime_config,
+        restart_spec_from_parts, should_warn_about_public_authless_release_bind,
+        title_image_handler, validate_authless_runtime_config,
         validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
@@ -4080,34 +4102,33 @@ mod tests {
     }
 
     #[test]
-    fn release_authless_access_requires_loopback_bind() {
+    fn release_authless_access_preserves_existing_public_bind_with_deprecation_warning() {
         let auth_mode = resolve_auth_mode(Some("false"), None, None, None).expect("auth mode");
 
-        validate_authless_runtime_config(true, false, "127.0.0.1:8080", false, &auth_mode, false)
-            .expect("loopback authless release configuration");
+        validate_authless_runtime_config(true, false, false, &auth_mode, false)
+            .expect("release authless configuration");
 
-        let error =
-            validate_authless_runtime_config(true, false, "0.0.0.0:8080", false, &auth_mode, false)
-                .expect_err("public bind must be rejected for release authless access");
-        assert!(error.contains("loopback"));
+        assert!(should_warn_about_public_authless_release_bind(
+            true,
+            "0.0.0.0:8080",
+            false
+        ));
+        assert!(!should_warn_about_public_authless_release_bind(
+            true,
+            "127.0.0.1:8080",
+            false
+        ));
     }
 
     #[test]
     fn public_authless_overrides_require_explicit_development_mode() {
         let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
 
-        let error = validate_authless_runtime_config(
-            false,
-            false,
-            "0.0.0.0:8080",
-            false,
-            &auth_mode,
-            false,
-        )
-        .expect_err("public override without development mode");
+        let error = validate_authless_runtime_config(false, false, false, &auth_mode, false)
+            .expect_err("public override without development mode");
         assert!(error.contains("SCRYER_DEVELOPMENT_MODE=true"));
 
-        validate_authless_runtime_config(false, true, "0.0.0.0:8080", false, &auth_mode, false)
+        validate_authless_runtime_config(false, true, false, &auth_mode, false)
             .expect("explicit development mode allows the override");
     }
 
