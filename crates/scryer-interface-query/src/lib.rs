@@ -1352,6 +1352,23 @@ impl CatalogQueries {
         Ok(title.map(|title| from_title(&app, title)))
     }
 
+    /// Fetch locally cached movie metadata through a visible title relationship.
+    async fn movie_entity(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Title used to authorize access to the movie.")] title_id: ID,
+        #[graphql(desc = "Movie entity ID to fetch.")] id: ID,
+    ) -> GqlResult<Option<MovieEntityPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.get_movie_entity(&actor, title_id.as_ref(), id.as_ref())
+            .await
+            .map(|movie| {
+                movie.map(|movie| mappers::from_movie_entity(&app, title_id.to_string(), movie))
+            })
+            .map_err(to_gql_error)
+    }
+
     /// Fetch an episode by ID while verifying that it belongs to the supplied parent title.
     async fn episode(
         &self,

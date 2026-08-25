@@ -2100,6 +2100,28 @@ async fn create_test_series_movie_link(
             tmdb_id: None,
             mal_id: None,
             anidb_id: None,
+            ratings: Some(scryer_domain::TitleRatingSummary {
+                rating: Some(8.7),
+                rating_sources: vec!["tmdb".to_string()],
+                external_ratings: vec![scryer_domain::TitleExternalRating {
+                    source: "tmdb".to_string(),
+                    value: Some(8.7),
+                    normalized: 8.7,
+                    votes: Some(1_234),
+                    url: "https://www.themoviedb.org/movie/fixture".to_string(),
+                    ..Default::default()
+                }],
+            }),
+            credits: Some(vec![scryer_domain::TitleCredit {
+                kind: "voice_actor".to_string(),
+                person_id: "movie-cast-1".to_string(),
+                person_name: "Fixture Performer".to_string(),
+                person_image_url: "https://images.example.com/private-upstream.jpg".to_string(),
+                character_name: "Fixture Character".to_string(),
+                language: "eng".to_string(),
+                billing_order: 1,
+                ..Default::default()
+            }]),
             created_at: now,
             updated_at: now,
         },

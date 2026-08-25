@@ -322,8 +322,11 @@ pub struct SetCollectionMonitoredPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-/// Movie metadata used when a movie is linked into a series timeline.
+#[graphql(complex)]
+/// Persisted movie metadata.
 pub struct MovieEntityPayload {
+    #[graphql(skip)]
+    pub permission_title_id: ID,
     /// Stable movie identifier.
     pub id: ID,
     /// Movie title.
@@ -350,6 +353,8 @@ pub struct MovieEntityPayload {
     pub mal_id: Option<String>,
     /// AniDB identifier, or null when unmatched.
     pub anidb_id: Option<String>,
+    /// Aggregated ratings cached during the movie's latest metadata hydration.
+    pub ratings: TitleRatingPayload,
 }
 
 #[derive(SimpleObject, Clone)]

@@ -1915,6 +1915,13 @@ pub trait ShowRepository: Send + Sync {
         &self,
         link_id: &str,
     ) -> AppResult<Option<scryer_domain::SeriesMovieLink>>;
+    async fn list_movie_entity_credits(
+        &self,
+        movie_entity_id: &str,
+    ) -> AppResult<Vec<crate::TitleCredit>> {
+        let _ = movie_entity_id;
+        Ok(Vec::new())
+    }
     async fn find_series_movie_link_by_legacy_collection_id(
         &self,
         collection_id: &str,

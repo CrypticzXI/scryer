@@ -565,8 +565,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Live import activity adds one query, one mutation, one subscription, two
     // payload objects, and one phase enum: query 132->133, mutation 193->194,
     // subscription 13->14, OBJECT 316->318, ENUM 110->111, public types 611->614.
+    // Local movie-entity detail adds one query and reuses existing payload types:
+    // query 133->134; all named-type counts are unchanged.
     assert_eq!(
-        query_field_count, 133,
+        query_field_count, 134,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(

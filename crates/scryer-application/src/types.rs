@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use scryer_domain::{
     CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
 };
+pub use scryer_domain::{TitleCredit, TitleExternalRating, TitleRatingSummary};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -15,40 +16,6 @@ use crate::release_parser::{ParsedReleaseMetadata, VideoCodec};
 pub struct LibraryRootDraft {
     pub path: String,
     pub is_default: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TitleExternalRating {
-    pub source: String,
-    pub value: Option<f64>,
-    pub score: Option<f64>,
-    pub normalized: f64,
-    pub votes: Option<i32>,
-    pub url: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TitleRatingSummary {
-    pub rating: Option<f64>,
-    pub rating_sources: Vec<String>,
-    pub external_ratings: Vec<TitleExternalRating>,
-}
-
-/// One cast or crew credit as returned by SMG for a title. Crew records share the
-/// shape with cast records; `character_name`/`language` are simply empty for them.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TitleCredit {
-    pub kind: String,
-    pub person_id: String,
-    pub person_name: String,
-    pub person_original_name: String,
-    pub person_image_url: String,
-    pub person_source: String,
-    pub person_external_id: String,
-    pub character_name: String,
-    pub language: String,
-    pub billing_order: i32,
-    pub episode_count: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

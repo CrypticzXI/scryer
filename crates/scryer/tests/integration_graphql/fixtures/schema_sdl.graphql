@@ -10155,7 +10155,7 @@ enum MonitorTypeValue {
 }
 
 """
-Movie metadata used when a movie is linked into a series timeline.
+Persisted movie metadata.
 """
 type MovieEntityPayload {
 	"""
@@ -10210,6 +10210,14 @@ type MovieEntityPayload {
 	AniDB identifier, or null when unmatched.
 	"""
 	anidbId: String
+	"""
+	Aggregated ratings cached during the movie's latest metadata hydration.
+	"""
+	ratings: TitleRatingPayload!
+	"""
+	Cast and crew cached during the movie's latest metadata hydration.
+	"""
+	credits: [TitleCreditPayload!]!
 }
 
 type MutationRoot {
@@ -13865,6 +13873,19 @@ type QueryRoot {
 		"""
 		id: ID!
 	): TitlePayload
+	"""
+	Fetch locally cached movie metadata through a visible title relationship.
+	"""
+	movieEntity(
+		"""
+		Title used to authorize access to the movie.
+		"""
+		titleId: ID!,
+		"""
+		Movie entity ID to fetch.
+		"""
+		id: ID!
+	): MovieEntityPayload
 	"""
 	Fetch an episode by ID while verifying that it belongs to the supplied parent title.
 	"""

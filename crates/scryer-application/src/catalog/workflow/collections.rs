@@ -135,6 +135,7 @@ async fn sync_series_movie_links(
     app: &AppUseCase,
     title: &Title,
     anime_movies: &[&AnimeMovie],
+    movie_metadata: &HashMap<i64, crate::MovieMetadata>,
     anime_mappings: &[AnimeMapping],
     season_last_aired: &std::collections::BTreeMap<i32, String>,
     episodes_by_number: &HashMap<(i32, i32), Episode>,
@@ -209,7 +210,14 @@ async fn sync_series_movie_links(
                         .get(&(*season, *episode_number))
                         .map(|episode| episode.id.clone())
                 });
-            let movie_entity = movie_entity_from_anime_movie(movie);
+            let mut movie_entity = movie_entity_from_anime_movie(movie);
+            if let Some(metadata) = movie
+                .movie_tvdb_id
+                .and_then(|tvdb_id| movie_metadata.get(&tvdb_id))
+            {
+                movie_entity.ratings = Some(metadata.ratings.clone());
+                movie_entity.credits = Some(metadata.credits.clone());
+            }
             let link = series_movie_link_from_anime_movie(
                 &title.id,
                 movie,
@@ -255,6 +263,7 @@ async fn sync_series_movie_links(
 }
 
 impl AppUseCase {
+    #[cfg(test)]
     pub(crate) async fn create_series_seasons_and_episodes(
         &self,
         title: &Title,
@@ -262,6 +271,26 @@ impl AppUseCase {
         episodes: &[EpisodeMetadata],
         anime_mappings: &[AnimeMapping],
         anime_movies: &[AnimeMovie],
+    ) {
+        self.create_series_seasons_and_episodes_with_movie_metadata(
+            title,
+            seasons,
+            episodes,
+            anime_mappings,
+            anime_movies,
+            &HashMap::new(),
+        )
+        .await;
+    }
+
+    pub(crate) async fn create_series_seasons_and_episodes_with_movie_metadata(
+        &self,
+        title: &Title,
+        seasons: &[SeasonMetadata],
+        episodes: &[EpisodeMetadata],
+        anime_mappings: &[AnimeMapping],
+        anime_movies: &[AnimeMovie],
+        movie_metadata: &HashMap<i64, crate::MovieMetadata>,
     ) {
         let monitor_type = if title.monitored {
             extract_monitor_type(&title.tags)
@@ -698,6 +727,7 @@ impl AppUseCase {
                     self,
                     title,
                     &derived_anime_movies,
+                    movie_metadata,
                     anime_mappings,
                     &season_last_aired,
                     &episode_lookup_by_number,
@@ -981,6 +1011,36 @@ impl AppUseCase {
             .catalog
             .shows
             .list_series_movie_links_for_title(title_id)
+            .await
+    }
+
+    pub async fn get_movie_entity(
+        &self,
+        actor: &User,
+        title_id: &str,
+        movie_entity_id: &str,
+    ) -> AppResult<Option<scryer_domain::MovieEntity>> {
+        Ok(self
+            .list_series_movie_links(actor, title_id)
+            .await?
+            .into_iter()
+            .find(|link| link.movie.id == movie_entity_id)
+            .map(|link| link.movie))
+    }
+
+    pub async fn movie_entity_credits(
+        &self,
+        actor: &User,
+        title_id: &str,
+        movie_entity_id: &str,
+    ) -> AppResult<Vec<crate::TitleCredit>> {
+        self.get_movie_entity(actor, title_id, movie_entity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("movie entity {movie_entity_id}")))?;
+        self.services
+            .catalog
+            .shows
+            .list_movie_entity_credits(movie_entity_id)
             .await
     }
 

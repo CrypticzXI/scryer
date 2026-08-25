@@ -1310,6 +1310,23 @@ file = "postgres/migrations/0183_manual_import_selection_durable_identity.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 184
+description = "allow movie entities to own hydrated ratings and credits"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0184_movie_entity_metadata_ownership.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0184_movie_entity_metadata_ownership.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

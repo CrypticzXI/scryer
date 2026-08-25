@@ -2459,6 +2459,163 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
 }
 
 #[tokio::test]
+async fn graphql_movie_entity_ratings_and_credits_are_read_from_local_storage() {
+    let ctx = TestContext::new().await;
+    let title = create_catalog_title(
+        &ctx,
+        "Locally Hydrated Series Movie",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let link =
+        create_test_series_movie_link(&ctx, &title, "Cached Cast Movie", "7654304", None, None)
+            .await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        query($titleId: ID!, $movieId: ID!) {
+          title(id: $titleId) {
+            seriesMovieLinks {
+              id
+              movie {
+                id
+                ratings {
+                  rating
+                  ratingSources
+                  externalRatings { source normalized votes url }
+                }
+              }
+            }
+          }
+          movieEntity(titleId: $titleId, id: $movieId) {
+            id
+            credits {
+              kind
+              personName
+              personImageUrl
+              character
+              language
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id, "movieId": link.movie.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let listed = &body["data"]["title"]["seriesMovieLinks"][0];
+    assert_eq!(listed["id"], link.id);
+    assert_eq!(listed["movie"]["ratings"]["rating"], json!(8.7));
+    assert_eq!(listed["movie"]["ratings"]["ratingSources"], json!(["tmdb"]));
+    assert_eq!(
+        listed["movie"]["ratings"]["externalRatings"][0]["votes"],
+        json!(1_234)
+    );
+
+    let focused = &body["data"]["movieEntity"];
+    assert_eq!(focused["id"], link.movie.id);
+    assert_eq!(focused["credits"][0]["personName"], "Fixture Performer");
+    assert_eq!(focused["credits"][0]["character"], "Fixture Character");
+    let image_url = focused["credits"][0]["personImageUrl"]
+        .as_str()
+        .expect("movie credit portrait proxy URL");
+    let token = image_url
+        .strip_prefix("/images/media/")
+        .and_then(|value| value.strip_suffix("/w185"))
+        .expect("movie credit portraits should use the local media route");
+    assert!(!image_url.contains("images.example.com"));
+
+    let persisted: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT owner_type, owner_id FROM image_proxy_sources WHERE token = ?")
+            .bind(token)
+            .fetch_one(ctx.db.pool())
+            .await
+            .expect("movie portrait source should persist");
+    assert_eq!(
+        persisted,
+        (Some("movie".to_string()), Some(link.movie.id.clone()))
+    );
+
+    let mut unavailable = link.clone();
+    unavailable.movie.ratings = None;
+    unavailable.movie.credits = None;
+    let preserved = ctx
+        .shows
+        .upsert_series_movie_link(unavailable)
+        .await
+        .expect("unavailable enrichment should preserve movie metadata");
+    assert_eq!(
+        preserved
+            .movie
+            .ratings
+            .as_ref()
+            .and_then(|ratings| ratings.rating),
+        Some(8.7)
+    );
+    assert_eq!(
+        ctx.shows
+            .list_movie_entity_credits(&link.movie.id)
+            .await
+            .expect("preserved movie credits")[0]
+            .person_name,
+        "Fixture Performer"
+    );
+
+    let mut cleared = link.clone();
+    cleared.movie.ratings = Some(scryer_domain::TitleRatingSummary::default());
+    cleared.movie.credits = Some(vec![]);
+    let cleared = ctx
+        .shows
+        .upsert_series_movie_link(cleared)
+        .await
+        .expect("empty enrichment should clear movie metadata");
+    assert!(cleared.movie.ratings.is_none());
+    assert!(
+        ctx.shows
+            .list_movie_entity_credits(&link.movie.id)
+            .await
+            .expect("cleared movie credits")
+            .is_empty()
+    );
+
+    let invalid_owner = sqlx::query(
+        "INSERT INTO title_credits (
+             title_id, movie_entity_id, position, kind, person_id
+         ) VALUES (?, ?, 999, 'actor', 'invalid-owner')",
+    )
+    .bind(&title.id)
+    .bind(&link.movie.id)
+    .execute(ctx.db.pool())
+    .await;
+    assert!(
+        invalid_owner.is_err(),
+        "credit rows must have exactly one owner"
+    );
+
+    sqlx::query("DELETE FROM movie_entities WHERE id = ?")
+        .bind(&link.movie.id)
+        .execute(ctx.db.pool())
+        .await
+        .expect("delete movie entity");
+    let remaining_metadata: (i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT COUNT(*) FROM title_metadata_rating_summaries WHERE movie_entity_id = ?),
+            (SELECT COUNT(*) FROM title_credits WHERE movie_entity_id = ?)",
+    )
+    .bind(&link.movie.id)
+    .bind(&link.movie.id)
+    .fetch_one(ctx.db.pool())
+    .await
+    .expect("count cascaded movie metadata");
+    assert_eq!(remaining_metadata, (0, 0));
+}
+
+#[tokio::test]
 async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
     let ctx = TestContext::new().await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
