@@ -76,15 +76,17 @@ pub(crate) enum FailureHandlingOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StandbyRecoveryOutcome {
     /// The next eligible saved result was grabbed; the scope is `grabbed`
-    /// again. `season_pack` lets the cursor suppress sibling episode work in
-    /// the same cycle without re-reading the pending row.
-    Recovered { season_pack: bool },
+    /// again. Returning the submitted scope lets the cursor suppress exactly
+    /// the recovered pack's coverage without reparsing the saved release.
+    Recovered { scope: SubmissionScope },
+    /// The saved release is already active in a download client.
+    Active { scope: SubmissionScope },
     /// The download client could not be consulted; the list is left intact for
     /// the next cycle.
-    Deferred,
+    Deferred { scope: Option<SubmissionScope> },
     /// A better saved result is still held by a delay profile. The promotion
     /// lane owns it, so this walk must not take a worse release.
-    Parked,
+    Parked { scope: Option<SubmissionScope> },
     /// Every saved result has been tried (or is no longer eligible). Sources
     /// whose artifact vanished are returned so the cursor can refresh only
     /// their coverage once.
@@ -94,13 +96,25 @@ pub(crate) enum StandbyRecoveryOutcome {
 fn order_standby_releases(
     standby_releases: &mut [PendingRelease],
     season_pack_ids: &HashSet<String>,
+    series_pack_ids: &HashSet<String>,
 ) {
-    standby_releases.sort_by(|left, right| {
-        season_pack_ids
-            .contains(&left.id)
-            .cmp(&season_pack_ids.contains(&right.id))
-            .then_with(|| right.release_score.cmp(&left.release_score))
-            .then_with(|| left.added_at.cmp(&right.added_at))
+    standby_releases.sort_by_key(|release| {
+        // Episode rows always recover before packs. Among packs, whole-series
+        // rows come before plain season packs so their persisted `added_at`
+        // sequence remains the search rank they were saved with.
+        let (group, score) = if series_pack_ids.contains(&release.id) {
+            (1, 0)
+        } else if season_pack_ids.contains(&release.id) {
+            (2, release.release_score)
+        } else {
+            (0, release.release_score)
+        };
+        (
+            group,
+            std::cmp::Reverse(score),
+            release.added_at.clone(),
+            release.id.clone(),
+        )
     });
 }
 // Canonical owner for all title-affecting failed release / blocklist side effects.
@@ -683,23 +697,23 @@ fn preferred_failed_release_title(
         .and_then(|submission| normalized_non_empty_owned(submission.source_title.clone()))
         .or_else(|| normalized_non_empty_owned(Some(context.release_title.clone())))
 }
-async fn resolve_failed_collection_episode_wanted_items(
+async fn resolve_failed_pack_episode_wanted_items(
     app: &AppUseCase,
     submission: &DownloadSubmission,
 ) -> AppResult<Vec<AcquisitionScopeState>> {
-    let SubmissionScope::Collection { collection_id } = &submission.scope else {
-        return Ok(Vec::new());
+    let episode_ids: HashSet<String> = match &submission.scope {
+        SubmissionScope::Collection { collection_id } => app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(collection_id)
+            .await?
+            .into_iter()
+            .map(|episode| episode.id)
+            .collect(),
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.iter().cloned().collect(),
+        _ => return Ok(Vec::new()),
     };
-
-    let episode_ids: HashSet<String> = app
-        .services
-        .catalog
-        .shows
-        .list_episodes_for_collection(collection_id)
-        .await?
-        .into_iter()
-        .map(|episode| episode.id)
-        .collect();
 
     if episode_ids.is_empty() {
         return Ok(Vec::new());
@@ -709,12 +723,7 @@ async fn resolve_failed_collection_episode_wanted_items(
         .services
         .workflow
         .acquisition_scope_states
-        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
-            media_types: vec!["episode".into()],
-            title_id: Some(submission.title_id.clone()),
-            limit: 500,
-            ..AcquisitionScopeStatesQuery::default()
-        })
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&submission.title_id))
         .await?;
 
     Ok(wanted_items
@@ -723,7 +732,8 @@ async fn resolve_failed_collection_episode_wanted_items(
             matches!(
                 item.status,
                 AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed
-            ) && item
+            ) && item.media_type == "episode"
+                && item
                 .episode_id
                 .as_ref()
                 .is_some_and(|episode_id| episode_ids.contains(episode_id))
@@ -831,8 +841,8 @@ pub(crate) async fn process_download_failure(
         submission.purpose.is_operator_queued() || submission.purpose.is_manual_replacement()
     });
 
-    let failed_collection_items = if let Some(submission) = failed_submission.as_ref() {
-        match resolve_failed_collection_episode_wanted_items(app, submission).await {
+    let failed_pack_items = if let Some(submission) = failed_submission.as_ref() {
+        match resolve_failed_pack_episode_wanted_items(app, submission).await {
             Ok(items) if !items.is_empty() => Some(items),
             Ok(_) => None,
             Err(err) => {
@@ -840,7 +850,7 @@ pub(crate) async fn process_download_failure(
                     title_id = submission.title_id.as_str(),
                     download_client_item_id = context.client_item_id.as_str(),
                     error = %err,
-                    "failed to resolve wanted items for collection-scoped download failure"
+                    "failed to resolve wanted items for pack-scoped download failure"
                 );
                 None
             }
@@ -851,7 +861,7 @@ pub(crate) async fn process_download_failure(
 
     let wanted_item = match context.wanted_item.clone() {
         Some(item) => Some(item),
-        None if failed_collection_items.is_none() && failed_submission.is_some() => {
+        None if failed_pack_items.is_none() && failed_submission.is_some() => {
             resolve_failure_wanted_item(
                 app,
                 resolved_title_id.as_deref(),
@@ -866,7 +876,7 @@ pub(crate) async fn process_download_failure(
         resolved_title_id.as_deref(),
         failed_submission.as_ref(),
         wanted_item.as_ref(),
-        failed_collection_items.as_deref(),
+        failed_pack_items.as_deref(),
     )
     .await;
 
@@ -882,7 +892,7 @@ pub(crate) async fn process_download_failure(
             ),
         )
     } else if context.skip_reacquire {
-        if let Some(items) = failed_collection_items.as_ref() {
+        if let Some(items) = failed_pack_items.as_ref() {
             let mut update_error = None;
             for item in items {
                 if let Err(err) = mark_wanted_item_failed_without_reacquire(app, item).await {
@@ -893,7 +903,7 @@ pub(crate) async fn process_download_failure(
                 (
                     FailureHandlingOutcome::RecordedOnly,
                     format!(
-                        "season pack download failed for '{}': {}; failed to disable reacquisition: {}",
+                        "pack download failed for '{}': {}; failed to disable reacquisition: {}",
                         release_title_for_matching, context.reason, err
                     ),
                 )
@@ -901,7 +911,7 @@ pub(crate) async fn process_download_failure(
                 (
                     FailureHandlingOutcome::RecordedNoReacquire,
                     format!(
-                        "season pack download failed for '{}': {}; recorded failure without reacquisition",
+                        "pack download failed for '{}': {}; recorded failure without reacquisition",
                         release_title_for_matching, context.reason
                     ),
                 )
@@ -932,9 +942,9 @@ pub(crate) async fn process_download_failure(
                 ),
             )
         }
-    } else if let Some(items) = failed_collection_items.as_ref() {
+    } else if let Some(items) = failed_pack_items.as_ref() {
         let message = format!(
-            "season pack download failed for '{}': {}; re-opened season episodes under existing coverage",
+            "pack download failed for '{}': {}; re-opened covered episodes under existing coverage",
             release_title_for_matching, context.reason
         );
         record_failed_release_outcome(
@@ -954,7 +964,7 @@ pub(crate) async fn process_download_failure(
         )
         .await;
         failure_recorded = true;
-        // A failed season pack re-opens every covered episode scope after its
+        // A failed pack re-opens every covered episode scope after its
         // release is blocklisted. Coverage is kept: the cursor walks each
         // scope's saved search results before it would query an indexer.
         for item in items {
@@ -966,7 +976,7 @@ pub(crate) async fn process_download_failure(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
             affected_wanted_items = items.len(),
             release_title = release_title_for_matching,
-            "re-opened season episode scopes after failed season-pack download"
+            "re-opened covered episode scopes after failed pack download"
         );
 
         (FailureHandlingOutcome::Reopened, message)
@@ -1173,6 +1183,7 @@ pub(crate) async fn try_saved_candidates(
     app: &AppUseCase,
     item: &AcquisitionScopeState,
     failed_release_title: Option<&str>,
+    excluded_episode_ids: Option<&HashSet<String>>,
     dl_snapshot: &DownloadClientSnapshot,
     now: &DateTime<Utc>,
 ) -> StandbyRecoveryOutcome {
@@ -1187,7 +1198,7 @@ pub(crate) async fn try_saved_candidates(
         .unwrap_or_default()
         .is_empty()
     {
-        return StandbyRecoveryOutcome::Parked;
+        return StandbyRecoveryOutcome::Parked { scope: None };
     }
 
     let mut standby_releases = app
@@ -1199,6 +1210,8 @@ pub(crate) async fn try_saved_candidates(
         .unwrap_or_default();
 
     let mut season_pack_ids = HashSet::new();
+    let mut series_pack_ids = HashSet::new();
+    let mut standby_scopes = HashMap::new();
     // Title-wide standby rows only matter to an episode: movies and other
     // non-episode scopes cannot be covered by a sibling season pack, so avoid
     // the title-wide read and parse work entirely for them.
@@ -1252,14 +1265,19 @@ pub(crate) async fn try_saved_candidates(
                 .episode
                 .as_ref()
                 .is_some_and(|episode| episode.full_season);
-            let covers_item = crate::acquisition_coverage::resolve_release_coverage(
+            let is_series_pack = parsed
+                .episode
+                .as_ref()
+                .is_some_and(|episode| episode.is_series_pack);
+            let coverage = crate::acquisition_coverage::resolve_release_coverage(
                 &parsed,
                 &catalog_episodes,
                 &catalog_collections,
                 None,
-            )
-            .covers_episode(&target_episode);
-            (covers_item, is_season_pack)
+            );
+            let covers_item = coverage.covers_episode(&target_episode);
+            let scope = coverage.submission_scope_or(&item.submission_scope());
+            (covers_item, is_season_pack, is_series_pack, scope)
         };
 
         let title_pending = app
@@ -1269,12 +1287,14 @@ pub(crate) async fn try_saved_candidates(
             .list_pending_releases_for_title(&item.title_id)
             .await
             .unwrap_or_default();
-        if title_pending.iter().any(|pending| {
-            pending.status == PendingReleaseStatus::Waiting
+        if let Some(scope) = title_pending.iter().find_map(|pending| {
+            let metadata = parse_coverage(pending);
+            (pending.status == PendingReleaseStatus::Waiting
                 && pending.wanted_item_id != item.id
-                && parse_coverage(pending).0
+                && metadata.0)
+                .then_some(metadata.3)
         }) {
-            return StandbyRecoveryOutcome::Parked;
+            return StandbyRecoveryOutcome::Parked { scope: Some(scope) };
         }
 
         let mut known_ids = standby_releases
@@ -1291,10 +1311,12 @@ pub(crate) async fn try_saved_candidates(
         let mut title_standby_metadata = std::collections::HashMap::new();
         for pending in title_standby {
             let metadata = parse_coverage(&pending);
+            standby_scopes.insert(pending.id.clone(), metadata.3.clone());
+            let covers_item = metadata.0;
             title_standby_metadata.insert(pending.id.clone(), metadata);
             if known_ids.insert(pending.id.clone())
                 && pending.wanted_item_id != item.id
-                && metadata.0
+                && covers_item
             {
                 standby_releases.push(pending);
             }
@@ -1310,6 +1332,16 @@ pub(crate) async fn try_saved_candidates(
                 })
                 .map(|pending| pending.id.clone()),
             );
+            series_pack_ids.extend(
+                standby_releases
+                    .iter()
+                    .filter(|pending| {
+                        title_standby_metadata
+                            .get(&pending.id)
+                            .is_some_and(|metadata| metadata.2)
+                    })
+                    .map(|pending| pending.id.clone()),
+            );
         }
     }
 
@@ -1317,7 +1349,11 @@ pub(crate) async fn try_saved_candidates(
     // single-episode and episode-set standby releases are exhausted first; only
     // then does the walk consider packs. Each partition keeps the canonical
     // persistence order (score descending, then oldest first).
-    order_standby_releases(&mut standby_releases, &season_pack_ids);
+    order_standby_releases(
+        &mut standby_releases,
+        &season_pack_ids,
+        &series_pack_ids,
+    );
     // Standby candidates are re-checked against the per-title blocklist (the
     // single, removable exclusion source), never the failed-attempt history.
     let db_blocklist = app
@@ -1327,7 +1363,20 @@ pub(crate) async fn try_saved_candidates(
     let mut stale_indexer_ids = HashSet::new();
 
     for standby in standby_releases {
-        let season_pack = season_pack_ids.contains(&standby.id);
+        let standby_scope = standby_scopes
+            .get(&standby.id)
+            .cloned()
+            .unwrap_or_else(|| item.submission_scope());
+        if series_pack_ids.contains(&standby.id)
+            && excluded_episode_ids.is_some_and(|excluded| {
+                episode_ids_for_scope(&standby_scope)
+                    .is_some_and(|episode_ids| episode_ids.iter().any(|id| excluded.contains(id)))
+            })
+        {
+            // Keep the saved result for failure recovery, but never submit an
+            // overlapping series pack while this cycle already owns a member.
+            continue;
+        }
         let mut effective_wanted = item.clone();
         effective_wanted.grabbed_release = None;
         effective_wanted.last_search_at = None;
@@ -1375,7 +1424,9 @@ pub(crate) async fn try_saved_candidates(
                 .pending_releases
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                 .await;
-            return StandbyRecoveryOutcome::Deferred;
+            return StandbyRecoveryOutcome::Deferred {
+                scope: Some(standby_scope),
+            };
         }
 
         if dl_snapshot.is_active(&standby.release_title) {
@@ -1385,7 +1436,9 @@ pub(crate) async fn try_saved_candidates(
                 .pending_releases
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                 .await;
-            continue;
+            return StandbyRecoveryOutcome::Active {
+                scope: standby_scope,
+            };
         }
 
         info!(
@@ -1407,7 +1460,7 @@ pub(crate) async fn try_saved_candidates(
             )
             .await
         {
-            Ok(super::pending::PendingGrabOutcome::Grabbed) => {
+            Ok(super::pending::PendingGrabOutcome::Grabbed { scope }) => {
                 let grabbed_at = now.to_rfc3339();
                 let _ = app
                     .services
@@ -1441,7 +1494,7 @@ pub(crate) async fn try_saved_candidates(
                         .await;
                 }
 
-                return StandbyRecoveryOutcome::Recovered { season_pack };
+                return StandbyRecoveryOutcome::Recovered { scope };
             }
             Ok(super::pending::PendingGrabOutcome::Deferred) => {
                 info!(
@@ -1454,10 +1507,14 @@ pub(crate) async fn try_saved_candidates(
                     .pending_releases
                     .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                     .await;
-                return StandbyRecoveryOutcome::Deferred;
+                return StandbyRecoveryOutcome::Deferred {
+                    scope: Some(standby_scope),
+                };
             }
             Ok(super::pending::PendingGrabOutcome::Parked) => {
-                return StandbyRecoveryOutcome::Parked;
+                return StandbyRecoveryOutcome::Parked {
+                    scope: Some(standby_scope),
+                };
             }
             Ok(super::pending::PendingGrabOutcome::SourceGone) => {
                 if let Some(indexer_id) = standby.indexer_id.as_ref() {
@@ -1504,7 +1561,7 @@ async fn persist_standby_candidates<F>(
     failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
     include_candidate: F,
-)
+) -> bool
 where
     F: Fn(&IndexerSearchResult) -> bool,
 {
@@ -1516,15 +1573,21 @@ where
         .await;
 
     let mut persisted = 0usize;
+    let mut complete = true;
     let mut seen_source_hints = std::collections::HashSet::<String>::new();
 
-    for candidate in results.iter().skip(start_index) {
+    for (rank, candidate) in results.iter().enumerate().skip(start_index) {
         if !include_candidate(candidate) {
             continue;
         }
         let decision_code =
             effective_auto_decision_code_for_route(candidate, failed_routes, db_blocklist);
-        if !decision_code.is_eligible() {
+        if !decision_code.is_eligible()
+            && !matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::PendingDelay | ReleaseAutoDecisionCode::AlreadyActive
+            )
+        {
             // A fact about the *scope*, not about this candidate: the ranked
             // order is (tier, revision, score) and admission compares the same
             // three in the same order, so nothing below a rejected candidate
@@ -1586,7 +1649,8 @@ where
             indexer_source: Some(candidate.source.clone()),
             indexer_id: candidate.indexer_id.clone(),
             release_guid: candidate.guid.clone(),
-            added_at: now.to_rfc3339(),
+            added_at: (*now + chrono::Duration::microseconds(rank as i64))
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
             delay_until: now.to_rfc3339(),
             status: PendingReleaseStatus::Standby,
             grabbed_at: None,
@@ -1610,6 +1674,8 @@ where
             .is_ok()
         {
             persisted += 1;
+        } else {
+            complete = false;
         }
     }
 
@@ -1621,6 +1687,7 @@ where
             "persisted standby candidates for failed-download recovery"
         );
     }
+    complete
 }
 
 #[cfg(test)]
@@ -1703,7 +1770,7 @@ mod client_snapshot_tests {
         ];
         let season_pack_ids = HashSet::from(["season-pack".to_string()]);
 
-        order_standby_releases(&mut standby, &season_pack_ids);
+        order_standby_releases(&mut standby, &season_pack_ids, &HashSet::new());
 
         assert_eq!(
             standby
@@ -1712,6 +1779,89 @@ mod client_snapshot_tests {
                 .collect::<Vec<_>>(),
             vec!["single-episode", "season-pack"]
         );
+    }
+
+    #[test]
+    fn series_pack_standby_order_preserves_persisted_search_rank() {
+        let mut standby = vec![
+            standby("rank-two", 900, "2026-01-01T00:00:00.000001000Z"),
+            standby("rank-one", 100, "2026-01-01T00:00:00.000000000Z"),
+        ];
+        let pack_ids = HashSet::from(["rank-one".to_string(), "rank-two".to_string()]);
+
+        order_standby_releases(&mut standby, &pack_ids, &pack_ids);
+
+        assert_eq!(
+            standby
+                .iter()
+                .map(|pending| pending.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rank-one", "rank-two"]
+        );
+    }
+
+    #[test]
+    fn standby_order_is_total_for_mixed_plain_and_series_packs() {
+        let mut standby = vec![
+            standby("plain", 500, "2026-01-01T00:00:05Z"),
+            standby("series-a", 100, "2026-01-01T00:00:00Z"),
+            standby("series-b", 900, "2026-01-01T00:00:01Z"),
+        ];
+        let season_pack_ids = HashSet::from([
+            "plain".to_string(),
+            "series-a".to_string(),
+            "series-b".to_string(),
+        ]);
+        let series_pack_ids = HashSet::from(["series-a".to_string(), "series-b".to_string()]);
+
+        order_standby_releases(&mut standby, &season_pack_ids, &series_pack_ids);
+
+        assert_eq!(
+            standby
+                .iter()
+                .map(|pending| pending.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["series-a", "series-b", "plain"]
+        );
+    }
+
+    #[test]
+    fn standby_order_keeps_all_groups_ordered_in_a_large_mixed_list() {
+        let mut standby = (0..8)
+            .map(|index| standby(&format!("episode-{index}"), index, &format!("2026-01-01T00:00:{index:02}Z")))
+            .chain((0..8).map(|index| {
+                standby(
+                    &format!("series-{index}"),
+                    1000 - index,
+                    &format!("2026-01-01T00:01:{index:02}Z"),
+                )
+            }))
+            .chain((0..8).map(|index| {
+                standby(
+                    &format!("season-{index}"),
+                    index,
+                    &format!("2026-01-01T00:02:{index:02}Z"),
+                )
+            }))
+            .collect::<Vec<_>>();
+        standby.reverse();
+        let season_pack_ids = (0..8)
+            .map(|index| format!("series-{index}"))
+            .chain((0..8).map(|index| format!("season-{index}")))
+            .collect::<HashSet<_>>();
+        let series_pack_ids = (0..8)
+            .map(|index| format!("series-{index}"))
+            .collect::<HashSet<_>>();
+
+        order_standby_releases(&mut standby, &season_pack_ids, &series_pack_ids);
+
+        let ids = standby
+            .iter()
+            .map(|pending| pending.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids[..8].iter().all(|id| id.starts_with("episode-")));
+        assert!(ids[8..16].iter().all(|id| id.starts_with("series-")));
+        assert!(ids[16..].iter().all(|id| id.starts_with("season-")));
     }
 
     #[test]

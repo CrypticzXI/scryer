@@ -1206,6 +1206,118 @@ fn season_pack_range_sets_multi_season_contract_flag() {
 }
 
 #[test]
+fn series_pack_markers_cover_complete_and_multi_season_release_names() {
+    let complete = analyze_release_for_target(
+        "[AOmundson] Mirai Nikki Complete Series + Specials & Extras",
+        &context(ContextFacetHint::Series, "Mirai Nikki"),
+    );
+    let complete_episode = complete
+        .best_candidate()
+        .and_then(|candidate| candidate.projected.episode.as_ref())
+        .expect("complete series marker should project an episodic pack");
+    assert!(complete_episode.is_series_pack);
+    assert!(complete_episode.season_numbers.is_empty());
+
+    let complete_with_extras = analyze_release_for_target(
+        "[DB] No Game No Life Complete Series+OVAs+Movie [BD 1080p]",
+        &context(ContextFacetHint::Series, "No Game No Life"),
+    );
+    assert!(
+        complete_with_extras
+            .best_candidate()
+            .and_then(|candidate| candidate.projected.episode.as_ref())
+            .is_some_and(|episode| episode.is_series_pack)
+    );
+
+    for (release, title, expected_seasons) in [
+        (
+            "[ItachiUchiha] The Dangers in My Heart S01+S02+OVAs [BD 1080p]",
+            "The Dangers in My Heart",
+            vec![1, 2],
+        ),
+        (
+            "[Judas] Spice and Wolf (Seasons 01-02) [BD 1080p]",
+            "Spice and Wolf",
+            vec![1, 2],
+        ),
+    ] {
+        let analysis =
+            analyze_release_for_target(release, &context(ContextFacetHint::Series, title));
+        let episode = analysis
+            .best_candidate()
+            .and_then(|candidate| candidate.projected.episode.as_ref())
+            .unwrap_or_else(|| panic!("{release}: {:?}", analysis.tokens));
+        assert!(episode.is_series_pack, "{release}");
+        assert_eq!(episode.season_numbers, expected_seasons, "{release}");
+    }
+}
+
+#[test]
+fn explicit_single_episode_markers_beat_series_pack_markers() {
+    let analysis = analyze_release_for_target(
+        "Show.S05E12.The.Complete.Series.720p",
+        &context(ContextFacetHint::Series, "Show"),
+    );
+    let episode = analysis
+        .best_candidate()
+        .and_then(|candidate| candidate.projected.episode.as_ref())
+        .expect("single episode should win over complete-series marker");
+    assert_eq!(
+        episode.release_type,
+        crate::ParsedEpisodeReleaseType::SingleEpisode
+    );
+    assert_eq!(episode.season, Some(5));
+    assert_eq!(episode.episode_numbers, vec![12]);
+
+    for release in [
+        "Show.S01-S03.S02E05.mkv",
+        "Show.S01+S02.S02E05.1080p.WEB-DL",
+    ] {
+        let analysis =
+            analyze_release_for_target(release, &context(ContextFacetHint::Series, "Show"));
+        assert!(
+            !analysis
+                .best_candidate()
+                .and_then(|candidate| candidate.projected.episode.as_ref())
+                .is_some_and(|episode| episode.is_series_pack),
+            "{release}: {:?}",
+            analysis.tokens
+        );
+    }
+}
+
+#[test]
+fn movie_ova_and_bare_complete_markers_are_not_series_packs() {
+    for (release, title) in [
+        (
+            "The Garden of Sinners Complete Movie Series [BD 1080p]",
+            "The Garden of Sinners",
+        ),
+        (
+            "Strawberry Marshmallow Complete OVA Series [BD 1080p]",
+            "Strawberry Marshmallow",
+        ),
+        ("Show Complete Collection [BD 1080p]", "Show"),
+        ("Show Complete Original Series [BD 1080p]", "Show"),
+        ("Show Complete Subbed Collection [BD 1080p]", "Show"),
+        ("Show All Seasons [BD 1080p]", "Show"),
+        ("Dragon Ball Season 01 to 09 [BD 1080p]", "Dragon Ball"),
+        ("Yatterman Complete [BD 1080p]", "Yatterman"),
+        ("Show 01-24 [BD 1080p]", "Show"),
+    ] {
+        let analysis =
+            analyze_release_for_target(release, &context(ContextFacetHint::Series, title));
+        assert!(
+            !analysis
+                .best_candidate()
+                .and_then(|candidate| candidate.projected.episode.as_ref())
+                .is_some_and(|episode| episode.is_series_pack),
+            "{release}"
+        );
+    }
+}
+
+#[test]
 fn parenthetical_standard_identity_beats_prefixed_absolute_number() {
     let mut target = context(
         ContextFacetHint::Anime,

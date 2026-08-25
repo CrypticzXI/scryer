@@ -12,9 +12,11 @@ use crate::delay_profile::DelayProfile;
 use crate::types::{PendingRelease, PendingReleaseStatus};
 use std::collections::HashSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PendingGrabOutcome {
-    Grabbed,
+    Grabbed {
+        scope: SubmissionScope,
+    },
     /// The release remains the best choice, but its delay profile still holds
     /// it. The caller must not try a lower-ranked release.
     Parked,
@@ -416,7 +418,7 @@ impl AppUseCase {
                     .try_grab_pending_release(&wanted, pr, &now, PendingGrabTrigger::Automatic)
                     .await
                 {
-                    Ok(PendingGrabOutcome::Grabbed) => {
+                    Ok(PendingGrabOutcome::Grabbed { .. }) => {
                         // Mark this one as grabbed
                         let _ = self
                             .services
@@ -729,7 +731,7 @@ impl AppUseCase {
         Ok(matches!(
             self.try_grab_pending_release(&wanted, &pr, &now, PendingGrabTrigger::Operator)
                 .await?,
-            PendingGrabOutcome::Grabbed
+            PendingGrabOutcome::Grabbed { .. }
         ))
     }
 
@@ -954,16 +956,96 @@ impl AppUseCase {
         );
         let pending_scope = pending_coverage.submission_scope_or(&pending_scope_fallback);
 
-        let existing_files = self
+        let is_series_pack = pending_parsed
+            .episode
+            .as_ref()
+            .is_some_and(|episode| episode.is_series_pack);
+        let existing_files = match self
             .services
             .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|file| file.role.is_primary())
-            .collect::<Vec<_>>();
+        {
+            Ok(files) => files
+                .into_iter()
+                .filter(|file| file.role.is_primary())
+                .collect::<Vec<_>>(),
+            Err(error) if is_series_pack => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "pending series pack: media ownership is unavailable; deferring retry"
+                );
+                return Ok(PendingGrabOutcome::Deferred);
+            }
+            Err(_) => Vec::new(),
+        };
+        if is_series_pack {
+            let mut owned_episode_ids = existing_files
+                .iter()
+                .filter_map(|file| file.episode_id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let submissions = match self
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&title.id)
+                .await
+            {
+                Ok(submissions) => submissions,
+                Err(error) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        error = %error,
+                        "pending series pack: submission ownership is unavailable; deferring retry"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+            };
+            let identities = submissions
+                .iter()
+                .map(crate::contracts::DownloadSourceIdentity::from_submission)
+                .collect::<Vec<_>>();
+            let tracked_states = match self
+                .services
+                .workflow
+                .download_submissions
+                .list_identity_tracked_states_for_client_items(&identities)
+                .await
+            {
+                Ok(states) => states
+                    .into_iter()
+                    .filter_map(|(identity, state)| {
+                        scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                            .map(|state| (identity, state))
+                    })
+                    .collect(),
+                Err(error) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        error = %error,
+                        "pending series pack: tracked submission ownership is unavailable; deferring retry"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+            };
+            owned_episode_ids.extend(
+                crate::acquisition_coverage::in_flight_series_pack_episode_ids(
+                    &catalog_episodes,
+                    &submissions,
+                    &tracked_states,
+                    &dl_snapshot,
+                ),
+            );
+            if !crate::acquisition_coverage::series_pack_missing_ratio_qualifies(
+                &pending_parsed,
+                &catalog_episodes,
+                &owned_episode_ids,
+            ) {
+                return Ok(PendingGrabOutcome::Rejected);
+            }
+        }
         let cutoff_scope = self.cutoff_scope_for(&pending_scope).await;
         let analyzed_cutoff_quality =
             crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
@@ -1420,7 +1502,9 @@ impl AppUseCase {
                     ))
                     .await;
 
-                Ok(PendingGrabOutcome::Grabbed)
+                Ok(PendingGrabOutcome::Grabbed {
+                    scope: pending_scope,
+                })
             }
             Err(err) => {
                 warn!(

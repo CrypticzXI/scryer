@@ -1000,6 +1000,22 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(())
     }
 
+    async fn list_identity_tracked_states_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        let tracked_states = self.tracked_states.lock().await;
+        Ok(client_items
+            .iter()
+            .filter_map(|identity| {
+                tracked_states
+                    .get(&download_source_identity_key(identity))
+                    .cloned()
+                    .map(|state| (identity.clone(), state))
+            })
+            .collect())
+    }
+
     async fn get_tracked_state(
         &self,
         identity: &DownloadSourceIdentity,
@@ -1467,6 +1483,7 @@ pub(super) struct StubDownloadClient {
     /// hand-written error string.
     pub(super) category_gate_nzb: Arc<Mutex<Option<Vec<u8>>>>,
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
+    pub(super) unique_job_ids: bool,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
     pub(super) submitted_info_hash_hints: Arc<Mutex<Vec<Option<String>>>>,
@@ -1489,6 +1506,11 @@ pub(super) struct StubDownloadClient {
 }
 
 impl StubDownloadClient {
+    pub(super) fn with_unique_job_ids(mut self) -> Self {
+        self.unique_job_ids = true;
+        self
+    }
+
     pub(super) async fn set_delete_error(&self, error: Option<&str>) {
         *self.delete_error.lock().await = error.map(str::to_string);
     }
@@ -1551,7 +1573,15 @@ impl DownloadClient for StubDownloadClient {
         if let Some(nzb) = self.category_gate_nzb.lock().await.as_deref() {
             crate::enforce_nzb_category_gate(nzb, &request.title.facet)?;
         }
-        let job_id = format!("job-for-{}", request.title.id);
+        let job_id = if self.unique_job_ids {
+            format!(
+                "job-for-{}-{}",
+                request.title.id,
+                request.download_id.as_deref().unwrap_or("unidentified")
+            )
+        } else {
+            format!("job-for-{}", request.title.id)
+        };
         self.submitted_release_titles.lock().await.push(
             request
                 .release_title

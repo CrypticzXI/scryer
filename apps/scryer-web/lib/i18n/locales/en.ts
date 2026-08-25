@@ -2581,6 +2581,7 @@ const en: LocaleDictionary = {
   "wanted.decision.ambiguousIdentity": "Ambiguous identity",
   "wanted.decision.qualityBlocked": "Quality blocked",
   "wanted.decision.minimumSeeders": "Too few seeders",
+  "wanted.decision.packBelowMissingThreshold": "Pack below missing threshold",
   "wanted.decision.upgradeRejected": "Upgrade rejected",
   "wanted.decision.pendingDelay": "Pending delay",
   "wanted.decision.alreadyActive": "Already active",
