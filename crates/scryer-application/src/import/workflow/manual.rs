@@ -8,6 +8,9 @@ const MANUAL_IMPORT_RECOVERY_WINDOW_HOURS: i64 = 24;
 const MANUAL_IMPORT_SOURCE_UNAVAILABLE: &str = "download is no longer available for manual import";
 const MANUAL_MOVIE_NO_PRIMARY_FILE: &str =
     "no primary movie file to import: every mapped video is named as a sample";
+// Opaque files have no release-name semantics for the manual candidate UI.
+// Keep small samples and sidecars out of that expanded discovery surface while
+// leaving known video files (including legitimate short specials) untouched.
 const OPAQUE_MANUAL_IMPORT_PROBE_MIN_BYTES: u64 = 16 * 1024 * 1024;
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
@@ -869,6 +872,7 @@ pub(crate) async fn qualify_manual_import_video_candidate(
     let video_facts = {
         let probe_path = canonical_path.clone();
         let analysis = tokio::task::spawn_blocking(move || {
+            crate::nice_thread();
             scryer_mediainfo::analyze_file_with_options(
                 &probe_path,
                 scryer_mediainfo::AnalyzeOptions {
@@ -948,6 +952,7 @@ async fn discover_manual_import_video_candidates(
     let mut candidates: Vec<QualifiedManualImportVideo> = Vec::new();
     let mut candidate_indexes: std::collections::HashMap<PathBuf, usize> =
         std::collections::HashMap::new();
+    let mut first_error = None;
     for path in paths {
         match qualify_manual_import_video_candidate(&path, trusted_root).await {
             Ok(Some(candidate)) => {
@@ -970,8 +975,14 @@ async fn discover_manual_import_video_candidates(
                     error = %error,
                     "skipping unavailable manual import candidate"
                 );
+                first_error.get_or_insert(error);
             }
         }
+    }
+    if candidates.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
     }
     Ok(candidates)
 }

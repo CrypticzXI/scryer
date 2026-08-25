@@ -1370,6 +1370,42 @@ mod tests {
 
     #[cfg(all(feature = "runtime-media-analysis", unix))]
     #[tokio::test]
+    async fn manual_import_discovery_surfaces_an_unavailable_only_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source = tempfile::tempdir().expect("source tempdir");
+        let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
+        let unavailable = source.path().join("unavailable.mkv");
+        copy_mediainfo_fixture(&unavailable);
+        std::fs::set_permissions(&unavailable, std::fs::Permissions::from_mode(0o000))
+            .expect("make candidate unavailable");
+
+        let result = discover_manual_import_video_candidates(&trusted_root).await;
+
+        std::fs::set_permissions(&unavailable, std::fs::Permissions::from_mode(0o644))
+            .expect("restore candidate permissions");
+        let error = result.expect_err("unavailable-only candidate should surface an error");
+        assert!(error.to_string().contains("not accessible"));
+    }
+
+    #[cfg(feature = "runtime-media-analysis")]
+    #[tokio::test]
+    async fn manual_import_content_probe_rejects_small_opaque_files() {
+        let source = tempfile::tempdir().expect("source tempdir");
+        let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
+        let small_opaque = source.path().join("opaque");
+        copy_mediainfo_fixture(&small_opaque);
+
+        assert!(
+            qualify_manual_import_video_candidate(&small_opaque, &trusted_root)
+                .await
+                .expect("qualify small opaque file")
+                .is_none()
+        );
+    }
+
+    #[cfg(all(feature = "runtime-media-analysis", unix))]
+    #[tokio::test]
     async fn manual_import_discovery_preserves_symlink_entry_name_and_rejects_escape() {
         let source = tempfile::tempdir().expect("source tempdir");
         let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
@@ -1433,19 +1469,6 @@ mod tests {
 
     #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
-    async fn manual_import_content_probe_rejects_small_opaque_files() {
-        let source = tempfile::tempdir().expect("source tempdir");
-        let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
-        let small_opaque = source.path().join("opaque");
-        copy_mediainfo_fixture(&small_opaque);
-        assert!(
-            qualify_manual_import_video_candidate(&small_opaque, &trusted_root)
-                .await
-                .expect("qualify small opaque file")
-                .is_none()
-        );
-    }
-
     #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
     async fn manual_import_content_probe_keeps_unsupported_extensions_and_rejects_malformed() {
