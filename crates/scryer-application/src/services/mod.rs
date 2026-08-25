@@ -28,8 +28,8 @@ use builder::AppServicesBuildConfiguration;
 use runtime::normalize_supported_plugin_required_features;
 
 pub(crate) use runtime::{
-    CachedWantedProjection, CompletedDownloadAdmission, DownloadClientCategoryAdmissionSnapshot,
-    DownloadQueueReadModel, ReleaseCandidatePasswordTicket, download_observation_is_admitted,
+    CachedWantedProjection, CompletedDownloadAdmission, DownloadQueueReadModel,
+    ReleaseCandidatePasswordTicket, download_observation_is_admitted,
     normalize_download_client_category,
 };
 

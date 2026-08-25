@@ -75,6 +75,10 @@ import {
   TvdbSeriesExternalLink,
 } from "@/components/common/external-media-links";
 import { titleGenreLabels } from "@/lib/utils/title-genres";
+import {
+  collectActiveDownloadEpisodeIds,
+  coveredEpisodeIdsForQueueItem,
+} from "@/lib/utils/episode-download-activity";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -104,39 +108,6 @@ function compareEpisodeQueueItems(
   }
 
   return right.progressPercent - left.progressPercent;
-}
-
-function coveredEpisodeIdsForQueueItem(
-  item: DownloadQueueItem,
-  episodesByCollection: Record<string, CollectionEpisode[]>,
-): string[] {
-  const episodeIds = new Set<string>();
-  if (item.episodeId) {
-    episodeIds.add(item.episodeId);
-  }
-
-  const scope = item.queueScope;
-  if (!scope) {
-    return Array.from(episodeIds);
-  }
-
-  if (scope.__typename === "EpisodeScopePayload" && scope.episodeId) {
-    episodeIds.add(scope.episodeId);
-  }
-
-  if (scope.__typename === "EpisodeSetScopePayload") {
-    for (const episodeId of scope.episodeIds) {
-      episodeIds.add(episodeId);
-    }
-  }
-
-  if (scope.__typename === "CollectionScopePayload" && scope.collectionId) {
-    for (const episode of episodesByCollection[scope.collectionId] ?? []) {
-      episodeIds.add(episode.id);
-    }
-  }
-
-  return Array.from(episodeIds);
 }
 
 type Props = {
@@ -318,7 +289,7 @@ export function SeriesOverviewView({
   const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
-  const { primaryQueueItemByEpisodeId } = React.useMemo(() => {
+  const { activeDownloadEpisodeIds, primaryQueueItemByEpisodeId } = React.useMemo(() => {
     const queueItemsByEpisodeId: Record<string, DownloadQueueItem[]> = {};
 
     for (const item of downloadQueueItems) {
@@ -335,6 +306,10 @@ export function SeriesOverviewView({
     ) as Record<string, DownloadQueueItem | undefined>;
 
     return {
+      activeDownloadEpisodeIds: collectActiveDownloadEpisodeIds(
+        downloadQueueItems,
+        sortedEpisodesByCollection,
+      ),
       primaryQueueItemByEpisodeId: primaryByEpisodeId,
     };
   }, [downloadQueueItems, sortedEpisodesByCollection]);
@@ -549,6 +524,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: { episode: episode.id },
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(mediaFilesByEpisode[episode.id]);
       const mutation = replacesPrimary
@@ -604,6 +580,7 @@ export function SeriesOverviewView({
             titleId: title.id,
             scope: { episode: episode.id },
             candidateToken: release.candidateToken,
+            sizeBytes: release.sizeBytes ?? null,
             purpose: "ADDITIONAL_FILE",
           },
         }).toPromise();
@@ -733,6 +710,7 @@ export function SeriesOverviewView({
         titleId: title.id,
         scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
         candidateToken: release.candidateToken,
+        sizeBytes: release.sizeBytes ?? null,
       };
       const replacesPrimary = hasPrimaryMediaFile(
         mediaFilesBySeriesMovieLink[link.id],
@@ -795,6 +773,7 @@ export function SeriesOverviewView({
               titleId: title.id,
               scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
               candidateToken: release.candidateToken,
+              sizeBytes: release.sizeBytes ?? null,
               purpose: "ADDITIONAL_FILE",
             },
           })
@@ -1145,6 +1124,7 @@ export function SeriesOverviewView({
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
               onLoadEpisodeDetail={onLoadEpisodeDetail}
+                    activeDownloadEpisodeIds={activeDownloadEpisodeIds}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}

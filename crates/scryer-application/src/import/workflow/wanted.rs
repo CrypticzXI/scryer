@@ -70,6 +70,8 @@ async fn execute_resolved_episode_import(
     quality_profile: &crate::QualityProfile,
     quality_override: Option<String>,
     runtime_sample_mode: crate::post_download_gate::RuntimeSampleValidationMode,
+    origin: crate::import_decide::ImportOrigin,
+    announced_size_bytes: Option<i64>,
     additional_import: bool,
 ) -> AppResult<EpisodeImportOutcome> {
     let use_season_folders = app.resolve_use_season_folders(title).await?;
@@ -172,12 +174,17 @@ async fn execute_resolved_episode_import(
             &dest_path,
             import_mode,
             None,
+            completed,
         )
         .await?;
         let media_file_input = crate::InsertMediaFileInput {
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                announced_size_bytes,
+            ),
             role: crate::MediaFileRole::Additional,
             quality_label: effective_quality_label.clone(),
             scene_name: Some(effective_parsed.raw_title.clone()),
@@ -236,8 +243,11 @@ async fn execute_resolved_episode_import(
             }
         }
 
-        let link_type =
-            finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+        let link_type = if import_mode == scryer_domain::ImportMode::Move {
+            scryer_domain::ImportStrategy::Move
+        } else {
+            file_result.strategy
+        };
 
         return Ok(EpisodeImportOutcome::Imported {
             dest_path: path_to_stored_string(&dest_path),
@@ -245,6 +255,7 @@ async fn execute_resolved_episode_import(
             imported_media_file_id: Some(media_file_id),
             reason_code: Some("additional_file".to_string()),
             link_type: Some(link_type),
+            source_cleanup: file_result.source_cleanup.clone().map(Box::new),
             size_bytes: Some(file_result.size_bytes as i64),
             // An additional file never reaches the gate, so it never earns one.
             blocklist_after_import: None,
@@ -350,10 +361,11 @@ async fn execute_resolved_episode_import(
             }
             // The probe refused the bytes outright. A corrupt container or a
             // source that changed under the import means the release is not
-            // what it claimed, so it is burned and the scope reopened; a
-            // user/system rule veto on the file is operator policy, not a lie,
-            // and is held instead (`prepare_rejection_disposition`).
-            let disposition = crate::import_decide::prepare_rejection_disposition(&rejection);
+            // what it claimed, so it is burned and the scope reopened. A
+            // user/system rule veto on the file is also an import failure.
+            let rejection = origin.held_rejection(rejection);
+            let disposition =
+                crate::import_decide::prepare_rejection_disposition_for_origin(&rejection, origin);
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,
                 disposition,
@@ -378,14 +390,18 @@ async fn execute_resolved_episode_import(
             file = %source_video.display(),
             "rejecting implausible episode coverage during import"
         );
+        let rejection = crate::post_download_gate::ImportedFileRejection {
+            message: issue.message,
+            recycle_reason: super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE,
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: Vec::new(),
+        };
+        let rejection = origin.held_rejection(rejection);
         return Ok(EpisodeImportOutcome::Rejected {
-            rejection: crate::post_download_gate::ImportedFileRejection {
-                message: issue.message,
-                recycle_reason: super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE,
-                skip_reason: Some(ImportSkipReason::PolicyMismatch),
-                blocking_rule_codes: Vec::new(),
-            },
-            disposition: crate::import_decide::RejectionDisposition::Blocklist,
+            disposition: crate::import_decide::prepare_rejection_disposition_for_origin(
+                &rejection, origin,
+            ),
+            rejection,
             reason_code: Some(
                 super::coverage_validation::COVERAGE_RUNTIME_MISMATCH_CODE.to_string(),
             ),
@@ -505,7 +521,9 @@ async fn execute_resolved_episode_import(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes,
         is_filler,
+        origin,
         operator_intent: manual_replacement,
         incumbent_rows: crate::import_decide::IncumbentRows::Episodes(&existing_incumbents),
         scope_label: "this episode",
@@ -575,6 +593,8 @@ async fn execute_resolved_episode_import(
             Some(old_file_recycle_context.media_root.as_str()),
             &old_file_recycle_context.recycle_config,
             import_mode,
+            announced_size_bytes,
+            completed,
         )
         .await
         {
@@ -613,6 +633,7 @@ async fn execute_resolved_episode_import(
                     reason_code: Some("upgrade".to_string()),
                     link_type: (import_mode == scryer_domain::ImportMode::Move)
                         .then_some(scryer_domain::ImportStrategy::Move),
+                    source_cleanup: outcome.source_cleanup.clone(),
                     size_bytes: Some(outcome.new_size_bytes),
                     blocklist_after_import,
                 });
@@ -644,6 +665,7 @@ async fn execute_resolved_episode_import(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        completed,
     )
     .await?;
 
@@ -658,6 +680,10 @@ async fn execute_resolved_episode_import(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            announced_size_bytes,
+        ),
         quality_label: post_download_score.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: post_download_score.parsed.release_group.clone(),
@@ -746,8 +772,11 @@ async fn execute_resolved_episode_import(
         )));
     }
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+    let link_type = if import_mode == scryer_domain::ImportMode::Move {
+        scryer_domain::ImportStrategy::Move
+    } else {
+        file_result.strategy
+    };
 
     for episode in target_episodes {
         mark_wanted_completed(app, &title.id, Some(&episode.id), true).await;
@@ -759,6 +788,7 @@ async fn execute_resolved_episode_import(
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
         link_type: Some(link_type),
+        source_cleanup: file_result.source_cleanup.clone().map(Box::new),
         size_bytes: Some(file_result.size_bytes as i64),
         blocklist_after_import,
     })

@@ -117,6 +117,15 @@ pub(crate) fn resolve_release_coverage(
         return ReleaseCoverage::Title;
     };
 
+    if episode.is_series_pack {
+        let covered = eligible_series_pack_episode_ids(episodes, &episode.season_numbers);
+        return if covered.is_empty() {
+            ReleaseCoverage::Unknown
+        } else {
+            ReleaseCoverage::EpisodeSet(covered)
+        };
+    }
+
     if episode.release_type == ParsedEpisodeReleaseType::SeasonPack {
         if let Some(season) = episode.season {
             if let Some(collection_id) = collection_id_for_season(collections, season) {
@@ -197,6 +206,198 @@ pub(crate) fn resolve_release_coverage(
     }
 
     coverage_from_episode_ids(covered).unwrap_or(ReleaseCoverage::Unknown)
+}
+
+/// A series pack is worth considering only when it can fill more than 30% of
+/// the regular, already-aired episodes the operator monitors. This deliberately
+/// counts episodes not already owned by a primary file or an in-flight
+/// submission, not quality upgrades: the guard is about avoiding a huge
+/// download for a small hole in an otherwise complete series.
+pub(crate) fn series_pack_missing_ratio_qualifies(
+    parsed: &ParsedReleaseMetadata,
+    episodes: &[Episode],
+    owned_episode_ids: &std::collections::HashSet<String>,
+) -> bool {
+    let Some(series_pack) = parsed
+        .episode
+        .as_ref()
+        .filter(|episode| episode.is_series_pack)
+    else {
+        return true;
+    };
+
+    series_pack_missing_ratio_qualifies_for_seasons(
+        episodes,
+        owned_episode_ids,
+        &series_pack.season_numbers,
+    )
+}
+
+/// Whether a title should issue its one series-pack lookup. A later
+/// result-specific check applies the threshold to the exact seasons the pack
+/// covers. Searching when any season clears the threshold cannot miss a
+/// qualifying multi-season pack: a weighted average above 30% has at least
+/// one component season above 30%.
+pub(crate) fn title_series_pack_missing_ratio_qualifies(
+    episodes: &[Episode],
+    owned_episode_ids: &std::collections::HashSet<String>,
+) -> bool {
+    series_pack_missing_ratio_qualifies_for_seasons(episodes, owned_episode_ids, &[])
+        || eligible_series_pack_season_numbers(episodes)
+            .into_iter()
+            .any(|season| {
+                series_pack_missing_ratio_qualifies_for_seasons(
+                    episodes,
+                    owned_episode_ids,
+                    &[season],
+                )
+            })
+}
+
+/// Collection ids represented by the title's monitored, aired, standard
+/// episodes. These are the members of the title-level series-pack search set.
+pub(crate) fn eligible_series_pack_collection_ids(episodes: &[Episode]) -> Vec<String> {
+    eligible_series_pack_collection_ids_for_seasons(episodes, &[])
+}
+
+/// Collection ids exactly covered by a parsed series pack.
+pub(crate) fn series_pack_collection_ids(
+    parsed: &ParsedReleaseMetadata,
+    episodes: &[Episode],
+) -> Vec<String> {
+    let Some(series_pack) = parsed
+        .episode
+        .as_ref()
+        .filter(|episode| episode.is_series_pack)
+    else {
+        return Vec::new();
+    };
+    eligible_series_pack_collection_ids_for_seasons(episodes, &series_pack.season_numbers)
+}
+
+/// Eligible missing episodes across a title. This is intentionally distinct
+/// from the ratio gate: a single small hole should not initiate a pack lookup.
+pub(crate) fn eligible_missing_series_pack_episode_count(
+    episodes: &[Episode],
+    owned_episode_ids: &std::collections::HashSet<String>,
+) -> usize {
+    eligible_series_pack_episode_ids(episodes, &[])
+        .into_iter()
+        .filter(|episode_id| !owned_episode_ids.contains(episode_id))
+        .count()
+}
+
+/// Eligible episodes occupied by a live submission. The queued predicate is
+/// the same one admission uses, so failed submissions immediately become
+/// missing again while downloads that have completed into import work remain
+/// owned until their media files land.
+pub(crate) fn in_flight_series_pack_episode_ids(
+    episodes: &[Episode],
+    submissions: &[crate::DownloadSubmission],
+    tracked_states: &std::collections::HashMap<
+        crate::contracts::ClientJobLocator,
+        scryer_domain::TrackedDownloadState,
+    >,
+    dl_snapshot: &crate::acquisition_workflow::DownloadClientSnapshot,
+) -> std::collections::HashSet<String> {
+    let now = chrono::Utc::now();
+    episodes
+        .iter()
+        .filter(|episode| is_eligible_series_pack_episode(episode, &now))
+        .filter(|episode| {
+            let episode_ids = std::slice::from_ref(&episode.id);
+            let collection_ids = episode.collection_id.as_slice();
+            let membership = crate::acquisition_workflow::ScopeMembership {
+                episode_ids,
+                collection_ids,
+                series_movie_link_id: None,
+            };
+            submissions.iter().any(|submission| {
+                let identity = crate::contracts::ClientJobLocator::from_submission(submission);
+                crate::acquisition_workflow::submission_is_queued(
+                    tracked_states.get(&identity).copied(),
+                    crate::acquisition_workflow::submission_is_active(submission, dl_snapshot),
+                ) && crate::acquisition_workflow::submission_scope_intersects(
+                    &submission.scope,
+                    &membership,
+                )
+            })
+        })
+        .map(|episode| episode.id.clone())
+        .collect()
+}
+
+fn series_pack_missing_ratio_qualifies_for_seasons(
+    episodes: &[Episode],
+    owned_episode_ids: &std::collections::HashSet<String>,
+    season_numbers: &[u32],
+) -> bool {
+    let episode_ids = eligible_series_pack_episode_ids(episodes, season_numbers);
+    if episode_ids.is_empty() {
+        return false;
+    }
+    let missing = episode_ids
+        .iter()
+        .filter(|episode_id| !owned_episode_ids.contains(*episode_id))
+        .count();
+
+    missing.saturating_mul(100) > episode_ids.len().saturating_mul(30)
+}
+
+fn eligible_series_pack_season_numbers(episodes: &[Episode]) -> std::collections::HashSet<u32> {
+    let now = chrono::Utc::now();
+    episodes
+        .iter()
+        .filter(|episode| is_eligible_series_pack_episode(episode, &now))
+        .filter_map(|episode| episode.season_number.as_deref())
+        .filter_map(|season| season.parse::<u32>().ok())
+        .collect()
+}
+
+fn eligible_series_pack_episode_ids(episodes: &[Episode], season_numbers: &[u32]) -> Vec<String> {
+    let now = chrono::Utc::now();
+    episodes
+        .iter()
+        .filter(|episode| is_eligible_series_pack_episode(episode, &now))
+        .filter(|episode| {
+            season_numbers.is_empty()
+                || episode
+                    .season_number
+                    .as_deref()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .is_some_and(|season| season_numbers.contains(&season))
+        })
+        .map(|episode| episode.id.clone())
+        .collect()
+}
+
+fn eligible_series_pack_collection_ids_for_seasons(
+    episodes: &[Episode],
+    season_numbers: &[u32],
+) -> Vec<String> {
+    let now = chrono::Utc::now();
+    let mut collection_ids = episodes
+        .iter()
+        .filter(|episode| is_eligible_series_pack_episode(episode, &now))
+        .filter(|episode| {
+            season_numbers.is_empty()
+                || episode
+                    .season_number
+                    .as_deref()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .is_some_and(|season| season_numbers.contains(&season))
+        })
+        .filter_map(|episode| episode.collection_id.clone())
+        .collect::<Vec<_>>();
+    collection_ids.sort_unstable();
+    collection_ids.dedup();
+    collection_ids
+}
+
+fn is_eligible_series_pack_episode(episode: &Episode, now: &chrono::DateTime<chrono::Utc>) -> bool {
+    episode.episode_type == scryer_domain::EpisodeType::Standard
+        && episode.monitored
+        && !crate::acquisition_policy::episode_is_unaired(episode.air_date.as_deref(), now)
 }
 
 pub(crate) fn coverage_runtime_minutes(
@@ -478,5 +679,159 @@ mod tests {
             ReleaseCoverage::Unknown.submission_scope_or(&fallback),
             fallback
         );
+    }
+
+    #[test]
+    fn multi_season_series_pack_uses_only_the_pack_coverage_for_qualification() {
+        let episodes = (1..=10)
+            .flat_map(|season| {
+                (1..=4).map(move |number| {
+                    episode(
+                        &format!("s{season}-e{number}"),
+                        &season.to_string(),
+                        &number.to_string(),
+                        None,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let parsed = parsed_with_episode(ParsedEpisodeMetadata {
+            season_numbers: vec![1, 2, 3, 4],
+            full_season: true,
+            is_series_pack: true,
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
+            ..Default::default()
+        });
+        let primary_episode_ids = episodes
+            .iter()
+            .filter(|episode| {
+                !matches!(
+                    episode.id.as_str(),
+                    "s1-e1" | "s1-e2" | "s1-e3" | "s1-e4" | "s2-e1"
+                )
+            })
+            .map(|episode| episode.id.clone())
+            .collect();
+
+        assert!(series_pack_missing_ratio_qualifies(
+            &parsed,
+            &episodes,
+            &primary_episode_ids
+        ));
+        assert!(title_series_pack_missing_ratio_qualifies(
+            &episodes,
+            &primary_episode_ids
+        ));
+    }
+
+    #[test]
+    fn series_pack_title_membership_and_missing_guard_use_eligible_episodes() {
+        let episodes = vec![
+            episode("s1-e1", "1", "1", None),
+            episode("s1-e2", "1", "2", None),
+            episode("s2-e1", "2", "1", None),
+        ];
+        let primary_episode_ids = ["s1-e2", "s2-e1"].into_iter().map(str::to_string).collect();
+        let parsed = parsed_with_episode(ParsedEpisodeMetadata {
+            season_numbers: vec![1],
+            full_season: true,
+            is_series_pack: true,
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            eligible_series_pack_collection_ids(&episodes),
+            vec!["season-1".to_string(), "season-2".to_string()]
+        );
+        assert_eq!(
+            series_pack_collection_ids(&parsed, &episodes),
+            vec!["season-1".to_string()]
+        );
+        assert_eq!(
+            eligible_missing_series_pack_episode_count(&episodes, &primary_episode_ids),
+            1
+        );
+    }
+
+    #[test]
+    fn series_pack_threshold_rejects_thirty_percent_and_accepts_thirty_one_percent() {
+        let episodes = (1..=100)
+            .map(|number| episode(&format!("ep-{number}"), "1", &number.to_string(), None))
+            .collect::<Vec<_>>();
+        let parsed = parsed_with_episode(ParsedEpisodeMetadata {
+            full_season: true,
+            is_series_pack: true,
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
+            ..Default::default()
+        });
+        let seventy_owned = (1..=70)
+            .map(|number| format!("ep-{number}"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!series_pack_missing_ratio_qualifies(
+            &parsed,
+            &episodes,
+            &seventy_owned
+        ));
+
+        let sixty_nine_owned = (1..=69)
+            .map(|number| format!("ep-{number}"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(series_pack_missing_ratio_qualifies(
+            &parsed,
+            &episodes,
+            &sixty_nine_owned
+        ));
+    }
+
+    #[test]
+    fn series_pack_threshold_excludes_special_unmonitored_and_unaired_episodes() {
+        let mut episodes = (1..=10)
+            .map(|number| episode(&format!("ep-{number}"), "1", &number.to_string(), None))
+            .collect::<Vec<_>>();
+        let mut special = episode("special-1", "0", "1", None);
+        special.episode_type = EpisodeType::Special;
+        episodes.push(special);
+
+        let mut unmonitored = episode("unmonitored-1", "1", "11", None);
+        unmonitored.monitored = false;
+        episodes.push(unmonitored);
+
+        let mut unaired = episode("unaired-1", "1", "12", None);
+        unaired.air_date = Some("2999-01-01".to_string());
+        episodes.push(unaired);
+
+        let parsed = parsed_with_episode(ParsedEpisodeMetadata {
+            full_season: true,
+            is_series_pack: true,
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
+            ..Default::default()
+        });
+        let primary_episode_ids = (1..=7)
+            .map(|number| format!("ep-{number}"))
+            .collect::<std::collections::HashSet<_>>();
+
+        assert!(!series_pack_missing_ratio_qualifies(
+            &parsed,
+            &episodes,
+            &primary_episode_ids
+        ));
+        assert!(!title_series_pack_missing_ratio_qualifies(
+            &episodes,
+            &primary_episode_ids
+        ));
+
+        let primary_episode_ids = (1..=6)
+            .map(|number| format!("ep-{number}"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(series_pack_missing_ratio_qualifies(
+            &parsed,
+            &episodes,
+            &primary_episode_ids
+        ));
+        assert!(title_series_pack_missing_ratio_qualifies(
+            &episodes,
+            &primary_episode_ids
+        ));
     }
 }

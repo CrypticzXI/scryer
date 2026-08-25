@@ -527,7 +527,7 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries
 }
 
 #[tokio::test]
-async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
+async fn search_indexers_anime_required_original_and_english_accepts_dual_audio_release() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
         "Anime.Show.S01E01.1080p.WEB-DL.DUAL.H.265",
@@ -547,9 +547,13 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
     .await
     .expect("create download client config");
 
-    app.set_facet_required_audio_languages(&user, "anime", vec!["English".to_string()])
-        .await
-        .expect("set anime required audio");
+    app.set_facet_required_audio_languages(
+        &user,
+        "anime",
+        vec!["original".to_string(), "English".to_string()],
+    )
+    .await
+    .expect("set anime required audio");
 
     let title = app
         .add_title(
@@ -560,6 +564,7 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
                 monitored: true,
                 tags: vec![],
                 external_ids: vec![],
+                language: Some("jpn".to_string()),
                 ..Default::default()
             },
         )
@@ -1723,6 +1728,7 @@ async fn a_queued_releases_announced_size_is_part_of_its_score() {
     let subject =
         AdmissionSubject::new(AdmissionScope::Title, []).with_queued(vec![QueuedRelease {
             title: release.to_string(),
+            covers: Vec::new(),
             tier_index: queued_facts.tier_index,
             revision: queued_facts.revision,
             score: queued_facts.score,
@@ -1834,6 +1840,7 @@ async fn a_queued_release_the_profile_now_vetoes_still_holds_its_scope() {
     let subject =
         AdmissionSubject::new(AdmissionScope::Title, []).with_queued(vec![QueuedRelease {
             title: release.to_string(),
+            covers: Vec::new(),
             tier_index: facts.tier_index,
             revision: facts.revision,
             score: facts.score,

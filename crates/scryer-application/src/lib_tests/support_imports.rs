@@ -248,6 +248,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             role: input.role,
             file_path: input.file_path.clone(),
             size_bytes: input.size_bytes,
+            announced_size_bytes: input.announced_size_bytes,
             source_signature_scheme: input.source_signature_scheme.clone(),
             source_signature_value: input.source_signature_value.clone(),
             quality_label: input.quality_label.clone(),
@@ -814,7 +815,7 @@ impl crate::ImportArtifactRepository for RecordingImportArtifactRepo {
 
     async fn list_by_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
     ) -> AppResult<Vec<crate::ImportArtifact>> {
         Ok(self
             .artifacts
@@ -828,7 +829,7 @@ impl crate::ImportArtifactRepository for RecordingImportArtifactRepo {
 
     async fn count_by_result_for_source_identity(
         &self,
-        identity: &DownloadSourceIdentity,
+        identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
         Ok(self
@@ -885,7 +886,7 @@ impl ImportRepository for TrackingImportRepo {
 
     async fn queue_import_request(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
@@ -895,7 +896,7 @@ impl ImportRepository for TrackingImportRepo {
 
     async fn queue_import_request_with_identity(
         &self,
-        source_identity: DownloadSourceIdentity,
+        source_identity: ClientJobLocator,
         import_type: String,
         payload_json: String,
         submission_identity: Option<DownloadSubmissionIdentity>,
@@ -1049,7 +1050,7 @@ impl ImportRepository for TrackingImportRepo {
 
     async fn list_imports_for_identities(
         &self,
-        identities: &[DownloadSourceIdentity],
+        identities: &[ClientJobLocator],
     ) -> AppResult<Vec<ImportRecord>> {
         let records = self.records.lock().await;
         Ok(records
@@ -1067,7 +1068,7 @@ impl ImportRepository for TrackingImportRepo {
             .collect())
     }
 
-    async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
         Ok(self
             .records
             .lock()
@@ -1084,7 +1085,7 @@ impl ImportRepository for TrackingImportRepo {
 
     async fn is_already_imported_by_download_id(
         &self,
-        source_identity: &DownloadSourceIdentity,
+        source_identity: &ClientJobLocator,
         identity: &DownloadSubmissionIdentity,
     ) -> AppResult<bool> {
         let Some(download_id) = identity

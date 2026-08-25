@@ -2614,6 +2614,7 @@ export const securitySettingsQuery = `query SecuritySettings {
     formLoginEnabled
     passwordMinLength
     skipLoginForLocalIps
+    apiKeysRestrictToSystemSettingsUsers
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     mfaRequireJellyfinLogin
@@ -2621,6 +2622,16 @@ export const securitySettingsQuery = `query SecuritySettings {
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
+  }
+}`;
+
+export const oauthClientRegistrationsQuery = `query OAuthClientRegistrations {
+  oauthClientRegistrations {
+    clientId
+    displayName
+    redirectUris
+    enabled
+    source
   }
 }`;
 
@@ -2814,6 +2825,13 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
   }
 }`;
 
+export const oauthAuthorizationClientQuery = `query OAuthAuthorizationClient($clientId: String!, $redirectUri: String!) {
+  oauthAuthorizationClient(clientId: $clientId, redirectUri: $redirectUri) {
+    clientId
+    displayName
+  }
+}`;
+
 export const myPasskeysQuery = `query MyPasskeys {
   myPasskeys {
     id
@@ -2830,6 +2848,13 @@ export const myOauthAppsQuery = `query MyOauthApps {
     clientName
     authorizedAt
     lastUsedAt
+  }
+}`;
+
+export const myApiKeysQuery = `query MyApiKeys {
+  canCreateMyApiKeys
+  myApiKeys {
+    id label actor expiresAt revokedAt lastUsedAt createdAt provisioningSource
   }
 }`;
 
@@ -3045,6 +3070,33 @@ export const smgScryerUpdateNoticeQuery = `query SmgScryerUpdateNotice {
   }
 }`;
 
+export const applicationUpgradeStatusQuery = `query ApplicationUpgradeStatus {
+  applicationUpgradeStatus {
+    currentVersion
+    updateVersion
+    updateTag
+    updateAvailable
+    installationKind
+    managementOwner
+    eligible
+    eligibilityReason
+    activeRun {
+${JOB_RUN_FIELDS}
+    }
+    latestRun {
+${JOB_RUN_FIELDS}
+    }
+  }
+}`;
+
+export const startApplicationUpgradeMutation = `mutation StartApplicationUpgrade($input: StartApplicationUpgradeInput!) {
+  startApplicationUpgrade(input: $input) {
+    jobRun {
+${JOB_RUN_FIELDS}
+    }
+  }
+}`;
+
 export const scryerVersionQuery = `query ScryerVersion {
   scryerVersion
 }`;
@@ -3093,6 +3145,7 @@ export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!
       status
       grabbedRelease
       currentScore
+      standbyCount
       latestReleaseDecision {
         decisionCode
         createdAt
@@ -3305,6 +3358,13 @@ export const notificationsInitQuery = `query NotificationsInit {
 
 const METADATA_SEARCH_FIELDS = `
     tvdbId
+    smgId
+    tmdbId
+    primarySource
+    externalIds {
+      source
+      value
+    }
     name
     imdbId
     slug
@@ -3426,6 +3486,8 @@ export const searchMetadataMultiQuery = `query SearchMetadataMulti($query: Strin
 export const metadataMovieQuery = `query MetadataMovie($input: MetadataMovieInput!) {
   metadataMovie(input: $input) {
     tvdbId
+    smgId
+    tmdbId
     name
     slug
     year
@@ -3487,6 +3549,8 @@ export const pendingReleasesQuery = `query PendingReleases($filter: PendingRelea
       releaseScore
       scoringLogJson
       indexerSource
+      publishedAt
+      seeders
       addedAt
       delayUntil
       status

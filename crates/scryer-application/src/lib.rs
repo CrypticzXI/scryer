@@ -1,4 +1,6 @@
 mod acquisition;
+mod api_keys;
+pub mod application_upgrade;
 mod authorization;
 mod catalog;
 pub mod challenge_solver;
@@ -8,7 +10,7 @@ mod download_client_config;
 mod download_client_path_mappings;
 mod download_identity;
 
-pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 100;
+pub(crate) const DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT: usize = 300;
 
 /// Widened completed-history bound used when a stuck download misses the recent
 /// window.
@@ -37,6 +39,7 @@ mod helpers;
 mod image_proxy;
 mod import;
 mod indexer_category;
+mod indexer_errors;
 pub use indexer_category::{
     CATEGORY_MISMATCH_CODE, IndexerCategoryFamily, NZB_HEAD_PROBE_BYTES, enforce_nzb_category_gate,
     indexer_category_contradicts_facet, indexer_category_family, nzb_head_category,
@@ -145,6 +148,10 @@ pub use ports::{
     UserUiSettingsRepository,
 };
 pub(crate) mod normalize;
+pub use api_keys::{
+    API_KEY_PREFIX, ApiKeyAuthentication, ApiKeyExpiryPreset, ApiKeySummary, CreateApiKey,
+    CreatedApiKey, DevelopmentApiKeySeed, parse_api_key,
+};
 pub use events::retention::user_facing_domain_event_types;
 pub use import::failed_download as failed_download_handler;
 pub use import::post_processing as app_usecase_post_processing;
@@ -156,8 +163,9 @@ pub use notifications::runtime::{
     NotificationSubscriptionTargetCreate, NotificationSubscriptionTargetUpdate,
 };
 pub use oauth::{
-    OAUTH_E2E_CLIENT_ENV, OAUTH_E2E_CLIENT_ID, OAUTH_GENERIC_NATIVE_CLIENT_ID, OAUTH_LIBRARY_SCOPE,
-    OAuthClientInfo, OAuthConnectedAppSummary, OAuthIssuedCode, OAuthTokenPair,
+    CreateOAuthClientRegistration, OAUTH_E2E_CLIENT_ENV, OAUTH_E2E_CLIENT_ID,
+    OAUTH_GENERIC_NATIVE_CLIENT_ID, OAUTH_LIBRARY_SCOPE, OAuthClientInfo, OAuthClientSource,
+    OAuthConnectedAppSummary, OAuthIssuedCode, OAuthTokenPair, UpdateOAuthClientRegistration,
 };
 pub use plugins::catalog::blake3_digest as plugin_wasm_blake3_digest;
 pub use plugins::catalog::decompress_zstd as plugin_wasm_decompress_zstd;
@@ -168,6 +176,7 @@ pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
 pub use quality::release_dedup;
 pub use services::{
+    DownloadClientCategoryAdmissionSnapshot, DownloadClientCategorySnapshotStore,
     DownloadQueueSync, PluginInstallInProgressError, PluginInstallOperationKind,
     PluginInstallProgressSnapshot, PluginInstallState, RuntimeFeature, RuntimePerformanceClass,
     RuntimePerformanceSnapshot,
@@ -238,8 +247,9 @@ pub(crate) use audio_requirements::missing_required_audio_languages;
 #[cfg(feature = "runtime-media-analysis")]
 pub(crate) use audio_requirements::{RequiredAudioVerdict, classify_required_audio};
 pub(crate) use audio_requirements::{
-    normalize_required_audio_languages, release_audio_language_hints_for_title,
-    required_audio_languages_match, title_audio_language_context,
+    normalize_required_audio_requirements, release_audio_language_hints_for_title,
+    required_audio_languages_match, resolve_required_audio_requirements,
+    title_audio_language_context,
 };
 pub use catalog::facets::handler::{
     FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
@@ -256,21 +266,22 @@ pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{
-    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, CollectionUpdate,
-    DashboardActivityStats, DeleteExecutionConfirmation, DownloadClientAddRequest,
-    DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
-    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerDownloadClientMappingCatalog,
-    IndexerDownloadClientMappingClient, IndexerDownloadClientMappingIndexer,
-    IndexerDownloadClientProviderCompatibility, IndexerProxyConfigUpdate, IndexerProxyTestResult,
-    IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult,
-    InsertMediaFileInput, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
-    MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole, NewBlocklistEntry,
-    NewIndexerProxyConfig, NewSeedingProfile, NotificationScopeIdUpdate, PendingReleasePageSort,
-    PendingReleasesPageQuery, PendingStagedNzb, PersistedSeedGoals, QueueDownloadOutcome,
-    QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact,
-    SearchMode, SeedGoalGrabRecord, SeedingProfileUpdate, StagedNzbRef, StorageRootUsage,
+    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, ClientJobLocator,
+    CollectionUpdate, DashboardActivityStats, DeleteExecutionConfirmation,
+    DownloadClientAddRequest, DownloadClientBindingRecord, DownloadClientConfigUpdate,
+    DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadOrigin, DownloadRecord,
+    DownloadSubmission, DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity,
+    DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult,
+    IndexerConfigUpdate, IndexerDownloadClientMappingCatalog, IndexerDownloadClientMappingClient,
+    IndexerDownloadClientMappingIndexer, IndexerDownloadClientProviderCompatibility,
+    IndexerProxyConfigUpdate, IndexerProxyTestResult, IndexerRoutingEntry, IndexerRoutingPlan,
+    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
+    NewBlocklistEntry, NewIndexerProxyConfig, NewSeedingProfile, NotificationScopeIdUpdate,
+    ObservationResolution, ObservedClientJob, PendingReleasePageSort, PendingReleasesPageQuery,
+    PendingStagedNzb, PersistedSeedGoals, QueueDownloadOutcome, QueuedDownloadResult,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
+    SeedGoalGrabRecord, SeedingProfileUpdate, StagedNzbRef, StorageRootUsage,
     SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
     SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
     SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
@@ -359,9 +370,6 @@ pub use subtitles::orchestration::{
     start_background_subtitle_poller,
 };
 
-pub const DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE: &str =
-    "download feedback timed out after 10s; queue status is temporarily unavailable";
-
 pub(crate) const LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY: usize = 4;
 pub(crate) const LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 24;
 pub(crate) const LIBRARY_SCAN_EPISODIC_TITLE_ANALYSIS_GROUP_CONCURRENCY: usize = 4;
@@ -378,6 +386,11 @@ pub(crate) use helpers::{
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
+pub use indexer_errors::{
+    ClassifiedIndexerError, IndexerErrorRecorder, IndexerErrorRepository, NullIndexerErrorRecorder,
+    UNKNOWN_INDEXER_ERROR_MESSAGE, classify_indexer_http_response, classify_newznab_error_message,
+    indexer_response_content_type, redact_indexer_response_headers, unknown_indexer_error,
+};
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -396,9 +409,10 @@ pub use library_scan::{
     DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubjectInput,
     DiscoveryTitle, EpisodeArtworkUrls, EpisodeMetadata, LibraryDirectoryScanResult, LibraryFile,
     LibraryFileBatch, LibraryFileBatchReceiver, LibraryScanSummary, LibraryScanner,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata, SeriesArtworkUrls,
-    SeriesMetadata, TitleArtworkUrls, TitleRecommendationsInput,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MovieTitleBulkResult,
+    MovieTitleRef, MultiMetadataSearchResult, RichMetadataSearchItem, SeasonMetadata,
+    SeriesArtworkUrls, SeriesMetadata, TitleArtworkUrls, TitleRecommendationsInput,
+    TitleResolution,
 };
 pub use library_scan_progress::{
     LibraryScanMode, LibraryScanPhaseProgress, LibraryScanSession, LibraryScanStatus,
@@ -406,9 +420,10 @@ pub use library_scan_progress::{
 };
 pub use media::analyzer::NativeMediaAnalyzer;
 pub use notifications::dispatcher::start_notification_dispatcher;
+pub use null_repositories::NullIndexerErrorRepository;
 pub use null_repositories::{
     NullAcquisitionScopeStateRepository, NullAcquisitionStateRepository, NullBlocklistRepository,
-    NullDomainEventRepository, NullDownloadQueueCommandRepository,
+    NullDomainEventRepository, NullDownloadQueueCommandRepository, NullDownloadRegistryRepository,
     NullDownloadSubmissionRepository, NullExternalImportMonitorSnapshotRepository,
     NullExternalImportSetupSecretDraftRepository, NullFileImporter, NullHousekeepingRepository,
     NullImportArtifactRepository, NullImportRepository, NullIndexerProxyConfigRepository,
@@ -427,8 +442,9 @@ pub use ports::{
     AcquisitionScopeStateRepository, AcquisitionStateRepository, ArchiveExtractorClient,
     ArchiveExtractorPluginProvider, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
-    DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
-    EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
+    DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadQueueCommandRepository,
+    DownloadRegistryRepository, DownloadSubmissionRepository, EmbyApiKeyExchange,
+    EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
     EmbyConnectIdentityVerification, EmbyConnectServer, EmbyConnectUserType, EmbyServerIdentity,
     EmbyServerUser, ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupInstanceApiKeyDraft, ExternalImportSetupSecretDraft,
@@ -436,16 +452,17 @@ pub use ports::{
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus,
     ExternalImportSetupSecretInstanceKind, ExternalImportSetupSecretOverrideDraft,
     ExternalPluginWasm, FileImporter, HousekeepingMediaFileRootRow, HousekeepingRepository,
-    ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyKind, ImageProxyRegistration,
-    ImageProxyRepository, ImageProxySourceRecord, ImportArtifactRepository, ImportFilePermissions,
-    ImportFileTransferProgress, ImportFileTransferProgressSender, ImportRepository,
-    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
-    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerSearchLearningContext,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerStatsTracker, IndexerSystemBackoff, JellyfinServerUser, JobRunRepository,
-    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
-    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    IdentityTrackedStateTarget, ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyKind,
+    ImageProxyRegistration, ImageProxyRepository, ImageProxySourceRecord, ImportArtifactRepository,
+    ImportFileExecutionContext, ImportFilePermissions, ImportFileTransferProgress,
+    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
+    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
+    IndexerProxyConfigRepository, IndexerSearchLearningContext, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker,
+    IndexerSystemBackoff, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
+    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
+    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
+    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
@@ -496,16 +513,17 @@ pub use services::{
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
     ANIME_MONITOR_SPECIALS_KEY, ANIME_PATH_KEY, ANIME_RECAP_POLICY_KEY, ANIME_ROOT_FOLDERS_KEY,
-    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
-    AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
-    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
-    DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY,
-    DEFAULT_FOLDER_TEMPLATE_ANIME, DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES,
-    DEFAULT_IMAGE_CACHE_MAX_SIZE_MB, DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY,
-    DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
-    DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
-    DEFAULT_SEASON_FOLDER_TEMPLATE, DEFAULT_SEEDING_PROFILE_SETTING_KEY,
-    DEFAULT_SERIES_LIBRARY_PATH, DEFAULT_SPECIALS_FOLDER_TEMPLATE, DISCOVERY_REGION_KEY,
+    API_KEYS_RESTRICT_TO_SYSTEM_SETTINGS_USERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
+    AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY,
+    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+    BACKUP_PATH_KEY, CHOWN_GROUP_KEY, DEFAULT_ANIME_LIBRARY_PATH,
+    DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY, DEFAULT_FOLDER_TEMPLATE_ANIME,
+    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_IMAGE_CACHE_MAX_SIZE_MB,
+    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
+    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
+    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SEASON_FOLDER_TEMPLATE,
+    DEFAULT_SEEDING_PROFILE_SETTING_KEY, DEFAULT_SERIES_LIBRARY_PATH,
+    DEFAULT_SPECIALS_FOLDER_TEMPLATE, DISCOVERY_REGION_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMAGE_CACHE_MAX_BYTES_ENV,
@@ -546,21 +564,22 @@ pub use types::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeGrabTransition,
     AcquisitionScopePauseTransition, AcquisitionScopeState, AcquisitionScopeStatus,
     AddTitleAndQueueDownloadOutcome, AddTitleHydrationState, AddTitleOutcome,
-    AuthenticatedTokenClaims, BackupDownloadTicket, BackupInfo, BackupStatus, BackupTrigger,
-    CancelLibraryScanResult, CollectionEpisodeProgressSummary, CreateTitleOutcome, CutoffUnmetItem,
-    CutoffUnmetPage, CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo,
-    DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
-    DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
-    DownloadImportPage, DownloadQueueCommandRecord, DownloadQueuePage, DownloadSourceKind,
-    EpisodeMediaAvailability, EpisodeMediaAvailabilityState, EpisodeScopedMediaFile,
-    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
-    IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, JwtSessionScope, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass,
-    LoginVerificationChallengeRecord, LoginVerificationMethod, LoginVerificationRequirement,
-    LoginVerificationSatisfied, ManualImportSelection, ManualImportSelectionCandidate,
-    MediaRequestCounts, MissingEpisodeCandidate, MissingScopeCandidates,
-    MissingSeriesMovieLinkCandidate, MissingTitleCandidate, OAuthAuthorizationCodeRecord,
-    OAuthAuthorizationSource, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
+    ApiKeyProvisioningSource, ApiKeyRecord, AuthenticatedTokenClaims, BackupDownloadTicket,
+    BackupInfo, BackupStatus, BackupTrigger, CancelLibraryScanResult,
+    CollectionEpisodeProgressSummary, CreateTitleOutcome, CutoffUnmetItem, CutoffUnmetPage,
+    CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo, DownloadActivityFilter,
+    DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter, DownloadHistoryPage,
+    DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter, DownloadImportPage,
+    DownloadQueueCommandRecord, DownloadQueuePage, DownloadSourceKind, EpisodeMediaAvailability,
+    EpisodeMediaAvailabilityState, EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult,
+    HealthCheckStatus, HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats,
+    JwtAuthConfig, JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem,
+    LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass, LoginVerificationChallengeRecord,
+    LoginVerificationMethod, LoginVerificationRequirement, LoginVerificationSatisfied,
+    ManualImportSelection, ManualImportSelectionCandidate, MediaRequestCounts,
+    MissingEpisodeCandidate, MissingScopeCandidates, MissingSeriesMovieLinkCandidate,
+    MissingTitleCandidate, OAuthAuthorizationCodeRecord, OAuthAuthorizationSource,
+    OAuthClientRegistrationRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
     OAuthRefreshRotation, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
     PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
     PendingImportCounts, PendingImportItem, PendingImportReasonClass, PendingImportSearchAttempt,
@@ -585,6 +604,13 @@ pub use types::{
     WebauthnChallengeType, WebauthnCredentialRecord,
 };
 pub use types::{
+    CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, IndexerErrorClassification,
+    IndexerErrorDetail, IndexerErrorOperation, IndexerErrorPage, IndexerErrorSummary,
+    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, NewIndexerError, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
+    ReleaseStrategyKind, extract_magnet_info_hash, is_valid_magnet_uri,
+};
+pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,
     ExternalIdHint, ExternalIdProvider, ExternalImportMonitorEpisodeEntry,
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
@@ -595,12 +621,14 @@ pub use types::{
     is_external_import_monitor_apply_session_id, library_scan_file_full_path_key,
     library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
-pub use types::{
-    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
-    IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
-    extract_magnet_info_hash, is_valid_magnet_uri,
-};
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoEligibilityReason {
+    pub code: String,
+    pub summary: String,
+    pub count: usize,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -609,6 +637,12 @@ pub enum AppError {
 
     #[error("validation: {0}")]
     Validation(String),
+
+    #[error("no auto-eligible release found")]
+    NoAutoEligibleRelease {
+        candidate_count: usize,
+        reasons: Vec<AutoEligibilityReason>,
+    },
 
     #[error("plugin install already in progress for '{0}'")]
     PluginInstallInProgress(String),
@@ -622,11 +656,27 @@ pub enum AppError {
     #[error("{0}")]
     DownloadSubmitAmbiguous(String),
 
+    /// An ambiguous client mutation annotated by the router with the selected
+    /// configured client. The display text intentionally remains identical to
+    /// the underlying client error.
+    #[error("{message}")]
+    DownloadSubmitAmbiguousWithClient {
+        message: String,
+        client_id: Option<String>,
+        client_type: String,
+    },
+
     #[error("{0}")]
     DownloadSubmitRejected(String),
 
     #[error("{0}")]
     DownloadSubmitUnavailable(String),
+
+    /// The indexer accepted the search result but no longer serves its download
+    /// artifact. This is neither retryable client unavailability nor a release
+    /// failure worth blocklisting.
+    #[error("{0}")]
+    DownloadSourceGone(String),
 
     /// Every eligible download client in the routing order was tried and none
     /// enqueued the release. A retryable submission failure like
@@ -641,6 +691,9 @@ pub enum AppError {
         message: String,
         source_path: Option<String>,
     },
+
+    #[error("{message}")]
+    ArchiveExtractionTimedOut { message: String },
 
     #[error("{message}")]
     TemporaryUnavailable {
@@ -670,6 +723,12 @@ pub enum AppError {
     #[error("canceled: {0}")]
     Canceled(String),
 
+    #[error("manual reconciliation required: {0}")]
+    ManualReconciliationRequired(String),
+
+    #[error("import evidence unavailable: {0}")]
+    ImportEvidenceUnavailable(String),
+
     #[error("repository: {0}")]
     Repository(String),
 }
@@ -687,10 +746,42 @@ impl AppError {
         Self::DownloadSubmitFailoverExhausted(message.into())
     }
 
+    pub fn with_ambiguous_download_submission_client(
+        self,
+        client_id: Option<String>,
+        client_type: String,
+    ) -> Self {
+        match self {
+            Self::DownloadSubmitAmbiguous(message) => Self::DownloadSubmitAmbiguousWithClient {
+                message,
+                client_id,
+                client_type,
+            },
+            other => other,
+        }
+    }
+
+    pub fn ambiguous_download_submission_client(&self) -> Option<(Option<&str>, &str)> {
+        match self {
+            Self::DownloadSubmitAmbiguousWithClient {
+                client_id,
+                client_type,
+                ..
+            } => Some((client_id.as_deref(), client_type.as_str())),
+            _ => None,
+        }
+    }
+
     pub fn archive_extraction_plugin_required(source_path: Option<String>) -> Self {
         Self::ArchiveExtractionPluginRequired {
             message: "This import is blocked because the download contains archive files. Install, update, or enable the Archive Extraction plugin, then re-import.".to_string(),
             source_path,
+        }
+    }
+
+    pub fn archive_extraction_timed_out(message: impl Into<String>) -> Self {
+        Self::ArchiveExtractionTimedOut {
+            message: message.into(),
         }
     }
 
@@ -722,13 +813,19 @@ impl AppError {
             Self::DownloadSubmitUnavailable(_)
             | Self::DownloadSubmitFailoverExhausted(_)
             | Self::DownloadSubmitAmbiguous(_)
-            | Self::DownloadSubmitRejected(_) => self,
+            | Self::DownloadSubmitAmbiguousWithClient { .. }
+            | Self::DownloadSubmitRejected(_)
+            | Self::DownloadSourceGone(_) => self,
             _ => Self::DownloadSubmitUnavailable(self.to_string()),
         }
     }
 
     pub fn is_download_submit_unavailable(&self) -> bool {
         matches!(self, Self::DownloadSubmitUnavailable(_))
+    }
+
+    pub fn is_download_source_gone(&self) -> bool {
+        matches!(self, Self::DownloadSourceGone(_))
     }
 
     /// The typed retryable download-submission failures: the submitter was
@@ -743,7 +840,10 @@ impl AppError {
     }
 
     pub fn is_download_submit_ambiguous(&self) -> bool {
-        matches!(self, Self::DownloadSubmitAmbiguous(_))
+        matches!(
+            self,
+            Self::DownloadSubmitAmbiguous(_) | Self::DownloadSubmitAmbiguousWithClient { .. }
+        )
     }
 
     pub fn is_canceled(&self) -> bool {

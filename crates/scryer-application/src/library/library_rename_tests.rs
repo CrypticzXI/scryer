@@ -357,6 +357,8 @@ fn season_folder_template_requires_season_and_rejects_episode_tokens() {
         .expect("zero-width padding should be accepted");
     validate_season_folder_template("{title} S{season:2}")
         .expect("season templates should accept title tokens and numeric padding");
+    validate_season_folder_template("{{S{season}}}")
+        .expect("season templates should accept escaped literal braces");
 
     assert!(validate_season_folder_template("Season").is_err());
     assert!(validate_season_folder_template("Season {episode}").is_err());
@@ -409,6 +411,10 @@ fn render_episode_folder_name_selects_regular_and_specials_templates() {
     assert_eq!(
         render_episode_folder_name(&title, 12, "{title|space:.}.S{season:3}", "Specials"),
         "Neon.Cipher.S012"
+    );
+    assert_eq!(
+        render_episode_folder_name(&title, 3, "{{S{season}}}", "Specials"),
+        "{S3}"
     );
     assert_eq!(
         render_episode_folder_name(&title, 0, "Season {season}", "{title} Specials"),
@@ -517,7 +523,7 @@ fn sanitize_leaves_non_reserved_device_prefixes_unchanged() {
 }
 
 #[test]
-fn truncate_generated_filename_preserves_extension_and_byte_budget() {
+fn truncate_generated_filename_preserves_extension_and_utf8_byte_budget() {
     let long_stem = "長".repeat(120);
     let filename = format!("{long_stem}.mkv");
     let result = truncate_generated_filename_component(&filename);
@@ -541,6 +547,7 @@ fn finalize_generated_filename_sanitizes_fallback_title_before_join() {
     assert_eq!(result, "Unsafe Title Name.mkv");
 }
 
+#[cfg(windows)]
 #[test]
 fn configured_title_folder_path_truncates_generated_folder_component() {
     let title = test_movie_title(&"Long ".repeat(100));
@@ -551,6 +558,20 @@ fn configured_title_folder_path_truncates_generated_folder_component() {
         folder.len() <= GENERATED_COMPONENT_MAX_BYTES - GENERATED_COMPONENT_SUFFIX_RESERVE_BYTES,
         "truncated folder exceeded budget: {} bytes",
         folder.len()
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn configured_title_folder_path_caps_long_component() {
+    let title_name = format!("{}Long", "Long ".repeat(99));
+    let title = test_movie_title(&title_name);
+    let path = configured_title_folder_path("/library", &title, "{title}", None);
+    let expected = truncate_generated_folder_component(&title_name);
+
+    assert_eq!(
+        path.file_name().and_then(|folder| folder.to_str()),
+        Some(expected.as_str())
     );
 }
 
@@ -865,6 +886,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
         role: crate::MediaFileRole::Primary,
         file_path: path.to_string(),
         size_bytes: 1_000,
+        announced_size_bytes: None,
         source_signature_scheme: None,
         source_signature_value: None,
         quality_label: Some("720p".to_string()),

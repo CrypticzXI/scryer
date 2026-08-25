@@ -5,9 +5,9 @@ use crate::domain_events::{DomainEventActor, new_title_domain_event, title_conte
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, DownloadSourceIdentity, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
-    acquisition::convergence::{CoverageReopen, convergence_scope_key},
-    normalize_release_attempt_hint, normalize_release_attempt_title,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
+    acquisition::convergence::CoverageReopen, normalize_release_attempt_hint,
+    normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -314,32 +314,35 @@ pub(crate) fn replace_runtime_band_block(
 /// on both sides of every comparison. This exists only because
 /// `build_rule_input` wants a `QualityProfileDecision` to expose to rules, and
 /// it is built from the same terms the canonical pass uses.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "post-download scoring needs the complete import context to match search-time policy decisions"
-)]
 #[cfg(feature = "runtime-media-analysis")]
-pub(crate) fn build_import_profile_decision(
+fn resolved_import_profile(
     profile: &crate::QualityProfile,
     required_audio_languages: &[String],
     persona: &crate::ScoringPersona,
+) -> crate::QualityProfile {
+    let mut resolved_profile = profile.clone();
+    resolved_profile.criteria.required_audio_languages = required_audio_languages.to_vec();
+    resolved_profile.criteria.scoring_persona = persona.clone();
+    resolved_profile.criteria.facet_persona_overrides.clear();
+    resolved_profile
+}
+
+#[cfg(feature = "runtime-media-analysis")]
+pub(crate) fn build_import_profile_decision(
+    profile: &crate::QualityProfile,
     parsed: &crate::ParsedReleaseMetadata,
     category_hint: &str,
     runtime_minutes: Option<i32>,
     size_bytes: Option<i64>,
     has_existing_file: bool,
 ) -> crate::QualityProfileDecision {
-    let mut resolved_profile = profile.clone();
-    resolved_profile.criteria.required_audio_languages = required_audio_languages.to_vec();
-    resolved_profile.criteria.scoring_persona = persona.clone();
-    resolved_profile.criteria.facet_persona_overrides.clear();
     let weights = crate::scoring_weights::build_weights_for_category(
-        persona,
-        &resolved_profile.criteria.scoring_overrides,
+        &profile.criteria.scoring_persona,
+        &profile.criteria.scoring_overrides,
         Some(category_hint),
     );
     let mut decision = crate::quality_profile::evaluate_against_profile_for_category(
-        &resolved_profile,
+        profile,
         parsed,
         has_existing_file,
         &weights,
@@ -599,13 +602,7 @@ pub(crate) async fn probe_and_validate(
     }
 
     let category_hint = facet_to_category_hint(&title.facet);
-    let required_audio_resolution = app
-        .resolve_required_audio_languages(
-            Some(&title.id),
-            Some(title.library_id.as_str()),
-            Some(category_hint),
-        )
-        .await;
+    let required_audio_resolution = app.resolve_required_audio_languages_for_title(title).await;
     let required_audio_resolution_failed = required_audio_resolution.is_err();
     let required_audio_languages = required_audio_resolution.unwrap_or_else(|error| {
         warn!(
@@ -645,7 +642,7 @@ pub(crate) async fn probe_and_validate(
             parsed,
             None,
             Some(&title_audio_context),
-            true,
+            false,
         );
         match crate::classify_required_audio(
             &required_audio_languages,
@@ -730,10 +727,10 @@ pub(crate) async fn probe_and_validate(
                 None
             }
         };
+        let resolved_profile =
+            resolved_import_profile(quality_profile, &required_audio_languages, &persona);
         let decision = build_import_profile_decision(
-            quality_profile,
-            &required_audio_languages,
-            &persona,
+            &resolved_profile,
             &rescored_for_rules,
             category_hint,
             title.runtime_minutes,
@@ -742,7 +739,7 @@ pub(crate) async fn probe_and_validate(
         );
         let input = crate::user_rule_input::build_rule_input(
             &rescored_for_rules,
-            quality_profile,
+            &resolved_profile,
             &decision,
             crate::user_rule_input::ReleaseRuntimeInfo {
                 size_bytes: Some(size_bytes),
@@ -881,27 +878,40 @@ pub(crate) async fn probe_and_validate(
 pub(crate) mod probe_override {
     use super::ImportedFileAcceptance;
     use std::cell::RefCell;
+    use std::collections::VecDeque;
 
     thread_local! {
-        static NEXT: RefCell<Option<ImportedFileAcceptance>> = const { RefCell::new(None) };
+        static NEXT: RefCell<VecDeque<ImportedFileAcceptance>> = const { RefCell::new(VecDeque::new()) };
     }
 
     /// Install the analysis the next probe on this thread will report.
     #[must_use = "the override is cleared when the guard drops"]
     pub(crate) fn install(acceptance: ImportedFileAcceptance) -> ProbeOverrideGuard {
-        NEXT.with(|slot| *slot.borrow_mut() = Some(acceptance));
+        install_sequence([acceptance])
+    }
+
+    /// Install the analyses successive probes on this thread will report.
+    #[must_use = "the override is cleared when the guard drops"]
+    pub(crate) fn install_sequence(
+        acceptances: impl IntoIterator<Item = ImportedFileAcceptance>,
+    ) -> ProbeOverrideGuard {
+        NEXT.with(|slot| {
+            let mut queued = slot.borrow_mut();
+            queued.clear();
+            queued.extend(acceptances);
+        });
         ProbeOverrideGuard
     }
 
     pub(super) fn take() -> Option<ImportedFileAcceptance> {
-        NEXT.with(|slot| slot.borrow_mut().take())
+        NEXT.with(|slot| slot.borrow_mut().pop_front())
     }
 
     pub(crate) struct ProbeOverrideGuard;
 
     impl Drop for ProbeOverrideGuard {
         fn drop(&mut self) {
-            NEXT.with(|slot| *slot.borrow_mut() = None);
+            NEXT.with(|slot| slot.borrow_mut().clear());
         }
     }
 }
@@ -1137,8 +1147,7 @@ pub(crate) const TRUTH_BLOCKED_CODE: &str = "truth_blocked";
 /// advertised.
 pub(crate) const TRUTH_QUALITY_DOWNGRADE_CODE: &str = "truth_quality_downgrade";
 /// Recycle reason for a file the profile vetoes over a property its release name
-/// never disclosed. Held for the operator, never blocklisted (design §9,
-/// "Truth verdicts").
+/// never disclosed. This is burned so convergence can seek another candidate.
 pub(crate) const TRUTH_VETOED_CODE: &str = "truth_vetoed";
 
 /// Prefix of the verdict code [`crate::canonical_scoring::score_release`] emits
@@ -1162,13 +1171,6 @@ pub(crate) enum TruthVerdictAction {
     /// Refuse it: recycle the bytes, blocklist the release for this title, and
     /// reopen the scope's search so it seeks a different candidate.
     Reject(ImportedFileRejection),
-    /// Refuse it, but blame the profile rather than the release: the file
-    /// violates a veto the announcement never disclosed
-    /// ([`crate::canonical_scoring::TruthVerdict::Vetoed`]). No blocklist and no
-    /// reopen — the next silent release would land in exactly the same place, so
-    /// burning this one buys nothing and reopening the scope only fetches
-    /// another one. The download is held for the operator.
-    Hold(ImportedFileRejection),
 }
 
 /// The `(announced, landed)` pair from a quality-contradiction code, if one is
@@ -1216,13 +1218,12 @@ fn landed_tier_is_worse(
 ///    (an honest 720p beats no episode) but must never be offered the same
 ///    release again as an upgrade.
 ///
-/// A third outcome refuses without blaming the release.
-/// [`crate::canonical_scoring::TruthVerdict::Vetoed`] — the probe surfaced a
-/// fact the name never stated (HDR, Dolby Vision, a codec on a silent name, a
-/// file rule reading `input.file.*`) and the profile forbids it — becomes
-/// [`TruthVerdictAction::Hold`]: no blocklist, no reopen. Burning the release
-/// would only make room for the next release with the same undisclosed
-/// property.
+/// A probe veto is an import failure. [`crate::canonical_scoring::TruthVerdict::Vetoed`]
+/// means the downloaded file carries something this quality profile refuses,
+/// even though the name did not state it. Blocklist the release and reopen the
+/// scope: the next search excludes the burned release, deliberately walking
+/// codec-silent releases into the blocklist one at a time until an import
+/// succeeds.
 ///
 /// A score-only `Contradicted` is deliberately **not** a blocklist: one size
 /// bucket of drift is the ordinary case for usenet (par2/RAR overhead, a short
@@ -1231,10 +1232,11 @@ fn landed_tier_is_worse(
 /// folded in WEBDL-vs-WEBRip source noise, so honest releases tripped it. Ours
 /// cannot: [`crate::quality_profile::normalize_quality_tier`] keys on the
 /// resolution alone, so a source relabel never reads as a tier change.
-pub(crate) fn resolve_truth_verdict_action(
+pub(crate) fn resolve_truth_verdict_action_for_origin(
     verdict: &crate::canonical_scoring::TruthVerdict,
     criteria: &crate::QualityProfileCriteria,
     scope_is_occupied: bool,
+    origin: crate::import_decide::ImportOrigin,
 ) -> TruthVerdictAction {
     use crate::canonical_scoring::TruthVerdict;
 
@@ -1254,17 +1256,15 @@ pub(crate) fn resolve_truth_verdict_action(
             blocking_rule_codes: codes.clone(),
         }),
         // The profile refuses the file over something the name never claimed.
-        // Held, not burned — but a *proven* tier downgrade in the same verdict
-        // still outranks it: that half is a lie, and the release must not be
-        // offered back as an upgrade. The file is refused either way, so the
-        // unoccupied-scope "import it honestly" branch does not apply here.
+        // A proven tier downgrade still takes the dedicated path first; every
+        // other veto is burned so convergence can seek another candidate.
         TruthVerdict::Vetoed { codes } => {
             if let Some((announced, landed)) = quality_contradiction(codes)
                 && landed_tier_is_worse(criteria, announced, landed)
             {
                 return TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed));
             }
-            TruthVerdictAction::Hold(ImportedFileRejection {
+            TruthVerdictAction::Reject(ImportedFileRejection {
                 message: format!(
                     "the downloaded file carries something this quality profile refuses, which the release never advertised: {}",
                     if codes.is_empty() {
@@ -1285,6 +1285,9 @@ pub(crate) fn resolve_truth_verdict_action(
             };
             if !landed_tier_is_worse(criteria, announced, landed) {
                 return TruthVerdictAction::Import;
+            }
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
+                return TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed));
             }
             if scope_is_occupied {
                 TruthVerdictAction::Reject(quality_downgrade_rejection(announced, landed))
@@ -1434,7 +1437,7 @@ pub(crate) fn compute_post_download_acquisition_decision(
     let announced_parsed = crate::quality::canonical_context::announced_metadata_for_title(
         title,
         parsed,
-        context.profile(),
+        context.required_audio_languages(),
         None,
     );
 
@@ -1557,7 +1560,6 @@ pub(crate) async fn reject_source_file_before_import(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
-    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1573,7 +1575,6 @@ pub(crate) async fn reject_source_file_before_import(
         app,
         actor,
         title,
-        completed,
         completed_name,
         path,
         attribution,
@@ -1591,7 +1592,6 @@ async fn finalize_import_rejection(
     app: &AppUseCase,
     actor: impl Into<DomainEventActor>,
     title: &Title,
-    completed: &scryer_domain::CompletedDownload,
     completed_name: &str,
     path: &Path,
     attribution: BlocklistAttribution<'_>,
@@ -1626,43 +1626,11 @@ async fn finalize_import_rejection(
     ));
     blocklist_release_for_title(app, title, completed_name, reason.clone(), attribution).await;
 
-    // Invalidate the source indexer's convergence coverage (or the whole scope
-    // when the grab cannot be attributed) only *after* the blocklist row exists,
-    // then re-open the refused scopes so the cursor seeks a different candidate
-    // from that indexer rather than re-grabbing the burned release.
-    let coverage = match app
-        .services
-        .workflow
-        .download_submissions
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            Some(completed.client_id.as_str()),
-            &completed.client_type,
-            &completed.download_client_item_id,
-        ))
-        .await
-    {
-        Ok(Some(submission)) => {
-            let indexer_id = submission.source_provider_id.clone();
-            if let Some(scope_key) = convergence_scope_key(&submission.scope, &title.id) {
-                app.prune_scope_key_coverage(&scope_key, indexer_id.as_deref())
-                    .await;
-            }
-            indexer_id
-                .map(CoverageReopen::Indexer)
-                .unwrap_or(CoverageReopen::All)
-        }
-        Ok(None) => CoverageReopen::All,
-        Err(error) => {
-            warn!(
-                error = %error,
-                client_id = %completed.client_id,
-                client_type = %completed.client_type,
-                download_client_item_id = %completed.download_client_item_id,
-                "failed to resolve indexer for rejected import coverage invalidation"
-            );
-            CoverageReopen::All
-        }
-    };
+    // Re-open the refused scopes under their existing coverage: the cursor
+    // walks each scope's saved search results before it would spend an indexer
+    // query (the burned release is excluded by the blocklist row written above),
+    // and a scope whose saved results are exhausted stays converged.
+    let coverage = CoverageReopen::Keep;
     match reopen_episode_ids {
         // A pack reopens only the members that were refused; the row written
         // above is still attributed to every member the download covered.
@@ -1888,6 +1856,54 @@ mod tests {
         ))
         .expect("profile fixture should parse")
         .criteria
+    }
+
+    #[cfg(feature = "runtime-media-analysis")]
+    #[test]
+    fn resolved_import_profile_exposes_concrete_audio_to_post_download_rules() {
+        let profile = crate::QualityProfile::parse(
+            r#"{"id":"p","name":"P","criteria":{"quality_tiers":["1080P"]}}"#,
+        )
+        .expect("profile fixture should parse");
+        let resolved = resolved_import_profile(
+            &profile,
+            &["jpn".to_string()],
+            &crate::ScoringPersona::default(),
+        );
+        let parsed = crate::parse_release_metadata("Example Title 1080p");
+        let decision =
+            build_import_profile_decision(&resolved, &parsed, "movie", None, None, false);
+        let input = crate::user_rule_input::build_rule_input(
+            &parsed,
+            &resolved,
+            &decision,
+            crate::user_rule_input::ReleaseRuntimeInfo {
+                size_bytes: None,
+                published_at: None,
+                thumbs_up: None,
+                thumbs_down: None,
+                is_password_protected: None,
+                extra: None,
+                indexer_languages: None,
+            },
+            crate::user_rule_input::RuleContextInfo {
+                title_id: None,
+                library_name: None,
+                category: Some("movie"),
+                original_language: Some("jpn"),
+                original_country: None,
+                title_tags: &[],
+                has_existing_file: false,
+                existing_score: None,
+                search_mode: "post_download",
+                runtime_minutes: None,
+                is_filler: false,
+            },
+            None,
+        );
+
+        assert_eq!(input.profile.required_audio_languages, vec!["jpn"]);
+        assert_eq!(input.release.languages_audio, vec!["jpn"]);
     }
 
     /// The tier comparison behind a `quality_contradicted:` blocklist. It reads
@@ -2282,7 +2298,12 @@ mod tests {
     #[test]
     fn a_consistent_verdict_just_imports() {
         assert!(matches!(
-            resolve_truth_verdict_action(&TruthVerdict::Consistent, &tiered_criteria(), true),
+            resolve_truth_verdict_action_for_origin(
+                &TruthVerdict::Consistent,
+                &tiered_criteria(),
+                true,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
             TruthVerdictAction::Import
         ));
     }
@@ -2292,12 +2313,13 @@ mod tests {
     #[test]
     fn a_blocked_verdict_rejects_whether_or_not_the_scope_is_occupied() {
         for occupied in [true, false] {
-            let action = resolve_truth_verdict_action(
+            let action = resolve_truth_verdict_action_for_origin(
                 &TruthVerdict::Blocked {
                     codes: codes(&["required_audio_missing"]),
                 },
                 &tiered_criteria(),
                 occupied,
+                crate::import_decide::ImportOrigin::Automatic,
             );
             let TruthVerdictAction::Reject(rejection) = action else {
                 panic!("a hard block must refuse the import (occupied = {occupied})");
@@ -2311,17 +2333,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_operator_queued_guard_failure_is_rejected_for_manual_import() {
+        let action = resolve_truth_verdict_action_for_origin(
+            &TruthVerdict::Blocked {
+                codes: codes(&["required_audio_missing"]),
+            },
+            &tiered_criteria(),
+            false,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+        );
+        assert!(matches!(action, TruthVerdictAction::Reject(_)));
+
+        let quality_lie = resolve_truth_verdict_action_for_origin(
+            &TruthVerdict::Contradicted {
+                codes: codes(&["quality_contradicted:1080P->720P"]),
+            },
+            &tiered_criteria(),
+            false,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+        );
+        assert!(matches!(quality_lie, TruthVerdictAction::Reject(_)));
+    }
+
     /// Advertised 1080p, landed 720p, and something already occupies the scope:
     /// the tier gate would refuse it anyway, so name the reason and stop the
     /// release from being offered again.
     #[test]
     fn a_quality_lie_into_an_occupied_scope_is_rejected() {
-        let action = resolve_truth_verdict_action(
+        let action = resolve_truth_verdict_action_for_origin(
             &TruthVerdict::Contradicted {
                 codes: codes(&["size_expected", "quality_contradicted:1080P->720P"]),
             },
             &tiered_criteria(),
             true,
+            crate::import_decide::ImportOrigin::Automatic,
         );
         let TruthVerdictAction::Reject(rejection) = action else {
             panic!("a landed tier below the announced one must not overwrite a file");
@@ -2334,12 +2380,13 @@ mod tests {
     /// re-grab it and "upgrade" the scope to the tier it already has.
     #[test]
     fn a_quality_lie_into_an_empty_scope_imports_and_blocklists() {
-        let action = resolve_truth_verdict_action(
+        let action = resolve_truth_verdict_action_for_origin(
             &TruthVerdict::Contradicted {
                 codes: codes(&["quality_contradicted:1080P->720P"]),
             },
             &tiered_criteria(),
             false,
+            crate::import_decide::ImportOrigin::Automatic,
         );
         let TruthVerdictAction::ImportAndBlocklist { code, reason } = action else {
             panic!("an empty scope keeps an honest file at its real tier");
@@ -2356,12 +2403,13 @@ mod tests {
         for occupied in [true, false] {
             assert!(
                 matches!(
-                    resolve_truth_verdict_action(
+                    resolve_truth_verdict_action_for_origin(
                         &TruthVerdict::Contradicted {
                             codes: codes(&["size_slightly_small", "bitrate_low"]),
                         },
                         &tiered_criteria(),
                         occupied,
+                        crate::import_decide::ImportOrigin::Automatic,
                     ),
                     TruthVerdictAction::Import
                 ),
@@ -2375,12 +2423,13 @@ mod tests {
     #[test]
     fn a_quality_contradiction_that_landed_better_imports_normally() {
         assert!(matches!(
-            resolve_truth_verdict_action(
+            resolve_truth_verdict_action_for_origin(
                 &TruthVerdict::Contradicted {
                     codes: codes(&["quality_contradicted:720P->1080P"]),
                 },
                 &tiered_criteria(),
                 true,
+                crate::import_decide::ImportOrigin::Automatic,
             ),
             TruthVerdictAction::Import
         ));

@@ -623,6 +623,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "download_client_bindings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "downloads",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "download_import_artifacts",
         classification: BackupTableClassification::Export,
     },
@@ -684,6 +692,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "indexer_api_quotas",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "indexer_errors",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -796,6 +808,18 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "notification_subscriptions",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "api_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "oauth_client_redirect_uris",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "oauth_client_registrations",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -1815,6 +1839,7 @@ mod tests {
     #[test]
     fn backup_table_catalog_preserves_oauth_grants_but_not_codes() {
         for (table, expected) in [
+            ("api_keys", BackupTableClassification::Export),
             (
                 "oauth_authorization_codes",
                 BackupTableClassification::Ignore,

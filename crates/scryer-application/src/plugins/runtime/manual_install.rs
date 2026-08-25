@@ -256,11 +256,15 @@ impl AppUseCase {
                 ))
             })?;
         let wasm_bytes = decode_uploaded_plugin_wasm(uploaded_bytes, uploaded_is_zstd).await?;
-        let descriptor = self
-            .services
-            .customization
-            .plugin_descriptor_loader
-            .load_descriptor_from_wasm_bytes(&wasm_bytes)?;
+        let descriptor_loader = self.services.customization.plugin_descriptor_loader.clone();
+        let (wasm_bytes, descriptor) = tokio::task::spawn_blocking(move || {
+            let descriptor = descriptor_loader.load_descriptor_from_wasm_bytes(&wasm_bytes)?;
+            Ok::<_, AppError>((wasm_bytes, descriptor))
+        })
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("plugin descriptor loading task failed: {error}"))
+        })??;
         validate_plugin_descriptor_sdk_contract(&descriptor, SDK_VERSION)
             .map_err(AppError::Validation)?;
         validate_plugin_descriptor_host_permissions(&descriptor).map_err(AppError::Validation)?;

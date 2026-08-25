@@ -183,6 +183,7 @@ impl AppUseCase {
                 None,
                 None,
                 SearchMode::Interactive,
+                IndexerErrorOperation::ConnectionTest,
                 None,
                 None,
                 None,
@@ -424,6 +425,10 @@ const KNOWN_NEWZNAB_API_ERRORS: &[NewznabApiError] = &[
 ];
 
 fn known_newznab_error_message(message: &str) -> Option<String> {
+    if let Some(classified) = crate::classify_newznab_error_message(message) {
+        return Some(classified.message.to_string());
+    }
+
     let code = extract_newznab_error_code(message)?;
     let known_error = KNOWN_NEWZNAB_API_ERRORS
         .iter()
@@ -723,6 +728,7 @@ mod tests {
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
+            _operation: IndexerErrorOperation,
             _season: Option<u32>,
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,

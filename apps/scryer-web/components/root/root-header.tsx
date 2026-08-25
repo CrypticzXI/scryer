@@ -1224,7 +1224,7 @@ export const RootHeader = React.memo(function RootHeader({
         return (
           <SearchMetadataPosterButton
             id={globalSearchMetadataResultId(facet, result)}
-            key={`${facet}-${result.tvdbId}-${result.name}`}
+            key={`${facet}-${result.smgId ?? result.tvdbId ?? result.name}`}
             onClick={handleMetadataAction}
             onKeyDown={handleSearchResultKeyDown}
             disabled={disabled}
@@ -1235,6 +1235,7 @@ export const RootHeader = React.memo(function RootHeader({
             name={result.name}
             posterUrl={posterUrl}
             resultAttribute="data-global-search-result"
+            smgId={result.smgId}
             tvdbId={result.tvdbId}
             year={result.year}
             yearLabel={result.year ? result.year : t("label.yearUnknown")}

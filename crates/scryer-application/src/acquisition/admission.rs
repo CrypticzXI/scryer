@@ -38,14 +38,10 @@
 //!
 //! Both arrows marked "grab" and the admit arm of the import gate are this
 //! module. The comparison is lexicographic — **tier, then revision, then score**
-//! (invariant I3) — and what differs between the lanes is only the
-//! [`AdmissionPolicy`]: grab applies churn thresholds, the upgrade guard, the
-//! format cutoff and the queue; import accepts ties and refuses only downgrades
-//! (I4); manual bypasses the score entirely while the structural span guard
-//! still binds.
-//!
-//! Design: `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model
-//! and its invariants) and §3 (which lane enters where).
+//! — and what differs between the lanes is only the [`AdmissionPolicy`]: grab
+//! applies churn thresholds, the upgrade guard, the format cutoff and the
+//! queue; import accepts ties and refuses only downgrades; manual bypasses the
+//! score entirely while the structural span guard still binds.
 
 use std::collections::HashSet;
 
@@ -79,9 +75,9 @@ pub(crate) struct Incumbent {
     pub revision: i32,
     pub file_id: String,
     pub file_path: String,
-    /// The release group that produced this file, for the repack rule (D16). A
-    /// REPACK is a group re-releasing its own encode, so the comparison needs
-    /// the incumbent's group and not just its score.
+    /// The release group that produced this file. A REPACK is a group
+    /// re-releasing its own encode, so the comparison needs the incumbent's
+    /// group and not just its score.
     pub release_group: Option<String>,
     /// The incumbent's canonical landed score — its bar.
     pub score: i32,
@@ -102,12 +98,15 @@ pub(crate) struct Incumbent {
 /// Its facts are always **re-derived from the submission's release title**, never
 /// read out of the `grabbed_release` JSON. That number was computed under
 /// whatever profile, persona and rule packs were live at grab time; using it
-/// would reintroduce exactly the staleness this design removes (D13, D20, the
-/// incumbent bar), and it does not exist at all for pre-0.18 rows.
+/// would reintroduce stale decisions instead of applying the current profile,
+/// and it does not exist at all for pre-0.18 rows.
 #[derive(Debug, Clone)]
 pub(crate) struct QueuedRelease {
     /// The release name, for the operator-facing message.
     pub title: String,
+    /// Episode members covered by the queued submission. Empty for title and
+    /// series-movie-link scopes, which are evaluated as single-file subjects.
+    pub covers: Vec<String>,
     pub tier_index: Option<usize>,
     pub revision: i32,
     pub score: i32,
@@ -139,7 +138,7 @@ pub(crate) struct AdmissionPolicy {
     /// Sonarr's `CutoffFormatScore`, and it is a **ceiling on the incumbent**,
     /// not a floor on the candidate. The two used to be the same profile field
     /// (`min_score_to_grab`), which meant "never grab anything under 100" also
-    /// said "stop upgrading once you have 100" (D19). The floor is now a veto in
+    /// said "stop upgrading once you have 100". The floor is now a veto in
     /// the scorer (`apply_min_score_gate`) and never reaches this module; the
     /// grab lanes fill this from `criteria.cutoff_score`, falling back to
     /// `min_score_to_grab` when the profile forbids upgrades — which is exactly
@@ -150,11 +149,11 @@ pub(crate) struct AdmissionPolicy {
     pub manual_override: bool,
     /// Whether the scope's in-flight submissions count as pseudo-incumbents.
     ///
-    /// **Grab only.** Import must never re-litigate the queue (I4): the bytes
+    /// **Grab only.** Import must never re-litigate the queue: the bytes
     /// are already on disk, and refusing them because something else is still
     /// downloading would discard a finished download in favour of one that may
-    /// never finish. D18's "coexist, don't cancel" — whichever lands worse is
-    /// skipped at its own import.
+    /// never finish. Queued downloads coexist rather than being canceled;
+    /// whichever lands worse is skipped at its own import.
     pub applies_to_queue: bool,
 }
 
@@ -215,7 +214,7 @@ impl AdmissionPolicy {
 
 /// What a candidate is, for admission purposes: where it sits in the profile's
 /// quality ordering, whether it is a re-release of that quality, and what it
-/// scores within that tier — compared in exactly that order (I3, D9).
+/// scores within that tier — compared in exactly that order.
 ///
 /// Three separate values rather than one number. Sonarr compares
 /// `QualityModelComparer` (quality, then revision) first and only consults the
@@ -417,7 +416,7 @@ impl AdmissionSubject {
         }
     }
 
-    /// Attach the scope's in-flight submissions as pseudo-incumbents (D18).
+    /// Attach the scope's in-flight submissions as pseudo-incumbents.
     pub(crate) fn with_queued(mut self, queued: Vec<QueuedRelease>) -> Self {
         self.queued = queued;
         self
@@ -447,31 +446,6 @@ impl AdmissionSubject {
 
     pub(crate) fn incumbents(&self) -> &[Incumbent] {
         &self.incumbents
-    }
-
-    /// How many distinct scope members the incumbents actually hold. A scope
-    /// with more members than this has episodes nobody has filled yet.
-    ///
-    /// `covers` is the file's **full** episode span, which can reach outside the
-    /// scope: a member set narrowed to monitored episodes leaves an incumbent
-    /// covering an unmonitored one, and counting that coverage would say the
-    /// scope is full while a monitored member is still missing. So the span is
-    /// intersected with the members first.
-    pub(crate) fn covered_members(&self) -> usize {
-        let AdmissionScope::Episodes(member_ids) = &self.scope else {
-            // Title and link scopes carry no `covers`; one incumbent is the
-            // whole scope.
-            return self.incumbents.len();
-        };
-        let members: std::collections::HashSet<&str> =
-            member_ids.iter().map(String::as_str).collect();
-        self.incumbents
-            .iter()
-            .flat_map(|incumbent| incumbent.covers.iter())
-            .map(String::as_str)
-            .filter(|episode_id| members.contains(episode_id))
-            .collect::<std::collections::HashSet<_>>()
-            .len()
     }
 
     pub(crate) fn best_score(&self) -> Option<i32> {
@@ -520,12 +494,58 @@ enum QueueWin {
 /// Refuse when a release already in the queue for this scope is equal or better.
 ///
 /// The same tier → revision → score ladder an incumbent gets, with two
-/// deliberate omissions: no span guard (a queued release has no `covers` — it is
-/// a name, not a file) and no format cutoff (nothing has landed, so "this scope
+/// deliberate omissions: no format cutoff (nothing has landed, so "this scope
 /// is already good enough" is not the question being asked). The churn delta
 /// *does* apply, matching Sonarr's `MinUpgradeFormatScore` inside
 /// `QueueSpecification`: two near-identical releases downloading in parallel is
 /// the waste this rule exists to prevent.
+fn queued_candidate_win(
+    candidate: CandidateFacts,
+    queued: &QueuedRelease,
+    policy: &AdmissionPolicy,
+) -> Option<QueueWin> {
+    match tier_cmp(candidate.tier_index, queued.tier_index) {
+        std::cmp::Ordering::Greater => Some(QueueWin::Tier),
+        std::cmp::Ordering::Less => None,
+        std::cmp::Ordering::Equal => match candidate.revision.cmp(&queued.revision) {
+            std::cmp::Ordering::Greater => Some(QueueWin::Revision),
+            std::cmp::Ordering::Less => None,
+            std::cmp::Ordering::Equal => (candidate.score.saturating_sub(queued.score)
+                >= policy.required_delta())
+            .then_some(QueueWin::Score),
+        },
+    }
+}
+
+fn queued_blocks_candidate(
+    queued: &QueuedRelease,
+    candidate: CandidateFacts,
+    policy: &AdmissionPolicy,
+) -> bool {
+    policy.applies_to_queue
+        && !policy.manual_override
+        && queued_candidate_win(candidate, queued, policy).is_none()
+}
+
+fn queued_equal_or_better_rejection(
+    queued: &QueuedRelease,
+    candidate: CandidateFacts,
+) -> AdmissionRejection {
+    AdmissionRejection {
+        reason: AdmissionRejectionReason::QueuedEqualOrBetter {
+            queued_title: queued.title.clone(),
+            queued_score: queued.score,
+            candidate_score: candidate.score,
+        },
+        message: format!(
+            "{} is already downloading for this scope and is equal or better (score {} >= {})",
+            queued.title, queued.score, candidate.score
+        ),
+        incumbent_file_id: String::new(),
+        incumbent_file_path: String::new(),
+    }
+}
+
 fn queued_rejection(
     subject: &AdmissionSubject,
     candidate: CandidateFacts,
@@ -536,20 +556,10 @@ fn queued_rejection(
     }
     subject.queued.iter().find_map(|queued| {
         // The same tier → revision → score ladder an incumbent gets.
-        let win = match tier_cmp(candidate.tier_index, queued.tier_index) {
-            std::cmp::Ordering::Greater => Some(QueueWin::Tier),
-            std::cmp::Ordering::Less => None,
-            std::cmp::Ordering::Equal => match candidate.revision.cmp(&queued.revision) {
-                std::cmp::Ordering::Greater => Some(QueueWin::Revision),
-                std::cmp::Ordering::Less => None,
-                std::cmp::Ordering::Equal => (candidate.score.saturating_sub(queued.score)
-                    >= policy.required_delta())
-                .then_some(QueueWin::Score),
-            },
-        };
+        let win = queued_candidate_win(candidate, queued, policy);
         match win {
             // A revision upgrade admits regardless of `allow_upgrades`, exactly
-            // as it does over a file on disk (D9).
+            // as it does over a file on disk.
             Some(QueueWin::Revision) => None,
             // Sonarr's `QueueUpgradesNotAllowed`: the candidate would only be
             // an *upgrade* over what is already downloading, and the profile
@@ -566,19 +576,7 @@ fn queued_rejection(
                 })
             }
             Some(QueueWin::Tier | QueueWin::Score) => None,
-            None => Some(AdmissionRejection {
-                reason: AdmissionRejectionReason::QueuedEqualOrBetter {
-                    queued_title: queued.title.clone(),
-                    queued_score: queued.score,
-                    candidate_score: candidate.score,
-                },
-                message: format!(
-                    "{} is already downloading for this scope and is equal or better (score {} >= {})",
-                    queued.title, queued.score, candidate.score
-                ),
-                incumbent_file_id: String::new(),
-                incumbent_file_path: String::new(),
-            }),
+            None => Some(queued_equal_or_better_rejection(queued, candidate)),
         }
     })
 }
@@ -662,12 +660,50 @@ fn evaluate_any_member(
         };
     }
 
+    let (members, incumbent_covered_members, queued_covered_members) = match &subject.scope {
+        AdmissionScope::Episodes(ids) => {
+            let members: HashSet<&str> = ids.iter().map(String::as_str).collect();
+            let incumbent_covered_members: HashSet<&str> = subject
+                .incumbents
+                .iter()
+                .flat_map(|incumbent| incumbent.covers.iter())
+                .map(String::as_str)
+                .filter(|episode_id| members.contains(episode_id))
+                .collect();
+            let queued_covered_members: HashSet<&str> = subject
+                .queued
+                .iter()
+                .filter(|queued| queued_blocks_candidate(queued, candidate, policy))
+                .flat_map(|queued| queued.covers.iter())
+                .map(String::as_str)
+                .filter(|episode_id| members.contains(episode_id))
+                .collect();
+            (ids.len(), incumbent_covered_members, queued_covered_members)
+        }
+        AdmissionScope::Title | AdmissionScope::SeriesMovieLink(_) => {
+            (occupied, HashSet::new(), HashSet::new())
+        }
+    };
+
     let improvable: Vec<String> = subject
         .incumbents
         .iter()
         .filter(|incumbent| {
+            let covered_members: Vec<&str> = incumbent
+                .covers
+                .iter()
+                .map(String::as_str)
+                .filter(|episode_id| incumbent_covered_members.contains(episode_id))
+                .collect();
+            if !covered_members.is_empty()
+                && covered_members
+                    .iter()
+                    .all(|episode_id| queued_covered_members.contains(episode_id))
+            {
+                return false;
+            }
             // Same ladder as `evaluate_admission`, per member: tier, then
-            // revision, then score (D9). A higher revision improves the member
+            // revision, then score. A higher revision improves the member
             // whatever the profile says about upgrades — see the long note at
             // the single-file ladder.
             match tier_cmp(candidate.tier_index, incumbent.tier_index) {
@@ -689,19 +725,26 @@ fn evaluate_any_member(
         .map(|incumbent| incumbent.file_id.clone())
         .collect();
 
-    // `covered_members` counts episodes an incumbent actually holds, so a scope
-    // with fewer incumbents than members has missing episodes to fill.
-    let members = match &subject.scope {
-        AdmissionScope::Episodes(ids) => ids.len(),
-        AdmissionScope::Title | AdmissionScope::SeriesMovieLink(_) => occupied,
-    };
-    let has_missing_member = members > subject.covered_members();
+    let covered_members = incumbent_covered_members
+        .union(&queued_covered_members)
+        .count();
+    let has_missing_member = members > covered_members;
 
     if has_missing_member || !improvable.is_empty() {
         return AdmissionVerdict::Admit {
             ranked_superseded: improvable,
             previous_best_score: subject.best_score().unwrap_or(0),
         };
+    }
+
+    if members > 0
+        && queued_covered_members.len() == members
+        && let Some(queued) = subject
+            .queued
+            .iter()
+            .find(|queued| queued_blocks_candidate(queued, candidate, policy))
+    {
+        return AdmissionVerdict::Reject(queued_equal_or_better_rejection(queued, candidate));
     }
 
     // No missing member, nothing improvable — and, when the member set is empty
@@ -722,7 +765,7 @@ fn evaluate_any_member(
     // Tier first here too. A pack every member of which is held by a *better
     // quality* file was refused as `NotAnUpgrade` with a `required_delta` the
     // candidate could never have cleared — a threshold an operator might go and
-    // tune, when the honest answer is that no score crosses a tier (I3).
+    // tune, when the honest answer is that no score crosses a tier.
     let lower_tier_than_every_member = subject.incumbents.iter().all(|incumbent| {
         tier_cmp(candidate.tier_index, incumbent.tier_index) == std::cmp::Ordering::Less
     });
@@ -787,7 +830,9 @@ pub(crate) fn evaluate_admission(
 ) -> AdmissionVerdict {
     // Before anything about the library: a scope with a better release already
     // downloading has nothing to gain from this one, whatever is on disk.
-    if let Some(rejection) = queued_rejection(subject, candidate, policy) {
+    if !subject.per_member
+        && let Some(rejection) = queued_rejection(subject, candidate, policy)
+    {
         return AdmissionVerdict::Reject(rejection);
     }
 
@@ -853,7 +898,7 @@ pub(crate) fn evaluate_admission(
             std::cmp::Ordering::Equal => {}
         }
 
-        // Revision, between tier and score (D9). A PROPER or a REPACK of the
+        // Revision, between tier and score. A PROPER or a REPACK of the
         // quality already on disk is a re-release of the *same* thing, so it is
         // not a matter of degree: it wins outright and the score never gets a
         // say — a re-encode fixing a sync fault can easily score a few points
@@ -901,9 +946,8 @@ pub(crate) fn evaluate_admission(
         // An incumbent already past the profile's format cutoff is only worth
         // displacing by a whole tier, not by trimmings — and a whole tier
         // admitted above, without reaching this line. Reported on its own
-        // (n1/D19): a `NotAnUpgrade` naming a `required_delta` the candidate
-        // could never have cleared reads as a tunable threshold, and it is not
-        // one.
+        // because a `NotAnUpgrade` naming a `required_delta` the candidate could
+        // never have cleared reads as a tunable threshold, and it is not one.
         if let Some(cutoff_score) = policy
             .cutoff_score
             .filter(|cutoff| incumbent.score >= *cutoff)

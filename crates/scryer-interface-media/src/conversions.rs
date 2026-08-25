@@ -98,7 +98,7 @@ impl FromApplication<AppDownloadSourceKind> for DownloadSourceKindValue {
 impl IntoApplication<AppDownloadSubmissionPurpose> for QueueDownloadPurposeValue {
     fn into_application(self) -> AppDownloadSubmissionPurpose {
         match self {
-            Self::Standard => AppDownloadSubmissionPurpose::Standard,
+            Self::Standard => AppDownloadSubmissionPurpose::OperatorQueued,
             Self::AdditionalFile => AppDownloadSubmissionPurpose::AdditionalFile,
         }
     }
@@ -348,6 +348,7 @@ impl IntoApplication<AppJobKey> for JobKeyValue {
             Self::RecycleBinRestore => AppJobKey::RecycleBinRestore,
             Self::RecycleBinPurge => AppJobKey::RecycleBinPurge,
             Self::AcquisitionSearch => AppJobKey::AcquisitionSearch,
+            Self::ApplicationUpgrade => AppJobKey::ApplicationUpgrade,
         }
     }
 }
@@ -378,6 +379,7 @@ impl FromApplication<AppJobKey> for JobKeyValue {
             AppJobKey::RecycleBinRestore => Self::RecycleBinRestore,
             AppJobKey::RecycleBinPurge => Self::RecycleBinPurge,
             AppJobKey::AcquisitionSearch => Self::AcquisitionSearch,
+            AppJobKey::ApplicationUpgrade => Self::ApplicationUpgrade,
         }
     }
 }
@@ -507,5 +509,22 @@ impl IntoApplication<AppScoringOverrides> for ScoringOverridesInput {
             prefer_lossless_audio: self.prefer_lossless_audio,
             block_upscaled: self.block_upscaled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_queue_download_purposes_preserve_their_application_lanes() {
+        assert_eq!(
+            QueueDownloadPurposeValue::Standard.into_application(),
+            AppDownloadSubmissionPurpose::OperatorQueued
+        );
+        assert_eq!(
+            QueueDownloadPurposeValue::AdditionalFile.into_application(),
+            AppDownloadSubmissionPurpose::AdditionalFile
+        );
     }
 }

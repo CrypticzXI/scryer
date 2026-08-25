@@ -38,6 +38,7 @@ members = [
     "crates/scryer-plugin-sdk",
     "crates/scryer-plugins",
     "crates/scryer-runtime-info",
+    "crates/scryer-logging",
     "crates/scryer-launcher",
     "crates/scryer",
     "crates/scryer-mock-apis",
@@ -57,7 +58,7 @@ dotenvy = "0.15"
 thiserror = "2.0"
 async-trait = "0.1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.24", features = ["v4", "serde"] }
 async-graphql = { version = "7.2", default-features = false, features = ["chrono", "dataloader"] }
@@ -73,8 +74,8 @@ toml = "1"
 quick-xml = "0.41.0"
 # Native Wasmtime hosts for command-model archive plugins and legacy reactor
 # compatibility.
-wasmtime = { version = "47", default-features = false, features = ["runtime", "cranelift", "std", "threads", "cache"] }
-wasmtime-wasi = { version = "47", default-features = false, features = ["p1"] }
+wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "std", "threads", "cache"] }
+wasmtime-wasi = { version = "48", default-features = false, features = ["p1"] }
 semver = "1"
 metrics = "0.24"
 security-framework = "3"

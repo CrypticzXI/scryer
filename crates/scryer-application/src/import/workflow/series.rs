@@ -37,7 +37,7 @@ fn facet_for_completed_download(completed: &CompletedDownload) -> Option<MediaFa
         _ => None,
     }
 }
-fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
+pub(crate) fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
     match value
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -198,7 +198,7 @@ async fn import_series_download(
         }
     }
 
-    blocklist_ledger.finalize(app, actor, title, completed).await;
+    blocklist_ledger.finalize(app, actor, title).await;
 
     if imported_count > 0 {
         persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
@@ -306,6 +306,7 @@ enum EpisodeImportOutcome {
         imported_media_file_id: Option<String>,
         reason_code: Option<String>,
         link_type: Option<scryer_domain::ImportStrategy>,
+        source_cleanup: Option<Box<scryer_domain::ImportSourceCleanupGuard>>,
         /// Bytes written for this file, so multi-file imports can report a
         /// total without re-stating the destination paths.
         size_bytes: Option<i64>,
@@ -442,13 +443,7 @@ impl DownloadBlocklistLedger {
     }
 
     /// Write the single entry this download earned, if any.
-    async fn finalize(
-        self,
-        app: &AppUseCase,
-        actor: &User,
-        title: &scryer_domain::Title,
-        completed: &CompletedDownload,
-    ) {
+    async fn finalize(self, app: &AppUseCase, actor: &User, title: &scryer_domain::Title) {
         let Some(write) = self.planned_write() else {
             return;
         };
@@ -457,7 +452,6 @@ impl DownloadBlocklistLedger {
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 write.release_title,
                 write.source_path,
                 write.attribution,
@@ -885,7 +879,7 @@ async fn import_single_episode_file(
             None,
             &target_episodes,
         )
-        .await;
+        .await?;
         return Ok(EpisodeImportOutcome::Rejected {
             rejection: crate::post_download_gate::ImportedFileRejection {
                 message: "file resolves to no episode of this title".to_string(),
@@ -928,11 +922,12 @@ async fn import_single_episode_file(
             episode_ids: target_episode_ids.clone(),
         });
     }
-    let ep_num_str = ep_meta
-        .episode_numbers
-        .first()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let ep_num_str = episode_number_token_for_import(
+        &ep_meta.episode_numbers,
+        target_episodes
+            .first()
+            .and_then(|episode| episode.episode_number.as_deref()),
+    );
     let abs_str = ep_meta.absolute_episode.map(|n| n.to_string()).or_else(|| {
         target_episodes
             .first()
@@ -940,6 +935,7 @@ async fn import_single_episode_file(
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     let additional_import = import_purpose.is_additional_file();
     let runtime_sample_mode = if import_purpose.is_manual_replacement() {
         crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
@@ -968,6 +964,8 @@ async fn import_single_episode_file(
         quality_profile,
         None,
         runtime_sample_mode,
+        origin,
+        release_evidence.announced_size_bytes(),
         additional_import,
     )
     .await?;
@@ -978,6 +976,7 @@ async fn import_single_episode_file(
             imported_media_file_id,
             reason_code,
             blocklist_after_import,
+            source_cleanup,
             ..
         } => {
             // Imported, but the release lied about its quality: burn it so the
@@ -1011,7 +1010,15 @@ async fn import_single_episode_file(
                 imported_media_file_id.as_deref(),
                 &target_episodes,
             )
-            .await;
+            .await?;
+
+            finalize_deferred_import_source_cleanup(
+                app,
+                source_cleanup.as_deref().cloned(),
+                &crate::stored_paths::stored_path_to_path_buf(dest_path),
+                Some(completed),
+            )
+            .await?;
 
             if imported_media_file_id.is_some() && reason_code.as_deref() != Some("additional_file")
             {
@@ -1077,7 +1084,7 @@ async fn import_single_episode_file(
                 None,
                 &target_episodes,
             )
-            .await;
+            .await?;
         }
         EpisodeImportOutcome::Rejected {
             rejection,
@@ -1118,11 +1125,59 @@ async fn import_single_episode_file(
                 None,
                 &target_episodes,
             )
-            .await;
+            .await?;
         }
     }
 
     Ok(outcome)
+}
+
+fn episode_number_token_for_import(
+    parsed_episode_numbers: &[u32],
+    resolved_episode_number: Option<&str>,
+) -> String {
+    parsed_episode_numbers
+        .first()
+        .map(ToString::to_string)
+        .or_else(|| {
+            resolved_episode_number
+                .map(str::trim)
+                .filter(|number| !number.is_empty())
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod episode_number_token_for_import_tests {
+    use super::*;
+
+    #[test]
+    fn parsed_regular_episode_number_takes_precedence() {
+        assert_eq!(episode_number_token_for_import(&[7], Some("1")), "7");
+    }
+
+    #[test]
+    fn resolved_episode_number_fills_an_absolute_only_parse() {
+        assert_eq!(episode_number_token_for_import(&[], Some("1")), "1");
+    }
+
+    #[test]
+    fn episode_number_token_stays_empty_without_a_regular_number() {
+        assert_eq!(episode_number_token_for_import(&[], Some("  ")), "");
+        assert_eq!(episode_number_token_for_import(&[], None), "");
+    }
+
+    #[test]
+    fn resolved_episode_number_renders_a_padded_destination_token() {
+        let episode = episode_number_token_for_import(&[], Some("1"));
+        let tokens = BTreeMap::from([
+            ("season".to_string(), "1".to_string()),
+            ("episode".to_string(), episode),
+        ]);
+
+        assert_eq!(render_rename_template("S{season:2}E{episode:2}", &tokens), "S01E01");
+    }
 }
 /// Resolve media root path and rename template for a title's facet.
 pub(crate) async fn resolve_import_paths(
@@ -1650,7 +1705,7 @@ async fn persist_file_import_artifact(
     reason_code: Option<&str>,
     imported_media_file_id: Option<&str>,
     episodes: &[scryer_domain::Episode],
-) {
+) -> AppResult<()> {
     let relative_path = source_path
         .strip_prefix(&completed.dest_dir)
         .ok()
@@ -1661,6 +1716,24 @@ async fn persist_file_import_artifact(
         .and_then(|name| name.to_str())
         .map(|name| name.to_ascii_lowercase())
         .unwrap_or_else(|| source_path.to_string_lossy().to_ascii_lowercase());
+    let canonical_download_id = match app
+        .services
+        .workflow
+        .imports
+        .canonical_download_id_for_import(import_id)
+        .await
+    {
+        Ok(canonical_download_id) => canonical_download_id,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                import_id,
+                source_ref = %completed.download_client_item_id,
+                "failed to resolve canonical identity for import artifact; retaining legacy artifact write"
+            );
+            None
+        }
+    };
 
     let episode_rows: Vec<(Option<String>, Option<i32>, Option<i32>)> = if episodes.is_empty() {
         vec![(None, None, None)]
@@ -1683,12 +1756,18 @@ async fn persist_file_import_artifact(
             .collect()
     };
 
-    for (episode_id, season_number, episode_number) in episode_rows {
-        let artifact = ImportArtifact {
+    let source_identity = ClientJobLocator::for_import_artifact(
+        Some(completed.client_id.as_str()),
+        &completed.client_type,
+        &completed.download_client_item_id,
+    );
+    let artifacts = episode_rows
+        .into_iter()
+        .map(|(episode_id, season_number, episode_number)| ImportArtifact {
             id: Id::new().0,
-            source_client_id: Some(completed.client_id.clone()),
-            source_system: completed.client_type.clone(),
-            source_ref: completed.download_client_item_id.clone(),
+            source_client_id: source_identity.client_id.clone(),
+            source_system: source_identity.client_type.clone(),
+            source_ref: source_identity.item_id.clone(),
             import_id: Some(import_id.to_string()),
             relative_path: relative_path.clone(),
             normalized_file_name: normalized_file_name.clone(),
@@ -1701,23 +1780,25 @@ async fn persist_file_import_artifact(
             reason_code: reason_code.map(str::to_string),
             imported_media_file_id: imported_media_file_id.map(str::to_string),
             created_at: Utc::now(),
-        };
-        if let Err(error) = app
-            .services
-            .workflow
-            .import_artifacts
-            .insert_artifact(artifact)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                import_id,
-                source_ref = %completed.download_client_item_id,
-                file = %source_path.display(),
-                "failed to persist import artifact"
-            );
-        }
+        })
+        .collect();
+    if let Err(error) = app
+        .services
+        .workflow
+        .import_artifacts
+        .insert_artifacts_for_download(artifacts, canonical_download_id.as_ref())
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            import_id,
+            source_ref = %completed.download_client_item_id,
+            file = %source_path.display(),
+            "failed to persist import artifacts"
+        );
+        return Err(AppError::ImportEvidenceUnavailable(error.to_string()));
     }
+    Ok(())
 }
 // 50 MB
 

@@ -15,6 +15,7 @@ impl IndexerClient for MockIndexerClient {
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -169,6 +170,38 @@ pub(super) struct RecordedIndexerSearch {
 #[derive(Default, Clone)]
 pub(super) struct TrackingIndexerClient {
     pub(super) searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
+    pub(super) season_pack_titles: Vec<String>,
+    pub(super) title_pack_titles: Vec<String>,
+    pub(super) fail_scoped_queries: bool,
+    pub(super) report_routed_indexers_fired: bool,
+}
+
+impl TrackingIndexerClient {
+    pub(super) fn with_season_pack_titles(
+        mut self,
+        titles: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.season_pack_titles = titles.into_iter().collect();
+        self
+    }
+
+    pub(super) fn with_title_pack_titles(
+        mut self,
+        titles: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.title_pack_titles = titles.into_iter().collect();
+        self
+    }
+
+    pub(super) fn failing_scoped_queries(mut self) -> Self {
+        self.fail_scoped_queries = true;
+        self
+    }
+
+    pub(super) fn reporting_routed_indexers_fired(mut self) -> Self {
+        self.report_routed_indexers_fired = true;
+        self
+    }
 }
 
 #[async_trait]
@@ -181,8 +214,9 @@ impl IndexerClient for TrackingIndexerClient {
         _facet: Option<String>,
         _id_search_facet: Option<String>,
         _newznab_categories: Option<Vec<String>>,
-        _indexer_routing: Option<IndexerRoutingPlan>,
+        indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         season: Option<u32>,
         episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -195,6 +229,24 @@ impl IndexerClient for TrackingIndexerClient {
             season,
             episode,
         });
+        let indexer_outcomes = if self.report_routed_indexers_fired {
+            indexer_routing
+                .into_iter()
+                .flat_map(|plan| plan.entries)
+                .filter(|(_, entry)| entry.enabled)
+                .map(|(indexer_id, _)| crate::IndexerQueryOutcome {
+                    indexer_id,
+                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if self.fail_scoped_queries && (season.is_some() || episode.is_some()) {
+            return Err(AppError::Repository(
+                "tracking indexer scoped-query failure".to_string(),
+            ));
+        }
 
         let release_title = match (season, episode) {
             (Some(season), Some(episode)) => {
@@ -203,41 +255,56 @@ impl IndexerClient for TrackingIndexerClient {
             (Some(season), None) => format!("{query}.S{season:02}.1080p.WEB-DL"),
             (None, _) => format!("{query}.2024.1080p.WEB-DL"),
         };
-        let release_slug = release_title.replace([' ', '/'], ".");
+        let release_titles =
+            if season.is_none() && episode.is_none() && !self.title_pack_titles.is_empty() {
+                self.title_pack_titles.clone()
+            } else if season.is_some() && episode.is_none() && !self.season_pack_titles.is_empty() {
+                self.season_pack_titles.clone()
+            } else {
+                vec![release_title]
+            };
 
         Ok(IndexerSearchResponse {
-            indexer_outcomes: Vec::new(),
-            results: vec![IndexerSearchResult {
-                indexer_id: None,
-                source: "nzbgeek".into(),
-                title: release_title.clone(),
-                link: Some(format!("https://example.invalid/info/{release_slug}")),
-                download_url: Some(format!(
-                    "https://example.invalid/download/{release_slug}.nzb"
-                )),
-                source_kind: Some(DownloadSourceKind::NzbUrl),
-                size_bytes: None,
-                published_at: Some("1970-01-01T00:00:00Z".into()),
-                thumbs_up: None,
-                thumbs_down: None,
-                indexer_languages: None,
-                indexer_subtitles: None,
-                indexer_grabs: None,
-                password_hint: None,
-                parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
-                quality_profile_decision: None,
-                extra: Default::default(),
-                response_attributes: Default::default(),
-                guid: Some(format!("guid-{release_slug}")),
-                info_url: Some(format!("https://example.invalid/info/{release_slug}")),
-                provenance: None,
-                auto_eligible: None,
-                auto_decision_code: None,
-                auto_decision_summary: None,
-                candidate_token: None,
-                queue_scope: None,
-                coverage_scope: None,
-            }],
+            indexer_outcomes,
+            results: release_titles
+                .into_iter()
+                .map(|release_title| {
+                    let release_slug = release_title.replace([' ', '/'], ".");
+                    IndexerSearchResult {
+                        indexer_id: None,
+                        source: "nzbgeek".into(),
+                        title: release_title.clone(),
+                        link: Some(format!("https://example.invalid/info/{release_slug}")),
+                        download_url: Some(format!(
+                            "https://example.invalid/download/{release_slug}.nzb"
+                        )),
+                        source_kind: Some(DownloadSourceKind::NzbUrl),
+                        size_bytes: None,
+                        published_at: Some("1970-01-01T00:00:00Z".into()),
+                        thumbs_up: None,
+                        thumbs_down: None,
+                        indexer_languages: None,
+                        indexer_subtitles: None,
+                        indexer_grabs: None,
+                        password_hint: None,
+                        parsed_release_metadata: Some(crate::parse_release_metadata(
+                            &release_title,
+                        )),
+                        quality_profile_decision: None,
+                        extra: Default::default(),
+                        response_attributes: Default::default(),
+                        guid: Some(format!("guid-{release_slug}")),
+                        info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                        provenance: None,
+                        auto_eligible: None,
+                        auto_decision_code: None,
+                        auto_decision_summary: None,
+                        candidate_token: None,
+                        queue_scope: None,
+                        coverage_scope: None,
+                    }
+                })
+                .collect(),
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -313,6 +380,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -419,6 +487,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -529,6 +598,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -596,6 +666,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
@@ -624,13 +695,20 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
 #[derive(Clone)]
 pub(super) struct MultiReleaseIndexerClient {
     pub(super) release_titles: Vec<String>,
+    info_hash_hint: Option<String>,
 }
 
 impl MultiReleaseIndexerClient {
     pub(super) fn new(release_titles: Vec<&str>) -> Self {
         Self {
             release_titles: release_titles.into_iter().map(str::to_string).collect(),
+            info_hash_hint: None,
         }
+    }
+
+    pub(super) fn with_info_hash_hint(mut self, info_hash_hint: impl Into<String>) -> Self {
+        self.info_hash_hint = Some(info_hash_hint.into());
+        self
     }
 }
 
@@ -646,6 +724,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _newznab_categories: Option<Vec<String>>,
         _indexer_routing: Option<IndexerRoutingPlan>,
         _mode: SearchMode,
+        _operation: IndexerErrorOperation,
         _season: Option<u32>,
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
@@ -676,7 +755,16 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     password_hint: None,
                     parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
                     quality_profile_decision: None,
-                    extra: Default::default(),
+                    extra: self
+                        .info_hash_hint
+                        .as_ref()
+                        .map(|hash| {
+                            std::collections::HashMap::from([(
+                                "info_hash".to_string(),
+                                serde_json::Value::String(hash.clone()),
+                            )])
+                        })
+                        .unwrap_or_default(),
                     response_attributes: Default::default(),
                     guid: Some(format!("guid-multi-release-{index}")),
                     info_url: Some(format!("https://example.invalid/info/{index}")),
@@ -770,5 +858,36 @@ impl MetadataGateway for MockMetadataGateway {
             movies,
             series: HashMap::new(),
         })
+    }
+
+    async fn get_movie_titles(
+        &self,
+        refs: &[MovieTitleRef],
+        _language: &str,
+    ) -> AppResult<MovieTitleBulkResult> {
+        let mut result = MovieTitleBulkResult::default();
+        for (ref_index, movie_ref) in refs.iter().enumerate() {
+            let movie = self.movies.values().find(|movie| {
+                movie_ref
+                    .smg_id
+                    .is_some_and(|smg_id| movie.smg_id == Some(smg_id))
+                    || movie_ref
+                        .tvdb_id
+                        .is_some_and(|tvdb_id| movie.tvdb_id == Some(tvdb_id))
+                    || movie_ref
+                        .tmdb_id
+                        .is_some_and(|tmdb_id| movie.tmdb_id == Some(tmdb_id))
+                    || movie_ref
+                        .imdb_id
+                        .as_deref()
+                        .is_some_and(|imdb_id| movie.imdb_id == imdb_id)
+            });
+            if let Some(movie) = movie {
+                result.by_ref_index.insert(ref_index, movie.clone());
+            } else {
+                result.missing_ref_indexes.push(ref_index);
+            }
+        }
+        Ok(result)
     }
 }

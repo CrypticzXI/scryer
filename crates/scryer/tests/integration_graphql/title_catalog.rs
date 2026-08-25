@@ -1013,7 +1013,7 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
         json!({
             "input": {
                 "scope": "MOVIE",
-                "requiredAudioLanguages": ["eng"]
+                "requiredAudioLanguages": ["Original"]
             }
         }),
     )
@@ -1021,7 +1021,7 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
     assert_no_errors(&default_audio);
     assert_eq!(
         default_audio["data"]["updateMediaSettings"]["requiredAudioLanguages"],
-        json!(["eng"])
+        json!(["original"])
     );
 
     let set_override = gql(
@@ -1111,12 +1111,68 @@ async fn graphql_movie_required_audio_override_resolves_and_clears_to_facet_defa
     assert!(inherited_title["data"]["title"]["requiredAudioLanguagesOverride"].is_null());
     assert_eq!(
         inherited_title["data"]["title"]["effectiveRequiredAudioLanguages"],
-        json!(["eng"])
+        json!(["original"])
     );
     assert_eq!(
         inherited_title["data"]["title"]["inheritsRequiredAudioLanguages"],
         true
     );
+}
+
+#[tokio::test]
+async fn graphql_title_required_audio_inherits_original_from_library() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Original Audio Library",
+        &[("/library/original-audio", true)],
+    )
+    .await;
+    let library_id = library_id(&library).to_string();
+    ctx.settings_store
+        .upsert_setting_json(
+            "system",
+            "audio.required_languages",
+            Some(library_id.clone()),
+            json!(["original"]).to_string(),
+            "test",
+            None,
+        )
+        .await
+        .expect("set library required audio languages");
+
+    let title = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title {
+                    effectiveRequiredAudioLanguages
+                    inheritsRequiredAudioLanguages
+                }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Library Original Audio Movie",
+                "facet": "MOVIE",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "923456" }]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&title);
+    let title = &title["data"]["addTitle"]["title"];
+    assert_eq!(
+        title["effectiveRequiredAudioLanguages"],
+        json!(["original"])
+    );
+    assert_eq!(title["inheritsRequiredAudioLanguages"], true);
 }
 
 #[tokio::test]
@@ -1319,6 +1375,119 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
         second["data"]["addTitle"]["title"]["id"],
         first["data"]["addTitle"]["title"]["id"]
     );
+}
+
+#[tokio::test]
+async fn graphql_add_movie_accepts_smg_and_tmdb_identity_without_tvdb() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                metadataHydrationState
+                title { externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "SMG and TMDB Identity Movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [],
+                "smgId": 202,
+                "tmdbId": 2020
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["metadataHydrationState"],
+        "PENDING"
+    );
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["externalIds"],
+        json!([
+            { "source": "smg", "value": "202" },
+            { "source": "tmdb", "value": "2020" },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn graphql_add_series_discards_movie_identities_from_search_input() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Series Search Result",
+                "facet": "SERIES",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [
+                    { "source": "smg", "value": "202" },
+                    { "source": "tmdb", "value": "2020" },
+                    { "source": "imdb", "value": "tt0202020" },
+                    { "source": "tvdb", "value": "12345" }
+                ],
+                "smgId": 202,
+                "tvdbId": "12345",
+                "tmdbId": 2020,
+                "imdbId": "tt0202020"
+            }
+        }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["externalIds"],
+        json!([{ "source": "tvdb", "value": "12345" }])
+    );
+}
+
+/// `addTitle` accepted an identity-less movie before the title-id surface
+/// existed: the title simply parks unhydrated until an identity arrives.
+/// Teaching the mutation to reject one would be a non-additive change to an
+/// operation integrations already call.
+#[tokio::test]
+async fn graphql_add_movie_without_an_identity_parks_unhydrated() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                metadataHydrationState
+                title { id name externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Identity-less Movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": []
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["metadataHydrationState"],
+        "NOT_REQUIRED"
+    );
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["name"],
+        "Identity-less Movie"
+    );
+    assert_eq!(body["data"]["addTitle"]["title"]["externalIds"], json!([]));
 }
 
 #[tokio::test]
@@ -3321,6 +3490,89 @@ async fn graphql_wanted_items_missing_view_exposes_fileless_monitored_movie() {
 }
 
 #[tokio::test]
+async fn graphql_wanted_items_reports_standby_count_for_the_scope_anchor() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Standby Count Test", "MOVIE").await;
+    let wanted_item_id = Id::new().0;
+    let now = Utc::now();
+    ctx.library_state
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
+            id: wanted_item_id.clone(),
+            title_id: title_id.clone(),
+            title_name: Some("Standby Count Test".to_string()),
+            title_slug: None,
+            title_facet: Some("movie".to_string()),
+            library_id: None,
+            library_name: None,
+            library_slug: None,
+            episode_id: None,
+            collection_id: None,
+            series_movie_link_id: None,
+            season_number: None,
+            episode_number: None,
+            media_type: "movie".to_string(),
+            last_search_at: None,
+            status: scryer_application::AcquisitionScopeStatus::Wanted,
+            grabbed_release: None,
+            landed_bar: None,
+            latest_release_decision: None,
+            mismatch_recovery_eligible: false,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        })
+        .await
+        .expect("seed wanted scope");
+    let pending_store =
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        );
+    for score in [500, 400] {
+        pending_store
+            .insert_pending_release(&PendingRelease {
+                id: Id::new().0,
+                wanted_item_id: wanted_item_id.clone(),
+                title_id: title_id.clone(),
+                release_title: format!("Standby.Count.Test.{score}.1080p.WEB-DL"),
+                release_url: Some(format!("https://example.invalid/{score}.nzb")),
+                source_kind: None,
+                release_size_bytes: Some(1_024),
+                release_score: score,
+                scoring_log_json: None,
+                indexer_source: Some("test-indexer".to_string()),
+                indexer_id: None,
+                release_guid: Some(format!("guid-{score}")),
+                added_at: now.to_rfc3339(),
+                delay_until: now.to_rfc3339(),
+                status: scryer_application::PendingReleaseStatus::Standby,
+                grabbed_at: None,
+                source_password: None,
+                published_at: None,
+                info_hash: None,
+                seed_minimums: Default::default(),
+                seeders: None,
+            })
+            .await
+            .expect("seed standby release");
+    }
+
+    let body = gql(
+        &ctx,
+        r#"query($wantedKind: WantedKindValue!, $titleSearch: String) {
+            wantedItems(wantedKind: $wantedKind, titleSearch: $titleSearch) {
+                items { id standbyCount }
+            }
+        }"#,
+        json!({ "wantedKind": "MISSING", "titleSearch": "Standby Count Test" }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let item = &body["data"]["wantedItems"]["items"][0];
+    assert_eq!(item["id"], wanted_item_id);
+    assert_eq!(item["standbyCount"], 2);
+}
+
+#[tokio::test]
 async fn graphql_delete_title() {
     let ctx = TestContext::new().await;
     let id = add_test_title(&ctx, "To Delete", "MOVIE").await;
@@ -3408,6 +3660,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: id.clone(),
             facet: "movie".to_string(),
             download_client_id: None,

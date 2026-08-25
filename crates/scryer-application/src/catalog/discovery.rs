@@ -600,7 +600,6 @@ impl AppUseCase {
         let canonical_context = self
             .resolve_canonical_scoring_context(&scored_title, quality_profile)
             .await;
-        let resolved_profile = canonical_context.profile().clone();
 
         let catalog_episodes = self
             .services
@@ -616,6 +615,7 @@ impl AppUseCase {
             .list_collections_for_title(title_id)
             .await
             .unwrap_or_default();
+        let mut primary_episode_ids = None;
         let requested_episode =
             resolve_requested_episode(&catalog_episodes, season, episode, absolute_episode);
         let mut scored = Vec::new();
@@ -645,9 +645,55 @@ impl AppUseCase {
                 crate::quality::canonical_context::announced_metadata_for_title(
                     &scored_title,
                     &parsed_release_metadata,
-                    &resolved_profile,
+                    canonical_context.required_audio_languages(),
                     result.indexer_languages.as_deref(),
                 );
+
+            let is_series_pack = scored_release_metadata
+                .episode
+                .as_ref()
+                .is_some_and(|episode| episode.is_series_pack);
+            let pack_below_missing_threshold = if is_series_pack {
+                if primary_episode_ids.is_none() {
+                    primary_episode_ids = Some(
+                        match self
+                            .services
+                            .library
+                            .media_files
+                            .list_media_files_for_title(title_id)
+                            .await
+                        {
+                            Ok(files) => Some(
+                                files
+                                    .into_iter()
+                                    .filter(|file| file.role.is_primary())
+                                    .filter_map(|file| file.episode_id)
+                                    .collect::<std::collections::HashSet<_>>(),
+                            ),
+                            Err(error) => {
+                                tracing::warn!(
+                                    title_id,
+                                    error = %error,
+                                    "release scoring: failed to load media ownership; rejecting series packs"
+                                );
+                                None
+                            }
+                        },
+                    );
+                }
+                !primary_episode_ids
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_some_and(|primary_episode_ids| {
+                        crate::acquisition_coverage::series_pack_missing_ratio_qualifies(
+                            &scored_release_metadata,
+                            &catalog_episodes,
+                            primary_episode_ids,
+                        )
+                    })
+            } else {
+                false
+            };
 
             let release_coverage = crate::acquisition_coverage::resolve_release_coverage(
                 &scored_release_metadata,
@@ -717,7 +763,7 @@ impl AppUseCase {
                 release_search_key(&result),
                 crate::acquisition::scoring::SearchRank {
                     head: crate::acquisition::scoring::RankHead {
-                        blocked: !decision.allowed,
+                        blocked: !decision.allowed || pack_below_missing_threshold,
                         tier_index: decision.tier_index.unwrap_or(usize::MAX),
                         negated_revision: -(i32::from(scored_release_metadata.is_proper_upload)
                             + i32::from(scored_release_metadata.is_repack)),
@@ -741,7 +787,7 @@ impl AppUseCase {
                 },
             );
 
-            scored.push(IndexerSearchResult {
+            let mut scored_result = IndexerSearchResult {
                 parsed_release_metadata: Some(scored_release_metadata),
                 quality_profile_decision: Some(decision),
                 // Carry the coverage the scoring pass already resolved (D21);
@@ -756,7 +802,14 @@ impl AppUseCase {
                     resolved => Some(resolved.submission_scope()),
                 },
                 ..result
-            });
+            };
+            if pack_below_missing_threshold {
+                crate::acquisition_release_search::annotate_auto_decision(
+                    &mut scored_result,
+                    crate::acquisition_release_search::ReleaseAutoDecisionCode::PackBelowMissingThreshold,
+                );
+            }
+            scored.push(scored_result);
         }
 
         let mut scored = dedupe_cross_indexer_release_results(
@@ -965,6 +1018,10 @@ impl AppUseCase {
         } else {
             None
         };
+        let indexer_error_operation = match mode {
+            SearchMode::Interactive => IndexerErrorOperation::InteractiveSearch,
+            SearchMode::Auto => IndexerErrorOperation::AutomaticSearch,
+        };
 
         for query in effective_queries {
             let indexer_client = self.services.integrations.indexer_client.clone();
@@ -992,6 +1049,7 @@ impl AppUseCase {
                         newznab_categories,
                         indexer_routing,
                         mode,
+                        indexer_error_operation,
                         season,
                         episode,
                         absolute_episode,
@@ -1132,6 +1190,77 @@ impl AppUseCase {
         restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
         background_value: Option<f64>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
+        let results = self
+            .search_and_score_subject_restricted(
+                title,
+                subject,
+                caller_label,
+                mode,
+                cancel_token,
+                restrict_to_indexer_ids,
+                background_value,
+            )
+            .await?;
+        Ok(self
+            .evaluate_search_results_for_subject(title, subject, results)
+            .await)
+    }
+
+    /// Search and score `subject` while leaving admission evaluation to the
+    /// caller. This is used by pack discovery lanes that must group candidates
+    /// by their resolved submission scope before running canonical evaluation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "background search threads the convergence subset and value hint alongside the subject"
+    )]
+    pub(crate) async fn search_and_score_subject_restricted(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+        cancel_token: CancellationToken,
+        restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+        background_value: Option<f64>,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
+        let (results, fired_indexer_ids) = self
+            .search_and_score_subject_restricted_with_fired_indexers(
+                title,
+                subject,
+                caller_label,
+                mode,
+                cancel_token,
+                restrict_to_indexer_ids,
+                background_value,
+            )
+            .await?;
+
+        // A search is a search: every generic scoped search — background,
+        // interactive, or pack — records per-indexer convergence coverage.
+        // The series-pack title lane opts into its own keys through the narrow
+        // lower-level helper below.
+        self.record_search_coverage(title, subject, &fired_indexer_ids)
+            .await;
+        Ok(results)
+    }
+
+    /// Search and score without writing generic scope coverage. The series-pack
+    /// title lane uses this to record its set and qualifying collection keys;
+    /// all normal search callers should use `search_and_score_subject_restricted`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "background search threads the convergence subset and value hint alongside the subject"
+    )]
+    pub(crate) async fn search_and_score_subject_restricted_with_fired_indexers(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+        cancel_token: CancellationToken,
+        restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+        background_value: Option<f64>,
+    ) -> AppResult<(Vec<IndexerSearchResult>, Vec<String>)> {
         let tagged_aliases = release_search_tagged_aliases(title);
         let (results, fired_indexer_ids) = self
             .search_and_score_releases(ReleaseSearchRequest {
@@ -1163,16 +1292,7 @@ impl AppUseCase {
                 background_value,
             })
             .await?;
-
-        let evaluated = self
-            .evaluate_search_results_for_subject(title, subject, results)
-            .await;
-        // A search is a search: every scoped search — background,
-        // interactive, season-pack — records per-indexer convergence coverage
-        // for the indexers that actually fired. Best-effort.
-        self.record_search_coverage(title, subject, &fired_indexer_ids)
-            .await;
-        Ok(evaluated)
+        Ok((results, fired_indexer_ids))
     }
 
     /// Interactive search for a title (movie or standalone). Resolves all
@@ -1253,6 +1373,12 @@ impl AppUseCase {
                     .or(result.source_kind),
                 source_title: Some(result.title.clone()),
                 source_password: result.password_hint.clone(),
+                info_hash_hint: result
+                    .extra
+                    .get("info_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                size_bytes: result.size_bytes,
                 seeders: crate::acquisition::seed_goals::seeders_from_extra(&result.extra),
             };
             result.candidate_token = if selection.source_hint.is_some() {

@@ -117,6 +117,9 @@ enum SabApiAuth {
 }
 
 const SAB_ADDFILE_UPLOAD_FIELD: &str = "nzbfile";
+// Safe reads may make three attempts. Ninety seconds per attempt plus the
+// bounded retry backoff remains below the default 300-second feedback gate.
+const SABNZBD_HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 const SAB_SECRET_QUERY_KEYS: &[&str] = &["apikey", "api_key", "ma_password", "password"];
 
 #[derive(Clone)]
@@ -295,7 +298,11 @@ impl SabnzbdDownloadClient {
                     form_or_query.push(("apikey".to_string(), api_key.clone()));
                     self.outbound_http
                         .send(policy.clone(), || {
-                            self.outbound_http.client().get(url).query(&form_or_query)
+                            self.outbound_http
+                                .client()
+                                .get(url)
+                                .query(&form_or_query)
+                                .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT)
                         })
                         .await
                 }
@@ -317,6 +324,7 @@ impl SabnzbdDownloadClient {
                                 .post(url)
                                 .header("Content-Type", "application/x-www-form-urlencoded")
                                 .body(encoded_form.clone())
+                                .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT)
                         })
                         .await
                 }
@@ -563,7 +571,11 @@ impl SabnzbdDownloadClient {
                     let request_builder =
                         self.outbound_http.client().post(&url).query(&query_params);
 
-                    Ok::<_, AppError>(request_builder.multipart(form))
+                    Ok::<_, AppError>(
+                        request_builder
+                            .multipart(form)
+                            .timeout(SABNZBD_HTTP_REQUEST_TIMEOUT),
+                    )
                 }
             })
             .await
@@ -787,6 +799,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                         "sabnzbd addfile succeeded"
                     );
                     Ok(DownloadGrabResult {
+                        download_id: None,
                         job_id: nzo_id,
                         client_id: None,
                         client_type: "sabnzbd".to_string(),
@@ -884,7 +897,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                     };
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let state = sabnzbd_queue_state(status);
+                let state = sabnzbd_queue_state(status)?;
 
                 let percentage = slot
                     .get("percentage")
@@ -995,18 +1008,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     .to_string();
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let (state, mut attention_reason) = sabnzbd_history_state(status);
-
-                // SABnzbd provides a dedicated fail_message field with the actual
-                // failure detail (e.g. "54 articles were missing"). Use it when the
-                // status line alone didn't produce a reason.
-                if state == DownloadQueueState::Failed && attention_reason.is_none() {
-                    attention_reason = slot
-                        .get("fail_message")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                }
+                let fail_message = slot.get("fail_message").and_then(Value::as_str);
+                let (state, attention_reason) = sabnzbd_history_state(status, fail_message)?;
                 let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
@@ -1085,15 +1088,8 @@ impl DownloadClient for SabnzbdDownloadClient {
                     .to_string();
 
                 let status = slot.get("status").and_then(Value::as_str).unwrap_or("");
-                let (state, mut attention_reason) = sabnzbd_history_state(status);
-
-                if state == DownloadQueueState::Failed && attention_reason.is_none() {
-                    attention_reason = slot
-                        .get("fail_message")
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                }
+                let fail_message = slot.get("fail_message").and_then(Value::as_str);
+                let (state, attention_reason) = sabnzbd_history_state(status, fail_message)?;
                 let category = extract_sabnzbd_category(slot);
 
                 Some(DownloadQueueItem {
@@ -1393,6 +1389,7 @@ impl SabnzbdDownloadClient {
     ) -> AppResult<DownloadGrabResult> {
         match self.reconcile_addfile_after_ambiguous(nzb_name).await {
             Some(nzo_id) => Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: nzo_id,
                 client_id: None,
                 client_type: "sabnzbd".to_string(),
@@ -1910,18 +1907,19 @@ fn sabnzbd_queue_priority(raw_priority: Option<&str>) -> i32 {
     }
 }
 
-fn sabnzbd_queue_state(status: &str) -> DownloadQueueState {
+fn sabnzbd_queue_state(status: &str) -> Option<DownloadQueueState> {
     let normalized = status.to_ascii_uppercase();
     match normalized.as_str() {
-        "DOWNLOADING" => DownloadQueueState::Downloading,
-        "QUEUED" | "FETCHING" | "PROPAGATING" | "GRABBING" => DownloadQueueState::Queued,
-        "PAUSED" => DownloadQueueState::Paused,
+        "DELETED" => None,
+        "DOWNLOADING" => Some(DownloadQueueState::Downloading),
+        "QUEUED" | "FETCHING" | "PROPAGATING" | "GRABBING" => Some(DownloadQueueState::Queued),
+        "PAUSED" => Some(DownloadQueueState::Paused),
         // Post-processing stages reported in queue (SABnzbd 4.x can show these)
-        "VERIFYING" | "QUICKCHECK" => DownloadQueueState::Verifying,
-        "REPAIRING" => DownloadQueueState::Repairing,
-        "EXTRACTING" => DownloadQueueState::Extracting,
-        "MOVING" | "RUNNING" => DownloadQueueState::Downloading,
-        _ => DownloadQueueState::Queued,
+        "VERIFYING" | "QUICKCHECK" => Some(DownloadQueueState::Verifying),
+        "REPAIRING" => Some(DownloadQueueState::Repairing),
+        "EXTRACTING" => Some(DownloadQueueState::Extracting),
+        "MOVING" | "RUNNING" => Some(DownloadQueueState::Downloading),
+        _ => Some(DownloadQueueState::Queued),
     }
 }
 
@@ -1937,9 +1935,18 @@ fn sabnzbd_postprocessing_stage(status: &str) -> Option<String> {
     }
 }
 
-fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
+fn sabnzbd_history_state(
+    status: &str,
+    fail_message: Option<&str>,
+) -> Option<(DownloadQueueState, Option<String>)> {
+    const UNPACK_WRITE_FAILURE: &str = "Unpacking failed, write error or disk is full?";
+
     let normalized = status.to_ascii_uppercase();
-    match normalized.as_str() {
+    if normalized == "DELETED" {
+        return None;
+    }
+
+    let (state, mut reason) = match normalized.as_str() {
         "COMPLETED" => (DownloadQueueState::Completed, None),
         "FAILED" => (DownloadQueueState::Failed, None),
         "QUEUED" => (DownloadQueueState::Queued, None),
@@ -1956,10 +1963,25 @@ fn sabnzbd_history_state(status: &str) -> (DownloadQueueState, Option<String>) {
                     .filter(|d| !d.is_empty());
                 (DownloadQueueState::Failed, reason)
             } else {
-                (DownloadQueueState::Completed, None)
+                (DownloadQueueState::Downloading, None)
             }
         }
+    };
+
+    if state == DownloadQueueState::Failed
+        && let Some(fail_message) = fail_message
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        if fail_message.eq_ignore_ascii_case(UNPACK_WRITE_FAILURE) {
+            return Some((DownloadQueueState::Warning, Some(fail_message.to_string())));
+        }
+        if reason.is_none() {
+            reason = Some(fail_message.to_string());
+        }
     }
+
+    Some((state, reason))
 }
 
 fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<String> {
@@ -2162,15 +2184,193 @@ mod tests {
         evaluate_sab_addfile_response, evaluate_sab_api_response, extract_sabnzbd_category,
         map_sabnzbd_outbound_error, normalize_sab_job_name, redact_sab_secret_values,
         sab_addfile_query_params, sab_api_mode_matches_response, sab_reconcile_slot_nzo_id,
+        sabnzbd_history_state, sabnzbd_queue_state,
     };
     use chrono::Utc;
     use reqwest::StatusCode;
-    use scryer_application::{AppError, DownloadClient};
+    use scryer_application::{
+        AppError, DownloadClient, DownloadClientAddRequest, DownloadSubmissionPurpose,
+        ResolvedDownloadArtifact,
+    };
+    use scryer_domain::{DownloadQueueState, MediaFacet, Title};
     use scryer_outbound_http::OutboundHttpError;
     use serde_json::json;
+    use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::Semaphore;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::downloads::staged_nzb_store::FileSystemStagedNzbStore;
+
+    fn test_add_request(download_id: &str) -> DownloadClientAddRequest {
+        let facet = MediaFacet::Movie;
+        DownloadClientAddRequest {
+            title: Title {
+                id: "title-1".to_string(),
+                name: "Test Title".to_string(),
+                library_id: scryer_domain::default_library_id_for_facet(&facet),
+                facet,
+                monitored: true,
+                tags: vec![],
+                canonical_tags: vec![],
+                external_ids: vec![],
+                root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
+                created_by: None,
+                created_at: Utc::now(),
+                year: None,
+                overview: None,
+                poster_url: None,
+                poster_source_url: None,
+                background_url: None,
+                background_source_url: None,
+                sort_title: None,
+                catalog_sort_key: String::new(),
+                slug: None,
+                imdb_id: None,
+                runtime_minutes: None,
+                popularity: None,
+                content_status: None,
+                language: None,
+                first_aired: None,
+                network: None,
+                studio: None,
+                country: None,
+                aliases: vec![],
+                tagged_aliases: vec![],
+                metadata_language: None,
+                metadata_fetched_at: None,
+                min_availability: None,
+                digital_release_date: None,
+                folder_path: None,
+            },
+            search_facet: None,
+            purpose: DownloadSubmissionPurpose::Standard,
+            download_id: Some(
+                scryer_domain::download_identity::DownloadId::from_wire(download_id)
+                    .expect("test token should be a wire DownloadId"),
+            ),
+            source_hint: Some("https://example.invalid/release.nzb".to_string()),
+            staged_nzb: None,
+            resolved_download_artifact: Some(ResolvedDownloadArtifact::Nzb {
+                bytes: b"<nzb></nzb>".to_vec(),
+                file_name: Some("Test Release.nzb".to_string()),
+                content_type: Some("application/x-nzb".to_string()),
+            }),
+            source_kind: None,
+            source_title: Some("Test Release".to_string()),
+            source_password: Some("archive-password".to_string()),
+            category: Some("movies".to_string()),
+            queue_priority: Some("high".to_string()),
+            download_directory: None,
+            release_title: None,
+            indexer_name: None,
+            indexer_id: None,
+            info_hash_hint: None,
+            seed_goal_ratio: None,
+            seed_goal_seconds: None,
+            tracker_min_seed_ratio: None,
+            tracker_min_seed_time_minutes: None,
+            season_pack_seed_ratio: None,
+            season_pack_seed_time_minutes: None,
+            is_recent: None,
+            season_pack: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_addfile_request_has_no_scryer_download_id_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/release.nzb"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"<nzb></nzb>".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api"))
+            .and(query_param("mode", "queue"))
+            .and(query_param("limit", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "queue": { "slots": [] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": true,
+                "nzo_ids": ["SABnzbd_nzo_abc123"]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let download_id = "scryer-download:00000000-0000-4000-8000-000000000021";
+        let staged_nzb_dir = tempfile::tempdir().expect("staged nzb directory");
+        let staged_nzb_store = Arc::new(
+            FileSystemStagedNzbStore::new(staged_nzb_dir.path())
+                .await
+                .expect("staged nzb store"),
+        );
+        let client = SabnzbdDownloadClient::with_staged_nzb_store(
+            server.uri(),
+            "test-api-key".to_string(),
+            staged_nzb_store,
+            Arc::new(Semaphore::new(1)),
+        );
+        let mut add_request = test_add_request(download_id);
+        add_request.source_hint = Some(format!("{}/release.nzb", server.uri()));
+        let result = client
+            .submit_download(&add_request)
+            .await
+            .expect("addfile should succeed");
+        assert_eq!(result.job_id, "SABnzbd_nzo_abc123");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("addfile request should be recorded");
+        let request = requests
+            .iter()
+            .find(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "mode" && value == "addfile")
+            })
+            .expect("addfile request");
+        let query = request
+            .url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            query,
+            vec![
+                ("mode".to_string(), "addfile".to_string()),
+                ("output".to_string(), "json".to_string()),
+                ("nzbname".to_string(), "Test Release".to_string()),
+                ("priority".to_string(), "1".to_string()),
+                ("apikey".to_string(), "test-api-key".to_string()),
+                ("cat".to_string(), "movies".to_string()),
+                ("password".to_string(), "archive-password".to_string()),
+            ],
+        );
+        let request_text = format!(
+            "{}\n{}",
+            request.url,
+            String::from_utf8_lossy(&request.body)
+        );
+        assert!(request_text.contains("name=\"nzbfile\""));
+        assert!(request_text.contains("filename=\"Test Release.nzb\""));
+        assert!(request_text.contains("<nzb></nzb>"));
+        assert!(
+            !request_text.contains(download_id),
+            "SABnzbd must not receive a Scryer download token: {request_text}",
+        );
+    }
 
     #[test]
     fn outbound_rate_limit_preserves_retry_after() {
@@ -2216,6 +2416,40 @@ mod tests {
         assert_eq!(
             completed_downloads_from_sab_slots(&slots, None)[0].download_client_item_id,
             "old-nzo"
+        );
+    }
+
+    #[test]
+    fn sabnzbd_deleted_items_are_skipped() {
+        assert_eq!(sabnzbd_queue_state("Deleted"), None);
+        assert_eq!(sabnzbd_history_state("Deleted", None), None);
+    }
+
+    #[test]
+    fn sabnzbd_unknown_history_status_remains_in_progress() {
+        assert_eq!(
+            sabnzbd_history_state("FutureStatus", None),
+            Some((DownloadQueueState::Downloading, None))
+        );
+    }
+
+    #[test]
+    fn sabnzbd_unpack_write_failure_is_a_warning() {
+        let message = "Unpacking failed, write error or disk is full?";
+        assert_eq!(
+            sabnzbd_history_state("Failed", Some(message)),
+            Some((DownloadQueueState::Warning, Some(message.to_string())))
+        );
+    }
+
+    #[test]
+    fn sabnzbd_regular_failure_preserves_its_message() {
+        assert_eq!(
+            sabnzbd_history_state("Failed", Some("54 articles were missing")),
+            Some((
+                DownloadQueueState::Failed,
+                Some("54 articles were missing".to_string())
+            ))
         );
     }
 

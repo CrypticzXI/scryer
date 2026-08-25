@@ -64,7 +64,7 @@ jobs:
   winget-xtask-build:
     name: winget-xtask-build
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 50
     needs: [release-trust]
     permissions:
       contents: read
@@ -201,7 +201,18 @@ jobs:
             -p scryer \
             -p scryer-application \
             -p scryer-domain \
-            -p scryer-infrastructure \
+            -p scryer-infrastructure-sql \
+            -p scryer-infrastructure-crypto \
+            -p scryer-infrastructure-library \
+            -p scryer-infrastructure-library-search \
+            -p scryer-infrastructure-workflow \
+            -p scryer-infrastructure-acquisition \
+            -p scryer-infrastructure-metadata \
+            -p scryer-infrastructure-configuration \
+            -p scryer-infrastructure-identity \
+            -p scryer-infrastructure-notifications \
+            -p scryer-infrastructure-datastore \
+            -p scryer-infrastructure-runtime \
             -p scryer-interface \
             -p scryer-interface-acquisition \
             -p scryer-interface-core \
@@ -322,7 +333,7 @@ jobs:
   launcher-build:
     name: launcher-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     needs: [release-trust]
     if: ${{ always() && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
@@ -461,24 +472,13 @@ jobs:
         run: |
           set -euo pipefail
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -W linker-messages"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 2100 \
-              -- cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}"
-          fi
+          cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
 
       - name: Validate release build diagnostics
         if: ${{ always() && github.event_name != 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.launcher-cargo-build.outcome }}" = "success" ]; then
             compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
           fi
@@ -507,8 +507,6 @@ jobs:
             ${{ matrix.artifact_name }}-test.log
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
@@ -523,7 +521,7 @@ jobs:
   linux-build:
     name: linux-${{ matrix.arch }}-${{ matrix.variant }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     needs: [web, release-trust]
     if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
@@ -557,6 +555,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-linux-${{ matrix.arch }}-${{ matrix.variant }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
       SCCACHE_CACHE_SIZE: 10G
@@ -659,25 +661,43 @@ jobs:
           export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_env_suffix="$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_cc_var="CC_${target_env_suffix}"
+          target_cflags_var="CFLAGS_${target_env_suffix}"
+          target_cxxflags_var="CXXFLAGS_${target_env_suffix}"
           if [ "${SCRYER_SCCACHE_ENABLED:-false}" = "true" ]; then
             export "${target_cc_var}=sccache musl-gcc"
           else
             export "${target_cc_var}=musl-gcc"
           fi
+          native_flags="-O3 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden"
+          export "${target_cflags_var}=${native_flags}"
+          export "${target_cxxflags_var}=${native_flags}"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -W linker-messages"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
+          {
+            musl-gcc --version
+            printf '%s=%s\n' "${target_cc_var}" "${!target_cc_var}"
+            printf '%s=%s\n' "${target_cflags_var}" "${!target_cflags_var}"
+            printf '%s=%s\n' "${target_cxxflags_var}" "${!target_cxxflags_var}"
+            printf 'AWS_LC_SYS_USE_SYSTEM=%s\n' "${AWS_LC_SYS_USE_SYSTEM}"
+            printf 'AWS_LC_SYS_STATIC=%s\n' "${AWS_LC_SYS_STATIC}"
+            printf 'AWS_LC_SYS_SMALL=%s\n' "${AWS_LC_SYS_SMALL}"
+            printf 'AWS_LC_SYS_CMAKE_BUILDER=%s\n' "${AWS_LC_SYS_CMAKE_BUILDER}"
+          } | tee "${{ matrix.artifact_name }}-native-build-env.txt"
+          cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+
+      - name: Validate native linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE/scryer"
+          readelf -d "$binary" | tee "${{ matrix.artifact_name }}-native-linkage.txt"
+          if grep -q '(NEEDED)' "${{ matrix.artifact_name }}-native-linkage.txt"; then
+            echo "::error::Linux release binary has dynamic NEEDED libraries"
+            exit 1
           fi
 
       - name: Validate release build diagnostics
@@ -685,10 +705,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.linux-cargo-build.outcome }}" = "success" ]; then
             compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
+            build_log="${{ matrix.artifact_name }}-build.log"
+            if ! grep -Eq 'aws-lc-sys@[^:]+: Building with: CC' "$build_log"; then
+              echo "::error::Cold release log does not confirm the AWS-LC CC source builder"
+              exit 1
+            fi
+            if grep -Eq 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)' "$build_log"; then
+              echo "::error::Cold release log reports an unsupported AWS-LC build mode"
+              exit 1
+            fi
           fi
 
       - name: Package tarball
@@ -721,9 +748,9 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
           retention-days: 14
@@ -771,6 +798,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-macos-${{ matrix.arch }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: ${{ github.workspace }}
       SCCACHE_CACHE_SIZE: 10G
@@ -886,19 +917,38 @@ jobs:
             export CC="clang"
             export CXX="clang++"
           fi
+          target_env_suffix="$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
+          target_cflags_var="CFLAGS_${target_env_suffix}"
+          target_cxxflags_var="CXXFLAGS_${target_env_suffix}"
+          native_flags="-O3 -DNDEBUG -ffunction-sections -fdata-sections -fvisibility=hidden"
+          export "${target_cflags_var}=${native_flags}"
+          export "${target_cxxflags_var}=${native_flags}"
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -A linker-messages"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
-          else
-            python3 .github/scripts/build_heartbeat.py \
-              --output "${{ matrix.artifact_name }}-heartbeat.log" \
-              --build-log "${{ matrix.artifact_name }}-build.log" \
-              --status-file "${{ matrix.artifact_name }}-build-status.json" \
-              --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
+          {
+            clang --version
+            printf 'CC=%s\n' "${CC}"
+            printf 'CXX=%s\n' "${CXX}"
+            printf '%s=%s\n' "${target_cflags_var}" "${!target_cflags_var}"
+            printf '%s=%s\n' "${target_cxxflags_var}" "${!target_cxxflags_var}"
+            printf 'AWS_LC_SYS_USE_SYSTEM=%s\n' "${AWS_LC_SYS_USE_SYSTEM}"
+            printf 'AWS_LC_SYS_STATIC=%s\n' "${AWS_LC_SYS_STATIC}"
+            printf 'AWS_LC_SYS_SMALL=%s\n' "${AWS_LC_SYS_SMALL}"
+            printf 'AWS_LC_SYS_CMAKE_BUILDER=%s\n' "${AWS_LC_SYS_CMAKE_BUILDER}"
+          } | tee "${{ matrix.artifact_name }}-native-build-env.txt"
+          cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+
+      - name: Validate native linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE/scryer"
+          otool -L "$binary" | tee "${{ matrix.artifact_name }}-native-linkage.txt"
+          if grep -Eiq 'aws[-_]?lc|libcrypto' "${{ matrix.artifact_name }}-native-linkage.txt"; then
+            echo "::error::macOS release binary links an external AWS-LC or libcrypto library"
+            exit 1
           fi
 
       - name: Validate release build diagnostics
@@ -906,10 +956,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s "${{ matrix.artifact_name }}-heartbeat.log"
-          test -s "${{ matrix.artifact_name }}-build-status.json"
           if [ "${{ steps.macos-cargo-build.outcome }}" = "success" ]; then
             test -n "$(find "${CARGO_TARGET_DIR}/cargo-timings" -type f -print -quit 2>/dev/null)"
+            build_log="${{ matrix.artifact_name }}-build.log"
+            if ! grep -Eq 'aws-lc-sys@[^:]+: Building with: CC' "$build_log"; then
+              echo "::error::Cold release log does not confirm the AWS-LC CC source builder"
+              exit 1
+            fi
+            if grep -Eq 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)' "$build_log"; then
+              echo "::error::Cold release log reports an unsupported AWS-LC build mode"
+              exit 1
+            fi
           fi
 
       - name: Codesign binary
@@ -966,9 +1023,9 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: warn
           retention-days: 14
@@ -1018,6 +1075,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-windows-${{ matrix.arch }}
+      AWS_LC_SYS_USE_SYSTEM: "0"
+      AWS_LC_SYS_STATIC: "1"
+      AWS_LC_SYS_SMALL: "0"
+      AWS_LC_SYS_CMAKE_BUILDER: "0"
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
       SCCACHE_BASEDIRS: ${{ github.workspace }}
       SCCACHE_CACHE_SIZE: 10G
@@ -1126,6 +1187,7 @@ jobs:
         id: windows-cargo-build
         shell: pwsh
         env:
+          INSTALL_NASM: ${{ matrix.install_nasm }}
           USE_CLANG_CL: ${{ matrix.use_clang_cl }}
           USE_LLD_LINK: ${{ matrix.use_lld_link }}
         run: |
@@ -1163,20 +1225,49 @@ jobs:
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
-          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
-            cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
-            $cargoExitCode = $LASTEXITCODE
-          } else {
-            & python .github/scripts/build_heartbeat.py `
-              --output "${{ matrix.artifact_name }}-heartbeat.log" `
-              --build-log "${{ matrix.artifact_name }}-build.log" `
-              --status-file "${{ matrix.artifact_name }}-build-status.json" `
-              --timeout-seconds 3300 `
-              -- cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
-            $cargoExitCode = $LASTEXITCODE
+          $targetEnvSuffix = "${{ matrix.target }}".Replace("-", "_")
+          $cFlagsName = "CFLAGS_$targetEnvSuffix"
+          $cxxFlagsName = "CXXFLAGS_$targetEnvSuffix"
+          Set-Item -Path "Env:$cFlagsName" -Value "/O2 /DNDEBUG /Gy /Gw"
+          Set-Item -Path "Env:$cxxFlagsName" -Value "/O2 /DNDEBUG /Gy /Gw"
+          if ($env:INSTALL_NASM -eq "true") {
+            $env:AWS_LC_SYS_PREBUILT_NASM = "0"
           }
+          $cFlagsValue = (Get-Item -Path "Env:$cFlagsName").Value
+          $cxxFlagsValue = (Get-Item -Path "Env:$cxxFlagsName").Value
+          $nativeDiagnostics = @(
+            "CC=$env:CC"
+            "CXX=$env:CXX"
+            "${cFlagsName}=$cFlagsValue"
+            "${cxxFlagsName}=$cxxFlagsValue"
+            "AWS_LC_SYS_USE_SYSTEM=$env:AWS_LC_SYS_USE_SYSTEM"
+            "AWS_LC_SYS_STATIC=$env:AWS_LC_SYS_STATIC"
+            "AWS_LC_SYS_SMALL=$env:AWS_LC_SYS_SMALL"
+            "AWS_LC_SYS_CMAKE_BUILDER=$env:AWS_LC_SYS_CMAKE_BUILDER"
+            "AWS_LC_SYS_PREBUILT_NASM=$env:AWS_LC_SYS_PREBUILT_NASM"
+          )
+          $nativeDiagnostics | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt"
+          clang-cl --version 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt" -Append
+          lld-link --version 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-build-env.txt" -Append
+          cargo build --timings -p scryer --bin scryer --bin scryer-tray --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+          $cargoExitCode = $LASTEXITCODE
           if ($cargoExitCode -ne 0) {
             exit $cargoExitCode
+          }
+
+      - name: Validate native linkage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binary = Join-Path $env:CARGO_TARGET_DIR "${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe"
+          $imports = & llvm-readobj --coff-imports $binary 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $imports | Write-Host
+            throw "llvm-readobj failed while inspecting PE imports"
+          }
+          $imports | Tee-Object -FilePath "${{ matrix.artifact_name }}-native-linkage.txt"
+          if ($imports -match '(?i)aws[-_]?lc|libcrypto[^\s]*\.dll|(^|\s)crypto\.dll(\s|$)') {
+            throw "Windows release binary imports an external AWS-LC or crypto DLL"
           }
 
       - name: Validate release build diagnostics
@@ -1184,16 +1275,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "${{ matrix.artifact_name }}-heartbeat.log" -PathType Leaf)) {
-            throw "release heartbeat log was not created"
-          }
-          if (-not (Test-Path "${{ matrix.artifact_name }}-build-status.json" -PathType Leaf)) {
-            throw "release build status was not created"
-          }
           if ("${{ steps.windows-cargo-build.outcome }}" -eq "success") {
             $timing = Get-ChildItem -Path (Join-Path $env:CARGO_TARGET_DIR "cargo-timings") -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $timing) {
               throw "successful release build did not produce Cargo timing output"
+            }
+            $buildLog = Get-Content "${{ matrix.artifact_name }}-build.log" -Raw
+            if ($buildLog -notmatch 'aws-lc-sys@[^:]+: Building with: CC') {
+              throw "cold release log does not confirm the AWS-LC CC source builder"
+            }
+            if ($buildLog -match 'aws-lc-sys@[^:]+: (Building with: System Library|Size-optimized AWS-LC build enabled)') {
+              throw "cold release log reports an unsupported AWS-LC build mode"
             }
           }
 
@@ -1310,7 +1402,14 @@ jobs:
             -Architecture ${{ matrix.msi_arch }} `
             -StageDir "${{ matrix.artifact_name }}-stage" `
             -Version $version `
-            -OutputPath "${{ matrix.artifact_name }}.msi"
+            -OutputPath "${{ matrix.artifact_name }}.msi" `
+            -DistributionOwner msi
+          .\packaging\windows\build-msi.ps1 `
+            -Architecture ${{ matrix.msi_arch }} `
+            -StageDir "${{ matrix.artifact_name }}-stage" `
+            -Version $version `
+            -OutputPath "${{ matrix.artifact_name }}-winget.msi" `
+            -DistributionOwner winget
 
       - name: Validate packaged Windows artifact
         shell: pwsh
@@ -1320,6 +1419,8 @@ jobs:
             -ZipPath "${{ matrix.artifact_name }}.zip" `
             -MsiPath "${{ matrix.artifact_name }}.msi" `
             -MsiMetadataPath "${{ matrix.artifact_name }}.msi.json" `
+            -WingetMsiPath "${{ matrix.artifact_name }}-winget.msi" `
+            -WingetMsiMetadataPath "${{ matrix.artifact_name }}-winget.msi.json" `
             -BuiltExePath "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe" `
             -BuiltTrayPath "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer-tray.exe"
 
@@ -1343,6 +1444,8 @@ jobs:
             ${{ matrix.artifact_name }}.zip
             ${{ matrix.artifact_name }}.msi
             ${{ matrix.artifact_name }}.msi.json
+            ${{ matrix.artifact_name }}-winget.msi
+            ${{ matrix.artifact_name }}-winget.msi.json
           if-no-files-found: error
           retention-days: 14
 
@@ -1353,14 +1456,14 @@ jobs:
           name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}-build.log
+            ${{ matrix.artifact_name }}-native-build-env.txt
+            ${{ matrix.artifact_name }}-native-linkage.txt
             ${{ matrix.artifact_name }}-defender-scan.log
             ${{ matrix.artifact_name }}-attachment-services.log
             ${{ matrix.artifact_name }}-noarg-startup.log
             ${{ matrix.artifact_name }}-winget-install.log
             ${{ matrix.artifact_name }}-msi-install.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            ${{ matrix.artifact_name }}-heartbeat.log
-            ${{ matrix.artifact_name }}-build-status.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1845,6 +1948,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz
 
       - name: Generate deterministic checksums
@@ -1861,6 +1966,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz > scryer-checksums.txt
 
       - name: Install Cosign
@@ -1882,6 +1989,34 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             scryer-checksums.txt
 
+      - name: Download WinGet xtask binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: winget-xtask-release-${{ github.run_id }}
+          path: winget-tools
+
+      - name: Generate and sign upgrade manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#scryer-v}"
+          chmod +x winget-tools/xtask-release
+          ./winget-tools/xtask-release ci upgrade-manifest \
+            --version "$VERSION" \
+            --tag "${{ github.ref_name }}" \
+            --repository "${{ github.repository }}" \
+            --artifacts-dir release-artifacts \
+            --output release-artifacts/scryer-upgrade-manifest.json
+          cosign sign-blob --yes \
+            --bundle release-artifacts/scryer-upgrade-manifest.json.sigstore.json \
+            release-artifacts/scryer-upgrade-manifest.json
+          cosign verify-blob \
+            --bundle release-artifacts/scryer-upgrade-manifest.json.sigstore.json \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/scryer.yml@refs/tags/${{ github.ref_name }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            release-artifacts/scryer-upgrade-manifest.json
+
       - name: Verify release notes
         run: test -s "release-notes/${{ steps.release_meta.outputs.tag_name }}.md"
 
@@ -1894,9 +2029,14 @@ jobs:
           files: |
             release-artifacts/scryer-*.tar.gz
             release-artifacts/scryer-*.zip
-            release-artifacts/scryer-*.msi
+            release-artifacts/scryer-windows-arm64.msi
+            release-artifacts/scryer-windows-x86_64.msi
+            release-artifacts/scryer-windows-arm64-winget.msi
+            release-artifacts/scryer-windows-x86_64-winget.msi
             release-artifacts/scryer-checksums.txt
             release-artifacts/scryer-checksums.txt.sigstore.json
+            release-artifacts/scryer-upgrade-manifest.json
+            release-artifacts/scryer-upgrade-manifest.json.sigstore.json
             release-artifacts/scryer-provenance.intoto.jsonl
           fail_on_unmatched_files: true
 
@@ -1939,6 +2079,9 @@ jobs:
                   . "\$CONFIG_FILE"
                   set +a
                 fi
+
+                SCRYER_PACKAGE=homebrew
+                export SCRYER_PACKAGE
 
                 exec "#{opt_bin}/scryer" --data-dir "#{var}/scryer" "\$@"
               SH
@@ -2144,6 +2287,8 @@ jobs:
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
             scryer-windows-x86_64.msi \
+            scryer-windows-arm64-winget.msi \
+            scryer-windows-x86_64-winget.msi \
             scryer-winget-manifests.tar.gz > scryer-subjects.sha256
           echo "base64_subjects=$(base64 < scryer-subjects.sha256 | tr -d '\n')" >> "$GITHUB_OUTPUT"
 

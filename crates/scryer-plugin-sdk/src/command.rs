@@ -12,11 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     PluginCompletedDownload, PluginDownloadClientAddRequest, PluginDownloadClientAddResponse,
     PluginDownloadClientControlRequest, PluginDownloadClientMarkImportedRequest,
-    PluginDownloadClientStatus, PluginDownloadItem, PluginNotificationRequest,
-    PluginNotificationResponse, PluginResult, PluginSearchRequest, PluginSearchResponse,
-    SubtitlePluginDownloadRequest, SubtitlePluginDownloadResponse, SubtitlePluginGenerateRequest,
-    SubtitlePluginGenerateResponse, SubtitlePluginSearchRequest, SubtitlePluginSearchResponse,
-    SubtitlePluginValidateConfigRequest, SubtitlePluginValidateConfigResponse,
+    PluginDownloadClientStatus, PluginDownloadItem, PluginDownloadScopedListRequest,
+    PluginDownloadScopedListResponse, PluginDownloadScopedRecentCompletedRequest,
+    PluginNotificationRequest, PluginNotificationResponse, PluginResult, PluginSearchRequest,
+    PluginSearchResponse, SubtitlePluginDownloadRequest, SubtitlePluginDownloadResponse,
+    SubtitlePluginGenerateRequest, SubtitlePluginGenerateResponse, SubtitlePluginSearchRequest,
+    SubtitlePluginSearchResponse, SubtitlePluginValidateConfigRequest,
+    SubtitlePluginValidateConfigResponse,
 };
 
 /// WebAssembly custom section which opts an artifact into the native command ABI.
@@ -119,12 +121,17 @@ pub struct PluginDownloadGetCompletedRequest {
 pub enum PluginDownloadClientCommand {
     Add(PluginDownloadClientAddRequest),
     ListQueue,
+    ListQueueScoped(PluginDownloadScopedListRequest),
     ListHistory,
+    ListHistoryScoped(PluginDownloadScopedListRequest),
     ListCompleted,
+    ListCompletedScoped(PluginDownloadScopedListRequest),
     ListRecentCompleted(crate::PluginDownloadListRecentCompletedRequest),
+    ListRecentCompletedScoped(PluginDownloadScopedRecentCompletedRequest),
     GetCompleted(PluginDownloadGetCompletedRequest),
     Control(PluginDownloadClientControlRequest),
     MarkImported(PluginDownloadClientMarkImportedRequest),
+    MarkImportedNonDestructive(PluginDownloadClientMarkImportedRequest),
     Status,
     TestConnection,
 }
@@ -134,12 +141,19 @@ pub enum PluginDownloadClientCommand {
 pub enum PluginDownloadClientCommandResult {
     Add(PluginResult<PluginDownloadClientAddResponse>),
     ListQueue(PluginResult<Vec<PluginDownloadItem>>),
+    ListQueueScoped(PluginResult<PluginDownloadScopedListResponse<PluginDownloadItem>>),
     ListHistory(PluginResult<Vec<PluginCompletedDownload>>),
+    ListHistoryScoped(PluginResult<PluginDownloadScopedListResponse<PluginCompletedDownload>>),
     ListCompleted(PluginResult<Vec<PluginCompletedDownload>>),
+    ListCompletedScoped(PluginResult<PluginDownloadScopedListResponse<PluginCompletedDownload>>),
     ListRecentCompleted(PluginResult<Vec<PluginCompletedDownload>>),
+    ListRecentCompletedScoped(
+        PluginResult<PluginDownloadScopedListResponse<PluginCompletedDownload>>,
+    ),
     GetCompleted(PluginResult<Option<PluginCompletedDownload>>),
     Control(PluginResult<()>),
     MarkImported(PluginResult<()>),
+    MarkImportedNonDestructive(PluginResult<()>),
     Status(PluginResult<PluginDownloadClientStatus>),
     TestConnection(PluginResult<String>),
 }
@@ -181,6 +195,7 @@ pub enum PluginSubtitleCommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PluginDownloadFeedbackScope;
 
     #[test]
     fn exact_completed_command_round_trips() {
@@ -197,5 +212,50 @@ mod tests {
             decoded.command,
             PluginCommand::DownloadClient(PluginDownloadClientCommand::GetCompleted(_))
         ));
+    }
+
+    #[test]
+    fn legacy_unscoped_download_command_shape_is_unchanged() {
+        let request = PluginCommandRequest::new(PluginCommand::DownloadClient(
+            PluginDownloadClientCommand::ListQueue,
+        ));
+        let value = serde_json::to_value(request).expect("serialize request");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "abi_version": COMMAND_ABI_VERSION,
+                "command": {
+                    "family": "download_client",
+                    "command": {
+                        "operation": "list_queue"
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn category_scoped_download_command_round_trips() {
+        let request = PluginCommandRequest::new(PluginCommand::DownloadClient(
+            PluginDownloadClientCommand::ListRecentCompletedScoped(
+                PluginDownloadScopedRecentCompletedRequest {
+                    limit: 25,
+                    scope: PluginDownloadFeedbackScope {
+                        categories: vec!["Movies".to_string(), "TV / Anime".to_string()],
+                    },
+                },
+            ),
+        ));
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: PluginCommandRequest =
+            serde_json::from_str(&json).expect("deserialize request");
+        let PluginCommand::DownloadClient(PluginDownloadClientCommand::ListRecentCompletedScoped(
+            request,
+        )) = decoded.command
+        else {
+            panic!("expected scoped recent-completed command");
+        };
+        assert_eq!(request.limit, 25);
+        assert_eq!(request.scope.categories, vec!["Movies", "TV / Anime"]);
     }
 }

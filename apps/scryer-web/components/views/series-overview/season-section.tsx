@@ -68,6 +68,7 @@ export function SeasonSection({
   initiallyOpenEpisodeId,
   mediaFilesByEpisode,
   onLoadEpisodeDetail,
+  activeDownloadEpisodeIds,
   downloadQueueItemByEpisodeId,
   releaseBlocklistEntries,
   clearingReleaseBlocklistEntryId,
@@ -104,6 +105,7 @@ export function SeasonSection({
   initiallyOpenEpisodeId?: string | null;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   onLoadEpisodeDetail?: (episodeId: string) => Promise<void> | void;
+  activeDownloadEpisodeIds?: ReadonlySet<string>;
   downloadQueueItemByEpisodeId?: Record<string, DownloadQueueItem | undefined>;
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -444,6 +446,7 @@ export function SeasonSection({
                       onRefreshSubtitles={onRefreshSubtitles}
                       onRunEpisodeSearch={onRunEpisodeSearch}
                       onSetEpisodeMonitored={onSetEpisodeMonitored}
+                      downloadActive={activeDownloadEpisodeIds?.has(episode.id) ?? false}
                       queueItem={downloadQueueItemByEpisodeId?.[episode.id]}
                       releaseBlocklistEntries={releaseBlocklistEntries}
                       searchBlocked={searchBlockedByEpisode[episode.id] === true}
@@ -495,6 +498,7 @@ export function SeasonSection({
                         onRefreshSubtitles={onRefreshSubtitles}
                         onRunEpisodeSearch={onRunEpisodeSearch}
                         onSetEpisodeMonitored={onSetEpisodeMonitored}
+                        downloadActive={activeDownloadEpisodeIds?.has(episode.id) ?? false}
                         queueItem={downloadQueueItemByEpisodeId?.[episode.id]}
                         releaseBlocklistEntries={releaseBlocklistEntries}
                         searchBlocked={searchBlockedByEpisode[episode.id] === true}

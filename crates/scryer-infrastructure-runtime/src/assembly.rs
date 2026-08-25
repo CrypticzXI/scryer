@@ -7,10 +7,11 @@ use scryer_application::DiscoveryRepository;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
     DownloadClientConfigRepository, ImageProxyRepository, IndexerClient, IndexerConfigRepository,
-    IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
-    MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    RuleSetRepository, ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
+    IndexerErrorRepository, IndexerSearchLearningRepository, IndexerStatsTracker,
+    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
+    MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
+    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
+    ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
     SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
     TotpRepository, UpstreamScheduler, UserExternalAccountRepository, UserRepository,
     UserUiSettingsRepository, WebauthnRepository,
@@ -29,14 +30,15 @@ use crate::postgres::{
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
-    DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
-    ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
-    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerProxyConfigStore,
-    IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
-    NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
-    QualityProfileStore, ReleaseStore, RuleSetStore, SeedingProfileStore, SettingsStore, ShowStore,
-    SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    DownloadQueueCommandStore, DownloadRegistryStore, DownloadSubmissionStore,
+    ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore,
+    HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker, IndexerConfigStore,
+    IndexerErrorStore, IndexerProxyConfigStore, IndexerSearchLearningStore, LibraryProbeStore,
+    LibraryScanUnmatchedStore, MediaFileStore, MediaRequestStore, MediaServerConnectionStore,
+    MetadataGatewayClient, MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore,
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
+    SeedingProfileStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
     SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
     WebauthnStore, WorkflowOperationStore,
 };
@@ -630,6 +632,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_error_store: Arc<IndexerErrorStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         seeding_profile_store: Arc<SeedingProfileStore>,
@@ -653,6 +656,7 @@ enum DatastoreStores {
         quality_profile_store: Arc<QualityProfileStore>,
         domain_event_store: Arc<DomainEventStore>,
         acquisition_store: Arc<AcquisitionStore>,
+        download_registry_store: Arc<DownloadRegistryStore>,
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
@@ -674,6 +678,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_error_store: Arc<IndexerErrorStore>,
         indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         seeding_profile_store: Arc<SeedingProfileStore>,
@@ -697,6 +702,7 @@ enum DatastoreStores {
         quality_profile_store: Arc<QualityProfileStore>,
         domain_event_store: Arc<DomainEventStore>,
         acquisition_store: Arc<AcquisitionStore>,
+        download_registry_store: Arc<DownloadRegistryStore>,
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
@@ -740,6 +746,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_error_store = Arc::new(IndexerErrorStore::new(datastore.clone()));
         let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
@@ -783,6 +790,7 @@ impl DatastoreAssembly {
         let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_registry_store = Arc::new(DownloadRegistryStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
@@ -810,6 +818,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_error_store,
             indexer_proxy_config_store,
             download_client_config_store,
             seeding_profile_store,
@@ -833,6 +842,7 @@ impl DatastoreAssembly {
             quality_profile_store,
             domain_event_store,
             acquisition_store,
+            download_registry_store,
             download_submission_store,
             import_store,
             external_import_monitor_store,
@@ -870,6 +880,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_error_store = Arc::new(IndexerErrorStore::new(datastore.clone()));
         let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
@@ -913,6 +924,7 @@ impl DatastoreAssembly {
         let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_registry_store = Arc::new(DownloadRegistryStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
@@ -938,6 +950,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_error_store,
             indexer_proxy_config_store,
             download_client_config_store,
             seeding_profile_store,
@@ -961,6 +974,7 @@ impl DatastoreAssembly {
             quality_profile_store,
             domain_event_store,
             acquisition_store,
+            download_registry_store,
             download_submission_store,
             import_store,
             external_import_monitor_store,
@@ -1144,6 +1158,19 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn download_registry(&self) -> Arc<dyn scryer_application::DownloadRegistryRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                download_registry_store,
+                ..
+            } => download_registry_store.clone(),
+            DatastoreStores::Postgres {
+                download_registry_store,
+                ..
+            } => download_registry_store.clone(),
+        }
+    }
+
     pub fn seeding_profiles(&self) -> Arc<dyn scryer_application::SeedingProfileRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1269,6 +1296,19 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn indexer_errors(&self) -> Arc<dyn IndexerErrorRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                indexer_error_store,
+                ..
+            } => indexer_error_store.clone(),
+            DatastoreStores::Postgres {
+                indexer_error_store,
+                ..
+            } => indexer_error_store.clone(),
+        }
+    }
+
     fn scope_indexer_coverage_repository(&self) -> Arc<dyn ScopeIndexerCoverageRepository> {
         match &self.stores {
             DatastoreStores::Sqlite { db, .. } => {
@@ -1349,6 +1389,7 @@ impl DatastoreAssembly {
                 plugin_store,
                 domain_event_store,
                 acquisition_store,
+                download_registry_store,
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
@@ -1384,6 +1425,7 @@ impl DatastoreAssembly {
                     self.quality_profiles(),
                     self.backup_dir(),
                 )
+                .with_indexer_error_repository(self.indexer_errors())
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_user_ui_settings_store(ui_settings)
@@ -1411,6 +1453,7 @@ impl DatastoreAssembly {
                 .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(acquisition_store.clone())
                 .with_domain_events(domain_event_store.clone())
+                .with_download_registry(download_registry_store.clone())
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
@@ -1455,6 +1498,7 @@ impl DatastoreAssembly {
                 settings_store,
                 domain_event_store,
                 acquisition_store,
+                download_registry_store,
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
@@ -1488,6 +1532,7 @@ impl DatastoreAssembly {
                     self.quality_profiles(),
                     self.backup_dir(),
                 )
+                .with_indexer_error_repository(self.indexer_errors())
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
                 .with_user_ui_settings_store(ui_settings)
@@ -1515,6 +1560,7 @@ impl DatastoreAssembly {
                 .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(acquisition_store.clone())
                 .with_domain_events(domain_event_store.clone())
+                .with_download_registry(download_registry_store.clone())
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())

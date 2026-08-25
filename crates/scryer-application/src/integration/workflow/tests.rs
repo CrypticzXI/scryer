@@ -75,6 +75,7 @@ mod tests {
     fn tracked_for_dispatch(id: &str) -> crate::tracked_downloads::TrackedDownload {
         let client_item = item("job-1", DownloadQueueState::Completed);
         crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: id.to_string(),
             client_id: client_item.client_id.clone(),
             client_type: client_item.client_type.clone(),
@@ -143,7 +144,7 @@ mod tests {
         assert!(dispatched.is_some());
         assert_eq!(
             tracker.find(id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -177,7 +178,7 @@ mod tests {
         assert!(dispatched.is_some());
         assert_eq!(
             tracker.find(id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -212,7 +213,7 @@ mod tests {
         );
         assert_eq!(
             tracker.find(ready_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -252,12 +253,12 @@ mod tests {
         assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
         assert_eq!(
             tracker.find(second_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
     #[test]
-    fn tracked_download_poller_drain_dispatches_next_after_worker_result_without_interval_tick() {
+    fn tracked_download_drain_dispatches_multiple_imports_without_waiting_for_worker_result() {
         let first_id = "nzbget:first";
         let second_id = "nzbget:second";
         let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
@@ -278,25 +279,50 @@ mod tests {
         assert_eq!(id, first_id);
         in_flight.insert(id);
 
-        assert!(in_flight.remove(first_id));
-        tracker
-            .find_mut(first_id)
-            .expect("first tracked download")
-            .state = TrackedDownloadState::ImportPending;
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("second import should dispatch while the first remains in flight");
+
+        assert_eq!(id, second_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(second_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportPending)
+        );
+    }
+
+    #[test]
+    fn failed_work_is_capped_at_four_without_blocking_import_dispatch() {
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let failed_ids = (0..5)
+            .map(|index| format!("nzbget:failed-{index}"))
+            .collect::<Vec<_>>();
+        for id in &failed_ids {
+            let mut tracked = tracked_for_dispatch(id);
+            tracked.state = TrackedDownloadState::FailedPending;
+            tracker.insert_for_tests(tracked);
+        }
+        let import_id = "nzbget:import";
+        tracker.insert_for_tests(tracked_for_dispatch(import_id));
+        let in_flight = failed_ids[..4].iter().cloned().collect();
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![failed_ids[4].clone(), import_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
 
         let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
             &mut tracker,
             &in_flight,
             &mut drain,
         )
-        .expect("second item should dispatch after the worker result");
+        .expect("import should pass the saturated failed-work lane");
 
-        assert_eq!(id, second_id);
+        assert_eq!(id, import_id);
         assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
-        assert_eq!(
-            tracker.find(second_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
-        );
+        assert!(drain.has_pending(), "fifth failed item should remain queued");
     }
 
     #[test]
@@ -512,6 +538,7 @@ mod tests {
         client_item.client_name.clear();
         client_item.client_type.clear();
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "Weaver:job-1".to_string(),
             client_id: "Weaver".to_string(),
             client_type: "weaver".to_string(),
@@ -561,6 +588,7 @@ mod tests {
         let config = client_config("qBittorrent", "qBittorrent", "qbittorrent", 1);
         let client_item = item("torrent-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "qbittorrent:torrent-1".to_string(),
             client_id: "qBittorrent".to_string(),
             client_type: "qbittorrent".to_string(),
@@ -609,6 +637,7 @@ mod tests {
     fn apply_tracked_download_queue_metadata_backfills_missing_facet() {
         let mut queue_item = item("job-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "nzbget:job-1".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
@@ -663,6 +692,7 @@ mod tests {
         // Completed statuses.
         fn blocked_tracked(queue_item: &DownloadQueueItem) -> crate::tracked_downloads::TrackedDownload {
             crate::tracked_downloads::TrackedDownload {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 id: "weaver:job-1".to_string(),
                 client_id: "client-1".to_string(),
                 client_type: "weaver".to_string(),
@@ -788,6 +818,7 @@ mod tests {
         state: TrackedDownloadState,
     ) -> crate::tracked_downloads::TrackedDownload {
         crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: format!("qbittorrent:{}", queue_item.id),
             client_id: "client-1".to_string(),
             client_type: "qbittorrent".to_string(),
@@ -970,6 +1001,7 @@ mod tests {
         let mut queue_item = item("job-1", DownloadQueueState::Downloading);
         queue_item.title_name = "Ironclad".to_string();
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "nzbget:job-1".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),

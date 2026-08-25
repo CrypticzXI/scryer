@@ -434,6 +434,7 @@ fn media_row_as_import_would_write(
         series_movie_link_ids: Vec::new(),
         file_path: "/data/Movies/Movie (2024)/Movie (2024) WEBDL-1080p.mkv".into(),
         size_bytes: analyzed.actual_size_bytes,
+        announced_size_bytes: None,
         role: crate::MediaFileRole::Primary,
         source_signature_scheme: None,
         source_signature_value: None,
@@ -1201,4 +1202,149 @@ score_entry["quality_not_in_profile_tiers"] := -10000 if {
     // Deliberately named like a builtin quality veto: the source is what
     // decides, not the string.
     assert_eq!(codes, &["quality_not_in_profile_tiers".to_string()]);
+}
+
+// ── Size basis: grab and import agree inside the overhead band (option c) ───
+
+#[test]
+fn a_landed_file_inside_the_overhead_band_is_scored_on_its_announced_size() {
+    let announced = 10 * GIB;
+    let at_the_edge = (announced as f64 * SIZE_OVERHEAD_TOLERANCE) as i64;
+    assert_eq!(size_basis_bytes(at_the_edge, Some(announced)), announced);
+    assert_eq!(size_basis_bytes(announced - 1, Some(announced)), announced);
+    assert_eq!(size_basis_bytes(announced, Some(announced)), announced);
+    // A payload that landed larger than announced is still the release the
+    // grab admitted; the grab's number stands.
+    assert_eq!(
+        size_basis_bytes(announced + GIB, Some(announced)),
+        announced
+    );
+}
+
+#[test]
+fn a_real_shortfall_is_scored_on_what_landed() {
+    let announced = 10 * GIB;
+    let at_the_edge = (announced as f64 * SIZE_OVERHEAD_TOLERANCE) as i64;
+    assert_eq!(
+        size_basis_bytes(at_the_edge - 1, Some(announced)),
+        at_the_edge - 1
+    );
+    let short = (announced as f64 * 0.80) as i64;
+    assert_eq!(size_basis_bytes(short, Some(announced)), short);
+}
+
+#[test]
+fn without_an_announced_size_the_landed_size_is_the_basis() {
+    assert_eq!(size_basis_bytes(7 * GIB, None), 7 * GIB);
+    assert_eq!(size_basis_bytes(7 * GIB, Some(0)), 7 * GIB);
+    assert_eq!(size_basis_bytes(7 * GIB, Some(-1)), 7 * GIB);
+}
+
+/// The point of the rule: across the whole overhead band the size term the
+/// import scores is the size term the grab scored, and a real shortfall is not
+/// papered over.
+#[test]
+fn inside_the_overhead_band_the_size_term_matches_the_grab() {
+    let profile = movie_profile();
+    let weights = balanced_weights();
+    let tags: Vec<String> = Vec::new();
+    let context = ctx(&profile, &weights, &tags);
+    let parsed = parse_release_metadata("Glass.Harbor.2021.1080p.WEB-DL.H.264-GRP");
+    let announced = 8 * GIB;
+
+    let grab = score_release(
+        &ReleaseEvidence::announced(parsed.clone(), Some(announced)),
+        &context,
+    )
+    .release_score;
+    for permille in (850..=1000).step_by(5) {
+        // Round up so the 850‰ edge lands on the band, not one byte below it.
+        let landed = ((announced as f64) * (permille as f64 / 1000.0)).ceil() as i64;
+        let import = score_release(
+            &ReleaseEvidence::announced(
+                parsed.clone(),
+                Some(size_basis_bytes(landed, Some(announced))),
+            ),
+            &context,
+        )
+        .release_score;
+        assert_eq!(
+            grab, import,
+            "a file that landed at {permille}\u{2030} of its announced size must score like the grab"
+        );
+    }
+
+    // Load-bearing: below the band the landed bytes are the basis, and that
+    // moves the number.
+    let short = ((announced as f64) * 0.8) as i64;
+    let landed_basis = score_release(
+        &ReleaseEvidence::announced(
+            parsed.clone(),
+            Some(size_basis_bytes(short, Some(announced))),
+        ),
+        &context,
+    )
+    .release_score;
+    assert_ne!(
+        grab, landed_basis,
+        "fixture precondition: a 20% shortfall must actually move the size term"
+    );
+}
+
+// ── Option c, round trip: the row remembers the size it was scored on ───────
+
+#[test]
+fn only_an_engaged_announced_size_is_persisted_on_the_row() {
+    let announced = 8 * GIB;
+    assert_eq!(
+        persisted_announced_size_bytes((7.2 * GIB as f64) as i64, Some(announced)),
+        Some(announced),
+        "inside the band the import scored on the announced size, so the row keeps it"
+    );
+    assert_eq!(
+        persisted_announced_size_bytes(6 * GIB, Some(announced)),
+        None,
+        "a real shortfall was scored on the landed size; nothing to remember"
+    );
+    assert_eq!(persisted_announced_size_bytes(6 * GIB, None), None);
+}
+
+/// I7 for option c: a file that landed inside the overhead band was scored on
+/// its announced size; the row remembers that size, so re-deriving its bar
+/// reproduces the import score — and forgetting it would not.
+#[test]
+fn a_row_that_remembers_its_announced_size_reproduces_the_import_score() {
+    let profile = movie_profile();
+    let weights = balanced_weights();
+    let tags: Vec<String> = Vec::new();
+    let context = ctx(&profile, &weights, &tags);
+
+    // Announced 8 GiB, landed 7.2 GiB (90 %): inside the band, so both of the
+    // import's passes scored the size term on 8 GiB.
+    let announced_bytes = 8 * GIB;
+    let landed_bytes = (7.2 * GIB as f64) as i64;
+    assert_eq!(
+        size_basis_bytes(landed_bytes, Some(announced_bytes)),
+        announced_bytes
+    );
+    let evidence = announced(8.0).with_analysis(analyzed(8.0, None));
+    let at_import = score_release(&evidence, &context);
+
+    let mut row = media_row_as_import_would_write(&evidence, &at_import);
+    row.size_bytes = landed_bytes;
+    row.announced_size_bytes = persisted_announced_size_bytes(landed_bytes, Some(announced_bytes));
+    let re_derived = score_media_file(&row, &context);
+    assert_eq!(
+        re_derived.total, at_import.total,
+        "the bar must reproduce the import score: import wrote {}, row yields {}",
+        at_import.total, re_derived.total
+    );
+
+    // Load-bearing: a row that forgot its announcement drifts to the landed size.
+    row.announced_size_bytes = None;
+    let landed_only = score_media_file(&row, &context);
+    assert_ne!(
+        landed_only.total, at_import.total,
+        "fixture precondition: a 10 % shortfall must move the size term"
+    );
 }

@@ -16,6 +16,10 @@ pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,
     AdditionalFile,
+    /// A release an operator chose directly (interactive Queue or a redeemed
+    /// download token). It still runs import guards, but a guard failure is
+    /// held for manual import instead of burning the release.
+    OperatorQueued,
     /// A manually-queued release chosen by the operator to replace the existing
     /// primary file. On import it bypasses the required-audio gate (like a manual
     /// file-pick) and forces the upgrade/replace path regardless of score, so a
@@ -28,6 +32,7 @@ impl DownloadSubmissionPurpose {
         match self {
             Self::Standard => "standard",
             Self::AdditionalFile => "additional_file",
+            Self::OperatorQueued => "operator_queued",
             Self::ManualReplacement => "manual_replacement",
         }
     }
@@ -35,6 +40,7 @@ impl DownloadSubmissionPurpose {
     pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
+            "operator_queued" => Self::OperatorQueued,
             "manual_replacement" => Self::ManualReplacement,
             _ => Self::Standard,
         }
@@ -47,6 +53,11 @@ impl DownloadSubmissionPurpose {
     /// A manual operator-chosen replacement for the primary file.
     pub fn is_manual_replacement(self) -> bool {
         self == Self::ManualReplacement
+    }
+
+    /// A release selected by an operator rather than a convergence lane.
+    pub fn is_operator_queued(self) -> bool {
+        self == Self::OperatorQueued
     }
 }
 
@@ -165,6 +176,8 @@ impl SubmissionScope {
 
 #[derive(Clone, Debug)]
 pub struct DownloadSubmission {
+    /// Canonical identity allocated immediately before this client mutation.
+    pub download_id: scryer_domain::download_identity::DownloadId,
     pub title_id: String,
     pub facet: String,
     pub download_client_id: Option<String>,
@@ -233,6 +246,8 @@ impl PersistedSeedGoals {
 /// land before the acquisition layer records the submission itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeedGoalGrabRecord {
+    /// Canonical identity of the client mutation whose seed goals are frozen.
+    pub download_id: scryer_domain::download_identity::DownloadId,
     pub client_id: Option<String>,
     pub client_type: String,
     pub client_item_id: String,
@@ -243,13 +258,13 @@ pub struct SeedGoalGrabRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DownloadSourceIdentity {
+pub struct ClientJobLocator {
     pub client_id: Option<String>,
     pub client_type: String,
     pub item_id: String,
 }
 
-impl DownloadSourceIdentity {
+impl ClientJobLocator {
     pub fn new(
         client_id: Option<&str>,
         client_type: impl AsRef<str>,
@@ -264,6 +279,16 @@ impl DownloadSourceIdentity {
             client_type: client_type.as_ref().trim().to_ascii_lowercase(),
             item_id: item_id.as_ref().trim().to_string(),
         }
+    }
+
+    pub fn for_import_artifact(
+        client_id: Option<&str>,
+        client_type: impl AsRef<str>,
+        item_id: impl AsRef<str>,
+    ) -> Self {
+        let mut identity = Self::new(client_id, client_type, item_id);
+        identity.client_id = identity.client_id.map(|value| value.to_ascii_lowercase());
+        identity
     }
 
     pub fn from_submission(submission: &DownloadSubmission) -> Self {
@@ -281,6 +306,53 @@ impl DownloadSourceIdentity {
     pub fn client_id_or_empty(&self) -> &str {
         self.client_id.as_deref().unwrap_or("")
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadOrigin {
+    ScryerSubmission,
+    ForeignObservation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadRecord {
+    pub id: scryer_domain::download_identity::DownloadId,
+    pub origin: DownloadOrigin,
+    pub created_at: DateTime<Utc>,
+    pub first_observed_at: Option<DateTime<Utc>>,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub terminal_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadClientBindingRecord {
+    pub download_id: scryer_domain::download_identity::DownloadId,
+    pub client_config_id: Option<String>,
+    pub client_type_snapshot: Option<String>,
+    pub client_name_snapshot: Option<String>,
+    pub native_item_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// One observed client job, keyed by the configured-client/native-item locator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedClientJob {
+    pub locator: ClientJobLocator,
+    pub wire_token: Option<String>,
+    pub observed_name: Option<String>,
+    pub observed_at: DateTime<Utc>,
+}
+
+/// Canonical identity selected for an observed client job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObservationResolution {
+    Resolved {
+        download_id: scryer_domain::download_identity::DownloadId,
+        newly_foreign: bool,
+        attached: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -317,8 +389,8 @@ pub struct ImportArtifact {
 }
 
 impl ImportArtifact {
-    pub fn source_identity(&self) -> DownloadSourceIdentity {
-        DownloadSourceIdentity::new(
+    pub fn source_identity(&self) -> ClientJobLocator {
+        ClientJobLocator::for_import_artifact(
             self.source_client_id.as_deref(),
             &self.source_system,
             &self.source_ref,
@@ -578,6 +650,10 @@ pub struct QueuedReleaseSelection {
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
+    /// BitTorrent v1 info hash supplied by the indexer, when available.
+    pub info_hash_hint: Option<String>,
+    /// Indexer-announced release size, preserved for queued pseudo-incumbent scoring.
+    pub size_bytes: Option<i64>,
     /// Indexer-reported seeder count at the moment the candidate was offered.
     ///
     /// Carried so redemption can re-judge admission without trusting the
@@ -855,6 +931,9 @@ pub struct InsertMediaFileInput {
     pub title_id: String,
     pub file_path: String,
     pub size_bytes: i64,
+    /// The announced size the import scored this file on, when it did
+    /// (`canonical_scoring::persisted_announced_size_bytes`); `None` otherwise.
+    pub announced_size_bytes: Option<i64>,
     pub role: MediaFileRole,
     pub source_signature_scheme: Option<String>,
     pub source_signature_value: Option<String>,
@@ -967,7 +1046,8 @@ pub struct DownloadClientAddRequest {
     /// against this; `None` means the owner facet is the search facet.
     pub search_facet: Option<MediaFacet>,
     pub purpose: DownloadSubmissionPurpose,
-    pub download_id: Option<String>,
+    /// Canonical identity allocated before submitting this concrete mutation.
+    pub download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
     pub resolved_download_artifact: Option<ResolvedDownloadArtifact>,
@@ -1107,4 +1187,87 @@ pub struct IndexerDownloadClientProviderCompatibility {
     pub protocol_families: Vec<String>,
     pub supports_mapping: bool,
     pub compatible_client_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use super::ClientJobLocator;
+
+    #[test]
+    fn client_job_locator_new_normalizes_locator_values() {
+        let client_config_id = Some("  config-1  ");
+        let client_type = "  SABnzbd  ";
+        let native_item_id = "  nzo-123  ";
+
+        let locator = ClientJobLocator::new(client_config_id, client_type, native_item_id);
+        assert_eq!(locator.client_id.as_deref(), Some("config-1"));
+        assert_eq!(locator.client_type, "sabnzbd");
+        assert_eq!(locator.item_id, "nzo-123");
+
+        assert_eq!(
+            ClientJobLocator::new(Some("  \t "), " NZBGet ", " 10010 ").client_id,
+            None
+        );
+    }
+
+    #[test]
+    fn canonical_download_identity_source_guard() {
+        // Keep all forbidden patterns here; add future retired identity machinery to this list.
+        let forbidden = [
+            (
+                "global identity-state key selection",
+                "download_identity_state_",
+                "is_global",
+            ),
+            ("retired source identity type", "Download", "SourceIdentity"),
+            (
+                "tuple submission conflict target",
+                "ON CONFLICT(",
+                "download_client_id",
+            ),
+        ];
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("application crate lives below the workspace root");
+        let mut files = fs::read_dir(workspace_root.join("crates"))
+            .expect("crates directory should be readable")
+            .map(|entry| {
+                entry
+                    .expect("crate directory entry should be readable")
+                    .path()
+                    .join("src")
+            })
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        while let Some(path) = files.pop() {
+            for entry in fs::read_dir(&path).expect("source tree should be readable") {
+                let entry = entry.expect("source tree entry should be readable");
+                let path = entry.path();
+                if path.is_dir() {
+                    files.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs")
+                    || path.file_name().is_some_and(|name| name == "migrations.rs")
+                    || path
+                        .components()
+                        .any(|component| component.as_os_str() == "migrations")
+                {
+                    continue;
+                }
+                let source = fs::read_to_string(&path).expect("Rust source should be readable");
+                for (description, first, second) in forbidden {
+                    let pattern = format!("{first}{second}");
+                    assert!(
+                        !source.contains(&pattern),
+                        "{description} reappeared in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
 }

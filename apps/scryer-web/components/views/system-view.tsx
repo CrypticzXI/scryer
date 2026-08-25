@@ -3,10 +3,12 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
+import { ApplicationUpgradeSection } from "@/components/common/application-upgrade";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   CheckCircle2,
+  Copy,
   Database,
   ExternalLink,
   Film,
@@ -27,6 +29,11 @@ import { CODE_FONT } from "@/lib/fonts";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { formatUiDateTime } from "@/lib/utils/date-format";
+import {
+  parseServiceLogLine,
+  prettyServiceLogLine,
+  type ParsedServiceLogLine,
+} from "@/lib/utils/service-log-lines";
 
 type SystemViewState = {
   systemHealth: SystemHealth | null;
@@ -131,6 +138,7 @@ type RawLogLineEntry = {
   lower: string;
   level: string;
   parsed?: ParsedLine | null;
+  structured?: ParsedServiceLogLine | null;
 };
 
 type LogLineEntry = {
@@ -139,6 +147,7 @@ type LogLineEntry = {
   lower: string;
   level: string;
   parsed: ParsedLine | null;
+  structured: ParsedServiceLogLine | null;
 };
 
 type LogViewerSnapshot = {
@@ -169,17 +178,22 @@ function parseLine(raw: string): ParsedLine | null {
 }
 
 function buildRawLogLineEntry(id: number, raw: string): RawLogLineEntry {
+  const structured = parseServiceLogLine(raw);
   return {
     id,
     raw,
-    lower: raw.toLowerCase(),
-    level: detectLogLevel(raw),
+    lower: `${raw}\n${structured?.human ?? ""}`.toLowerCase(),
+    level: structured?.level ?? detectLogLevel(raw),
+    structured,
   };
 }
 
 function materializeLogLineEntry(entry: RawLogLineEntry): LogLineEntry {
+  if (entry.structured === undefined) {
+    entry.structured = parseServiceLogLine(entry.raw);
+  }
   if (entry.parsed === undefined) {
-    entry.parsed = parseLine(entry.raw);
+    entry.parsed = entry.structured ? null : parseLine(entry.raw);
   }
 
   return {
@@ -188,10 +202,26 @@ function materializeLogLineEntry(entry: RawLogLineEntry): LogLineEntry {
     lower: entry.lower,
     level: entry.level,
     parsed: entry.parsed,
+    structured: entry.structured,
   };
 }
 
 function HighlightedLine({ entry }: { entry: LogLineEntry }) {
+  if (entry.structured) {
+    const levelColor = LOG_LEVEL_COLORS[entry.structured.level] ?? "text-zinc-700 dark:text-zinc-300";
+    return (
+      <span style={{ fontFamily: CODE_FONT }}>
+        <span className="text-zinc-500 dark:text-zinc-500">{entry.structured.timestamp}</span>
+        {" "}
+        <span className={levelColor}>{entry.structured.level.toUpperCase().padStart(5)}</span>
+        {" "}
+        <span className="text-zinc-600 dark:text-zinc-400">{entry.structured.target}</span>
+        <span className="text-zinc-500 dark:text-zinc-500">:</span>
+        {" "}
+        <span className="text-zinc-700 dark:text-zinc-300">{entry.structured.human.split(": ").slice(1).join(": ")}</span>
+      </span>
+    );
+  }
   const parsed = entry.parsed;
   if (!parsed) {
     return (
@@ -297,6 +327,8 @@ function LogViewer() {
   const [paused, setPaused] = useState(false);
   const [snapshot, setSnapshot] = useState<LogViewerSnapshot>(EMPTY_LOG_SNAPSHOT);
   const [connected, setConnected] = useState(false);
+  const [selectedLine, setSelectedLine] = useState<LogLineEntry | null>(null);
+  const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const pausedRef = useRef(paused);
@@ -456,6 +488,18 @@ function LogViewer() {
     return `Live mode is showing the latest ${snapshot.lines.length} lines from ${snapshot.bufferedCount} buffered entries. Pause or filter to inspect more history.`;
   }, [snapshot.bufferedCount, snapshot.liveTailing, snapshot.lines.length]);
 
+  const selectedJson = useMemo(
+    () => prettyServiceLogLine(selectedLine?.structured ?? null),
+    [selectedLine],
+  );
+
+  const copySelectedJson = useCallback(async () => {
+    if (!selectedJson || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(selectedJson);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [selectedJson]);
+
   return (
     <section className={`${SYSTEM_PANEL_CLASS} flex min-h-0 flex-col`}>
       <div className={SYSTEM_PANEL_HEADER_CLASS}>
@@ -542,6 +586,8 @@ function LogViewer() {
                 }
                 pendingLinesRef.current = [];
                 rawBufferRef.current = [];
+                setSelectedLine(null);
+                setCopied(false);
                 startTransition(() => {
                   setSnapshot(EMPTY_LOG_SNAPSHOT);
                 });
@@ -558,7 +604,8 @@ function LogViewer() {
             {liveTailNotice}
           </div>
         ) : null}
-        <div className="flex flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-bg)]">
+        <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.45fr)]">
+          <div className="flex flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-bg)]">
           <div className="flex items-center justify-between gap-3 border-b border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 text-xs text-[var(--scry-muted3)]">
             <span>Line</span>
             <span>
@@ -579,9 +626,15 @@ function LogViewer() {
             ) : (
               <div className="p-2">
                 {snapshot.lines.map((line, index) => (
-                  <div
+                  <button
                     key={line.id}
-                    className="group grid grid-cols-[4.75ch_minmax(0,1fr)] gap-3 rounded-[7px] px-2 py-1 hover:bg-[var(--scry-hover)]"
+                    type="button"
+                    aria-pressed={selectedLine?.id === line.id}
+                    onClick={() => {
+                      setSelectedLine(line);
+                      setCopied(false);
+                    }}
+                    className={`group grid w-full grid-cols-[4.75ch_minmax(0,1fr)] gap-3 rounded-[7px] px-2 py-1 text-left hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-info-border-strong)] ${selectedLine?.id === line.id ? "bg-[var(--scry-hover)]" : ""}`}
                   >
                     <span className="select-none text-right tabular-nums text-[var(--scry-faint)]">
                       {index + 1}
@@ -592,12 +645,43 @@ function LogViewer() {
                     >
                       <HighlightedLine entry={line} />
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
           </div>
         </div>
+        <aside className="flex min-h-[240px] flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-bg)]">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2">
+            <div>
+              <p className="text-xs font-semibold text-[var(--scry-ink2)]">Event details</p>
+              <p className="text-xs text-[var(--scry-muted3)]">Select a JSON log line to inspect it.</p>
+            </div>
+            {selectedJson ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-8 rounded-[8px] px-2 text-xs"
+                onClick={() => void copySelectedJson()}
+              >
+                <Copy className="h-3.5 w-3.5" />
+                {copied ? "Copied" : "Copy"}
+              </Button>
+            ) : null}
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-3" data-code-font>
+            {selectedJson ? (
+              <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-zinc-700 dark:text-zinc-200" style={{ fontFamily: CODE_FONT }}>
+                {selectedJson}
+              </pre>
+            ) : selectedLine ? (
+              <p className="text-xs text-[var(--scry-muted3)]">This legacy text log line has no JSON event payload.</p>
+            ) : (
+              <p className="text-xs text-[var(--scry-muted3)]">No event selected.</p>
+            )}
+          </div>
+        </aside>
+      </div>
       </div>
     </section>
   );
@@ -626,6 +710,7 @@ export function SystemView({
 
   return (
     <div className="space-y-4 text-sm">
+      <ApplicationUpgradeSection />
       <section className={SYSTEM_PANEL_CLASS}>
         <div className={SYSTEM_PANEL_HEADER_CLASS}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

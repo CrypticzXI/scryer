@@ -125,6 +125,13 @@ fn push_positive_imdb_external_id(external_ids: &mut Vec<ExternalId>, value: Opt
 /// Shared by the single-title facet handler path and the bulk hydration loop.
 pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> HydrationResult {
     let mut extra_external_ids = Vec::new();
+    if let Some(smg_id) = movie.smg_id {
+        extra_external_ids.push(scryer_domain::ExternalId {
+            source: "smg".into(),
+            value: smg_id.to_string(),
+        });
+    }
+    push_positive_external_id(&mut extra_external_ids, "tvdb", movie.tvdb_id);
     if let Some(imdb_id) = crate::normalize::normalize_imdb_id(movie.imdb_id.as_str()) {
         extra_external_ids.push(scryer_domain::ExternalId {
             source: "imdb".into(),
@@ -448,7 +455,9 @@ mod tests {
     fn test_movie(credits: Vec<TitleCredit>) -> MovieMetadata {
         MovieMetadata {
             target_key: None,
-            tvdb_id: 909,
+            smg_id: None,
+            primary_source: "tvdb".to_string(),
+            tvdb_id: Some(909),
             name: "Fixture Movie".to_string(),
             slug: "fixture-movie".to_string(),
             year: Some(2026),
@@ -565,6 +574,24 @@ mod tests {
         let result = movie_to_hydration_result(test_movie(test_credits()), "eng");
 
         assert_eq!(result.metadata_update.credits, Some(test_credits()));
+    }
+
+    #[test]
+    fn movie_hydration_carries_the_smg_external_id() {
+        let mut movie = test_movie(vec![]);
+        movie.smg_id = Some(42_001);
+
+        let result = movie_to_hydration_result(movie, "eng");
+
+        assert!(
+            result
+                .metadata_update
+                .extra_external_ids
+                .contains(&ExternalId {
+                    source: "smg".to_string(),
+                    value: "42001".to_string(),
+                })
+        );
     }
 
     #[test]

@@ -45,14 +45,14 @@ impl MediaFileRepository for MediaFileStore {
             &self.datastore,
             "insert_media_file",
             "INSERT INTO media_files
-             (id, title_id, file_path, size_bytes, role, quality_id, scan_status, created_at,
+             (id, title_id, file_path, size_bytes, announced_size_bytes, role, quality_id, scan_status, created_at,
               source_signature_scheme, source_signature_value,
               scene_name, release_group, source_type, resolution,
               video_codec_parsed, audio_codec_parsed, audio_channels_parsed,
               acquisition_score, scoring_log,
               indexer_source, grabbed_release_title, grabbed_at,
               edition, original_file_path, release_hash)
-             VALUES ({}, {}, {}, {}, {}, {}, 'imported', {},
+             VALUES ({}, {}, {}, {}, {}, {}, {}, 'imported', {},
                      {}, {},
                      {}, {}, {}, {},
                      {}, {}, {},
@@ -62,6 +62,7 @@ impl MediaFileRepository for MediaFileStore {
              ON CONFLICT(file_path) DO UPDATE SET
                 title_id = excluded.title_id,
                 size_bytes = excluded.size_bytes,
+                announced_size_bytes = excluded.announced_size_bytes,
                 role = excluded.role,
                 quality_id = excluded.quality_id,
                 scan_status = excluded.scan_status,
@@ -87,6 +88,7 @@ impl MediaFileRepository for MediaFileStore {
                 SqlArg::Text(input.title_id.clone()),
                 SqlArg::Text(input.file_path.clone()),
                 SqlArg::I64(input.size_bytes),
+                SqlArg::OptI64(input.announced_size_bytes),
                 SqlArg::Text(input.role.as_str().to_string()),
                 SqlArg::OptText(input.quality_label.clone()),
                 SqlArg::Timestamp(now),
@@ -1397,7 +1399,7 @@ fn media_file_select_columns(dialect: SqlDialect, episode_expr: &str, role_expr:
         "mf.id, mf.title_id, {episode_expr} AS episode_id,
             {series_movie_link_ids_json} AS series_movie_link_ids_json,
             mf.file_path,
-            mf.size_bytes, {role_expr} AS role,
+            mf.size_bytes, mf.announced_size_bytes, {role_expr} AS role,
             mf.source_signature_scheme, mf.source_signature_value,
             mf.quality_id, mf.scan_status, mf.created_at,
             mf.video_codec, mf.video_width, mf.video_height,
@@ -1553,6 +1555,7 @@ fn row_to_title_media_file(row: &SqlRow) -> AppResult<TitleMediaFile> {
         ),
         file_path: row.text("file_path")?,
         size_bytes: row.i64("size_bytes")?,
+        announced_size_bytes: row.opt_i64("announced_size_bytes")?,
         role: row
             .opt_text("role")?
             .as_deref()

@@ -11,7 +11,18 @@ async fn run_import(
     manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<ImportResult> {
+    let mut preparation_permit = Some(match preparation_permit {
+        Some(permit) => permit,
+        None => {
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await
+        }
+    });
     let target = match Box::pin(resolve_completed_import_target(
         app,
         import_id,
@@ -20,6 +31,7 @@ async fn run_import(
         manual_title_id,
         started_at,
         archive_password,
+        &mut preparation_permit,
     ))
     .await?
     {
@@ -27,6 +39,13 @@ async fn run_import(
         CompletedImportTargetResolution::Finished(result) => return Ok(*result),
     };
 
+    drop(preparation_permit.take());
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(&target.title.id)
+        .await;
     let result = dispatch_completed_import_target(
         app,
         actor,
@@ -102,7 +121,6 @@ async fn carry_out_import_rejection(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 release_title,
                 source_video,
                 crate::post_download_gate::BlocklistAttribution {
@@ -134,7 +152,7 @@ async fn carry_out_import_rejection(
         None,
         episode_artifacts,
     )
-    .await;
+    .await?;
     let release_burned = decision == ImportDecision::Rejected;
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -195,7 +213,7 @@ enum CompletedImportTargetResolution {
     Finished(Box<ImportResult>),
 }
 
-async fn archive_extraction_destination_for_title(
+pub(super) async fn archive_extraction_destination_for_title(
     app: &AppUseCase,
     import_id: &str,
     title: &scryer_domain::Title,
@@ -338,6 +356,16 @@ fn archive_extraction_would_be_needed_best_effort(dir: &Path) -> bool {
     }
 }
 
+async fn mark_import_extracting(app: &AppUseCase, import_id: &str) -> AppResult<()> {
+    app.update_import_transfer_progress_and_notify(
+        import_id,
+        scryer_domain::ImportTransferPhase::Extracting,
+        0,
+        0,
+    )
+    .await
+}
+
 async fn try_match_titleless_archive_from_inner_video(
     app: &AppUseCase,
     import_id: &str,
@@ -361,13 +389,22 @@ async fn try_match_titleless_archive_from_inner_video(
         .available()
         .cloned();
 
-    let Some(extracted_dir) = crate::archive_extractor::extract_archives_if_needed(
-        dest_dir,
-        Some(destination),
-        archive_password,
-        archive_provider.clone(),
-    )
-    .await?
+    mark_import_extracting(app, import_id).await?;
+    let Some(extracted_dir) = ({
+        let _archive_extraction_permit = app
+            .runtime
+            .imports
+            .execution_coordinator
+            .acquire_archive_extraction()
+            .await;
+        crate::archive_extractor::extract_archives_if_needed(
+            dest_dir,
+            Some(destination),
+            archive_password,
+            archive_provider.clone(),
+        )
+        .await?
+    })
     else {
         return Ok(None);
     };
@@ -409,13 +446,24 @@ async fn try_match_titleless_archive_from_inner_video(
             let extracted_dir = match relocation {
                 TitlelessArchiveRelocation::Ready(extracted_dir) => extracted_dir,
                 TitlelessArchiveRelocation::ReextractUnderMatchedTitle => {
-                    crate::archive_extractor::extract_archives_if_needed(
-                        dest_dir,
-                        Some(archive_extraction_destination_for_title(app, import_id, &title).await?),
-                        archive_password,
-                        archive_provider.clone(),
-                    )
-                    .await?
+                    mark_import_extracting(app, import_id).await?;
+                    let destination =
+                        archive_extraction_destination_for_title(app, import_id, &title).await?;
+                    ({
+                        let _archive_extraction_permit = app
+                            .runtime
+                            .imports
+                            .execution_coordinator
+                            .acquire_archive_extraction()
+                            .await;
+                        crate::archive_extractor::extract_archives_if_needed(
+                            dest_dir,
+                            Some(destination),
+                            archive_password,
+                            archive_provider.clone(),
+                        )
+                        .await?
+                    })
                     .ok_or_else(|| {
                         AppError::Validation(format!(
                             "archive matched title '{}' but could not be re-extracted under the matched title destination",
@@ -435,6 +483,10 @@ async fn try_match_titleless_archive_from_inner_video(
     Ok(None)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "completed import target resolution carries explicit durable evidence and preparation ownership"
+)]
 async fn resolve_completed_import_target(
     app: &AppUseCase,
     import_id: &str,
@@ -443,6 +495,7 @@ async fn resolve_completed_import_target(
     manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
+    preparation_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<CompletedImportTargetResolution> {
     // 2. TITLE MATCHING
     let mut title = None;
@@ -494,18 +547,27 @@ async fn resolve_completed_import_target(
         }
     }
 
-    if title.is_none()
-        && let Some(archive_match) = try_match_titleless_archive_from_inner_video(
+    if title.is_none() {
+        drop(preparation_permit.take());
+        let archive_match = try_match_titleless_archive_from_inner_video(
             app,
             import_id,
             completed,
             dest_dir,
             archive_password,
         )
-        .await?
-    {
-        title = Some(archive_match.title);
-        extracted_dir = Some(archive_match.extracted_dir);
+        .await;
+        *preparation_permit = Some(
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await,
+        );
+        if let Some(archive_match) = archive_match? {
+            title = Some(archive_match.title);
+            extracted_dir = Some(archive_match.extracted_dir);
+        }
     }
 
     let title = match title {
@@ -567,17 +629,37 @@ async fn resolve_completed_import_target(
         } else {
             None
         };
-        extracted_dir = crate::archive_extractor::extract_archives_if_needed(
-            dest_dir,
-            extraction_destination,
-            archive_password,
-            app.services
-                .integrations
-                .archive_extractor_plugin_provider
-                .available()
-                .cloned(),
-        )
-        .await?;
+        if extraction_destination.is_some() {
+            mark_import_extracting(app, import_id).await?;
+        }
+        drop(preparation_permit.take());
+        let extraction = {
+            let _archive_extraction_permit = app
+                .runtime
+                .imports
+                .execution_coordinator
+                .acquire_archive_extraction()
+                .await;
+            crate::archive_extractor::extract_archives_if_needed(
+                dest_dir,
+                extraction_destination,
+                archive_password,
+                app.services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
+            )
+            .await
+        };
+        *preparation_permit = Some(
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await,
+        );
+        extracted_dir = extraction?;
     }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
     let video_files = match if is_series {
@@ -808,7 +890,7 @@ async fn hold_replacement_for_manual_resolution(
         None,
         &[],
     )
-    .await;
+    .await?;
     let result = ImportResult {
         import_id: import_id.to_string(),
         decision: ImportDecision::Skipped,
@@ -912,7 +994,7 @@ async fn import_additional_movie_download(
             None,
             linked_episode_artifacts,
         )
-        .await;
+        .await?;
         let skip_reason =
             Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
@@ -958,6 +1040,7 @@ async fn import_additional_movie_download(
         &dest_path,
         import_mode,
         None,
+        Some(completed),
     )
     .await?;
 
@@ -965,6 +1048,10 @@ async fn import_additional_movie_download(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            release_evidence.announced_size_bytes(),
+        ),
         role: crate::MediaFileRole::Additional,
         quality_label: parsed.quality.clone(),
         scene_name: Some(parsed.raw_title.clone()),
@@ -1038,9 +1125,6 @@ async fn import_additional_movie_download(
         );
     }
     maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -1053,7 +1137,17 @@ async fn import_additional_movie_download(
         Some(imported_media_file_id.as_str()),
         linked_episode_artifacts,
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -1145,6 +1239,7 @@ async fn import_movie_download(
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -1219,12 +1314,7 @@ async fn import_movie_download(
                 )
                 .await;
             }
-            // A user/system rule veto on the file is operator policy, not a
-            // lie: held like the band miss, never burned
-            // (`import_decide::prepare_rejection_disposition`).
-            if crate::import_decide::prepare_rejection_disposition(&rejection)
-                == crate::import_decide::RejectionDisposition::Hold
-            {
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
                 return hold_replacement_for_manual_resolution(
                     app,
                     title,
@@ -1235,7 +1325,10 @@ async fn import_movie_download(
                     source_size,
                     parsed.quality.clone(),
                     rejection.recycle_reason,
-                    rejection.message.clone(),
+                    format!(
+                        "held for manual import because the file failed {}: {}",
+                        rejection.recycle_reason, rejection.message
+                    ),
                     started_at,
                 )
                 .await;
@@ -1244,7 +1337,6 @@ async fn import_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 crate::post_download_gate::BlocklistAttribution::default(),
@@ -1264,7 +1356,7 @@ async fn import_movie_download(
                 None,
                 &[],
             )
-            .await;
+            .await?;
             let result = ImportResult {
                 import_id: import_id.to_string(),
                 decision: ImportDecision::Rejected,
@@ -1334,7 +1426,7 @@ async fn import_movie_download(
             None,
             &[],
         )
-        .await;
+        .await?;
         let skip_reason =
             Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
@@ -1423,7 +1515,9 @@ async fn import_movie_download(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes: release_evidence.announced_size_bytes(),
         is_filler: false,
+        origin,
         operator_intent: manual_replacement,
         incumbent_rows: crate::import_decide::IncumbentRows::Title(&existing_files),
         scope_label: "this title",
@@ -1497,6 +1591,8 @@ async fn import_movie_download(
             Some(old_file_recycle_context.media_root.as_str()),
             &old_file_recycle_context.recycle_config,
             import_mode,
+            release_evidence.announced_size_bytes(),
+            Some(completed),
         )
         .await
         {
@@ -1513,7 +1609,9 @@ async fn import_movie_download(
                     None,
                     &[],
                 )
-                .await;
+                .await?;
+                crate::upgrade::finalize_upgrade_source_cleanup(app, &outcome, Some(completed))
+                    .await?;
                 let result = ImportResult {
                     import_id: import_id.to_string(),
                     decision: ImportDecision::Imported,
@@ -1599,6 +1697,7 @@ async fn import_movie_download(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        Some(completed),
     )
     .await?;
 
@@ -1628,6 +1727,10 @@ async fn import_movie_download(
         title_id: title.id.clone(),
         file_path: path_to_stored_string(&dest_path),
         size_bytes: file_result.size_bytes as i64,
+        announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+            file_result.size_bytes as i64,
+            release_evidence.announced_size_bytes(),
+        ),
         quality_label: post_download_score.parsed.quality.clone(),
         scene_name: Some(prepared.parsed.raw_title.clone()),
         release_group: post_download_score.parsed.release_group.clone(),
@@ -1693,9 +1796,6 @@ async fn import_movie_download(
         }
     };
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -1708,7 +1808,17 @@ async fn import_movie_download(
         imported_media_file_id.as_deref(),
         &[],
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     let collection = Collection {
         id: Id::new().0,
@@ -1977,6 +2087,7 @@ async fn import_series_movie_download(
         .cloned()
         .collect();
     let import_purpose = release_evidence.purpose();
+    let origin = release_evidence.import_origin();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -2055,12 +2166,7 @@ async fn import_series_movie_download(
                 )
                 .await;
             }
-            // A user/system rule veto on the file is operator policy, not a
-            // lie: held like the band miss, never burned
-            // (`import_decide::prepare_rejection_disposition`).
-            if crate::import_decide::prepare_rejection_disposition(&rejection)
-                == crate::import_decide::RejectionDisposition::Hold
-            {
+            if origin == crate::import_decide::ImportOrigin::OperatorQueued {
                 return hold_replacement_for_manual_resolution(
                     app,
                     title,
@@ -2071,7 +2177,10 @@ async fn import_series_movie_download(
                     source_size,
                     parsed.quality.clone(),
                     rejection.recycle_reason,
-                    rejection.message.clone(),
+                    format!(
+                        "held for manual import because the file failed {}: {}",
+                        rejection.recycle_reason, rejection.message
+                    ),
                     started_at,
                 )
                 .await;
@@ -2080,7 +2189,6 @@ async fn import_series_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                completed,
                 source_title.as_deref().unwrap_or(""),
                 &source_video,
                 crate::post_download_gate::BlocklistAttribution {
@@ -2101,9 +2209,9 @@ async fn import_series_movie_download(
                 "rejected",
                 rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
                 None,
-                &[],
-            )
-            .await;
+            &[],
+        )
+        .await?;
             let result = ImportResult {
                 import_id: import_id.to_string(),
                 decision: ImportDecision::Rejected,
@@ -2187,7 +2295,9 @@ async fn import_series_movie_download(
         accepted: prepared.accepted.as_ref(),
         prior_rescore_changes: &prepared.rescore_changes,
         landed_size_bytes: source_size,
+        announced_size_bytes: release_evidence.announced_size_bytes(),
         is_filler: false,
+        origin,
         operator_intent: manual_replacement,
         // Every primary file of the title, not the handful that happen to sit at
         // this import's destination path: the subject holds *every* file linked
@@ -2270,6 +2380,8 @@ async fn import_series_movie_download(
                 Some(old_file_recycle_context.media_root.as_str()),
                 &old_file_recycle_context.recycle_config,
                 import_mode,
+                release_evidence.announced_size_bytes(),
+                Some(completed),
             )
             .await
             {
@@ -2286,7 +2398,13 @@ async fn import_series_movie_download(
                         None,
                         &[],
                     )
-                    .await;
+                    .await?;
+                    crate::upgrade::finalize_upgrade_source_cleanup(
+                        app,
+                        &outcome,
+                        Some(completed),
+                    )
+                    .await?;
                     tracing::info!(
                         title = %title.name,
                         movie = %movie.title,
@@ -2393,7 +2511,7 @@ async fn import_series_movie_download(
                         None,
                         &[],
                     )
-                    .await;
+                    .await?;
                     let result = ImportResult {
                         import_id: import_id.to_string(),
                         decision: ImportDecision::Rejected,
@@ -2454,6 +2572,7 @@ async fn import_series_movie_download(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        Some(completed),
     )
     .await?;
 
@@ -2472,6 +2591,10 @@ async fn import_series_movie_download(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                release_evidence.announced_size_bytes(),
+            ),
             quality_label: post_download_score.parsed.quality.clone(),
             scene_name: Some(prepared.parsed.raw_title.clone()),
             release_group: post_download_score.parsed.release_group.clone(),
@@ -2534,9 +2657,6 @@ async fn import_series_movie_download(
         }
     };
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -2549,7 +2669,17 @@ async fn import_series_movie_download(
         imported_media_file_id.as_deref(),
         &linked_episode_artifacts,
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     if let Some(file_id) = imported_media_file_id.as_deref()
         && let Err(err) = app

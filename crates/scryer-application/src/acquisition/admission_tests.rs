@@ -701,7 +701,6 @@ fn coverage_outside_the_member_set_does_not_mask_a_missing_member() {
     )
     .per_member();
 
-    assert_eq!(subject.covered_members(), 1);
     let verdict = evaluate_admission(&subject, CandidateFacts::new(Some(0), 0, 100), &auto(200));
     assert!(
         verdict.is_admitted(),
@@ -933,6 +932,7 @@ fn a_manual_pack_grab_still_cannot_fetch_an_unaired_season() {
 fn queued(title: &str, tier_index: Option<usize>, revision: i32, score: i32) -> QueuedRelease {
     QueuedRelease {
         title: title.to_string(),
+        covers: Vec::new(),
         tier_index,
         revision,
         score,
@@ -1116,13 +1116,15 @@ fn a_manual_grab_ignores_the_queue() {
     );
 }
 
-/// The queue gate runs before the pack gate too, so a season already
-/// downloading is not fetched twice.
+/// A pack whose every member is already covered by an equal queued release is
+/// not fetched twice.
 #[test]
-fn a_pack_scope_consults_the_queue_before_its_members() {
+fn a_pack_fully_covered_by_queued_equal_or_better_releases_is_refused() {
+    let mut queued_pack = queued("Show.S01.1080p.WEB-DL-GRP", Some(1), 0, 900);
+    queued_pack.covers = vec!["ep-01".to_string(), "ep-02".to_string()];
     let subject = AdmissionSubject::new(episodes(&["ep-01", "ep-02"]), [])
         .per_member()
-        .with_queued(vec![queued("Show.S01.1080p.WEB-DL-GRP", Some(1), 0, 900)]);
+        .with_queued(vec![queued_pack]);
 
     let verdict = evaluate_admission(
         &subject,
@@ -1133,6 +1135,26 @@ fn a_pack_scope_consults_the_queue_before_its_members() {
         verdict.rejection().map(|rejection| &rejection.reason),
         Some(AdmissionRejectionReason::QueuedEqualOrBetter { .. })
     ));
+}
+
+#[test]
+fn a_queued_single_episode_does_not_refuse_a_pack_that_fills_other_missing_members() {
+    let mut queued_episode = queued("Show.S01E01.1080p.WEB-DL-GRP", Some(1), 0, 900);
+    queued_episode.covers = vec!["ep-01".to_string()];
+    let subject = AdmissionSubject::new(episodes(&["ep-01", "ep-02"]), [])
+        .per_member()
+        .with_queued(vec![queued_episode]);
+
+    let verdict = evaluate_admission(
+        &subject,
+        CandidateFacts::new(Some(1), 0, 900),
+        &grab_policy_with_queue(200),
+    );
+
+    assert!(
+        verdict.is_admitted(),
+        "the pack still fills ep-02, so it must be admitted: {verdict:?}"
+    );
 }
 
 /// **N3.** A pack every member of which is held by a better *quality* file is

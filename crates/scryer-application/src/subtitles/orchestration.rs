@@ -2410,6 +2410,7 @@ mod tests {
             role: crate::MediaFileRole::Primary,
             file_path: "/tmp/video.mkv".into(),
             size_bytes: 1024,
+            announced_size_bytes: None,
             source_signature_scheme: None,
             source_signature_value: None,
             quality_label: None,

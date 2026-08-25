@@ -99,7 +99,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
 
     // Tests exercise the upgrade without a queued import record; the
     // progress writes for this id simply match no row.
-    crate::upgrade::execute_upgrade(
+    let result = crate::upgrade::execute_upgrade(
         app,
         actor,
         "upgrade-for-test",
@@ -117,8 +117,14 @@ pub async fn execute_upgrade_for_test_with_import_mode(
         old_file_media_root.as_deref().or(media_root),
         recycle_config,
         import_mode,
+        None,
+        None,
     )
-    .await
+    .await?;
+    if let crate::upgrade::UpgradeResult::Upgraded(outcome) = &result {
+        crate::upgrade::finalize_upgrade_source_cleanup(app, outcome, None).await?;
+    }
+    Ok(result)
 }
 
 pub trait AppUseCaseTestExt {

@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult};
+use async_graphql::{Context, Error, ErrorExtensions, Result as GqlResult, value};
 use scryer_application::{
     AppError, AppUseCase, BackupRestorePreparedBundle, JwtSessionScope, LoginFailureTimingClass,
-    OAuthAuthorizationSource,
+    OAuthAuthorizationSource, application_upgrade::InstallationAssessment,
 };
-use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
+use scryer_domain::{AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
 pub mod loaders;
@@ -154,6 +154,7 @@ pub struct ApiContext {
     pub app: AppUseCase,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub restore: Option<RestoreContext>,
+    pub application_upgrade_assessment: InstallationAssessment,
 }
 
 /// Per-HTTP-request session persistence policy. This is intentionally absent
@@ -282,6 +283,11 @@ pub fn app_from_ctx(ctx: &Context<'_>) -> GqlResult<AppUseCase> {
     Ok(ctx.data_unchecked::<ApiContext>().app.clone())
 }
 
+pub fn application_upgrade_assessment_from_ctx(ctx: &Context<'_>) -> InstallationAssessment {
+    ctx.data_unchecked::<ApiContext>()
+        .application_upgrade_assessment
+}
+
 pub fn auth_runtime_from_ctx(ctx: &Context<'_>) -> AuthRuntimeStateHandle {
     ctx.data_unchecked::<ApiContext>().auth_runtime.clone()
 }
@@ -301,13 +307,36 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::Validation(message) => {
             coded_gql_error(format!("validation: {message}"), "VALIDATION_ERROR")
         }
+        AppError::NoAutoEligibleRelease {
+            candidate_count,
+            reasons,
+        } => {
+            Error::new("validation: no auto-eligible release found").extend_with(|_, extensions| {
+                extensions.set("code", "VALIDATION_ERROR");
+                extensions.set("autoCandidateCount", candidate_count as i64);
+                extensions.set(
+                    "autoDecisionReasons",
+                    reasons
+                        .into_iter()
+                        .map(|reason| {
+                            value!({
+                                "code": reason.code,
+                                "summary": reason.summary,
+                                "count": reason.count as i64,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            })
+        }
         AppError::DownloadFeedbackTimeout(message) => {
             coded_gql_error(message, "DOWNLOAD_FEEDBACK_TIMEOUT")
         }
         // Failover exhaustion is a distinct internal kind for diagnostics but
         // the same external contract: the submission is retryable later.
         AppError::DownloadSubmitUnavailable(message)
-        | AppError::DownloadSubmitFailoverExhausted(message) => {
+        | AppError::DownloadSubmitFailoverExhausted(message)
+        | AppError::DownloadSourceGone(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
         AppError::ArchiveExtractionPluginRequired {
@@ -319,6 +348,9 @@ pub fn to_gql_error(err: AppError) -> Error {
                 extensions.set("sourcePath", source_path);
             }
         }),
+        AppError::ArchiveExtractionTimedOut { message } => {
+            coded_gql_error(message, "ARCHIVE_EXTRACTION_TIMED_OUT")
+        }
         AppError::TemporaryUnavailable {
             message,
             retry_after,
@@ -336,6 +368,9 @@ pub fn to_gql_error(err: AppError) -> Error {
             coded_gql_error(format!("not found: {message}"), "NOT_FOUND")
         }
         AppError::DownloadSubmitAmbiguous(message) => {
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
+        }
+        AppError::DownloadSubmitAmbiguousWithClient { message, .. } => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
         }
         AppError::DownloadSubmitRejected(message) => {
@@ -356,6 +391,10 @@ pub fn to_gql_error(err: AppError) -> Error {
             coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
         }
         AppError::Canceled(message) => coded_gql_error(message, "CANCELED"),
+        AppError::ManualReconciliationRequired(message) => {
+            coded_gql_error(message, "MANUAL_RECONCILIATION_REQUIRED")
+        }
+        AppError::ImportEvidenceUnavailable(message) => repository_gql_error(message),
         AppError::Repository(message) => repository_gql_error(message),
     }
 }
@@ -396,14 +435,18 @@ fn app_error_kind(err: &AppError) -> &'static str {
     match err {
         AppError::Unauthorized(_) => "Unauthorized",
         AppError::Validation(_) => "Validation",
+        AppError::NoAutoEligibleRelease { .. } => "NoAutoEligibleRelease",
         AppError::PluginInstallInProgress(_) => "PluginInstallInProgress",
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitAmbiguousWithClient { .. } => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::DownloadSourceGone(_) => "DownloadSourceGone",
         AppError::DownloadSubmitFailoverExhausted(_) => "DownloadSubmitFailoverExhausted",
         AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
+        AppError::ArchiveExtractionTimedOut { .. } => "ArchiveExtractionTimedOut",
         AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
@@ -412,6 +455,8 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
         AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
         AppError::Canceled(_) => "Canceled",
+        AppError::ManualReconciliationRequired(_) => "ManualReconciliationRequired",
+        AppError::ImportEvidenceUnavailable(_) => "ImportEvidenceUnavailable",
         AppError::Repository(_) => "Repository",
     }
 }
@@ -489,6 +534,20 @@ pub struct OAuthActorSession {
     pub grant_id: String,
 }
 
+/// Marker added only for browser or native interactive sessions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InteractiveSession;
+
+/// Returns the actor only when the request was authenticated by an interactive session.
+pub fn interactive_session_actor_from_ctx(ctx: &Context<'_>) -> GqlResult<User> {
+    if ctx.data_opt::<InteractiveSession>().is_none() {
+        return Err(to_gql_error(AppError::Unauthorized(
+            "an interactive session is required for this operation".into(),
+        )));
+    }
+    actor_from_ctx(ctx)
+}
+
 pub fn oauth_actor_session_from_ctx(ctx: &Context<'_>) -> Option<OAuthActorSession> {
     ctx.data_opt::<OAuthActorSession>().cloned()
 }
@@ -544,16 +603,10 @@ pub async fn require_config_app_permission(
     {
         return Ok(actor);
     }
-    if actor
-        .authorization
-        .actor_capabilities
-        .contains(ActorCapabilityMask::MANAGE_OWN_ACCOUNT)
-    {
-        let mfa = mfa_verification_from_ctx(ctx);
-        app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
-            .await
-            .map_err(to_gql_error)?;
-    }
+    let mfa = mfa_verification_from_ctx(ctx);
+    app.require_mfa_step_up(&actor, mfa.step_up_verified_until)
+        .await
+        .map_err(to_gql_error)?;
     Ok(actor)
 }
 
@@ -747,6 +800,36 @@ mod tests {
             .and_then(|extensions| extensions.get("retryAfterSeconds"))
             .expect("retryAfterSeconds extension should be present");
         assert_eq!(retry_after.to_string(), "120");
+    }
+
+    #[test]
+    fn no_auto_eligible_release_graphql_error_includes_reason_counts() {
+        let error = to_gql_error(AppError::NoAutoEligibleRelease {
+            candidate_count: 3,
+            reasons: vec![scryer_application::AutoEligibilityReason {
+                code: "title_mismatch".to_string(),
+                summary: "release title does not match the target title".to_string(),
+                count: 2,
+            }],
+        });
+
+        assert_eq!(error.message, "validation: no auto-eligible release found");
+        assert_eq!(graphql_error_code(&error), Some("VALIDATION_ERROR"));
+        let extensions = error.extensions.as_ref().expect("extensions are present");
+        assert_eq!(
+            extensions
+                .get("autoCandidateCount")
+                .expect("candidate count extension is present")
+                .to_string(),
+            "3"
+        );
+        assert_eq!(
+            extensions
+                .get("autoDecisionReasons")
+                .expect("reason counts extension is present")
+                .to_string(),
+            "[{code: \"title_mismatch\", summary: \"release title does not match the target title\", count: 2}]"
+        );
     }
 
     #[test]

@@ -105,6 +105,7 @@ pub async fn retry_failed_import(
         target_title_id.as_deref(),
         started_at,
         password,
+        None,
     )
     .await
     {
@@ -112,6 +113,8 @@ pub async fn retry_failed_import(
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
                 Some(ImportSkipReason::PasswordRequired)
+            } else if crate::archive_extractor::is_timeout_error(&error) {
+                Some(ImportSkipReason::ArchiveExtractionTimedOut)
             } else {
                 None
             };
@@ -195,6 +198,7 @@ pub(crate) async fn should_remove_terminal_download(
 )]
 async fn reconcile_terminal_download_cleanup(
     app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
     client_id: &str,
     client_type: &str,
     download_client_item_id: &str,
@@ -262,6 +266,7 @@ async fn reconcile_terminal_download_cleanup(
             && is_torrent)
     {
         let key = crate::seeding_gate::SeedGoalLookupKey {
+            canonical_download_id: canonical_download_id.cloned(),
             client_id: client_id.to_string(),
             client_type: client_type.trim().to_string(),
             client_item_id: download_client_item_id.trim().to_string(),
@@ -567,6 +572,7 @@ async fn finalize_import_source_cleanup(
     import_mode: scryer_domain::ImportMode,
     file_result: &scryer_domain::ImportFileResult,
     final_dest_path: &Path,
+    completed: Option<&scryer_domain::CompletedDownload>,
 ) -> AppResult<scryer_domain::ImportStrategy> {
     if import_mode != scryer_domain::ImportMode::Move {
         return Ok(file_result.strategy);
@@ -579,13 +585,45 @@ async fn finalize_import_source_cleanup(
         ))
     })?;
 
+    let execution_context = crate::ImportFileExecutionContext::new(
+        completed.map_or("", |item| item.client_id.as_str()),
+        completed.map_or("", |item| item.client_type.as_str()),
+    );
     app.services
         .workflow
         .file_importer
-        .remove_import_source_after_verified_import(guard, final_dest_path)
+        .remove_import_source_after_verified_import_with_context(
+            guard,
+            final_dest_path,
+            &execution_context,
+        )
         .await?;
 
     Ok(scryer_domain::ImportStrategy::Move)
+}
+
+async fn finalize_deferred_import_source_cleanup(
+    app: &AppUseCase,
+    source_cleanup: Option<scryer_domain::ImportSourceCleanupGuard>,
+    final_dest_path: &Path,
+    completed: Option<&scryer_domain::CompletedDownload>,
+) -> AppResult<()> {
+    let Some(guard) = source_cleanup else {
+        return Ok(());
+    };
+    let execution_context = crate::ImportFileExecutionContext::new(
+        completed.map_or("", |item| item.client_id.as_str()),
+        completed.map_or("", |item| item.client_type.as_str()),
+    );
+    app.services
+        .workflow
+        .file_importer
+        .remove_import_source_after_verified_import_with_context(
+            guard,
+            final_dest_path,
+            &execution_context,
+        )
+        .await
 }
 /// Sonarr's phase rule, not an error-string catalogue: an import that was
 /// approved but failed while *executing* (`ImportDecision::Failed` — locked or
@@ -599,9 +637,12 @@ async fn finalize_import_source_cleanup(
 /// markers that surface on non-`Failed` decisions.
 pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
     match result.decision {
-        ImportDecision::Failed => {
-            result.skip_reason != Some(ImportSkipReason::PasswordRequired)
-        }
+        ImportDecision::Failed => !matches!(
+            result.skip_reason,
+            Some(
+                ImportSkipReason::PasswordRequired | ImportSkipReason::ArchiveExtractionTimedOut
+            )
+        ),
         _ => {
             matches!(
                 result.skip_reason,

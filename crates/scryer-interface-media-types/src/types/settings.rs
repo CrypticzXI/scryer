@@ -152,6 +152,8 @@ pub struct SecuritySettingsPayload {
     pub password_min_length: i32,
     /// Whether local IPs may skip login.
     pub skip_login_for_local_ips: bool,
+    /// Whether API keys are restricted to users with system-settings permission.
+    pub api_keys_restrict_to_system_settings_users: bool,
     /// Whether configuration changes require MFA step-up.
     pub mfa_require_config_step_up: bool,
     /// Whether password login is required alongside MFA.
@@ -172,6 +174,49 @@ pub struct SecuritySettingsPayload {
     pub env_override_active: bool,
     /// Description of the active override, or null when none is active.
     pub env_override_description: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+/// Origin of an OAuth client registration.
+pub enum OAuthClientSourceValue {
+    /// Registration managed by Scryer and not editable through settings.
+    Managed,
+    /// Registration created and maintained by an administrator.
+    Custom,
+}
+
+#[derive(SimpleObject, Clone)]
+/// An OAuth application allowed to receive Scryer authorization codes.
+pub struct OAuthClientRegistrationPayload {
+    /// Immutable OAuth client identifier.
+    pub client_id: String,
+    /// Name shown to users on the authorization screen.
+    pub display_name: String,
+    /// Exact callback URL allowlist. Managed native clients may use an empty list.
+    pub redirect_uris: Vec<String>,
+    /// Whether the application can authorize or refresh tokens.
+    pub enabled: bool,
+    /// Whether the application is managed by Scryer or an administrator.
+    pub source: OAuthClientSourceValue,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Public authorization-screen identity for a validated OAuth request.
+pub struct OAuthAuthorizationClientPayload {
+    /// Requested OAuth client identifier.
+    pub client_id: String,
+    /// Client name safe to display after callback validation.
+    pub display_name: String,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Result of deleting a custom OAuth application.
+pub struct DeleteOAuthClientRegistrationPayload {
+    /// Deleted OAuth client identifier.
+    pub client_id: String,
+    /// Whether a persisted custom registration was removed.
+    pub deleted: bool,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -565,7 +610,7 @@ pub struct MediaSettingsPayload {
     pub library_path: String,
     /// Configured root folders.
     pub root_folders: Vec<RootFolderPayload>,
-    /// Effective required audio language codes.
+    /// Effective configured requirements; `original` remains unchanged.
     pub required_audio_languages: Vec<String>,
     /// Whether episodic titles use season folders.
     pub use_season_folders: bool,
@@ -685,7 +730,7 @@ pub struct UpdateMediaSettingsInput {
     pub library_path: Option<String>,
     /// Optional replacement list of library roots; null leaves existing roots unchanged.
     pub root_folders: Option<Vec<RootFolderInput>>,
-    /// Optional required audio-language codes.
+    /// Optional required audio-language codes; use `original` to resolve per title.
     pub required_audio_languages: Option<Vec<String>>,
     /// Whether episodic titles use season folders.
     pub use_season_folders: Option<bool>,
@@ -791,6 +836,8 @@ pub struct UpdateSecuritySettingsInput {
     pub password_min_length: i32,
     /// Whether local IPs may skip login.
     pub skip_login_for_local_ips: bool,
+    /// Whether API keys are restricted to users with system-settings permission.
+    pub api_keys_restrict_to_system_settings_users: Option<bool>,
     /// Whether sensitive configuration changes require MFA step-up.
     pub mfa_require_config_step_up: bool,
     /// Whether password login requires MFA.
@@ -805,6 +852,26 @@ pub struct UpdateSecuritySettingsInput {
     /// Deprecated alias for `mfaRequireEmbyLogin`. Omission preserves the saved setting.
     #[graphql(deprecation = "Use mfaRequireEmbyLogin.")]
     pub totp_require_emby_login: Option<bool>,
+}
+
+#[derive(InputObject, Clone)]
+/// Custom public OAuth application details. Authorization-code plus S256 PKCE is required.
+pub struct CreateOAuthClientRegistrationInput {
+    /// Name displayed to users during authorization.
+    pub display_name: String,
+    /// Exact HTTPS callback URLs permitted for this application.
+    pub redirect_uris: Vec<String>,
+}
+
+#[derive(InputObject, Clone)]
+/// Replacement details for a custom OAuth application.
+pub struct UpdateOAuthClientRegistrationInput {
+    /// Name displayed to users during authorization.
+    pub display_name: String,
+    /// Exact HTTPS callback URLs permitted for this application.
+    pub redirect_uris: Vec<String>,
+    /// Whether the application is active. Disabling revokes its existing grants.
+    pub enabled: bool,
 }
 
 #[derive(InputObject, Clone)]

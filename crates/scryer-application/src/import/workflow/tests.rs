@@ -167,6 +167,7 @@ mod tests {
                 facet: "series".to_string(),
                 source_title: Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
                 observed_release_name: None,
+                release_size_bytes: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Episode {
                     episode_id: "episode-3".to_string(),
@@ -270,6 +271,7 @@ mod tests {
     ) -> CompletedDownloadSubmissionResolution {
         CompletedDownloadSubmissionResolution::Matched(Box::new(CompletedDownloadSubmissionMatch {
             submission: DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title_id.to_string(),
                 facet: facet.to_string(),
                 download_client_id: Some("client-1".to_string()),
@@ -718,6 +720,7 @@ mod tests {
             facet: "movie".to_string(),
             source_title: Some(source_title.to_string()),
             observed_release_name: None,
+            release_size_bytes: None,
             purpose: DownloadSubmissionPurpose::Standard,
             scope: SubmissionScope::Title,
         }
@@ -1218,6 +1221,13 @@ mod tests {
             ImportStatus::Failed
         );
 
+        result.skip_reason = Some(ImportSkipReason::ArchiveExtractionTimedOut);
+        result.error_message = Some("archive plugin timed out after 3600 seconds".to_string());
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
+        );
+
         // Environmental skips clear on their own and are retried.
         result.decision = ImportDecision::Skipped;
         result.error_message = Some("not enough room".to_string());
@@ -1391,6 +1401,33 @@ mod tests {
         assert_eq!(
             candidates[0].canonical_path,
             std::fs::canonicalize(&opaque_target).expect("canonical target")
+        );
+    }
+
+    #[cfg(all(feature = "runtime-media-analysis", unix))]
+    #[tokio::test]
+    async fn manual_import_content_probe_accepts_symlinked_trusted_root() {
+        let actual_parent = tempfile::tempdir().expect("actual parent tempdir");
+        let actual_root = actual_parent.path().join("source");
+        std::fs::create_dir(&actual_root).expect("create source root");
+        let actual_file = actual_root.join("Example.Show.S01E02.1080p.mkv");
+        copy_mediainfo_fixture(&actual_file);
+
+        let alias_parent = tempfile::tempdir().expect("alias parent tempdir");
+        let alias_root = alias_parent.path().join("source-alias");
+        std::os::unix::fs::symlink(&actual_root, &alias_root).expect("create source root alias");
+
+        let candidate = qualify_manual_import_video_candidate(
+            &alias_root.join("Example.Show.S01E02.1080p.mkv"),
+            &alias_root,
+        )
+        .await
+        .expect("qualify symlinked source root")
+        .expect("valid video candidate");
+
+        assert_eq!(
+            candidate.canonical_path,
+            std::fs::canonicalize(&actual_file).expect("canonical source file")
         );
     }
 
@@ -1695,10 +1732,16 @@ mod tests {
         );
 
         let grab_enriched = crate::quality::canonical_context::announced_metadata_for_title(
-            &title, &at_grab, &profile, None,
+            &title,
+            &at_grab,
+            &profile.criteria.required_audio_languages,
+            None,
         );
         let import_enriched = crate::quality::canonical_context::announced_metadata_for_title(
-            &title, &at_import, &profile, None,
+            &title,
+            &at_import,
+            &profile.criteria.required_audio_languages,
+            None,
         );
 
         assert_eq!(
@@ -1808,12 +1851,10 @@ mod pack_blocklist_ledger_tests {
         assert!(DownloadBlocklistLedger::default().planned_write().is_none());
     }
 
-    /// **Final review B1.** A user/system rule veto raised by the probe gate is
-    /// operator policy on the file, not the release lying: held, never burned —
-    /// the gate half of the promise `classify_truth`'s `Vetoed` verdict keeps
-    /// for the scorer half. Bytes that are not what was claimed still burn.
+    /// A user/system rule veto raised by the probe gate is an import failure:
+    /// the release is burned so convergence can try another result.
     #[test]
-    fn a_probe_gate_rule_veto_is_held_not_blocklisted() {
+    fn a_probe_gate_rule_veto_is_blocklisted() {
         let rule_veto = crate::post_download_gate::ImportedFileRejection {
             message: "operator rule refused the file".to_string(),
             recycle_reason: "post_download_rule_blocked",
@@ -1821,8 +1862,11 @@ mod pack_blocklist_ledger_tests {
             blocking_rule_codes: vec!["no_eight_bit".to_string()],
         };
         assert_eq!(
-            crate::import_decide::prepare_rejection_disposition(&rule_veto),
-            crate::import_decide::RejectionDisposition::Hold
+            crate::import_decide::prepare_rejection_disposition_for_origin(
+                &rule_veto,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
+            crate::import_decide::RejectionDisposition::Blocklist
         );
 
         let corrupt = crate::post_download_gate::ImportedFileRejection {
@@ -1832,7 +1876,10 @@ mod pack_blocklist_ledger_tests {
             blocking_rule_codes: Vec::new(),
         };
         assert_eq!(
-            crate::import_decide::prepare_rejection_disposition(&corrupt),
+            crate::import_decide::prepare_rejection_disposition_for_origin(
+                &corrupt,
+                crate::import_decide::ImportOrigin::Automatic,
+            ),
             crate::import_decide::RejectionDisposition::Blocklist
         );
     }

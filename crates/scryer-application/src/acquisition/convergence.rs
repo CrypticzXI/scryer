@@ -442,10 +442,13 @@ pub(crate) struct ScopeConvergence {
 /// resets only the state row, retaining deliberately-valid coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CoverageReopen {
-    #[allow(dead_code)] // Retained for state-reset-only convergence policy tests.
+    /// Reset the scope's state row only. Every failure path uses this: the
+    /// scope's saved search results are tried before any indexer is queried,
+    /// and a scope whose results are exhausted stays converged.
     Keep,
+    /// Forget every indexer's coverage for the scope (operator triggers:
+    /// search-again, queue replacement, search-monitored).
     All,
-    Indexer(String),
 }
 
 /// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
@@ -477,6 +480,27 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
         }
         SubmissionScope::Orphan => None,
     }
+}
+
+/// Stable title-lane key for series-pack discovery. It deliberately has no
+/// title id: eligibility changes when its canonical collection membership does.
+pub(crate) fn series_pack_set_scope_key(collection_ids: &[String]) -> Option<String> {
+    let mut ids = collection_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    (!ids.is_empty()).then(|| format!("series_pack_set:{}", crate::sha256_hex(ids.join(","))))
+}
+
+/// Stable per-collection receipt for a qualifying series pack. This is kept
+/// distinct from ordinary `collection:` coverage so it cannot suppress the
+/// established season search lane.
+pub(crate) fn series_pack_collection_scope_key(collection_id: &str) -> Option<String> {
+    let collection_id = collection_id.trim();
+    (!collection_id.is_empty()).then(|| format!("series_pack_collection:{collection_id}"))
 }
 
 /// Stable convergence key derived from a persisted acquisition scope state.
@@ -546,6 +570,29 @@ impl AppUseCase {
         subject: &ResolvedReleaseSearchSubject,
     ) -> Option<ScopeConvergence> {
         let scope_key = convergence_scope_key(&subject.submission_scope, &subject.title_id)?;
+        self.resolve_scope_convergence_for_key(title, subject, scope_key)
+            .await
+    }
+
+    /// Convergence coordinates for the series-pack title lane. The set key is
+    /// based on eligible collection membership, never `title:<id>`.
+    pub(crate) async fn resolve_series_pack_convergence(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+        collection_ids: &[String],
+    ) -> Option<ScopeConvergence> {
+        let scope_key = series_pack_set_scope_key(collection_ids)?;
+        self.resolve_scope_convergence_for_key(title, subject, scope_key)
+            .await
+    }
+
+    async fn resolve_scope_convergence_for_key(
+        &self,
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+        scope_key: String,
+    ) -> Option<ScopeConvergence> {
         let facet = subject.owner_facet.as_str().to_string();
 
         let context = match self
@@ -566,10 +613,24 @@ impl AppUseCase {
                 return None;
             }
         };
+        let required_audio_languages = match self
+            .resolve_required_audio_languages_for_title(title)
+            .await
+        {
+            Ok(languages) => languages,
+            Err(error) => {
+                tracing::warn!(
+                    title_id = subject.title_id.as_str(),
+                    error = %error,
+                    "convergence: failed to resolve required audio languages; leaving scope unresolved"
+                );
+                return None;
+            }
+        };
         let fingerprint = compute_search_fingerprint(
             &context.profile.id,
             &profile_criteria_version(&context.profile.criteria),
-            &context.profile.criteria.required_audio_languages,
+            &required_audio_languages,
             &scope_match_identity(subject),
         );
 
@@ -647,6 +708,18 @@ impl AppUseCase {
         let Some(convergence) = self.resolve_scope_convergence(title, subject).await else {
             return;
         };
+        self.record_convergence_coverage(&convergence, fired_indexer_ids)
+            .await;
+    }
+
+    /// Write receipts for an already-resolved convergence unit. This lets the
+    /// series-pack title lane use its membership and collection keys without
+    /// changing the generic search coverage behavior.
+    pub(crate) async fn record_convergence_coverage(
+        &self,
+        convergence: &ScopeConvergence,
+        fired_indexer_ids: &[String],
+    ) {
         // Only routed indexers that actually fired are recorded as covered; a
         // deferred/skipped/errored routed indexer stays uncovered so the cursor
         // retries it.
@@ -681,8 +754,8 @@ impl AppUseCase {
 
     /// Re-open an acquisition state row and apply its coverage invalidation
     /// policy before waking the convergence cursor. Operator triggers use
-    /// [`CoverageReopen::All`]; failures use `Indexer` when their source is
-    /// known (or `All` when it is not); fingerprint rematches use `Keep`.
+    /// [`CoverageReopen::All`]; failures and fingerprint rematches use
+    /// [`CoverageReopen::Keep`].
     pub(crate) async fn reopen_wanted_scope_for_acquisition(
         &self,
         item: &AcquisitionScopeState,
@@ -706,10 +779,6 @@ impl AppUseCase {
             match coverage {
                 CoverageReopen::Keep => {}
                 CoverageReopen::All => self.prune_scope_key_coverage(&scope_key, None).await,
-                CoverageReopen::Indexer(indexer_id) => {
-                    self.prune_scope_key_coverage(&scope_key, Some(&indexer_id))
-                        .await;
-                }
             }
         }
         self.runtime.acquisition.acquisition_wake.notify_one();
@@ -750,7 +819,7 @@ impl AppUseCase {
 mod tests {
     use super::{
         canonical_json_string, compute_search_fingerprint, convergence_scope_key,
-        profile_criteria_version,
+        profile_criteria_version, series_pack_collection_scope_key, series_pack_set_scope_key,
     };
     use crate::contracts::SubmissionScope;
     use crate::quality_profile::QualityProfileCriteria;
@@ -784,6 +853,14 @@ mod tests {
             compute_search_fingerprint("p1", "v1", &["en".into(), "ja".into()], "m1")
         );
         assert_ne!(base, compute_search_fingerprint("p1", "v1", &[], "m1"));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_resolved_original_language_changes() {
+        let japanese = compute_search_fingerprint("p1", "v1", &["jpn".into()], "m1");
+        let korean = compute_search_fingerprint("p1", "v1", &["kor".into()], "m1");
+
+        assert_ne!(japanese, korean);
     }
 
     #[test]
@@ -880,6 +957,26 @@ mod tests {
                 "t1"
             ),
             None
+        );
+
+        let set_ab = series_pack_set_scope_key(&["c1".into(), "c2".into()]);
+        assert!(
+            set_ab
+                .as_deref()
+                .is_some_and(|key| key.starts_with("series_pack_set:"))
+        );
+        assert_eq!(
+            set_ab,
+            series_pack_set_scope_key(&[" c2 ".into(), "c1".into(), "c1".into()])
+        );
+        assert_ne!(
+            set_ab,
+            series_pack_set_scope_key(&["c1".into(), "c3".into()])
+        );
+        assert_eq!(series_pack_set_scope_key(&[]), None);
+        assert_eq!(
+            series_pack_collection_scope_key(" c1 "),
+            Some("series_pack_collection:c1".to_string())
         );
     }
 

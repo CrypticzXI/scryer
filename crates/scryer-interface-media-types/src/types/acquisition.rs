@@ -634,6 +634,8 @@ pub struct QueueDownloadInput {
     pub title_id: ID,
     /// Signed token identifying and authorizing the candidate release.
     pub candidate_token: String,
+    /// Indexer-announced release size, checked against the signed candidate when present.
+    pub size_bytes: Option<Long>,
     /// Acquisition scope targeted by the submission.
     pub scope: QueueDownloadScopeInput,
     /// Whether an in-progress submission may be replaced; omission uses the resolver default.

@@ -347,6 +347,18 @@ async fn graphql_http_schema_is_fully_documented() {
     );
 }
 
+#[test]
+fn graphql_schema_sdl_matches_identity_refactor_snapshot() {
+    const SNAPSHOT_PATH: &str =
+        "crates/scryer/tests/integration_graphql/fixtures/schema_sdl.graphql";
+
+    assert_eq!(
+        scryer_interface::export_schema_sdl(),
+        include_str!("fixtures/schema_sdl.graphql"),
+        "the identity refactor forbids schema changes; snapshot mismatch at {SNAPSHOT_PATH}",
+    );
+}
+
 #[tokio::test]
 async fn graphql_introspection_schema_census_matches_contract_baseline() {
     let ctx = TestContext::new().await;
@@ -533,19 +545,33 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // OBJECT 300->301, and INPUT_OBJECT 166->168.
     // Temporary-password replacement adds one mutation and its input object:
     // mutation 186->187, INPUT_OBJECT 168->169, public types 585->586.
+    // Durable indexer HTTP error history adds the indexerErrors and indexerError
+    // query roots: query 127->129. The title-id work changes existing metadata
+    // query inputs and payload fields only, so it adds no roots or named types.
+    // OAuth client registrations add their create, update, and delete mutation
+    // roots and six named types: mutation 187->190, public types 593->599.
+    // API-key lifecycle adds two queries, two mutations, and five named types:
+    // query 129->131, mutation 190->192, public types 599->604.
+    // Application upgrade status adds one query root, one payload object, and
+    // two enum types: query +1, OBJECT +1, ENUM +2, public types +3.
+    // Starting an application upgrade adds one mutation root, its input, and
+    // its acceptance payload. The status run fields reuse JobRunPayload and
+    // APPLICATION_UPGRADE joins the existing JobKeyValue enum: mutation +1,
+    // OBJECT +1, INPUT_OBJECT +1, public types +2.
+    // Merged: query 132, mutation 193, public types 609.
     assert_eq!(
-        query_field_count, 125,
+        query_field_count, 132,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 187,
+        mutation_field_count, 193,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 586);
-    assert_eq!(kind_count("OBJECT"), 301);
-    assert_eq!(kind_count("INPUT_OBJECT"), 169);
-    assert_eq!(kind_count("ENUM"), 104);
+    assert_eq!(public_types.len(), 609);
+    assert_eq!(kind_count("OBJECT"), 314);
+    assert_eq!(kind_count("INPUT_OBJECT"), 173);
+    assert_eq!(kind_count("ENUM"), 110);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -553,6 +579,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"indexerDownloadClientMappingCatalog"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
+    assert!(query_field_names.contains(&"indexerErrors"));
+    assert!(query_field_names.contains(&"indexerError"));
+    assert!(query_field_names.contains(&"canCreateMyApiKeys"));
+    assert!(query_field_names.contains(&"applicationUpgradeStatus"));
+    assert!(mutation_field_names.contains(&"startApplicationUpgrade"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
     assert!(!query_field_names.contains(&"catalogHasValidRoot"));
@@ -594,6 +625,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
+    assert!(public_type_names.contains(&"ApplicationUpgradeStatusPayload"));
+    assert!(public_type_names.contains(&"ApplicationInstallationKindValue"));
+    assert!(public_type_names.contains(&"ApplicationUpgradeOwnerValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
     // interactive-search job + convergence surface is present…
@@ -1452,10 +1486,17 @@ async fn graphql_introspection_search_metadata_uses_media_facet_enum() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect::<Vec<_>>(),
-        vec!["tvdbId", "language"]
+        vec!["tvdbId", "smgId", "tmdbId", "imdbId", "language"]
     );
-    assert_eq!(movie_input_fields[0]["type"]["kind"], "NON_NULL");
-    assert_eq!(movie_input_fields[0]["type"]["ofType"]["name"], "String");
+    for (field, scalar) in [
+        (&movie_input_fields[0], "String"),
+        (&movie_input_fields[1], "Int"),
+        (&movie_input_fields[2], "Int"),
+        (&movie_input_fields[3], "String"),
+    ] {
+        assert_eq!(field["type"]["kind"], "SCALAR");
+        assert_eq!(field["type"]["name"], scalar);
+    }
 
     let series_input_fields = body["data"]["metadataSeriesInput"]["inputFields"]
         .as_array()
@@ -1590,6 +1631,10 @@ async fn graphql_introspection_begin_manual_import_selection_uses_input_object()
             "durationSeconds",
         ]
     );
+
+    let extract_archives = input_field("extractArchives");
+    assert_eq!(extract_archives["type"]["kind"], "SCALAR");
+    assert_eq!(extract_archives["type"]["name"], "Boolean");
 }
 
 #[tokio::test]

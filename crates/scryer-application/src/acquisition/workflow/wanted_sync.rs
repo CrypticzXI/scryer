@@ -562,15 +562,12 @@ impl AppUseCase {
         scope: &SubmissionScope,
         fallback_wanted_item_id: &str,
     ) -> AppResult<Vec<String>> {
+        let title_ids = [title_id.to_string()];
         let items = self
             .services
             .workflow
             .acquisition_scope_states
-            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
-                title_id: Some(title_id.to_string()),
-                limit: 1000,
-                ..AcquisitionScopeStatesQuery::default()
-            })
+            .list_acquisition_scope_states_for_title_ids(&title_ids)
             .await?;
         if items.is_empty() {
             return Ok(if fallback_wanted_item_id.is_empty() {
@@ -587,6 +584,7 @@ impl AppUseCase {
             .list_episodes_for_title(title_id)
             .await?;
         let fake_submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             // Scope matching only; this submission is never persisted.
             release_size_bytes: None,

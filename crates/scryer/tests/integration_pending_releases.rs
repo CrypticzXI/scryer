@@ -6,10 +6,10 @@ use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStateRepository, AcquisitionScopeStatus,
-    AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
-    DownloadSubmission, DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository,
-    LibraryRootDraft, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
-    SuccessfulGrabCommit, TitleRepository, UserRepository,
+    AcquisitionStateRepository, AppError, ClientJobLocator, DownloadSourceKind, DownloadSubmission,
+    DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository, LibraryRootDraft,
+    PendingReleaseRepository, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
+    TitleRepository, UserRepository,
 };
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
@@ -384,6 +384,83 @@ async fn standby_listing_returns_only_standby_rows() {
 }
 
 #[tokio::test]
+async fn pending_release_page_uses_explicit_standby_status_or_the_open_review_default() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-page-statuses").await;
+    let wanted =
+        seed_wanted_item(&ctx, "title-page-statuses", AcquisitionScopeStatus::Wanted).await;
+    let standby = seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        500,
+        0,
+        PendingReleaseStatus::Standby,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        400,
+        5,
+        PendingReleaseStatus::Waiting,
+    )
+    .await;
+    seed_pending_release(
+        &ctx,
+        &wanted.id,
+        "title-page-statuses",
+        300,
+        5,
+        PendingReleaseStatus::NeedsReview,
+    )
+    .await;
+
+    let (standby_page, standby_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id.clone()),
+            statuses: vec![PendingReleaseStatus::Standby.as_str().to_string()],
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::ReleaseScoreDesc,
+        })
+        .await
+        .expect("standby page");
+    assert_eq!(standby_total, 1);
+    assert_eq!(
+        standby_page
+            .iter()
+            .map(|release| &release.id)
+            .collect::<Vec<_>>(),
+        vec![&standby.id]
+    );
+
+    let (default_page, default_total) = ctx
+        .library_state
+        .list_pending_releases_page(scryer_application::PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted.id),
+            statuses: Vec::new(),
+            limit: 50,
+            offset: 0,
+            sort: scryer_application::PendingReleasePageSort::DelayUntilAsc,
+        })
+        .await
+        .expect("default page");
+    assert_eq!(default_total, 2);
+    assert!(
+        default_page
+            .iter()
+            .all(|release| release.status != PendingReleaseStatus::Standby)
+    );
+}
+
+#[tokio::test]
 async fn delete_standby_for_wanted_item_leaves_waiting_rows_intact() {
     let ctx = TestContext::new().await;
 
@@ -495,7 +572,7 @@ async fn compare_and_set_pending_release_status_claims_once() {
 }
 
 #[tokio::test]
-async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab() {
+async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_results() {
     let ctx = TestContext::new().await;
 
     seed_title(&ctx, "title-1").await;
@@ -540,6 +617,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -579,7 +657,7 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
     );
 
     let submission = download_submission_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -605,7 +683,9 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
             .unwrap()
             .unwrap()
             .status,
-        PendingReleaseStatus::Superseded
+        // A saved search result survives a sibling grab: it is the fallback if
+        // that grab fails, so only the waiting sibling is superseded.
+        PendingReleaseStatus::Standby
     );
 }
 
@@ -654,6 +734,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
             .to_string(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -694,7 +775,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(sibling_release.status, PendingReleaseStatus::Superseded);
+    assert_eq!(sibling_release.status, PendingReleaseStatus::Standby);
 }
 
 #[tokio::test]
@@ -705,6 +786,7 @@ async fn download_submission_roundtrips_episode_scope() {
 
     workflow_store
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-episode-scope".to_string(),
             facet: "series".to_string(),
             download_client_id: None,
@@ -734,11 +816,7 @@ async fn download_submission_roundtrips_episode_scope() {
     .expect("load raw submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            None,
-            "nzbget",
-            "job-episode-scope",
-        ))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-episode-scope"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -773,6 +851,15 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-legacy-scope").await;
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
+    query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES (?, 'scryer_submission', ?)",
+    )
+    .bind("00000000-0000-4000-8000-000000000031")
+    .bind(chrono::Utc::now())
+    .execute(ctx.db.pool())
+    .await
+    .expect("insert canonical parent for legacy submission row");
 
     query(
         "INSERT INTO download_submissions
@@ -780,7 +867,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
           source_hint, source_kind, request_signature, collection_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind("submission-legacy")
+    .bind("00000000-0000-4000-8000-000000000031")
     .bind("title-legacy-scope")
     .bind("series")
     .bind("nzbget")
@@ -795,11 +882,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     .expect("insert legacy submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            None,
-            "nzbget",
-            "job-legacy-scope",
-        ))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-legacy-scope"))
         .await
         .expect("find legacy submission")
         .expect("legacy submission exists");

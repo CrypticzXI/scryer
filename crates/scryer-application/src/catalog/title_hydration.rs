@@ -1,6 +1,6 @@
 use super::*;
 use crate::catalog_workflow::{
-    HYDRATION_BULK_BATCH_SIZE, HydrationSource, HydrationTarget, extract_tvdb_id,
+    HYDRATION_BULK_BATCH_SIZE, HydrationSource, HydrationTarget, extract_tvdb_id, movie_title_ref,
 };
 use crate::polling_worker::PollingWorker;
 use std::time::Duration;
@@ -8,80 +8,271 @@ use tracing::{debug, info, warn};
 
 const TITLE_HYDRATION_MAX_BATCH: usize = HYDRATION_BULK_BATCH_SIZE;
 const TITLE_HYDRATION_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
-const TITLE_HYDRATION_STARTUP_JITTER_MAX: Duration = Duration::from_secs(10 * 60);
-const TITLE_HYDRATION_BATCH_DELAY_MIN: Duration = Duration::from_secs(10);
-const TITLE_HYDRATION_BATCH_DELAY_MAX: Duration = Duration::from_secs(30);
 const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
-
-fn title_hydration_jitter_delay(
-    seed: &str,
-    stream: &str,
-    minimum: Duration,
-    maximum: Duration,
-) -> Duration {
-    debug_assert!(minimum <= maximum);
-    let minimum_seconds = minimum.as_secs();
-    let window_seconds = maximum
-        .as_secs()
-        .saturating_sub(minimum_seconds)
-        .saturating_add(1);
-    minimum
-        + crate::scheduler::stable_jitter_offset(
-            seed,
-            "title_hydration",
-            stream,
-            Duration::from_secs(window_seconds),
-        )
-}
-
-fn randomized_title_hydration_delay(
-    stream: &str,
-    minimum: Duration,
-    maximum: Duration,
-) -> Duration {
-    title_hydration_jitter_delay(&uuid::Uuid::new_v4().to_string(), stream, minimum, maximum)
-}
+const MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH: usize = 200;
+const MOVIE_SMG_IDENTITY_BACKFILL_MAX_ATTEMPTS: i64 = 5;
+const MOVIE_SMG_IDENTITY_BACKFILL_TICK_INTERVAL: Duration = Duration::from_secs(5);
+const MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY: &str =
+    "catalog.movie_smg_identity_backfill_resume_after";
 
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct MovieSmgIdentityBackfillSummary {
+    pub(crate) linked: usize,
+    pub(crate) unresolved: usize,
+    pub(crate) errors: usize,
+}
+
+pub(crate) enum MovieSmgIdentityBackfillTick {
+    Completed(MovieSmgIdentityBackfillSummary),
+    NotSupported,
+    Cancelled,
+    Failed(crate::AppError),
+}
+
+impl AppUseCase {
+    async fn movie_smg_identity_backfill_resume_position(&self) -> AppResult<Option<String>> {
+        let value_json = self
+            .services
+            .config
+            .settings
+            .get_setting_json_explicit(
+                SETTINGS_SCOPE_SYSTEM,
+                MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY,
+                None,
+            )
+            .await?;
+        Ok(value_json
+            .and_then(|value_json| serde_json::from_str::<String>(&value_json).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()))
+    }
+
+    async fn store_movie_smg_identity_backfill_resume_position(
+        &self,
+        position: Option<&str>,
+    ) -> AppResult<()> {
+        let value_json = serde_json::to_string(position.unwrap_or_default())
+            .map_err(|error| crate::AppError::Repository(error.to_string()))?;
+        self.services
+            .config
+            .settings
+            .upsert_setting_json(
+                SETTINGS_SCOPE_SYSTEM,
+                MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY,
+                None,
+                value_json,
+                "system",
+                None,
+            )
+            .await
+    }
+}
+
+pub(crate) async fn run_movie_smg_identity_backfill_tick(
+    app: &AppUseCase,
+    token: &tokio_util::sync::CancellationToken,
+    limit: usize,
+) -> MovieSmgIdentityBackfillTick {
+    if limit == 0 {
+        return MovieSmgIdentityBackfillTick::Completed(MovieSmgIdentityBackfillSummary::default());
+    }
+
+    let after_id = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.movie_smg_identity_backfill_resume_position() => match result {
+            Ok(after_id) => after_id,
+            Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+        },
+    };
+    let titles = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.services.catalog.titles.list_movie_titles_missing_smg_id_after_id(after_id.as_deref(), limit) => match result {
+            Ok(titles) => titles,
+            Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+        },
+    };
+
+    if titles.is_empty() {
+        return MovieSmgIdentityBackfillTick::Completed(MovieSmgIdentityBackfillSummary::default());
+    }
+
+    let next_cursor = titles
+        .last()
+        .map(|title| title.id.clone())
+        .and_then(|candidate| {
+            after_id
+                .as_deref()
+                .filter(|after_id| candidate.as_str() <= *after_id)
+                .map(str::to_string)
+                .or(Some(candidate))
+        });
+    let mut summary = MovieSmgIdentityBackfillSummary::default();
+    let mut unresolved_title_ids = Vec::new();
+    let candidates = titles
+        .into_iter()
+        .filter_map(|title| match movie_title_ref(&title) {
+            Some(reference) => Some((title, reference)),
+            None => {
+                unresolved_title_ids.push(title.id);
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let references = candidates
+        .iter()
+        .map(|(_, reference)| reference.clone())
+        .collect::<Vec<_>>();
+
+    if !references.is_empty() {
+        let resolutions = tokio::select! {
+            _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+            result = app.services.library.metadata_gateway.resolve_movie_titles(&references, false) => match result {
+                Ok(resolutions) => resolutions,
+                Err(error) if crate::catalog_workflow::movie_title_queries_not_supported(&error) => {
+                    return MovieSmgIdentityBackfillTick::NotSupported;
+                }
+                Err(error) => return MovieSmgIdentityBackfillTick::Failed(error),
+            },
+        };
+        let resolutions = resolutions
+            .into_iter()
+            .map(|resolution| (resolution.ref_index, resolution))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for (index, (title, _)) in candidates.iter().enumerate() {
+            let Some(resolution) = resolutions.get(&index) else {
+                unresolved_title_ids.push(title.id.clone());
+                continue;
+            };
+            let Some(smg_id) = resolution.resolved.then_some(resolution.smg_id).flatten() else {
+                unresolved_title_ids.push(title.id.clone());
+                continue;
+            };
+            let persisted = tokio::select! {
+                _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+                result = app.services.catalog.titles.persist_smg_id(&title.id, smg_id, resolution.redirected_from) => result,
+            };
+            match persisted {
+                Ok(()) => summary.linked += 1,
+                Err(error) => {
+                    summary.errors += 1;
+                    warn!(
+                        title_id = %title.id,
+                        smg_id,
+                        error = %error,
+                        "movie SMG identity backfill: failed to persist title id"
+                    );
+                }
+            }
+        }
+    }
+
+    for title_id in unresolved_title_ids {
+        summary.unresolved += 1;
+        let recorded = tokio::select! {
+            _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+            result = app.services.catalog.titles.record_movie_smg_identity_backfill_unresolved(&title_id) => result,
+        };
+        if let Err(error) = recorded {
+            summary.errors += 1;
+            warn!(
+                title_id = %title_id,
+                max_attempts = MOVIE_SMG_IDENTITY_BACKFILL_MAX_ATTEMPTS,
+                error = %error,
+                "movie SMG identity backfill: failed to record unresolved identity attempt"
+            );
+        }
+    }
+
+    if let Err(error) = tokio::select! {
+        _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+        result = app.store_movie_smg_identity_backfill_resume_position(next_cursor.as_deref()) => result,
+    } {
+        summary.errors += 1;
+        warn!(error = %error, "movie SMG identity backfill: failed to persist cursor");
+    }
+    MovieSmgIdentityBackfillTick::Completed(summary)
+}
+
+async fn run_movie_smg_identity_backfill_phase(
+    app: &AppUseCase,
+    token: &tokio_util::sync::CancellationToken,
+    enabled: &mut bool,
+    last_tick: &mut Option<std::time::Instant>,
+) -> bool {
+    if !*enabled {
+        return true;
+    }
+    if last_tick
+        .is_some_and(|last_tick| last_tick.elapsed() < MOVIE_SMG_IDENTITY_BACKFILL_TICK_INTERVAL)
+    {
+        return true;
+    }
+    *last_tick = Some(std::time::Instant::now());
+
+    match run_movie_smg_identity_backfill_tick(app, token, MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH)
+        .await
+    {
+        MovieSmgIdentityBackfillTick::Completed(summary) => {
+            if summary.linked > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_linked_total")
+                    .increment(summary.linked as u64);
+            }
+            if summary.unresolved > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_unresolved_total")
+                    .increment(summary.unresolved as u64);
+            }
+            if summary.errors > 0 {
+                metrics::counter!("scryer_movie_smg_identity_backfill_errors_total")
+                    .increment(summary.errors as u64);
+            }
+            if summary.linked > 0 || summary.unresolved > 0 || summary.errors > 0 {
+                info!(
+                    linked = summary.linked,
+                    unresolved = summary.unresolved,
+                    errors = summary.errors,
+                    "movie SMG identity backfill batch complete"
+                );
+            }
+            true
+        }
+        MovieSmgIdentityBackfillTick::NotSupported => {
+            *enabled = false;
+            warn!(
+                "movie SMG identity backfill disabled because the metadata gateway does not support title-id queries"
+            );
+            true
+        }
+        MovieSmgIdentityBackfillTick::Cancelled => false,
+        MovieSmgIdentityBackfillTick::Failed(error) => {
+            metrics::counter!("scryer_movie_smg_identity_backfill_errors_total").increment(1);
+            warn!(error = %error, "movie SMG identity backfill batch failed");
+            true
+        }
+    }
 }
 
 pub async fn start_background_title_hydration_loop(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
 ) {
-    let worker = PollingWorker::new("title_hydration", token);
+    let worker = PollingWorker::new("title_hydration", token.clone());
+    let mut movie_smg_identity_backfill_enabled = true;
+    let mut movie_smg_identity_backfill_last_tick = None;
     info!(
         max_batch = TITLE_HYDRATION_MAX_BATCH,
         idle_poll_secs = TITLE_HYDRATION_IDLE_POLL_INTERVAL.as_secs(),
-        startup_jitter_max_secs = TITLE_HYDRATION_STARTUP_JITTER_MAX.as_secs(),
-        batch_delay_min_secs = TITLE_HYDRATION_BATCH_DELAY_MIN.as_secs(),
-        batch_delay_max_secs = TITLE_HYDRATION_BATCH_DELAY_MAX.as_secs(),
         retry_base_secs = TITLE_HYDRATION_RETRY_BASE.as_secs(),
         retry_max_secs = TITLE_HYDRATION_RETRY_MAX.as_secs(),
         max_attempts = TITLE_HYDRATION_MAX_ATTEMPTS,
         "background title hydration loop started"
     );
-
-    let startup_delay = randomized_title_hydration_delay(
-        "startup",
-        Duration::ZERO,
-        TITLE_HYDRATION_STARTUP_JITTER_MAX,
-    );
-    if !startup_delay.is_zero() {
-        info!(
-            delay_secs = startup_delay.as_secs(),
-            "title hydration loop: staggering initial backlog drain"
-        );
-        if !worker
-            .wait_for_wake_or_timeout(&app.runtime.catalog.title_hydration_wake, startup_delay)
-            .await
-        {
-            return;
-        }
-    }
 
     loop {
         let blocked_facets = app
@@ -110,6 +301,17 @@ pub async fn start_background_title_hydration_loop(
         metrics::gauge!("scryer_title_metadata_hydration_pending").set(due_titles.len() as f64);
 
         if due_titles.is_empty() {
+            if !blocked_facets.contains(&MediaFacet::Movie)
+                && !run_movie_smg_identity_backfill_phase(
+                    &app,
+                    &token,
+                    &mut movie_smg_identity_backfill_enabled,
+                    &mut movie_smg_identity_backfill_last_tick,
+                )
+                .await
+            {
+                return;
+            }
             if blocked_facets.is_empty() {
                 if !worker
                     .wait_for_wake_or_timeout(
@@ -169,13 +371,20 @@ pub async fn start_background_title_hydration_loop(
                 due_title.title.id.clone(),
                 (due_title.attempt_count, due_title.title.facet.clone()),
             );
-            if extract_tvdb_id(&due_title.title).is_none() {
+            let requested_movie_ref = movie_title_ref(&due_title.title);
+            let hydratable = match due_title.title.facet {
+                MediaFacet::Movie => requested_movie_ref.is_some(),
+                MediaFacet::Series | MediaFacet::Anime => {
+                    extract_tvdb_id(&due_title.title).is_some()
+                }
+            };
+            if !hydratable {
                 warn!(
                     hydration_source = HydrationSource::BackgroundDue.as_str(),
                     facet = due_title.title.facet.as_str(),
                     title_id = %due_title.title.id,
                     title_name = %due_title.title.name,
-                    "title hydration loop: clearing retry state because title has no tvdb external id"
+                    "title hydration loop: clearing retry state because title has no supported external id"
                 );
                 if let Err(error) = app
                     .services
@@ -188,7 +397,7 @@ pub async fn start_background_title_hydration_loop(
                         hydration_source = HydrationSource::BackgroundDue.as_str(),
                         title_id = %due_title.title.id,
                         error = %error,
-                        "title hydration loop: failed to clear retry state for title without tvdb id"
+                        "title hydration loop: failed to clear retry state for title without a supported external id"
                     );
                 }
                 original_attempts.remove(&due_title.title.id);
@@ -197,12 +406,24 @@ pub async fn start_background_title_hydration_loop(
             targets.push(HydrationTarget {
                 title: due_title.title,
                 requested_tvdb_id: None,
+                requested_movie_ref,
                 sync_wanted_after_completion: true,
                 source: HydrationSource::BackgroundDue,
             });
         }
 
         if targets.is_empty() {
+            if !blocked_facets.contains(&MediaFacet::Movie)
+                && !run_movie_smg_identity_backfill_phase(
+                    &app,
+                    &token,
+                    &mut movie_smg_identity_backfill_enabled,
+                    &mut movie_smg_identity_backfill_last_tick,
+                )
+                .await
+            {
+                return;
+            }
             continue;
         }
 
@@ -226,6 +447,24 @@ pub async fn start_background_title_hydration_loop(
                 for title_id in outcome.hydrated_titles.keys() {
                     metrics::counter!("scryer_title_metadata_hydration_success_total").increment(1);
                     original_attempts.remove(title_id);
+                }
+
+                for title_id in outcome.deferred_titles {
+                    if let Err(error) = app
+                        .services
+                        .catalog
+                        .titles
+                        .clear_title_metadata_hydration_retry_state(&title_id)
+                        .await
+                    {
+                        warn!(
+                            hydration_source = HydrationSource::BackgroundDue.as_str(),
+                            title_id = %title_id,
+                            error = %error,
+                            "title hydration loop: failed to park title unsupported by the legacy metadata gateway"
+                        );
+                    }
+                    original_attempts.remove(&title_id);
                 }
 
                 for (title_id, _) in outcome.failed_titles {
@@ -283,17 +522,15 @@ pub async fn start_background_title_hydration_loop(
                 }
             }
         }
-
-        let batch_delay = randomized_title_hydration_delay(
-            "between_batches",
-            TITLE_HYDRATION_BATCH_DELAY_MIN,
-            TITLE_HYDRATION_BATCH_DELAY_MAX,
-        );
-        debug!(
-            delay_secs = batch_delay.as_secs(),
-            "title hydration loop: pacing next background batch"
-        );
-        if !worker.wait_for_sleep(batch_delay).await {
+        if !blocked_facets.contains(&MediaFacet::Movie)
+            && !run_movie_smg_identity_backfill_phase(
+                &app,
+                &token,
+                &mut movie_smg_identity_backfill_enabled,
+                &mut movie_smg_identity_backfill_last_tick,
+            )
+            .await
+        {
             return;
         }
     }
@@ -383,35 +620,6 @@ fn title_hydration_retry_delay(attempt_count: i64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn background_batch_jitter_stays_between_ten_and_thirty_seconds() {
-        assert_eq!(TITLE_HYDRATION_BATCH_DELAY_MIN, Duration::from_secs(10));
-        assert_eq!(TITLE_HYDRATION_BATCH_DELAY_MAX, Duration::from_secs(30));
-        for seed in ["instance-a", "instance-b", "instance-c", "instance-d"] {
-            let delay = title_hydration_jitter_delay(
-                seed,
-                "between_batches",
-                TITLE_HYDRATION_BATCH_DELAY_MIN,
-                TITLE_HYDRATION_BATCH_DELAY_MAX,
-            );
-            assert!(
-                (TITLE_HYDRATION_BATCH_DELAY_MIN..=TITLE_HYDRATION_BATCH_DELAY_MAX)
-                    .contains(&delay)
-            );
-        }
-    }
-
-    #[test]
-    fn startup_jitter_is_ephemeral_and_bounded() {
-        let delay = title_hydration_jitter_delay(
-            "ephemeral-process-seed",
-            "startup",
-            Duration::ZERO,
-            TITLE_HYDRATION_STARTUP_JITTER_MAX,
-        );
-        assert!(delay <= TITLE_HYDRATION_STARTUP_JITTER_MAX);
-    }
 
     #[test]
     fn next_title_hydration_retry_stops_after_max_attempts() {

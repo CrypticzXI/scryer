@@ -33,7 +33,7 @@ pub use notification::{
     PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
     to_script_environment, to_webhook_json,
 };
-pub const SDK_VERSION: &str = "3.7.0";
+pub const SDK_VERSION: &str = "3.8.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -726,6 +726,8 @@ pub struct NotificationCapabilities {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadClientCapabilities {
     #[serde(default)]
+    pub category_scoped_feedback: bool,
+    #[serde(default)]
     pub pause: bool,
     #[serde(default)]
     pub resume: bool,
@@ -735,6 +737,8 @@ pub struct DownloadClientCapabilities {
     pub remove_with_data: bool,
     #[serde(default)]
     pub mark_imported: bool,
+    #[serde(default)]
+    pub mark_imported_non_destructive: bool,
     #[serde(default)]
     pub prepare_for_import: bool,
     #[serde(default)]
@@ -1768,6 +1772,38 @@ pub struct PluginDownloadListRecentCompletedRequest {
     pub limit: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadFeedbackScope {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadScopedListRequest {
+    #[serde(default)]
+    pub scope: PluginDownloadFeedbackScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct PluginDownloadScopedRecentCompletedRequest {
+    pub limit: usize,
+    #[serde(default)]
+    pub scope: PluginDownloadFeedbackScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadScopeFailure {
+    pub category: String,
+    pub error: PluginError,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginDownloadScopedListResponse<T> {
+    pub items: Vec<T>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<PluginDownloadScopeFailure>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadSource {
     pub kind: DownloadInputKind,
@@ -2656,7 +2692,14 @@ mod tests {
 
     #[test]
     fn current_sdk_constraint_uses_current_v3_minor_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.7.0, <4.0.0");
+        let version = Version::parse(SDK_VERSION).expect("SDK_VERSION should be valid semver");
+        let expected = format!(
+            ">={}.{}.0, <{}.0.0",
+            version.major,
+            version.minor,
+            version.major + 1
+        );
+        assert_eq!(current_sdk_constraint(), expected);
     }
 
     #[test]
@@ -2933,7 +2976,29 @@ mod tests {
             vec![DownloadInputKind::MagnetUri, DownloadInputKind::TorrentFile]
         );
         assert!(provider.capabilities.pause);
+        assert!(!provider.capabilities.mark_imported_non_destructive);
         assert!(provider.capabilities.torrent.is_none());
+    }
+
+    #[test]
+    fn non_destructive_import_mark_command_serializes_with_a_distinct_operation() {
+        let command = command::PluginDownloadClientCommand::MarkImportedNonDestructive(
+            PluginDownloadClientMarkImportedRequest {
+                client_item_id: "ABCDEF".to_string(),
+                info_hash: Some("ABCDEF".to_string()),
+                title_id: None,
+                title_name: None,
+                category: None,
+                post_import_isolation: Vec::new(),
+                imported_path: None,
+                download_path: None,
+            },
+        );
+        let value = serde_json::to_value(command).unwrap();
+        assert_eq!(
+            value.get("operation").and_then(serde_json::Value::as_str),
+            Some("mark_imported_non_destructive")
+        );
     }
 
     #[test]
@@ -3405,6 +3470,12 @@ mod tests {
             .join("schemas/plugin-sdk-v3.schema.json");
         let expected = std::fs::read_to_string(schema_path).unwrap();
         assert_eq!(expected, plugin_sdk_schema_json());
+    }
+
+    #[test]
+    fn category_scoped_feedback_capability_defaults_to_disabled() {
+        let capabilities: DownloadClientCapabilities = serde_json::from_str("{}").unwrap();
+        assert!(!capabilities.category_scoped_feedback);
     }
 
     #[test]

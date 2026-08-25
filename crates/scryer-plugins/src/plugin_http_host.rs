@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use glob::Pattern;
@@ -8,10 +8,17 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use reqwest::blocking::Client;
 use reqwest::{Method, StatusCode};
-use scryer_application::challenge_solver as solver;
+use scryer_application::{
+    CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, IndexerErrorOperation,
+    IndexerErrorRecorder, challenge_solver as solver, classify_indexer_http_response,
+    indexer_response_content_type, unknown_indexer_error,
+};
 
 pub(crate) const HTTP_ENV_NAMESPACE: &str = "extism:host/env";
 const DEFAULT_MAX_HTTP_RESPONSE_BYTES: u64 = 50 * 1024 * 1024;
+const DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const PLUGIN_HTTP_WORKER_RESPONSE_GRACE: Duration = Duration::from_secs(1);
+const PINNED_REQUEST_CLIENT_TTL: Duration = Duration::from_secs(5 * 60);
 type HostResult<T> = Result<T, String>;
 
 static SHARED_PLUGIN_HTTP_RUNTIME: LazyLock<PluginHttpRuntime> =
@@ -25,11 +32,12 @@ pub struct PluginHttpRuntime {
 #[derive(Default)]
 struct PluginHttpRuntimeState {
     extra_ca_bundle_pem: String,
-    cached_client: Option<Client>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PluginHttpHost {
     state: Arc<Mutex<PluginHttpHostState>>,
+    workers: Arc<Mutex<HashMap<PluginHttpRequestClientKey, mpsc::SyncSender<PluginHttpWork>>>>,
 }
 
 struct PluginHttpHostState {
@@ -39,6 +47,20 @@ struct PluginHttpHostState {
     destination_cooldown_key: Option<scryer_outbound_http::DestinationKey>,
     max_http_response_bytes: Option<u64>,
     last_responses: HashMap<String, PluginHttpLastResponse>,
+    indexer_error_capture: Option<ActiveIndexerErrorCapture>,
+}
+
+#[derive(Clone)]
+pub(crate) struct IndexerErrorCaptureContext {
+    pub(crate) indexer_id: String,
+    pub(crate) indexer_name: String,
+    pub(crate) operation: IndexerErrorOperation,
+    pub(crate) recorder: Arc<dyn IndexerErrorRecorder>,
+}
+
+struct ActiveIndexerErrorCapture {
+    context: IndexerErrorCaptureContext,
+    final_response: Option<CapturedIndexerHttpResponse>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -57,6 +79,43 @@ struct PluginHttpLastResponse {
     rate_limit_message: Option<String>,
 }
 
+struct PluginHttpWork {
+    plugin_id: String,
+    request: PluginHttpRequest,
+    body: Option<Vec<u8>>,
+    timeout: Option<Duration>,
+    response: mpsc::SyncSender<HostResult<Vec<u8>>>,
+}
+
+#[derive(Default)]
+struct PluginHttpWorkerRuntime {
+    extra_ca_bundle_pem: String,
+    request_clients: HashMap<PluginHttpRequestClientKey, CachedPluginHttpClient>,
+    proxy_client: Option<Client>,
+}
+
+struct CachedPluginHttpClient {
+    client: Client,
+    created_at: Instant,
+}
+
+impl CachedPluginHttpClient {
+    fn is_fresh(&self) -> bool {
+        pinned_client_is_fresh(self.created_at)
+    }
+}
+
+fn pinned_client_is_fresh(created_at: Instant) -> bool {
+    created_at.elapsed() < PINNED_REQUEST_CLIENT_TTL
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PluginHttpRequestClientKey {
+    scheme: String,
+    host: String,
+    port: u16,
+}
+
 #[derive(Clone)]
 pub(crate) struct IndexerProxyPolicy {
     pub indexer_id: String,
@@ -68,6 +127,8 @@ struct ProxiedHttpResponse {
     status_code: u16,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
+    captured_response: CapturedIndexerHttpResponse,
+    terminal_error: Option<String>,
 }
 
 pub fn shared_plugin_http_runtime() -> PluginHttpRuntime {
@@ -91,50 +152,96 @@ impl PluginHttpRuntime {
             .lock()
             .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))?;
         state.extra_ca_bundle_pem = bundle_pem.into();
-        state.cached_client = None;
         Ok(())
     }
 
-    /// Operator-trusted client for indexer-proxy endpoints (e.g. Byparr). Those
-    /// targets are operator-configured, so they are not subject to the plugin
-    /// egress guard and may legitimately live on the LAN.
-    fn client(&self) -> HostResult<Client> {
-        let mut state = self
-            .state
+    fn extra_ca_bundle_pem(&self) -> HostResult<String> {
+        self.state
             .lock()
-            .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))?;
-        if let Some(client) = &state.cached_client {
-            return Ok(client.clone());
-        }
+            .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))
+            .map(|state| state.extra_ca_bundle_pem.clone())
+    }
+}
 
-        let client =
-            scryer_outbound_http::blocking_indexer_proxy_reqwest_client(&state.extra_ca_bundle_pem)
-                .map_err(|error| error.to_string())?;
-        state.cached_client = Some(client.clone());
-        Ok(client)
+impl PluginHttpWorkerRuntime {
+    fn sync_trust_bundle(&mut self, runtime: &PluginHttpRuntime) -> HostResult<String> {
+        let extra_ca_bundle_pem = runtime.extra_ca_bundle_pem()?;
+        if self.extra_ca_bundle_pem != extra_ca_bundle_pem {
+            self.extra_ca_bundle_pem = extra_ca_bundle_pem.clone();
+            // These values only ever live on the HTTP worker, so replacing a
+            // trust bundle also drops every old client off the async runtime.
+            self.request_clients.clear();
+            self.proxy_client = None;
+        }
+        Ok(extra_ca_bundle_pem)
     }
 
-    /// Builds a DNS-pinned, guarded blocking client for an untrusted
-    /// plugin-controlled request URL under the plugin egress policy. A fresh
-    /// client is built per request because DNS pinning is host-specific; this
-    /// is what stops a plugin from reaching cloud-metadata / link-local space
-    /// (even via DNS rebinding) once its `allowed_hosts` allowlist has passed.
-    fn pinned_request_client(&self, url: &str) -> HostResult<Client> {
-        let extra_ca_bundle_pem = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))?;
-            state.extra_ca_bundle_pem.clone()
-        };
-        scryer_outbound_http::prepare_plugin_blocking_http_target(
-            url,
+    fn pinned_request_client(
+        &mut self,
+        runtime: &PluginHttpRuntime,
+        request_url: &str,
+    ) -> HostResult<Client> {
+        let key = plugin_http_request_client_key(request_url)?;
+        let extra_ca_bundle_pem = self.sync_trust_bundle(runtime)?;
+        if let Some(cached) = self.request_clients.get(&key)
+            && cached.is_fresh()
+        {
+            return Ok(cached.client.clone());
+        }
+
+        let client = scryer_outbound_http::prepare_plugin_blocking_http_target(
+            request_url,
             &extra_ca_bundle_pem,
             "plugin HTTP",
         )
         .map(scryer_outbound_http::PinnedPluginBlockingHttpTarget::into_client)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        self.request_clients.insert(
+            key,
+            CachedPluginHttpClient {
+                client: client.clone(),
+                created_at: Instant::now(),
+            },
+        );
+        Ok(client)
     }
+
+    fn proxy_client(&mut self, runtime: &PluginHttpRuntime) -> HostResult<Client> {
+        let extra_ca_bundle_pem = self.sync_trust_bundle(runtime)?;
+        if let Some(client) = &self.proxy_client {
+            return Ok(client.clone());
+        }
+
+        let client =
+            scryer_outbound_http::blocking_indexer_proxy_reqwest_client(&extra_ca_bundle_pem)
+                .map_err(|error| error.to_string())?;
+        self.proxy_client = Some(client.clone());
+        Ok(client)
+    }
+}
+
+fn plugin_http_request_client_key(request_url: &str) -> HostResult<PluginHttpRequestClientKey> {
+    let url = url::Url::parse(request_url).map_err(|error| format!("Invalid URL: {error:?}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("Invalid URL scheme: {}", url.scheme()));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Invalid URL: missing host".to_string())?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "Invalid URL: missing port".to_string())?;
+    Ok(PluginHttpRequestClientKey {
+        scheme: url.scheme().to_string(),
+        host: host.to_ascii_lowercase(),
+        port,
+    })
+}
+
+fn worker_response_timeout(timeout: Option<Duration>) -> Duration {
+    timeout
+        .unwrap_or(DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT)
+        .saturating_add(PLUGIN_HTTP_WORKER_RESPONSE_GRACE)
 }
 
 impl PluginHttpHost {
@@ -153,12 +260,177 @@ impl PluginHttpHost {
                     .map(scryer_outbound_http::DestinationKey::from),
                 max_http_response_bytes,
                 last_responses: HashMap::new(),
+                indexer_error_capture: None,
             })),
+            workers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub(crate) fn request(
         &self,
+        plugin_id: &str,
+        request: PluginHttpRequest,
+        body: Option<Vec<u8>>,
+        timeout: Option<Duration>,
+    ) -> HostResult<Vec<u8>> {
+        let worker_key = plugin_http_request_client_key(&request.url)?;
+        let allowed_hosts = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?
+            .allowed_hosts
+            .clone();
+        enforce_allowed_hosts(allowed_hosts.as_deref(), &request.url)?;
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        let worker = self.worker_sender(worker_key.clone())?;
+        worker
+            .send(PluginHttpWork {
+                plugin_id: plugin_id.to_string(),
+                request,
+                body,
+                timeout,
+                response: response_sender,
+            })
+            .map_err(|_| {
+                self.reset_worker(&worker_key);
+                "plugin HTTP worker stopped".to_string()
+            })?;
+        let response_timeout = worker_response_timeout(timeout);
+        match response_receiver.recv_timeout(response_timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // DNS resolution happens while the worker builds a pinned
+                // client, before reqwest's request timeout can apply. Drop the
+                // sender mapping so later requests get a fresh worker instead
+                // of queueing behind that stalled resolution.
+                self.reset_worker(&worker_key);
+                Err(format!(
+                    "plugin HTTP worker timed out after {} ms",
+                    response_timeout.as_millis()
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.reset_worker(&worker_key);
+                Err("plugin HTTP worker stopped".to_string())
+            }
+        }
+    }
+
+    pub(crate) fn begin_indexer_error_capture(&self, context: IndexerErrorCaptureContext) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.indexer_error_capture = Some(ActiveIndexerErrorCapture {
+                    context,
+                    final_response: None,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to start indexer HTTP error capture")
+            }
+        }
+    }
+
+    pub(crate) fn finish_indexer_error_capture(&self, operation_failed: bool) {
+        let capture = match self.state.lock() {
+            Ok(mut state) => state.indexer_error_capture.take(),
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to finish indexer HTTP error capture");
+                None
+            }
+        };
+        let Some(capture) = capture else {
+            return;
+        };
+        let Some(response) = capture.final_response else {
+            return;
+        };
+        if operation_failed && (200..300).contains(&response.status) {
+            Self::record_captured_response(&capture.context, response);
+        }
+    }
+
+    fn worker_sender(
+        &self,
+        worker_key: PluginHttpRequestClientKey,
+    ) -> HostResult<mpsc::SyncSender<PluginHttpWork>> {
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|error| format!("plugin HTTP worker lock poisoned: {error}"))?;
+        if let Some(sender) = workers.get(&worker_key) {
+            return Ok(sender.clone());
+        }
+
+        let (sender, receiver) = mpsc::sync_channel::<PluginHttpWork>(32);
+        let state = Arc::clone(&self.state);
+        std::thread::Builder::new()
+            .name("scryer-plugin-http".to_string())
+            .spawn(move || {
+                // This long-lived dispatcher owns the origin's pinned-client
+                // cache. Request tasks receive Client clones, which share that
+                // client's connection pool, so a slow request cannot block a
+                // later request to the same indexer.
+                let runtime = Arc::new(Mutex::new(PluginHttpWorkerRuntime::default()));
+                let mut request_tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
+                while let Ok(work) = receiver.recv() {
+                    let mut still_running = Vec::new();
+                    for task in request_tasks.drain(..) {
+                        if task.is_finished() {
+                            let _ = task.join();
+                        } else {
+                            still_running.push(task);
+                        }
+                    }
+                    request_tasks = still_running;
+
+                    let worker_state = Arc::clone(&state);
+                    let worker_runtime = Arc::clone(&runtime);
+                    let PluginHttpWork {
+                        plugin_id,
+                        request,
+                        body,
+                        timeout,
+                        response,
+                    } = work;
+                    match std::thread::Builder::new()
+                        .name("scryer-plugin-http-request".to_string())
+                        .spawn(move || {
+                            let result = Self::request_inner(
+                                &worker_state,
+                                &worker_runtime,
+                                &plugin_id,
+                                request,
+                                body,
+                                timeout,
+                            );
+                            let _ = response.send(result);
+                        }) {
+                        Ok(task) => request_tasks.push(task),
+                        Err(error) => {
+                            tracing::warn!(error = %error, "failed to start plugin HTTP request task");
+                        }
+                    }
+                }
+                // Keep the cached client owned by this dispatcher until all
+                // request-client clones have been dropped off async runtimes.
+                for task in request_tasks {
+                    let _ = task.join();
+                }
+            })
+            .map_err(|error| format!("failed to start plugin HTTP worker: {error}"))?;
+        workers.insert(worker_key, sender.clone());
+        Ok(sender)
+    }
+
+    fn reset_worker(&self, worker_key: &PluginHttpRequestClientKey) {
+        if let Ok(mut workers) = self.workers.lock() {
+            workers.remove(worker_key);
+        }
+    }
+
+    fn request_inner(
+        state: &Arc<Mutex<PluginHttpHostState>>,
+        worker_runtime: &Arc<Mutex<PluginHttpWorkerRuntime>>,
         plugin_id: &str,
         request: PluginHttpRequest,
         body: Option<Vec<u8>>,
@@ -171,8 +443,7 @@ impl PluginHttpHost {
             destination_cooldown_key,
             max_http_response_bytes,
         ) = {
-            let mut host_state = self
-                .state
+            let mut host_state = state
                 .lock()
                 .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
             host_state
@@ -192,7 +463,10 @@ impl PluginHttpHost {
         // The allowlist is the primary boundary; the guarded, DNS-pinned client
         // is the second layer that keeps a declared host from reaching
         // link-local / cloud-metadata space.
-        let request_client = runtime.pinned_request_client(&request.url)?;
+        let request_client = worker_runtime
+            .lock()
+            .map_err(|error| format!("plugin HTTP worker runtime lock poisoned: {error}"))?
+            .pinned_request_client(&runtime, &request.url)?;
         let started_at = Instant::now();
         let request_is_get = request
             .method
@@ -220,13 +494,22 @@ impl PluginHttpHost {
         let status = response.status();
         let status_code = status.as_u16();
         let headers = response_headers(&response);
+        let captured_headers = captured_response_headers(&response);
+        let direct_body = read_response_body(response, max_http_response_bytes)?;
+        Self::capture_indexer_response(
+            state,
+            CapturedIndexerHttpResponse {
+                status: status_code,
+                headers: captured_headers,
+                body: direct_body.clone(),
+            },
+        );
 
         if status == StatusCode::TOO_MANY_REQUESTS {
-            let direct_body = read_response_body(response, max_http_response_bytes)?;
             let response_bytes = direct_body.len();
             let rate_limit_message = direct_rate_limit_message(&headers, &direct_body);
-            self.store_last_response(plugin_id, status_code, headers)?;
-            self.store_rate_limit_message(plugin_id, rate_limit_message)?;
+            Self::store_last_response(state, plugin_id, status_code, headers)?;
+            Self::store_rate_limit_message(state, plugin_id, rate_limit_message)?;
             tracing::debug!(
                 plugin_id,
                 status = status_code,
@@ -236,14 +519,6 @@ impl PluginHttpHost {
             );
             return Ok(direct_body);
         }
-
-        let should_read_body = status.is_success()
-            || indexer_proxy_policy.is_some() && solver::challenge_candidate_status(status_code);
-        let direct_body = if should_read_body {
-            read_response_body(response, max_http_response_bytes)?
-        } else {
-            Vec::new()
-        };
 
         if let Some(policy) = indexer_proxy_policy.as_ref()
             && solver::looks_like_challenge_response(status_code, &headers, &direct_body)
@@ -272,7 +547,10 @@ impl PluginHttpHost {
             // The proxy endpoint itself is operator-configured, so it uses the
             // trusted client; the plugin URL retry inside stays on the guarded
             // pinned client.
-            let proxy_client = runtime.client()?;
+            let proxy_client = worker_runtime
+                .lock()
+                .map_err(|error| format!("plugin HTTP worker runtime lock poisoned: {error}"))?
+                .proxy_client(&runtime)?;
             let solved = match execute_challenge_solver_request(
                 &proxy_client,
                 &request_client,
@@ -298,7 +576,8 @@ impl PluginHttpHost {
                 }
             };
             let response_bytes = solved.body.len();
-            self.store_last_response(plugin_id, solved.status_code, solved.headers)?;
+            Self::capture_indexer_response(state, solved.captured_response.clone());
+            Self::store_last_response(state, plugin_id, solved.status_code, solved.headers)?;
             tracing::debug!(
                 plugin_id,
                 indexer_id = policy.indexer_id.as_str(),
@@ -308,11 +587,14 @@ impl PluginHttpHost {
                 response_bytes,
                 "plugin HTTP request completed through indexer proxy"
             );
+            if let Some(error) = solved.terminal_error {
+                return Err(error);
+            }
             return Ok(solved.body);
         }
 
         let response_bytes = direct_body.len();
-        self.store_last_response(plugin_id, status_code, headers)?;
+        Self::store_last_response(state, plugin_id, status_code, headers)?;
         tracing::debug!(
             plugin_id,
             status = status_code,
@@ -362,9 +644,61 @@ impl PluginHttpHost {
             .and_then(|response| response.rate_limit_message.clone()))
     }
 
-    fn store_rate_limit_message(&self, plugin_id: &str, message: String) -> HostResult<()> {
-        let mut host_state = self
-            .state
+    fn capture_indexer_response(
+        state: &Arc<Mutex<PluginHttpHostState>>,
+        response: CapturedIndexerHttpResponse,
+    ) {
+        let immediate_capture = match state.lock() {
+            Ok(mut host_state) => {
+                let Some(capture) = host_state.indexer_error_capture.as_mut() else {
+                    return;
+                };
+                capture.final_response = Some(response.clone());
+                (!(200..300).contains(&response.status)).then(|| capture.context.clone())
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to capture indexer HTTP response");
+                None
+            }
+        };
+        if let Some(capture) = immediate_capture {
+            Self::record_captured_response(&capture, response);
+        }
+    }
+
+    fn record_captured_response(
+        capture: &IndexerErrorCaptureContext,
+        response: CapturedIndexerHttpResponse,
+    ) {
+        let classified =
+            classify_indexer_http_response(&response).unwrap_or_else(unknown_indexer_error);
+        let error = scryer_application::NewIndexerError {
+            id: uuid::Uuid::new_v4().to_string(),
+            indexer_id: capture.indexer_id.clone(),
+            indexer_name: capture.indexer_name.clone(),
+            operation: capture.operation,
+            classification: classified.classification,
+            provider_error_code: classified.provider_error_code,
+            message: classified.message.to_string(),
+            content_type: indexer_response_content_type(&response),
+            response,
+            occurred_at: chrono::Utc::now(),
+        };
+        if let Err(error) = capture.recorder.record(error) {
+            tracing::warn!(
+                indexer_id = capture.indexer_id.as_str(),
+                error = %error,
+                "failed to persist captured indexer HTTP response"
+            );
+        }
+    }
+
+    fn store_rate_limit_message(
+        state: &Arc<Mutex<PluginHttpHostState>>,
+        plugin_id: &str,
+        message: String,
+    ) -> HostResult<()> {
+        let mut host_state = state
             .lock()
             .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
         if let Some(response) = host_state.last_responses.get_mut(plugin_id) {
@@ -374,13 +708,12 @@ impl PluginHttpHost {
     }
 
     fn store_last_response(
-        &self,
+        state: &Arc<Mutex<PluginHttpHostState>>,
         plugin_id: &str,
         status_code: u16,
         headers: BTreeMap<String, String>,
     ) -> HostResult<()> {
-        let mut host_state = self
-            .state
+        let mut host_state = state
             .lock()
             .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
         host_state.last_responses.insert(
@@ -527,6 +860,31 @@ fn response_headers(response: &reqwest::blocking::Response) -> BTreeMap<String, 
         }
     }
     headers
+}
+
+fn captured_response_headers(
+    response: &reqwest::blocking::Response,
+) -> Vec<CapturedIndexerHttpHeader> {
+    response
+        .headers()
+        .iter()
+        .map(|(name, value)| CapturedIndexerHttpHeader {
+            name: name.as_str().to_string(),
+            value: value.as_bytes().to_vec(),
+        })
+        .collect()
+}
+
+fn captured_headers_from_text(
+    headers: &BTreeMap<String, String>,
+) -> Vec<CapturedIndexerHttpHeader> {
+    headers
+        .iter()
+        .map(|(name, value)| CapturedIndexerHttpHeader {
+            name: name.clone(),
+            value: value.as_bytes().to_vec(),
+        })
+        .collect()
 }
 
 fn direct_rate_limit_message(headers: &BTreeMap<String, String>, body: &[u8]) -> String {
@@ -687,6 +1045,19 @@ fn execute_challenge_solver_request(
 
     let solution_status = solution.status.unwrap_or_else(|| solver_status.as_u16());
     let solved_final_url = solution.url.as_deref().map(solver::sanitized_url_for_log);
+    let solved_body = solution.response.clone().unwrap_or_default().into_bytes();
+    let headers = solver::safe_solution_response_headers(solution.headers.as_ref());
+    let solved_response = |terminal_error| ProxiedHttpResponse {
+        status_code: solution_status,
+        captured_response: CapturedIndexerHttpResponse {
+            status: solution_status,
+            headers: captured_headers_from_text(&headers),
+            body: solved_body.clone(),
+        },
+        headers: headers.clone(),
+        body: solved_body.clone(),
+        terminal_error,
+    };
     if solution_status == StatusCode::TOO_MANY_REQUESTS.as_u16() {
         tracing::warn!(
             indexer_id = policy.indexer_id.as_str(),
@@ -694,12 +1065,15 @@ fn execute_challenge_solver_request(
             status = solution_status,
             "challenge solver reported target indexer rate limit"
         );
-        return Err(solver::target_rate_limit_message(&solution));
+        return Ok(solved_response(Some(solver::target_rate_limit_message(
+            &solution,
+        ))));
     }
 
-    let solved_body = solution.response.clone().unwrap_or_default().into_bytes();
     if solver::solved_body_looks_rate_limited(&solved_body) {
-        return Err(solver::target_rate_limit_message(&solution));
+        return Ok(solved_response(Some(solver::target_rate_limit_message(
+            &solution,
+        ))));
     }
     if (200..300).contains(&solution_status) && !solved_body.is_empty() {
         // Cache the clearance session so follow-up requests to this origin skip
@@ -719,8 +1093,14 @@ fn execute_challenge_solver_request(
         );
         return Ok(ProxiedHttpResponse {
             status_code: solution_status,
-            headers: solver::safe_solution_response_headers(solution.headers.as_ref()),
+            captured_response: CapturedIndexerHttpResponse {
+                status: solution_status,
+                headers: captured_headers_from_text(&headers),
+                body: solved_body.clone(),
+            },
+            headers,
             body: solved_body,
+            terminal_error: None,
         });
     }
 
@@ -741,47 +1121,71 @@ fn execute_challenge_solver_request(
         )?;
         let status = retry.status();
         let headers = response_headers(&retry);
-        if status == StatusCode::TOO_MANY_REQUESTS {
+        let captured_headers = captured_response_headers(&retry);
+        let body = read_response_body(retry, max_http_response_bytes)?;
+        let terminal_error = if status == StatusCode::TOO_MANY_REQUESTS {
             let retry_after = solver::header_value(&headers, "retry-after").and_then(|value| {
                 scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
             });
-            return Err(solver::rate_limit_message_with_retry_after(retry_after));
-        }
-        if !status.is_success() {
-            return Err(solver::solver_error_message(
-                provider,
-                solver::SolverErrorKind::MissingSolution,
+            Some(solver::rate_limit_message_with_retry_after(retry_after))
+        } else if !status.is_success() {
+            Some(
+                solver::solver_error_message(provider, solver::SolverErrorKind::MissingSolution)
+                    .to_string(),
             )
-            .to_string());
+        } else {
+            None
+        };
+        if terminal_error.is_none() {
+            solver::SolvedSessionCache::shared().store_solution(
+                &policy.config.id,
+                &request.url,
+                &solution,
+            );
         }
-        let body = read_response_body(retry, max_http_response_bytes)?;
-        solver::SolvedSessionCache::shared().store_solution(
-            &policy.config.id,
-            &request.url,
-            &solution,
-        );
         return Ok(ProxiedHttpResponse {
             status_code: status.as_u16(),
+            captured_response: CapturedIndexerHttpResponse {
+                status: status.as_u16(),
+                headers: captured_headers,
+                body: body.clone(),
+            },
             headers,
             body,
+            terminal_error,
         });
     }
 
     if !(200..300).contains(&solution_status) {
-        return Err(format!(
+        return Ok(solved_response(Some(format!(
             "{provider_name} target request returned HTTP {solution_status}."
-        ));
+        ))));
     }
 
-    Err(
+    Ok(solved_response(Some(
         solver::solver_error_message(provider, solver::SolverErrorKind::MissingSolution)
             .to_string(),
-    )
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingIndexerErrorRecorder {
+        errors: Mutex<Vec<scryer_application::NewIndexerError>>,
+    }
+
+    impl IndexerErrorRecorder for RecordingIndexerErrorRecorder {
+        fn record(
+            &self,
+            error: scryer_application::NewIndexerError,
+        ) -> scryer_application::AppResult<()> {
+            self.errors.lock().expect("recorded errors").push(error);
+            Ok(())
+        }
+    }
 
     const TEST_PLUGIN_HTTP_CA_CERT_PEM: &str = concat!(
         "-----BEGIN CERTIFICATE-----\n",
@@ -804,6 +1208,92 @@ mod tests {
         "dlYNMnHca3kyT/MHY4oX5MmPsHY8ANxBBz0XSKw5ysN4cNpK/Q==\n",
         "-----END CERTIFICATE-----\n",
     );
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn capture_scope_records_failed_http_and_terminal_success_responses_once() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let recorder = Arc::new(RecordingIndexerErrorRecorder::default());
+        let host = PluginHttpHost::new(vec!["127.0.0.1".to_string()], None, None, Some(64 * 1024));
+        let context = || IndexerErrorCaptureContext {
+            indexer_id: "indexer-1".to_string(),
+            indexer_name: "Test indexer".to_string(),
+            operation: IndexerErrorOperation::InteractiveSearch,
+            recorder: recorder.clone(),
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/unauthorized"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("content-type", "application/octet-stream")
+                    .set_body_bytes(vec![0, 255, 1, 254]),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        host.begin_indexer_error_capture(context());
+        host.request(
+            "newznab",
+            PluginHttpRequest {
+                url: format!("{}/unauthorized", server.uri()),
+                method: Some("GET".to_string()),
+                headers: BTreeMap::new(),
+            },
+            None,
+            Some(Duration::from_secs(2)),
+        )
+        .expect("accepted HTTP failure response");
+        host.finish_indexer_error_capture(true);
+
+        {
+            let errors = recorder.errors.lock().expect("recorded errors");
+            assert_eq!(
+                errors.len(),
+                1,
+                "terminal completion must not duplicate 401"
+            );
+            assert_eq!(errors[0].response.status, 401);
+            assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
+            assert_eq!(
+                errors[0].classification,
+                scryer_application::IndexerErrorClassification::HttpUnauthorized
+            );
+        }
+
+        Mock::given(method("GET"))
+            .and(path("/malformed"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("malformed plugin result"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        host.begin_indexer_error_capture(context());
+        host.request(
+            "newznab",
+            PluginHttpRequest {
+                url: format!("{}/malformed", server.uri()),
+                method: Some("GET".to_string()),
+                headers: BTreeMap::new(),
+            },
+            None,
+            Some(Duration::from_secs(2)),
+        )
+        .expect("accepted HTTP success response");
+        host.finish_indexer_error_capture(true);
+
+        let errors = recorder.errors.lock().expect("recorded errors");
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[1].response.status, 200);
+        assert_eq!(errors[1].response.body, b"malformed plugin result");
+        assert_eq!(
+            errors[1].classification,
+            scryer_application::IndexerErrorClassification::Unknown
+        );
+    }
 
     #[test]
     fn rate_limit_message_parses_prowlarr_newznab_429_contract() {
@@ -891,6 +1381,71 @@ mod tests {
 
         assert_eq!(errored_children, vec![0]);
         assert_eq!(server.received_requests().await.unwrap().len(), 11);
+    }
+
+    #[tokio::test]
+    async fn request_reuses_its_worker_from_an_async_runtime() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let host = PluginHttpHost::new(vec!["127.0.0.1".to_string()], None, None, Some(64 * 1024));
+        for query in ["first", "second"] {
+            let body = host
+                .request(
+                    "newznab",
+                    PluginHttpRequest {
+                        url: format!("{}/api?query={query}", server.uri()),
+                        method: Some("GET".to_string()),
+                        headers: BTreeMap::new(),
+                    },
+                    None,
+                    Some(Duration::from_secs(2)),
+                )
+                .expect("plugin HTTP request should succeed from an async runtime");
+
+            assert_eq!(body, b"ok");
+        }
+    }
+
+    #[test]
+    fn request_client_cache_key_reuses_an_origin_across_search_queries() {
+        let first = plugin_http_request_client_key("https://indexer.example/api?t=search&q=first")
+            .expect("first search URL should be valid");
+        let second =
+            plugin_http_request_client_key("https://indexer.example/api?t=search&q=second")
+                .expect("second search URL should be valid");
+        let different_port = plugin_http_request_client_key("https://indexer.example:8443/api")
+            .expect("alternate origin URL should be valid");
+
+        assert_eq!(first, second);
+        assert_ne!(first, different_port);
+    }
+
+    #[test]
+    fn pinned_client_cache_entries_expire_after_five_minutes() {
+        assert!(pinned_client_is_fresh(Instant::now()));
+        assert!(!pinned_client_is_fresh(
+            Instant::now() - PINNED_REQUEST_CLIENT_TTL
+        ));
+    }
+
+    #[test]
+    fn worker_response_timeout_bounds_missing_request_timeouts() {
+        assert_eq!(
+            worker_response_timeout(None),
+            DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT + PLUGIN_HTTP_WORKER_RESPONSE_GRACE
+        );
+        assert_eq!(
+            worker_response_timeout(Some(Duration::from_secs(5))),
+            Duration::from_secs(5) + PLUGIN_HTTP_WORKER_RESPONSE_GRACE
+        );
     }
 
     #[test]

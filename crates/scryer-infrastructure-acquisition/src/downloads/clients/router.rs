@@ -5,17 +5,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use scryer_application::challenge_solver as solver;
 use scryer_application::{
-    AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
-    DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
-    DownloadClientRemotePathMapping, DownloadClientStatus, DownloadGrabResult, DownloadSourceKind,
-    DownloadSubmissionRepository, IndexerConfigRepository, IndexerProxyConfigRepository,
-    PersistedSeedGoals, RateLimitCooldownAction, ResolvedDownloadArtifact, ResolvedSeedGoals,
-    SeedGoalGrabRecord, SeedGoalRequest, SeedGoalResolver, SeedingProfileRepository,
-    SettingsRepository, StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
-    apply_remote_path_mappings_to_completed_download, apply_remote_path_mappings_to_status,
-    extract_magnet_info_hash, is_valid_magnet_uri, parse_download_client_remote_path_mappings,
+    AppError, AppResult, DownloadClient, DownloadClientAddRequest,
+    DownloadClientCategorySnapshotStore, DownloadClientConfigRepository,
+    DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadClientRemotePathMapping,
+    DownloadClientStatus, DownloadGrabResult, DownloadSourceKind, DownloadSubmissionRepository,
+    IndexerConfigRepository, IndexerProxyConfigRepository, PersistedSeedGoals,
+    RateLimitCooldownAction, ResolvedDownloadArtifact, ResolvedSeedGoals, SeedGoalGrabRecord,
+    SeedGoalRequest, SeedGoalResolver, SeedingProfileRepository, SettingsRepository, StagedNzbRef,
+    StagedNzbStore, accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
+    apply_remote_path_mappings_to_status, extract_magnet_info_hash, is_valid_magnet_uri,
+    normalize_torrent_info_hash, parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
 use scryer_outbound_http::{
@@ -37,10 +39,42 @@ use super::{
 
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
-const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 300;
+const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS_ENV: &str =
+    "SCRYER_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS";
+const DOWNLOAD_CLIENT_FEEDBACK_POLL_CONCURRENCY: usize = 4;
 const DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const SOLVER_RESPONSE_MAX_BYTES: usize = PROXIED_TORRENT_FILE_MAX_BYTES * 2;
+
+fn download_client_feedback_timeout() -> Duration {
+    static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let raw = std::env::var(DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS_ENV).ok();
+        parse_download_client_feedback_timeout(
+            raw.as_deref(),
+            Duration::from_secs(DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS),
+        )
+    })
+}
+
+fn parse_download_client_feedback_timeout(raw: Option<&str>, default: Duration) -> Duration {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(default)
+}
+
+fn download_feedback_timeout_message(timeout: Duration) -> String {
+    let elapsed = if timeout.subsec_nanos() == 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{}ms", timeout.as_millis())
+    };
+    format!("download feedback timed out after {elapsed}; queue status is temporarily unavailable")
+}
 
 #[derive(Debug)]
 enum BoundedResponseBodyError {
@@ -96,13 +130,58 @@ fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<S
     })
 }
 
+fn hexadecimal_v1_magnet_info_hash(uri: &str) -> Option<String> {
+    extract_magnet_info_hash(uri)
+        .and_then(|hash| normalize_torrent_info_hash(Some(&hash)))
+        .filter(|hash| hash.len() == 40)
+}
+
+fn resolved_magnet_info_hash_hint(info_hash_hint: Option<String>, uri: &str) -> Option<String> {
+    hexadecimal_v1_magnet_info_hash(uri)
+        .or(info_hash_hint)
+        .or_else(|| extract_magnet_info_hash(uri))
+}
+
+fn preserves_v2_info_hash_hint(info_hash_hint: Option<&str>) -> bool {
+    normalize_torrent_info_hash(info_hash_hint).is_some_and(|hash| hash.len() == 64)
+}
+
+fn resolved_v1_info_hash(request: &DownloadClientAddRequest) -> Option<String> {
+    let info_hash_hint = match request.resolved_download_artifact.as_ref()? {
+        ResolvedDownloadArtifact::Magnet { info_hash_hint, .. }
+        | ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } => info_hash_hint.as_deref(),
+        ResolvedDownloadArtifact::Nzb { .. } => return None,
+    };
+    normalize_torrent_info_hash(info_hash_hint).filter(|hash| hash.len() == 40)
+}
+
+#[cfg(test)]
 fn looks_like_torrent_metainfo(bytes: &[u8]) -> bool {
+    torrent_info_hash_v1(bytes).is_some()
+}
+
+/// The BitTorrent v1 info hash is the SHA-1 of the raw bencoded `info`
+/// dictionary. Never deserialize and re-encode it: bencode byte order is part
+/// of the torrent identity.
+fn torrent_info_hash_v1(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
-        return false;
+        return None;
     }
-    matches!(
-        parse_bencode_dict(bytes, 0, 0),
-        Ok((consumed, true)) if consumed == bytes.len()
+    let (consumed, info_span) = parse_bencode_dict(bytes, 0, 0).ok()?;
+    if consumed != bytes.len() {
+        return None;
+    }
+    let (info_start, info_end) = info_span?;
+    let digest = aws_lc_rs::digest::digest(
+        &aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY,
+        &bytes[info_start..info_end],
+    );
+    Some(
+        digest
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
     )
 }
 
@@ -138,25 +217,32 @@ fn parse_bencode_value(bytes: &[u8], offset: usize, depth: usize) -> Result<usiz
     }
 }
 
-fn parse_bencode_dict(bytes: &[u8], offset: usize, depth: usize) -> Result<(usize, bool), ()> {
+fn parse_bencode_dict(
+    bytes: &[u8],
+    offset: usize,
+    depth: usize,
+) -> Result<(usize, Option<(usize, usize)>), ()> {
     if depth > 64 || bytes.get(offset) != Some(&b'd') {
         return Err(());
     }
     let mut cursor = offset + 1;
-    let mut has_info_dict = false;
+    let mut info_span = None;
     while cursor < bytes.len() && bytes[cursor] != b'e' {
         let (after_key, key_start, key_end) = parse_bencode_string(bytes, cursor)?;
         let is_top_level_info = depth == 0 && &bytes[key_start..key_end] == b"info";
         if is_top_level_info && bytes.get(after_key) != Some(&b'd') {
             return Err(());
         }
-        cursor = parse_bencode_value(bytes, after_key, depth + 1)?;
-        has_info_dict |= is_top_level_info;
+        let after_value = parse_bencode_value(bytes, after_key, depth + 1)?;
+        if is_top_level_info && info_span.replace((after_key, after_value)).is_some() {
+            return Err(());
+        }
+        cursor = after_value;
     }
     if cursor >= bytes.len() {
         return Err(());
     }
-    Ok((cursor + 1, has_info_dict))
+    Ok((cursor + 1, info_span))
 }
 
 fn parse_bencode_string(bytes: &[u8], offset: usize) -> Result<(usize, usize, usize), ()> {
@@ -309,6 +395,7 @@ pub struct PrioritizedDownloadClientRouter {
     download_submissions: Option<Arc<dyn DownloadSubmissionRepository>>,
     outbound_http: OutboundHttpClient,
     feedback_read_timeout: Duration,
+    category_snapshot_store: DownloadClientCategorySnapshotStore,
     feedback_read_backoff:
         Arc<Mutex<HashMap<(String, DownloadFeedbackReadKind), FeedbackReadBackoffState>>>,
 }
@@ -333,7 +420,7 @@ impl FeedbackTimeoutDownloadClient {
         T: Send,
     {
         timeout(self.read_timeout, future).await.map_err(|_| {
-            AppError::DownloadFeedbackTimeout(DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string())
+            AppError::DownloadFeedbackTimeout(download_feedback_timeout_message(self.read_timeout))
         })?
     }
 }
@@ -372,13 +459,41 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.run_feedback_read(self.inner.list_queue()).await
     }
 
+    async fn list_queue_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_queue_with_feedback_scope(scope))
+            .await
+    }
+
     async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_queue_for_title(title_id))
             .await
     }
 
+    async fn list_queue_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_queue_for_title_with_feedback_scope(title_id, scope),
+        )
+        .await
+    }
+
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_history()).await
+    }
+
+    async fn list_history_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(self.inner.list_history_with_feedback_scope(scope))
+            .await
     }
 
     async fn list_history_page(
@@ -390,9 +505,34 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
             .await
     }
 
+    async fn list_history_page_with_feedback_scope(
+        &self,
+        offset: usize,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_history_page_with_feedback_scope(offset, limit, scope),
+        )
+        .await
+    }
+
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.run_feedback_read(self.inner.list_recent_activity(limit))
             .await
+    }
+
+    async fn list_recent_activity_with_feedback_scope(
+        &self,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_with_feedback_scope(limit, scope),
+        )
+        .await
     }
 
     async fn list_recent_activity_for_title(
@@ -404,15 +544,53 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
             .await
     }
 
+    async fn list_recent_activity_for_title_with_feedback_scope(
+        &self,
+        title_id: &str,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_for_title_with_feedback_scope(title_id, limit, scope),
+        )
+        .await
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner.list_completed_downloads().await
+        self.run_feedback_read(self.inner.list_completed_downloads())
+            .await
+    }
+
+    async fn list_completed_downloads_with_feedback_scope(
+        &self,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(
+            self.inner
+                .list_completed_downloads_with_feedback_scope(scope),
+        )
+        .await
     }
 
     async fn list_recent_completed_downloads(
         &self,
         limit: usize,
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner.list_recent_completed_downloads(limit).await
+        self.run_feedback_read(self.inner.list_recent_completed_downloads(limit))
+            .await
+    }
+
+    async fn list_recent_completed_downloads_with_feedback_scope(
+        &self,
+        limit: usize,
+        scope: &DownloadClientFeedbackScope,
+    ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_completed_downloads_with_feedback_scope(limit, scope),
+        )
+        .await
     }
 
     async fn list_queue_excluding_client_types(
@@ -455,9 +633,14 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         limit: usize,
         excluded_client_types: &[&str],
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner
-            .list_recent_completed_downloads_excluding_client_types(limit, excluded_client_types)
-            .await
+        self.run_feedback_read(
+            self.inner
+                .list_recent_completed_downloads_excluding_client_types(
+                    limit,
+                    excluded_client_types,
+                ),
+        )
+        .await
     }
 
     async fn list_recent_completed_downloads_for_client_scope(
@@ -467,14 +650,13 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         client_types: &[String],
         excluded_client_types: &[&str],
     ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
-        self.inner
-            .list_recent_completed_downloads_for_client_scope(
-                limit,
-                client_ids,
-                client_types,
-                excluded_client_types,
-            )
-            .await
+        self.run_feedback_read(self.inner.list_recent_completed_downloads_for_client_scope(
+            limit,
+            client_ids,
+            client_types,
+            excluded_client_types,
+        ))
+        .await
     }
 
     async fn get_completed_download_for_source(
@@ -549,6 +731,23 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         self.inner.mark_imported(request).await
     }
 
+    async fn mark_imported_non_destructive(
+        &self,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner.mark_imported_non_destructive(request).await
+    }
+
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        self.inner
+            .mark_imported_non_destructive_for_client_id(client_id, request)
+            .await
+    }
+
     async fn get_client_status(&self) -> AppResult<scryer_application::DownloadClientStatus> {
         self.inner.get_client_status().await
     }
@@ -569,6 +768,7 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
 struct FeedbackReadSummary {
     successful_clients: usize,
     timed_out_clients: usize,
+    timeout_message: Option<String>,
 }
 
 impl FeedbackReadSummary {
@@ -577,15 +777,18 @@ impl FeedbackReadSummary {
     }
 
     fn record_error(&mut self, error: &AppError) {
-        if matches!(error, AppError::DownloadFeedbackTimeout(_)) {
+        if let AppError::DownloadFeedbackTimeout(message) = error {
             self.timed_out_clients += 1;
+            self.timeout_message.get_or_insert_with(|| message.clone());
         }
     }
 
     fn finish(self) -> AppResult<()> {
         if self.successful_clients == 0 && self.timed_out_clients > 0 {
             return Err(AppError::DownloadFeedbackTimeout(
-                DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE.to_string(),
+                self.timeout_message.unwrap_or_else(|| {
+                    download_feedback_timeout_message(download_client_feedback_timeout())
+                }),
             ));
         }
 
@@ -643,7 +846,7 @@ impl PrioritizedDownloadClientRouter {
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
-            Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS),
+            download_client_feedback_timeout(),
         )
     }
 
@@ -668,6 +871,7 @@ impl PrioritizedDownloadClientRouter {
             download_submissions: None,
             outbound_http: OutboundHttpClient::new(http_client.clone(), RateLimitRegistry::new()),
             feedback_read_timeout,
+            category_snapshot_store: DownloadClientCategorySnapshotStore::default(),
             feedback_read_backoff: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -679,6 +883,14 @@ impl PrioritizedDownloadClientRouter {
     ) -> Self {
         self.indexer_configs = Some(indexer_configs);
         self.indexer_proxy_configs = Some(indexer_proxy_configs);
+        self
+    }
+
+    pub fn with_download_client_category_snapshot_store(
+        mut self,
+        store: DownloadClientCategorySnapshotStore,
+    ) -> Self {
+        self.category_snapshot_store = store;
         self
     }
 
@@ -723,14 +935,18 @@ impl PrioritizedDownloadClientRouter {
         )
     }
 
-    fn feedback_backoff_duration(consecutive_failures: u32) -> Duration {
-        let mut seconds = DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS;
+    fn feedback_backoff_duration(
+        consecutive_failures: u32,
+        feedback_read_timeout: Duration,
+        failed_read_elapsed: Duration,
+    ) -> Duration {
+        let maximum = Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS)
+            .max(feedback_read_timeout);
+        let mut delay = Duration::from_secs(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS);
         for _ in 1..consecutive_failures {
-            seconds = seconds
-                .saturating_mul(2)
-                .min(DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS);
+            delay = delay.saturating_mul(2).min(maximum);
         }
-        Duration::from_secs(seconds)
+        delay.max(failed_read_elapsed.min(maximum))
     }
 
     fn feedback_backoff_remaining(
@@ -760,6 +976,75 @@ impl PrioritizedDownloadClientRouter {
         }
     }
 
+    async fn poll_feedback_clients<T, F, Fut>(
+        &self,
+        clients: Vec<DownloadClientConfig>,
+        read_kind: DownloadFeedbackReadKind,
+        operation: &'static str,
+        read: F,
+    ) -> Vec<(DownloadClientConfig, Duration, AppResult<T>)>
+    where
+        T: Send,
+        F: Fn(Arc<dyn DownloadClient>, DownloadClientFeedbackScope) -> Fut + Sync,
+        Fut: Future<Output = AppResult<T>> + Send,
+    {
+        let category_snapshot = self.category_snapshot_store.snapshot().await;
+        let reads = clients
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, config)| {
+                if let Some(remaining) = self.feedback_backoff_remaining(&config.id, read_kind) {
+                    debug!(
+                        client_id = %config.id,
+                        client = %config.name,
+                        read_kind = Self::feedback_read_kind_label(read_kind),
+                        remaining_ms = remaining.as_millis(),
+                        "skipping download client feedback read during backoff"
+                    );
+                    return None;
+                }
+
+                let client = match Self::client_from_config(
+                    &config,
+                    self.staged_nzb_store.clone(),
+                    self.staged_nzb_pipeline_limit.clone(),
+                    self.plugin_provider.as_ref(),
+                    self.feedback_read_timeout,
+                ) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(
+                            client_id = %config.id,
+                            error = %error,
+                            operation,
+                            "skipping client for feedback read"
+                        );
+                        return None;
+                    }
+                };
+                let scope = category_snapshot
+                    .as_deref()
+                    .map(|snapshot| snapshot.feedback_scope_for_client(&config.id))
+                    .unwrap_or_default();
+                let read = read(client, scope);
+                Some(async move {
+                    let started_at = Instant::now();
+                    let result = read.await;
+                    (index, config, started_at.elapsed(), result)
+                })
+            });
+
+        let mut reads = futures_util::stream::iter(reads)
+            .buffer_unordered(DOWNLOAD_CLIENT_FEEDBACK_POLL_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        reads.sort_unstable_by_key(|(index, ..)| *index);
+        reads
+            .into_iter()
+            .map(|(_, config, elapsed, result)| (config, elapsed, result))
+            .collect()
+    }
+
     fn record_feedback_read_success(&self, client_id: &str, kind: DownloadFeedbackReadKind) {
         let mut backoff = self
             .feedback_read_backoff
@@ -768,7 +1053,12 @@ impl PrioritizedDownloadClientRouter {
         backoff.remove(&(client_id.to_string(), kind));
     }
 
-    fn record_feedback_read_failure(&self, client_id: &str, kind: DownloadFeedbackReadKind) {
+    fn record_feedback_read_failure(
+        &self,
+        client_id: &str,
+        kind: DownloadFeedbackReadKind,
+        failed_read_elapsed: Duration,
+    ) {
         let mut backoff = self
             .feedback_read_backoff
             .lock()
@@ -778,7 +1068,11 @@ impl PrioritizedDownloadClientRouter {
             .get(&key)
             .map(|state| state.consecutive_failures.saturating_add(1))
             .unwrap_or(1);
-        let delay = Self::feedback_backoff_duration(failures);
+        let delay = Self::feedback_backoff_duration(
+            failures,
+            self.feedback_read_timeout,
+            failed_read_elapsed,
+        );
         backoff.insert(
             key,
             FeedbackReadBackoffState {
@@ -972,16 +1266,19 @@ impl PrioritizedDownloadClientRouter {
         }
         if is_valid_magnet_uri(download_url) {
             let uri = download_url.to_string();
+            let resolved_v1_info_hash = hexadecimal_v1_magnet_info_hash(&uri);
             let mut prepared = request.clone();
             prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: request
-                    .info_hash_hint
+                info_hash_hint: resolved_v1_info_hash
                     .clone()
+                    .or_else(|| request.info_hash_hint.clone())
                     .or_else(|| extract_magnet_info_hash(&uri)),
                 uri: uri.clone(),
             });
             prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
             prepared.source_hint = Some(uri);
+            prepared.info_hash_hint =
+                resolved_v1_info_hash.or_else(|| request.info_hash_hint.clone());
             return Ok(prepared);
         }
 
@@ -1567,10 +1864,31 @@ impl PrioritizedDownloadClientRouter {
                 });
             }
             if !response.status().is_success() {
-                return Err(AppError::DownloadSubmitUnavailable(format!(
-                    "The download artifact fetch returned HTTP {}.",
-                    response.status().as_u16()
-                )));
+                let status = response.status();
+                return Err(
+                    if matches!(
+                        status,
+                        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+                    ) {
+                        AppError::DownloadSourceGone(format!(
+                            "The download artifact is no longer available (HTTP {}).",
+                            status.as_u16()
+                        ))
+                    } else if matches!(
+                        status,
+                        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                    ) {
+                        AppError::DownloadSubmitUnavailable(format!(
+                            "The download artifact fetch was rejected by indexer '{provider_name}'; check its credentials (HTTP {}).",
+                            status.as_u16()
+                        ))
+                    } else {
+                        AppError::DownloadSubmitUnavailable(format!(
+                            "The download artifact fetch returned HTTP {}.",
+                            status.as_u16()
+                        ))
+                    },
+                );
             }
             let final_url = Some(response.url().to_string());
             let mut header_map = serde_json::Map::new();
@@ -1639,7 +1957,7 @@ impl PrioritizedDownloadClientRouter {
         if final_url.is_some_and(is_valid_magnet_uri) {
             let uri = final_url.unwrap().trim().to_string();
             return Ok(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
+                info_hash_hint: resolved_magnet_info_hash_hint(info_hash_hint, &uri),
                 uri,
             });
         }
@@ -1648,12 +1966,13 @@ impl PrioritizedDownloadClientRouter {
             if is_valid_magnet_uri(trimmed) {
                 let uri = trimmed.to_string();
                 return Ok(ResolvedDownloadArtifact::Magnet {
-                    info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
+                    info_hash_hint: resolved_magnet_info_hash_hint(info_hash_hint, &uri),
                     uri,
                 });
             }
         }
 
+        let torrent_info_hash_v1 = torrent_info_hash_v1(&bytes);
         let content_type = solver::solution_header_string(headers, "content-type");
         let file_name = content_disposition_filename(headers);
         let final_path = final_url
@@ -1669,16 +1988,16 @@ impl PrioritizedDownloadClientRouter {
         if content_type.as_deref().is_some_and(|value| {
             let value = value.to_ascii_lowercase();
             value.contains("application/x-bittorrent")
-                || value.contains("application/octet-stream") && looks_like_torrent_metainfo(&bytes)
+                || value.contains("application/octet-stream") && torrent_info_hash_v1.is_some()
         }) || final_path
             .as_deref()
             .is_some_and(|path| path.ends_with(".torrent"))
             || file_name_lower
                 .as_deref()
                 .is_some_and(|name| name.ends_with(".torrent"))
-            || looks_like_torrent_metainfo(&bytes)
+            || torrent_info_hash_v1.is_some()
         {
-            if !looks_like_torrent_metainfo(&bytes) {
+            if torrent_info_hash_v1.is_none() {
                 return Err(AppError::Validation(format!(
                     "{provider_name} resolved invalid torrent file bytes."
                 )));
@@ -1692,7 +2011,11 @@ impl PrioritizedDownloadClientRouter {
                 bytes,
                 file_name,
                 content_type,
-                info_hash_hint,
+                info_hash_hint: if preserves_v2_info_hash_hint(info_hash_hint.as_deref()) {
+                    info_hash_hint
+                } else {
+                    torrent_info_hash_v1.or(info_hash_hint)
+                },
             });
         }
 
@@ -2076,14 +2399,14 @@ impl PrioritizedDownloadClientRouter {
         config: &DownloadClientConfig,
         grab: &DownloadGrabResult,
         seed_goals: &ResolvedSeedGoals,
-    ) {
+    ) -> Option<scryer_domain::download_identity::DownloadId> {
         if !seed_goals.is_resolved() {
-            return;
+            return None;
         }
-        let Some(submissions) = self.download_submissions.as_ref() else {
-            return;
-        };
+        let download_id = request.download_id?;
+        let submissions = self.download_submissions.as_ref()?;
         let record = SeedGoalGrabRecord {
+            download_id,
             client_id: Some(config.id.clone()),
             client_type: config.client_type.clone(),
             client_item_id: grab.job_id.clone(),
@@ -2104,13 +2427,17 @@ impl PrioritizedDownloadClientRouter {
                     .or_else(|| request.info_hash_hint.clone()),
             },
         };
-        if let Err(error) = submissions.record_seed_goals(record).await {
-            warn!(
-                client_id = config.id.as_str(),
-                client_item_id = grab.job_id.as_str(),
-                error = %error,
-                "failed to persist resolved seeding goals for accepted torrent"
-            );
+        match submissions.record_seed_goals(record).await {
+            Ok(effective_download_id) => Some(effective_download_id),
+            Err(error) => {
+                warn!(
+                    client_id = config.id.as_str(),
+                    client_item_id = grab.job_id.as_str(),
+                    error = %error,
+                    "failed to persist resolved seeding goals for accepted torrent"
+                );
+                None
+            }
         }
     }
 
@@ -2439,6 +2766,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         {
             Ok(request) => request,
             Err(error) => {
+                if error.is_download_source_gone() {
+                    self.delete_staged_nzb(request.staged_nzb.as_ref(), "artifact_source_gone")
+                        .await;
+                    return Err(error);
+                }
                 if let (Some(indexer), Some(mapped_client_id)) =
                     (indexer_config.as_ref(), mapped_client_id)
                 {
@@ -2726,7 +3058,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         } else {
             None
         };
-        for config in clients {
+        for (candidate_index, config) in clients.into_iter().enumerate() {
             info!(
                 routing_mode = if mapped_client_id.is_some() {
                     "mapped"
@@ -2785,7 +3117,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
 
-            let (effective_request, resolved_seed_goals) = match self
+            let (mut effective_request, resolved_seed_goals) = match self
                 .apply_selected_client_routing(request, &config.id)
                 .await
             {
@@ -2797,8 +3129,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                             if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
                                 effective_request.resolved_download_artifact.clone()
                             {
-                                let source_label = effective_request
-                                    .download_id
+                                let wire_download_id =
+                                    effective_request.download_id.map(|id| id.to_wire());
+                                let source_label = wire_download_id
                                     .as_deref()
                                     .or(effective_request.source_title.as_deref())
                                     .unwrap_or("proxied-nzb");
@@ -2941,6 +3274,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 }
             };
 
+            if candidate_index > 0 && effective_request.download_id.is_some() {
+                effective_request.download_id =
+                    Some(scryer_domain::download_identity::DownloadId::new());
+            }
+
             match client.submit_download(&effective_request).await {
                 Ok(result) => {
                     self.delete_staged_nzb(
@@ -2948,19 +3286,26 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         "submit_success",
                     )
                     .await;
-                    let grab = DownloadGrabResult {
+                    let mut grab = DownloadGrabResult {
+                        download_id: effective_request.download_id,
                         job_id: result.job_id,
                         client_id: Some(config.id.clone()),
                         client_type: config.client_type.clone(),
-                        info_hash: result.info_hash,
+                        info_hash: result
+                            .info_hash
+                            .or_else(|| resolved_v1_info_hash(&effective_request)),
                     };
-                    self.persist_seed_goals(
-                        &effective_request,
-                        &config,
-                        &grab,
-                        &resolved_seed_goals,
-                    )
-                    .await;
+                    if let Some(effective_download_id) = self
+                        .persist_seed_goals(
+                            &effective_request,
+                            &config,
+                            &grab,
+                            &resolved_seed_goals,
+                        )
+                        .await
+                    {
+                        grab.download_id = Some(effective_download_id);
+                    }
                     return Ok(grab);
                 }
                 Err(error) => {
@@ -2989,7 +3334,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                                 "mapped_ambiguous_submit",
                             )
                             .await;
-                            return Err(error);
+                            return Err(error.with_ambiguous_download_submission_client(
+                                Some(config.id.clone()),
+                                config.client_type.clone(),
+                            ));
                         }
                         warn!(
                             routing_mode = "mapped",
@@ -3046,6 +3394,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         "submit_failure",
                     )
                     .await;
+                    if error.is_download_submit_ambiguous() {
+                        return Err(error.with_ambiguous_download_submission_client(
+                            Some(config.id.clone()),
+                            config.client_type.clone(),
+                        ));
+                    }
                     return Err(error);
                 }
             }
@@ -3087,33 +3441,16 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            if let Some(remaining) =
-                self.feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::Queue)
-            {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(DownloadFeedbackReadKind::Queue),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for queue listing");
-                    continue;
-                }
-            };
-            match client.list_queue().await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::Queue,
+                "queue listing",
+                |client, scope| async move { client.list_queue_with_feedback_scope(&scope).await },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(&config.id, DownloadFeedbackReadKind::Queue);
                     read_summary.record_success();
@@ -3124,7 +3461,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(items);
                 }
                 Err(error) => {
-                    self.record_feedback_read_failure(&config.id, DownloadFeedbackReadKind::Queue);
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::Queue,
+                        elapsed,
+                    );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list queue");
                 }
@@ -3141,23 +3482,20 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            let _ =
-                self.feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::TitleQueue);
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for title-scoped queue listing");
-                    continue;
-                }
-            };
-            match client.list_queue_for_title(title_id).await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::TitleQueue,
+                "title-scoped queue listing",
+                |client, scope| async move {
+                    client
+                        .list_queue_for_title_with_feedback_scope(title_id, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
@@ -3174,6 +3512,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::TitleQueue,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped queue");
@@ -3191,33 +3530,18 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            if let Some(remaining) =
-                self.feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::History)
-            {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(DownloadFeedbackReadKind::History),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for history listing");
-                    continue;
-                }
-            };
-            match client.list_history().await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::History,
+                "history listing",
+                |client, scope| async move {
+                    client.list_history_with_feedback_scope(&scope).await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
@@ -3234,6 +3558,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::History,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list history");
@@ -3266,42 +3591,30 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            if let Some(remaining) = self
-                .feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::RecentActivity)
-            {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(
-                        DownloadFeedbackReadKind::RecentActivity
-                    ),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for recent activity listing");
-                    continue;
-                }
-            };
-            match client.list_recent_activity(limit).await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::RecentActivity,
+                "recent activity listing",
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_with_feedback_scope(limit, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3312,6 +3625,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
@@ -3323,8 +3637,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3355,42 +3669,30 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            if let Some(remaining) = self
-                .feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::RecentActivity)
-            {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(
-                        DownloadFeedbackReadKind::RecentActivity
-                    ),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for type-scoped recent activity listing");
-                    continue;
-                }
-            };
-            match client.list_recent_activity(limit).await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::RecentActivity,
+                "type-scoped recent activity listing",
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_with_feedback_scope(limit, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3401,6 +3703,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list type-scoped recent activity");
@@ -3412,8 +3715,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3432,32 +3735,30 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            let _ = self.feedback_backoff_remaining(
-                &config.id,
+        let reads = self
+            .poll_feedback_clients(
+                clients,
                 DownloadFeedbackReadKind::TitleRecentActivity,
-            );
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for title-scoped recent activity listing");
-                    continue;
-                }
-            };
-            match client.list_recent_activity_for_title(title_id, limit).await {
+                "title-scoped recent activity listing",
+                |client, scope| async move {
+                    client
+                        .list_recent_activity_for_title_with_feedback_scope(title_id, limit, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
                         DownloadFeedbackReadKind::TitleRecentActivity,
                     );
                     read_summary.record_success();
+                    items.truncate(limit);
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         item.client_name = config.name.clone();
@@ -3468,6 +3769,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::TitleRecentActivity,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list title-scoped recent activity");
@@ -3479,8 +3781,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
-        all_items.truncate(limit);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
         Ok(all_items)
     }
 
@@ -3500,34 +3802,23 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let fetch_limit = offset.saturating_add(limit);
         let mut all_items = Vec::new();
+        let mut client_priorities = HashMap::new();
         let mut read_summary = FeedbackReadSummary::default();
-        for config in clients {
-            if let Some(remaining) =
-                self.feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::History)
-            {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(DownloadFeedbackReadKind::History),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for paged history listing");
-                    continue;
-                }
-            };
-            match client.list_history_page(0, fetch_limit).await {
+        let reads = self
+            .poll_feedback_clients(
+                clients,
+                DownloadFeedbackReadKind::History,
+                "paged history listing",
+                |client, scope| async move {
+                    client
+                        .list_history_page_with_feedback_scope(0, fetch_limit, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
+            client_priorities.insert(config.id.clone(), config.client_priority);
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
@@ -3544,6 +3835,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::History,
+                        elapsed,
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list paged history");
@@ -3555,7 +3847,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut seen = HashSet::with_capacity(all_items.len());
         all_items.retain(|item| seen.insert(download_queue_history_key(item)));
-        all_items.sort_by(compare_history_items_desc);
+        all_items
+            .sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
 
         Ok(all_items.into_iter().skip(offset).take(limit).collect())
     }
@@ -3566,35 +3859,19 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
-        for config in clients {
-            if let Some(remaining) = self.feedback_backoff_remaining(
-                &config.id,
+        let reads = self
+            .poll_feedback_clients(
+                clients,
                 DownloadFeedbackReadKind::RecentCompletedDownloads,
-            ) {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(
-                        DownloadFeedbackReadKind::RecentCompletedDownloads
-                    ),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for completed downloads");
-                    continue;
-                }
-            };
+                "completed downloads listing",
+                |client, scope| async move {
+                    client
+                        .list_completed_downloads_with_feedback_scope(&scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
             let mappings = download_client_remote_path_mappings(&config);
             let accepts_torrents = Self::config_accepts_source_kind(
                 &config,
@@ -3605,8 +3882,12 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 DownloadSourceKind::MagnetUri,
                 self.plugin_provider.as_ref(),
             );
-            match client.list_completed_downloads().await {
+            match result {
                 Ok(mut items) => {
+                    self.record_feedback_read_success(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentCompletedDownloads,
+                    );
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
@@ -3627,6 +3908,11 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     all_items.extend(accepted_items);
                 }
                 Err(error) => {
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentCompletedDownloads,
+                        elapsed,
+                    );
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list completed downloads");
                 }
             }
@@ -3685,47 +3971,34 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .filter(|value| !value.is_empty())
             .collect::<HashSet<_>>();
         let has_scope = !scoped_client_ids.is_empty() || !scoped_client_types.is_empty();
-        let mut all_items = Vec::new();
-        for config in clients {
-            if has_scope {
+        let clients = clients
+            .into_iter()
+            .filter(|config| {
+                if !has_scope {
+                    return true;
+                }
                 let type_key = config.client_type.trim().to_ascii_lowercase();
                 let id_matches =
                     !scoped_client_ids.is_empty() && scoped_client_ids.contains(config.id.trim());
                 let type_matches = !scoped_client_types.is_empty()
                     && scoped_client_types.contains(type_key.as_str());
-                let matches_scope = id_matches || type_matches;
-                if !matches_scope {
-                    continue;
-                }
-            }
-            if let Some(remaining) = self.feedback_backoff_remaining(
-                &config.id,
+                id_matches || type_matches
+            })
+            .collect::<Vec<_>>();
+        let mut all_items = Vec::new();
+        let reads = self
+            .poll_feedback_clients(
+                clients,
                 DownloadFeedbackReadKind::RecentCompletedDownloads,
-            ) {
-                debug!(
-                    client_id = %config.id,
-                    client = %config.name,
-                    read_kind = Self::feedback_read_kind_label(
-                        DownloadFeedbackReadKind::RecentCompletedDownloads
-                    ),
-                    remaining_ms = remaining.as_millis(),
-                    "skipping download client feedback read during backoff"
-                );
-                continue;
-            }
-            let client = match Self::client_from_config(
-                &config,
-                self.staged_nzb_store.clone(),
-                self.staged_nzb_pipeline_limit.clone(),
-                self.plugin_provider.as_ref(),
-                self.feedback_read_timeout,
-            ) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for recent completed downloads");
-                    continue;
-                }
-            };
+                "recent completed downloads listing",
+                |client, scope| async move {
+                    client
+                        .list_recent_completed_downloads_with_feedback_scope(limit, &scope)
+                        .await
+                },
+            )
+            .await;
+        for (config, elapsed, result) in reads {
             let mappings = download_client_remote_path_mappings(&config);
             let accepts_torrents = Self::config_accepts_source_kind(
                 &config,
@@ -3736,17 +4009,22 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 DownloadSourceKind::MagnetUri,
                 self.plugin_provider.as_ref(),
             );
-            match client.list_recent_completed_downloads(limit).await {
+            match result {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
                         &config.id,
                         DownloadFeedbackReadKind::RecentCompletedDownloads,
                     );
+                    let raw_count = items.len();
+                    items.truncate(limit);
                     tracing::debug!(
                         client = %config.name,
                         client_type = %config.client_type,
                         recent_completed_strategy = recent_completed_strategy_label(&config.client_type),
-                        count = items.len(),
+                        raw_count,
+                        returned_count = items.len(),
+                        limit,
+                        saturated = raw_count >= limit,
                         "recent completed downloads from client"
                     );
                     let mut accepted_items = Vec::with_capacity(items.len());
@@ -3766,6 +4044,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     self.record_feedback_read_failure(
                         &config.id,
                         DownloadFeedbackReadKind::RecentCompletedDownloads,
+                        elapsed,
                     );
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list recent completed downloads");
                 }
@@ -3773,7 +4052,6 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         }
 
         all_items.sort_by(compare_completed_downloads_desc);
-        all_items.truncate(limit);
         Ok(all_items)
     }
 
@@ -3812,6 +4090,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             self.plugin_provider.as_ref(),
             self.feedback_read_timeout,
         )?;
+        let started_at = Instant::now();
         match client
             .get_completed_download_for_source(&config.id, &config.client_type, reference)
             .await
@@ -3846,6 +4125,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                 self.record_feedback_read_failure(
                     &config.id,
                     DownloadFeedbackReadKind::RecentCompletedDownloads,
+                    started_at.elapsed(),
                 );
                 Err(error)
             }
@@ -3917,6 +4197,19 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )))
     }
 
+    async fn mark_imported_non_destructive_for_client_id(
+        &self,
+        client_id: &str,
+        request: &scryer_application::DownloadClientMarkImportedRequest,
+    ) -> AppResult<()> {
+        if let Some(client) = self.resolve_client_for_id(client_id).await? {
+            return client.mark_imported_non_destructive(request).await;
+        }
+        Err(AppError::Validation(format!(
+            "download client not found: {client_id}"
+        )))
+    }
+
     async fn delete_queue_item_for_client(
         &self,
         client_type: &str,
@@ -3971,18 +4264,45 @@ fn recent_completed_strategy_label(client_type: &str) -> &'static str {
     }
 }
 
-fn parse_history_timestamp(value: Option<&str>) -> i64 {
-    value
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(0)
+fn parse_history_timestamp(value: Option<&str>) -> Option<i64> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Ok(timestamp) = value.parse::<i64>() {
+        const UNIX_MILLISECONDS_THRESHOLD: u64 = 100_000_000_000;
+        return if timestamp.unsigned_abs() >= UNIX_MILLISECONDS_THRESHOLD {
+            Some(timestamp)
+        } else {
+            timestamp.checked_mul(1_000)
+        };
+    }
+
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
 }
 
 fn compare_history_items_desc(
     left: &DownloadQueueItem,
     right: &DownloadQueueItem,
+    client_priorities: &HashMap<String, i64>,
 ) -> std::cmp::Ordering {
     parse_history_timestamp(right.last_updated_at.as_deref())
         .cmp(&parse_history_timestamp(left.last_updated_at.as_deref()))
+        .then_with(|| {
+            client_priorities
+                .get(&left.client_id)
+                .copied()
+                .unwrap_or(i64::MAX)
+                .cmp(
+                    &client_priorities
+                        .get(&right.client_id)
+                        .copied()
+                        .unwrap_or(i64::MAX),
+                )
+        })
         .then_with(|| right.id.cmp(&left.id))
 }
 
@@ -4017,6 +4337,53 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn history_timestamps_support_seconds_milliseconds_and_rfc3339() {
+        assert_eq!(
+            parse_history_timestamp(Some("1700000000")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            parse_history_timestamp(Some("1700000000000")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            parse_history_timestamp(Some("2023-11-14T22:13:20Z")),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(parse_history_timestamp(Some("not-a-timestamp")), None);
+
+        let mut seconds = test_queue_item("seconds");
+        seconds.last_updated_at = Some("1700000001".to_string());
+        let mut milliseconds = test_queue_item("milliseconds");
+        milliseconds.last_updated_at = Some("1700000000500".to_string());
+        let mut rfc3339 = test_queue_item("rfc3339");
+        rfc3339.last_updated_at = Some("2023-11-14T22:13:20Z".to_string());
+        let mut malformed = test_queue_item("malformed");
+        malformed.last_updated_at = Some("not-a-timestamp".to_string());
+
+        let mut items = vec![malformed, rfc3339, milliseconds, seconds];
+        items.sort_by(|left, right| compare_history_items_desc(left, right, &HashMap::new()));
+        assert_eq!(
+            items
+                .into_iter()
+                .map(|item| item.download_client_item_id)
+                .collect::<Vec<_>>(),
+            vec!["seconds", "milliseconds", "rfc3339", "malformed"]
+        );
+
+        let mut high_priority = test_queue_item("aaa");
+        high_priority.client_id = "high".to_string();
+        high_priority.last_updated_at = Some("1700000000".to_string());
+        let mut low_priority = test_queue_item("zzz");
+        low_priority.client_id = "low".to_string();
+        low_priority.last_updated_at = Some("1700000000".to_string());
+        let client_priorities = HashMap::from([("high".to_string(), 0), ("low".to_string(), 10)]);
+        let mut tied = [low_priority, high_priority];
+        tied.sort_by(|left, right| compare_history_items_desc(left, right, &client_priorities));
+        assert_eq!(tied[0].client_id, "high");
+    }
 
     fn test_indexer_config(base_url: &str) -> scryer_domain::IndexerConfig {
         let now = Utc::now();
@@ -4143,10 +4510,13 @@ mod tests {
             None,
         )
         .expect("valid metainfo is sufficient to classify a torrent");
-        assert!(matches!(
-            artifact,
-            ResolvedDownloadArtifact::TorrentFile { .. }
-        ));
+        let ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } = artifact else {
+            panic!("valid metainfo should classify as a torrent");
+        };
+        assert_eq!(
+            info_hash_hint.as_deref(),
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
+        );
     }
 
     #[tokio::test]
@@ -4322,7 +4692,8 @@ mod tests {
             &format!("{}/download", server.uri()),
             Some(DownloadSourceKind::MagnetUri),
         );
-        torrent_request.info_hash_hint = Some("known-hash".to_string());
+        torrent_request.info_hash_hint =
+            Some("abcdef0123456789abcdef0123456789abcdef01".to_string());
         let prepared = router
             .prepare_download_request(&torrent_request, None)
             .await
@@ -4332,6 +4703,37 @@ mod tests {
             Some(ResolvedDownloadArtifact::TorrentFile { .. })
         ));
         assert_eq!(prepared.source_kind, Some(DownloadSourceKind::TorrentFile));
+        assert_eq!(
+            prepared.info_hash_hint.as_deref(),
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
+        );
+
+        let derived = router
+            .prepare_download_request(
+                &test_add_request(
+                    &format!("{}/download", server.uri()),
+                    Some(DownloadSourceKind::MagnetUri),
+                ),
+                None,
+            )
+            .await
+            .expect("HTTP torrent should derive its v1 hash when the indexer omitted it");
+        assert_eq!(
+            derived.info_hash_hint.as_deref(),
+            Some("1ade8a1a581f338e4fce4ce784da3f7d03f81f3a")
+        );
+
+        let v2_hint = "ab".repeat(32);
+        let mut v2_request = test_add_request(
+            &format!("{}/download", server.uri()),
+            Some(DownloadSourceKind::TorrentFile),
+        );
+        v2_request.info_hash_hint = Some(v2_hint.clone());
+        let prepared = router
+            .prepare_download_request(&v2_request, None)
+            .await
+            .expect("HTTP torrent should preserve an explicit v2 hint");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(v2_hint.as_str()));
 
         let nzb_request = test_add_request(
             "http://127.0.0.1:1/release.nzb",
@@ -4343,6 +4745,56 @@ mod tests {
             .expect("direct NZB URLs must not be fetched by torrent normalization");
         assert_eq!(preserved.source_hint, nzb_request.source_hint);
         assert!(preserved.resolved_download_artifact.is_none());
+    }
+
+    #[tokio::test]
+    async fn hexadecimal_v1_magnets_override_stale_hints_across_resolution_paths() {
+        const STALE_HASH: &str = "abcdef0123456789abcdef0123456789abcdef01";
+        const CANONICAL_HASH: &str = "0123456789abcdef0123456789abcdef01234567";
+        const MAGNET: &str = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+
+        let router = no_client_router();
+        let mut request = test_add_request(MAGNET, Some(DownloadSourceKind::MagnetUri));
+        request.info_hash_hint = Some(STALE_HASH.to_string());
+
+        let direct = router
+            .prepare_download_request(&request, None)
+            .await
+            .expect("direct hexadecimal btih magnet should resolve");
+        assert_eq!(direct.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
+        assert!(matches!(
+            direct.resolved_download_artifact.as_ref(),
+            Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: Some(hash),
+                ..
+            }) if hash == CANONICAL_HASH
+        ));
+
+        let from_final_url = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            Some(MAGNET),
+            None,
+            Vec::new(),
+            Some(STALE_HASH.to_string()),
+        )
+        .expect("final magnet URL should resolve");
+        let prepared = router
+            .prepare_resolved_request(&request, from_final_url)
+            .expect("final magnet URL should prepare");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
+
+        let from_body = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            None,
+            None,
+            MAGNET.as_bytes().to_vec(),
+            Some(STALE_HASH.to_string()),
+        )
+        .expect("magnet response body should resolve");
+        let prepared = router
+            .prepare_resolved_request(&request, from_body)
+            .expect("magnet response body should prepare");
+        assert_eq!(prepared.info_hash_hint.as_deref(), Some(CANONICAL_HASH));
     }
 
     #[tokio::test]
@@ -4966,6 +5418,7 @@ mod tests {
         paused: Mutex<Vec<String>>,
         resumed: Mutex<Vec<String>>,
         deleted: Mutex<Vec<(String, bool, bool)>>,
+        marked_imported: Mutex<Vec<scryer_application::DownloadClientMarkImportedRequest>>,
     }
 
     #[derive(Clone, Copy)]
@@ -5005,6 +5458,7 @@ mod tests {
                 None => {}
             }
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "mock".to_string(),
@@ -5050,6 +5504,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((id.to_string(), is_history, remove_data));
+            Ok(())
+        }
+
+        async fn mark_imported(
+            &self,
+            request: &scryer_application::DownloadClientMarkImportedRequest,
+        ) -> AppResult<()> {
+            self.marked_imported.lock().unwrap().push(request.clone());
             Ok(())
         }
     }
@@ -5182,6 +5644,35 @@ mod tests {
         queue_items: Vec<DownloadQueueItem>,
     }
 
+    struct FeedbackScopeQueueDownloadClient {
+        scopes: Mutex<Vec<Vec<String>>>,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for FeedbackScopeQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            Err(AppError::Repository(
+                "unscoped queue listing should not be used".to_string(),
+            ))
+        }
+
+        async fn list_queue_with_feedback_scope(
+            &self,
+            scope: &DownloadClientFeedbackScope,
+        ) -> AppResult<Vec<DownloadQueueItem>> {
+            self.scopes.lock().unwrap().push(scope.categories.clone());
+            Ok(self.queue_items.clone())
+        }
+    }
+
     #[async_trait]
     impl DownloadClient for DelayedQueueDownloadClient {
         async fn submit_download(
@@ -5189,6 +5680,7 @@ mod tests {
             _request: &DownloadClientAddRequest,
         ) -> AppResult<DownloadGrabResult> {
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "delayed".to_string(),
@@ -5199,6 +5691,119 @@ mod tests {
         async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
             tokio::time::sleep(self.delay).await;
             Ok(self.queue_items.clone())
+        }
+    }
+
+    struct CoordinatedQueueDownloadClient {
+        barrier: Arc<tokio::sync::Barrier>,
+        delay_after_barrier: Duration,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for CoordinatedQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            self.barrier.wait().await;
+            tokio::time::sleep(self.delay_after_barrier).await;
+            Ok(self.queue_items.clone())
+        }
+    }
+
+    struct GatedQueueDownloadClient {
+        started: Option<Arc<tokio::sync::Notify>>,
+        release: Option<Arc<tokio::sync::Notify>>,
+        queue_items: Vec<DownloadQueueItem>,
+    }
+
+    #[async_trait]
+    impl DownloadClient for GatedQueueDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
+            if let Some(started) = &self.started {
+                started.notify_one();
+            }
+            if let Some(release) = &self.release {
+                release.notified().await;
+            }
+            Ok(self.queue_items.clone())
+        }
+    }
+
+    struct DelayedCompletedDownloadClient {
+        delay: Duration,
+    }
+
+    impl DelayedCompletedDownloadClient {
+        async fn delay(&self) {
+            tokio::time::sleep(self.delay).await;
+        }
+    }
+
+    #[async_trait]
+    impl DownloadClient for DelayedCompletedDownloadClient {
+        async fn submit_download(
+            &self,
+            _request: &DownloadClientAddRequest,
+        ) -> AppResult<DownloadGrabResult> {
+            Err(AppError::Repository("not needed in test".to_string()))
+        }
+
+        async fn list_completed_downloads(
+            &self,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads(
+            &self,
+            _limit: usize,
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads_excluding_client_types(
+            &self,
+            _limit: usize,
+            _excluded_client_types: &[&str],
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn list_recent_completed_downloads_for_client_scope(
+            &self,
+            _limit: usize,
+            _client_ids: &[String],
+            _client_types: &[String],
+            _excluded_client_types: &[&str],
+        ) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(Vec::new())
+        }
+
+        async fn get_completed_download_for_source(
+            &self,
+            _client_id: &str,
+            _client_type: &str,
+            _download_client_item_id: &str,
+        ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+            self.delay().await;
+            Ok(None)
         }
     }
 
@@ -5225,6 +5830,7 @@ mod tests {
             _request: &DownloadClientAddRequest,
         ) -> AppResult<DownloadGrabResult> {
             Ok(DownloadGrabResult {
+                download_id: None,
                 job_id: "job-1".to_string(),
                 client_id: None,
                 client_type: "failing".to_string(),
@@ -5484,14 +6090,27 @@ mod tests {
             None,
         );
         request.indexer_id = Some("indexer-1".to_string());
+        let first_attempt_id = scryer_domain::download_identity::DownloadId::parse(
+            "00000000-0000-4000-8000-000000000011",
+        )
+        .expect("fixed UUID should parse");
+        request.download_id = Some(first_attempt_id);
 
         let result = router
             .submit_download(&request)
             .await
             .expect("automatic route should fail over for an unmapped indexer");
         assert_eq!(result.client_id.as_deref(), Some("secondary"));
-        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
-        assert_eq!(secondary.submissions.lock().unwrap().len(), 1);
+        let primary_submissions = primary.submissions.lock().unwrap();
+        let secondary_submissions = secondary.submissions.lock().unwrap();
+        assert_eq!(primary_submissions.len(), 1);
+        assert_eq!(secondary_submissions.len(), 1);
+        let second_attempt_id = secondary_submissions[0]
+            .download_id
+            .expect("fallback attempt should carry an ID");
+        assert_eq!(primary_submissions[0].download_id, Some(first_attempt_id));
+        assert_ne!(second_attempt_id, first_attempt_id);
+        assert_eq!(result.download_id, Some(second_attempt_id));
     }
 
     #[tokio::test]
@@ -5671,10 +6290,12 @@ mod tests {
         );
         request.indexer_id = Some("indexer-1".to_string());
 
-        assert!(matches!(
-            router.submit_download(&request).await,
-            Err(AppError::DownloadSubmitAmbiguous(_))
-        ));
+        assert!(
+            router
+                .submit_download(&request)
+                .await
+                .is_err_and(|error| error.is_download_submit_ambiguous())
+        );
         assert_eq!(mapped.submissions.lock().unwrap().len(), 1);
         assert!(fallback.submissions.lock().unwrap().is_empty());
     }
@@ -6321,7 +6942,7 @@ mod tests {
             .await
             .expect_err("ambiguous submit errors should stop router failover");
 
-        assert!(matches!(error, AppError::DownloadSubmitAmbiguous(_)));
+        assert!(error.is_download_submit_ambiguous());
         assert_eq!(primary.submissions.lock().unwrap().len(), 1);
         assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
     }
@@ -6874,6 +7495,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingDownloadSubmissionRepository {
         seed_goals: Mutex<Vec<SeedGoalGrabRecord>>,
+        effective_seed_goal_download_id:
+            Mutex<Option<scryer_domain::download_identity::DownloadId>>,
     }
 
     #[async_trait]
@@ -6885,16 +7508,23 @@ mod tests {
             Ok(())
         }
 
+        async fn record_ambiguous_submission(
+            &self,
+            _submission: scryer_application::DownloadSubmission,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
         async fn find_by_client_item_id(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<Option<scryer_application::DownloadSubmission>> {
             Ok(None)
         }
 
         async fn list_for_client_items(
             &self,
-            _identities: &[scryer_application::DownloadSourceIdentity],
+            _identities: &[scryer_application::ClientJobLocator],
         ) -> AppResult<Vec<scryer_application::DownloadSubmission>> {
             Ok(Vec::new())
         }
@@ -6922,14 +7552,14 @@ mod tests {
 
         async fn delete_by_client_item_id(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<()> {
             Ok(())
         }
 
         async fn update_tracked_state(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
             _tracked_state: &str,
         ) -> AppResult<()> {
             Ok(())
@@ -6937,14 +7567,19 @@ mod tests {
 
         async fn get_tracked_state(
             &self,
-            _identity: &scryer_application::DownloadSourceIdentity,
+            _identity: &scryer_application::ClientJobLocator,
         ) -> AppResult<Option<String>> {
             Ok(None)
         }
 
-        async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<()> {
+        async fn record_seed_goals(
+            &self,
+            record: SeedGoalGrabRecord,
+        ) -> AppResult<scryer_domain::download_identity::DownloadId> {
+            let download_id = record.download_id;
             self.seed_goals.lock().unwrap().push(record);
-            Ok(())
+            let effective_download_id = *self.effective_seed_goal_download_id.lock().unwrap();
+            Ok(effective_download_id.unwrap_or(download_id))
         }
     }
 
@@ -7020,7 +7655,7 @@ mod tests {
             title: test_title(),
             search_facet: None,
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,
-            download_id: None,
+            download_id: Some(scryer_domain::download_identity::DownloadId::new()),
             source_hint: None,
             staged_nzb: None,
             resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
@@ -7065,10 +7700,12 @@ mod tests {
         let mut request = torrent_add_request(Some("indexer-1"));
         // Tracker demands more than the indexer profile's 1.5.
         request.tracker_min_seed_ratio = Some(3.0);
-        router
+        let expected_download_id = request.download_id.expect("test request has an ID");
+        let grab = router
             .submit_download(&request)
             .await
             .expect("torrent request should route");
+        assert_eq!(grab.download_id, Some(expected_download_id));
 
         let sent = primary.submissions.lock().unwrap();
         let sent = sent.first().expect("submission should be recorded");
@@ -7082,6 +7719,7 @@ mod tests {
         assert_eq!(recorded.client_id.as_deref(), Some("primary"));
         assert_eq!(recorded.client_item_id, "job-1");
         assert_eq!(recorded.client_type, "qbittorrent");
+        assert_eq!(recorded.download_id, expected_download_id);
         assert_eq!(
             recorded.goals.seeding_profile_id.as_deref(),
             Some("indexer-profile")
@@ -7099,6 +7737,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_download_propagates_the_effective_seed_goal_download_id() {
+        let primary = Arc::new(MockDownloadClient::default());
+        let submissions = Arc::new(RecordingDownloadSubmissionRepository::default());
+        let adopted_download_id = scryer_domain::download_identity::DownloadId::new();
+        *submissions.effective_seed_goal_download_id.lock().unwrap() = Some(adopted_download_id);
+        let router = seeding_router(
+            primary,
+            "qbittorrent",
+            vec!["torrent_file".to_string(), "magnet_uri".to_string()],
+            r#"{"primary": {"enabled": true, "seedingProfileId": "routing-profile"}}"#,
+            submissions.clone(),
+        );
+
+        let request = torrent_add_request(Some("indexer-1"));
+        let requested_download_id = request.download_id.expect("test request has an ID");
+        let grab = router
+            .submit_download(&request)
+            .await
+            .expect("torrent request should route");
+
+        assert_ne!(requested_download_id, adopted_download_id);
+        assert_eq!(grab.download_id, Some(adopted_download_id));
+        assert_eq!(
+            submissions.seed_goals.lock().unwrap()[0].download_id,
+            requested_download_id
+        );
+    }
+
+    #[tokio::test]
     async fn submit_download_falls_back_to_the_routing_entry_seeding_profile() {
         let primary = Arc::new(MockDownloadClient::default());
         let submissions = Arc::new(RecordingDownloadSubmissionRepository::default());
@@ -7110,10 +7777,20 @@ mod tests {
             submissions.clone(),
         );
 
-        router
-            .submit_download(&torrent_add_request(None))
+        let canonical_hash = "0123456789abcdef0123456789abcdef01234567";
+        let mut request = torrent_add_request(None);
+        request.info_hash_hint = Some(canonical_hash.to_string());
+        if let Some(ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. }) =
+            request.resolved_download_artifact.as_mut()
+        {
+            *info_hash_hint = Some(canonical_hash.to_string());
+        }
+
+        let grab = router
+            .submit_download(&request)
             .await
             .expect("torrent request should route");
+        assert_eq!(grab.info_hash.as_deref(), Some(canonical_hash));
 
         let recorded = submissions.seed_goals.lock().unwrap();
         let recorded = recorded.first().expect("goals should be persisted");
@@ -7815,7 +8492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_recent_activity_merges_clients_before_truncating() {
+    async fn list_recent_activity_applies_limit_per_client() {
         let client_a = Arc::new(MockDownloadClient::default());
         let client_b = Arc::new(MockDownloadClient::default());
 
@@ -7862,7 +8539,82 @@ mod tests {
             .into_iter()
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+        assert_eq!(
+            ids,
+            vec![
+                "a-1".to_string(),
+                "b-1".to_string(),
+                "a-2".to_string(),
+                "b-2".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_feedback_limit_allows_300_rows_from_each_client() {
+        let client_a = Arc::new(MockDownloadClient::default());
+        let client_b = Arc::new(MockDownloadClient::default());
+        let now = Utc::now();
+
+        for index in 0..301 {
+            let mut a = test_queue_item(&format!("activity-a-{index:03}"));
+            a.last_updated_at = Some((1_800_000_000_i64 - index).to_string());
+            client_a.history_items.lock().unwrap().push(a);
+            let mut b = test_queue_item(&format!("activity-b-{index:03}"));
+            b.last_updated_at = Some((1_700_000_000_i64 - index).to_string());
+            client_b.history_items.lock().unwrap().push(b);
+
+            for (client, prefix) in [(&client_a, "a"), (&client_b, "b")] {
+                client
+                    .completed_downloads
+                    .lock()
+                    .unwrap()
+                    .push(scryer_domain::CompletedDownload {
+                        client_type: "qbittorrent".to_string(),
+                        client_id: String::new(),
+                        download_client_item_id: format!("completed-{prefix}-{index:03}"),
+                        download_id: None,
+                        name: format!("Completed {prefix} {index}"),
+                        release_name: None,
+                        dest_dir: format!("/downloads/{prefix}/{index}"),
+                        category: None,
+                        size_bytes: None,
+                        completed_at: Some(now - chrono::Duration::seconds(index)),
+                        parameters: Vec::new(),
+                    });
+            }
+        }
+
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![
+                    ("client-a".to_string(), client_a),
+                    ("client-b".to_string(), client_b),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("client-a", "Client A", "qbittorrent", 0),
+                    test_config("client-b", "Client B", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        assert_eq!(router.list_recent_activity(300).await.unwrap().len(), 600);
+        assert_eq!(
+            router
+                .list_recent_completed_downloads(300)
+                .await
+                .unwrap()
+                .len(),
+            600
+        );
     }
 
     #[tokio::test]
@@ -7926,7 +8678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_recent_completed_downloads_merges_clients_before_truncating() {
+    async fn list_recent_completed_downloads_applies_limit_per_client() {
         let client_a = Arc::new(MockDownloadClient::default());
         let client_b = Arc::new(MockDownloadClient::default());
 
@@ -8018,7 +8770,15 @@ mod tests {
             .into_iter()
             .map(|item| item.download_client_item_id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["a-1".to_string(), "b-1".to_string()]);
+        assert_eq!(
+            ids,
+            vec![
+                "a-1".to_string(),
+                "b-1".to_string(),
+                "a-2".to_string(),
+                "b-2".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -8365,6 +9125,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn download_client_feedback_timeout_configuration_uses_positive_seconds() {
+        let default = Duration::from_secs(DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS);
+
+        assert_eq!(
+            parse_download_client_feedback_timeout(None, default),
+            default
+        );
+        assert_eq!(
+            parse_download_client_feedback_timeout(Some(" 600 "), default),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            parse_download_client_feedback_timeout(Some("0"), default),
+            default
+        );
+        assert_eq!(
+            parse_download_client_feedback_timeout(Some("invalid"), default),
+            default
+        );
+    }
+
+    #[test]
+    fn feedback_backoff_retains_exponential_growth_for_fast_failures() {
+        let timeout = Duration::from_secs(90);
+        let elapsed = Duration::from_secs(1);
+
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(1, timeout, elapsed),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(2, timeout, elapsed),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(3, timeout, elapsed),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(4, timeout, elapsed),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn feedback_backoff_accounts_for_expensive_failures() {
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                1,
+                Duration::from_secs(300),
+                Duration::from_secs(240),
+            ),
+            Duration::from_secs(240)
+        );
+    }
+
+    #[test]
+    fn feedback_backoff_uses_dynamic_ceiling() {
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                10,
+                Duration::from_secs(300),
+                Duration::from_secs(1),
+            ),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            PrioritizedDownloadClientRouter::feedback_backoff_duration(
+                10,
+                Duration::from_secs(90),
+                Duration::from_secs(500),
+            ),
+            Duration::from_secs(120)
+        );
+    }
+
     #[tokio::test]
     async fn download_client_timeout_wrapper_times_out_feedback_reads() {
         let wrapped = FeedbackTimeoutDownloadClient::new(
@@ -8383,8 +9220,56 @@ mod tests {
         assert!(matches!(
             error,
             AppError::DownloadFeedbackTimeout(ref message)
-                if message == DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE
+                if message == "download feedback timed out after 5ms; queue status is temporarily unavailable"
         ));
+    }
+
+    #[tokio::test]
+    async fn download_client_timeout_wrapper_times_out_all_completion_reads() {
+        let wrapped = FeedbackTimeoutDownloadClient::new(
+            Arc::new(DelayedCompletedDownloadClient {
+                delay: Duration::from_millis(25),
+            }),
+            Duration::from_millis(5),
+        );
+        let client_ids = vec!["client-a".to_string()];
+        let client_types = vec!["qbittorrent".to_string()];
+
+        let errors = [
+            wrapped
+                .list_completed_downloads()
+                .await
+                .expect_err("completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads(10)
+                .await
+                .expect_err("recent completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads_excluding_client_types(10, &["sabnzbd"])
+                .await
+                .expect_err("excluded-type completed download reads should time out"),
+            wrapped
+                .list_recent_completed_downloads_for_client_scope(
+                    10,
+                    &client_ids,
+                    &client_types,
+                    &[],
+                )
+                .await
+                .expect_err("client-scoped completed download reads should time out"),
+            wrapped
+                .get_completed_download_for_source("client-a", "qbittorrent", "item-a")
+                .await
+                .expect_err("targeted completed download reads should time out"),
+        ];
+
+        for error in errors {
+            assert!(matches!(
+                error,
+                AppError::DownloadFeedbackTimeout(ref message)
+                    if message == "download feedback timed out after 5ms; queue status is temporarily unavailable"
+            ));
+        }
     }
 
     #[tokio::test]
@@ -8405,6 +9290,70 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, client_ids);
         assert_eq!(calls[0].1, client_types);
+    }
+
+    #[tokio::test]
+    async fn list_queue_delivers_only_each_clients_case_preserving_category_scope() {
+        let first = Arc::new(FeedbackScopeQueueDownloadClient {
+            scopes: Mutex::new(Vec::new()),
+            queue_items: vec![test_queue_item("first")],
+        });
+        let second = Arc::new(FeedbackScopeQueueDownloadClient {
+            scopes: Mutex::new(Vec::new()),
+            queue_items: vec![test_queue_item("second")],
+        });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_url".to_string()],
+                clients: vec![
+                    ("first".to_string(), first.clone()),
+                    ("second".to_string(), second.clone()),
+                ],
+            });
+        let store = DownloadClientCategorySnapshotStore::default();
+        store
+            .replace(
+                scryer_application::DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(
+                    HashMap::from([
+                        (
+                            "first".to_string(),
+                            vec!["Movies".to_string(), "TV / Anime".to_string()],
+                        ),
+                        ("second".to_string(), vec!["Series-HD".to_string()]),
+                    ]),
+                ),
+            )
+            .await;
+
+        let router = PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("first", "First", "qbittorrent", 0),
+                    test_config("second", "Second", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_secs(1),
+        )
+        .with_download_client_category_snapshot_store(store);
+
+        let items = router.list_queue().await.expect("scoped queue listing");
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first", "second"]);
+        assert_eq!(
+            *first.scopes.lock().unwrap(),
+            vec![vec!["Movies".to_string(), "TV / Anime".to_string()]]
+        );
+        assert_eq!(
+            *second.scopes.lock().unwrap(),
+            vec![vec!["Series-HD".to_string()]]
+        );
     }
 
     #[tokio::test]
@@ -8457,6 +9406,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_queue_polls_clients_concurrently_and_preserves_priority_order() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let first: Arc<dyn DownloadClient> = Arc::new(CoordinatedQueueDownloadClient {
+            barrier: barrier.clone(),
+            delay_after_barrier: Duration::from_millis(40),
+            queue_items: vec![test_queue_item("first")],
+        });
+        let second: Arc<dyn DownloadClient> = Arc::new(CoordinatedQueueDownloadClient {
+            barrier,
+            delay_after_barrier: Duration::ZERO,
+            queue_items: vec![test_queue_item("second")],
+        });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("first".to_string(), first), ("second".to_string(), second)],
+            });
+        let router = PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("first", "First", "qbittorrent", 0),
+                    test_config("second", "Second", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_secs(5),
+        );
+
+        let items = tokio::time::timeout(Duration::from_secs(1), router.list_queue())
+            .await
+            .expect("both feedback reads should reach the barrier concurrently")
+            .expect("parallel queue listing should succeed");
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn list_queue_refills_polling_slots_and_preserves_priority_order() {
+        let first_release = Arc::new(tokio::sync::Notify::new());
+        let fifth_started = Arc::new(tokio::sync::Notify::new());
+        let first: Arc<dyn DownloadClient> = Arc::new(GatedQueueDownloadClient {
+            started: None,
+            release: Some(first_release.clone()),
+            queue_items: vec![test_queue_item("first")],
+        });
+        let immediate = |id| -> Arc<dyn DownloadClient> {
+            Arc::new(GatedQueueDownloadClient {
+                started: None,
+                release: None,
+                queue_items: vec![test_queue_item(id)],
+            })
+        };
+        let fifth: Arc<dyn DownloadClient> = Arc::new(GatedQueueDownloadClient {
+            started: Some(fifth_started.clone()),
+            release: None,
+            queue_items: vec![test_queue_item("fifth")],
+        });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("first".to_string(), first),
+                    ("second".to_string(), immediate("second")),
+                    ("third".to_string(), immediate("third")),
+                    ("fourth".to_string(), immediate("fourth")),
+                    ("fifth".to_string(), fifth),
+                ],
+            });
+        let router = Arc::new(PrioritizedDownloadClientRouter::with_feedback_read_timeout(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("first", "First", "qbittorrent", 0),
+                    test_config("second", "Second", "qbittorrent", 1),
+                    test_config("third", "Third", "qbittorrent", 2),
+                    test_config("fourth", "Fourth", "qbittorrent", 3),
+                    test_config("fifth", "Fifth", "qbittorrent", 4),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+            Duration::from_secs(5),
+        ));
+
+        let poll = tokio::spawn({
+            let router = router.clone();
+            async move { router.list_queue().await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), fifth_started.notified())
+            .await
+            .expect("client five should start while client one remains blocked");
+        first_release.notify_one();
+
+        let items = tokio::time::timeout(Duration::from_secs(1), poll)
+            .await
+            .expect("queue polling should finish after client one is released")
+            .expect("queue polling task should not panic")
+            .expect("queue listing should succeed");
+        let ids = items
+            .into_iter()
+            .map(|item| item.download_client_item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string(),
+                "fourth".to_string(),
+                "fifth".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn list_queue_returns_timeout_error_when_all_clients_time_out() {
         let slow_a: Arc<dyn DownloadClient> = Arc::new(DelayedQueueDownloadClient {
             delay: Duration::from_millis(25),
@@ -8498,7 +9569,7 @@ mod tests {
         assert!(matches!(
             error,
             AppError::DownloadFeedbackTimeout(ref message)
-                if message == DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE
+                if message == "download feedback timed out after 5ms; queue status is temporarily unavailable"
         ));
     }
 

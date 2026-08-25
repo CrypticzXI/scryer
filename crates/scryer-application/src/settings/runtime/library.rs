@@ -1472,7 +1472,7 @@ impl AppUseCase {
         }
 
         if let Some(languages) = settings.required_audio_languages {
-            let languages = normalize_required_audio_languages(languages);
+            let languages = normalize_required_audio_requirements(languages);
             if languages.is_empty() {
                 self.delete_scoped_system_setting(REQUIRED_AUDIO_LANGUAGES_KEY, &library.id)
                     .await?;

@@ -40,7 +40,7 @@ fn app_with_real_fs(ctx: &TestContext) -> scryer_application::AppUseCase {
     ctx.app.with_test_overrides(|builder| {
         builder
             .with_media_files(Arc::new(ctx.media_files.clone()))
-            .with_file_importer(Arc::new(FsFileImporter))
+            .with_file_importer(Arc::new(FsFileImporter::new()))
     })
 }
 
@@ -63,7 +63,7 @@ fn app_with_failing_media_path_update(
                 fail_path,
                 rollback_occupant: None,
             }))
-            .with_file_importer(Arc::new(FsFileImporter))
+            .with_file_importer(Arc::new(FsFileImporter::new()))
     })
 }
 
@@ -80,7 +80,7 @@ fn app_with_failing_media_path_update_and_rollback_occupant(
                 fail_path,
                 rollback_occupant: Some((occupant_path, occupant_bytes)),
             }))
-            .with_file_importer(Arc::new(FsFileImporter))
+            .with_file_importer(Arc::new(FsFileImporter::new()))
     })
 }
 
@@ -92,7 +92,7 @@ impl FileImporter for CleanupFailingFileImporter {
         &self,
         source: &Path,
     ) -> AppResult<scryer_domain::ImportSourceSnapshot> {
-        let importer = FsFileImporter;
+        let importer = FsFileImporter::new();
         importer.snapshot_import_source(source).await
     }
 
@@ -103,7 +103,7 @@ impl FileImporter for CleanupFailingFileImporter {
         mode: scryer_domain::ImportMode,
         expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     ) -> AppResult<scryer_domain::ImportFileResult> {
-        let importer = FsFileImporter;
+        let importer = FsFileImporter::new();
         importer
             .import_file(source, dest, mode, expected_source)
             .await
@@ -489,6 +489,7 @@ async fn seed_media_file(
         title_id: title_id.to_string(),
         file_path: file_path.to_string_lossy().to_string(),
         size_bytes: size,
+        announced_size_bytes: None,
         quality_label: Some("720p".to_string()),
         acquisition_score: Some(score),
         ..Default::default()

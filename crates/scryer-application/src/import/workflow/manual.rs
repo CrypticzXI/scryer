@@ -25,28 +25,56 @@ pub async fn start_background_manual_import_poller(
     // tracked download in this process; each record is decided once.
     let mut manual_import_recovery_memo: HashMap<String, ManualImportRecoveryMemo> =
         HashMap::new();
+    let mut in_flight: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+
+    match app
+        .services
+        .workflow
+        .imports
+        .recover_stale_processing_imports_for_type(
+            ImportType::ManualImport,
+            IMPORT_STALE_RECOVERY_SECONDS,
+        )
+        .await
+    {
+        Ok(recovered) if recovered > 0 => {
+            worker.warn_recovered("recover_stale_manual_imports", recovered);
+        }
+        Err(error) => worker.warn_error("recover_stale_manual_imports", &error),
+        _ => {}
+    }
+
     loop {
         if !worker.wait_for_tick(&mut interval).await {
+            for (id, task) in in_flight.drain() {
+                task.abort();
+                let _ = task.await;
+                mark_manual_import_reconciliation(
+                    &app,
+                    &id,
+                    "manual import was interrupted during shutdown; inspect source and destination",
+                )
+                .await;
+            }
             return;
         }
 
-        match app
-            .services
-            .workflow
-            .imports
-            .recover_stale_processing_imports_for_type(
-                ImportType::ManualImport,
-                IMPORT_STALE_RECOVERY_SECONDS,
-            )
-            .await
-        {
-            Ok(recovered) if recovered > 0 => {
-                worker.warn_recovered("recover_stale_manual_imports", recovered);
+        let finished = in_flight
+            .iter()
+            .filter_map(|(id, task)| task.is_finished().then_some(id.clone()))
+            .collect::<Vec<_>>();
+        for id in finished {
+            if let Some(task) = in_flight.remove(&id)
+                && let Err(error) = task.await
+            {
+                tracing::warn!(import_id = %id, error = %error, "manual import task failed");
+                mark_manual_import_reconciliation(
+                    &app,
+                    &id,
+                    "manual import worker ended unexpectedly; inspect source and destination",
+                )
+                .await;
             }
-            Err(error) => {
-                worker.warn_error("recover_stale_manual_imports", &error);
-            }
-            _ => {}
         }
 
         recover_completed_manual_imports(&app, &worker, &mut manual_import_recovery_memo).await;
@@ -66,134 +94,274 @@ pub async fn start_background_manual_import_poller(
         };
 
         for record in pending {
-            let payload =
-                match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        let result_json = manual_import_result_json(
-                            &record.id,
-                            &ManualImportRequestPayload {
-                                requested_by_user_id: None,
-                                title_id: None,
-                                download_client_item_id: record.source_ref.clone(),
-                                client_id: None,
-                                client_type: record.source_system.clone(),
-                                files: Vec::new(),
-                                selection_id: None,
-                                release_evidence: None,
-                                requested_at: record.created_at.clone(),
-                            },
-                            ImportStatus::Failed,
-                            Some(ImportErrorCode::Unknown),
-                            Some(format!("invalid manual import payload: {error}")),
-                            Vec::new(),
-                        );
-                        let _ = app
-                            .update_import_status_and_notify(
-                                &record.id,
-                                ImportStatus::Failed,
-                                result_json,
-                            )
-                            .await;
-                        continue;
-                    }
-                };
-
-            let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-            let outcome =
-                match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
-                    Ok(result) => result,
-                    Err(error) => QueuedManualImportOutcome {
-                        status: ImportStatus::Failed,
-                        result_json: manual_import_result_json(
-                            &record.id,
-                            &payload,
-                            ImportStatus::Failed,
-                            Some(classify_manual_import_error_message(&error.to_string())),
-                            Some(error.to_string()),
-                            Vec::new(),
-                        ),
-                        files_imported_this_pass: 0,
-                        completed: None,
-                        title_id: payload.title_id.clone(),
-                        expected_mapping_count: None,
-                        prior_import_proven: false,
-                    },
-                };
-
-            if let Err(error) = app
-                .update_import_status_and_notify(
-                    &record.id,
-                    outcome.status,
-                    outcome.result_json.clone(),
-                )
-                .await
-            {
-                worker.warn_error("finalize_manual_import_request", &error);
+            if in_flight.contains_key(&record.id) {
                 continue;
             }
-
-            let has_successful_import = outcome.files_imported_this_pass > 0
-                || outcome.status == ImportStatus::Completed
-                || outcome.prior_import_proven;
-            let terminalized = if has_successful_import {
-                if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
-                    let tracked_id = crate::tracked_downloads::tracked_download_id(
-                        payload.client_id.as_deref(),
-                        &payload.client_type,
-                        &payload.download_client_item_id,
-                    );
-                    let reconciliation = if outcome.prior_import_proven {
-                        handle.mark_imported(tracked_id).await.map(|()| true)
-                    } else {
-                        handle
-                            .reconcile_manual_import(
-                                tracked_id,
-                                outcome.files_imported_this_pass,
-                                outcome.expected_mapping_count,
-                            )
-                            .await
-                    };
-                    match reconciliation {
-                        Ok(terminalized) => terminalized,
-                        Err(error) => {
-                            worker.warn_error("reconcile_manual_import", &error);
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if terminalized {
-                let source_identity = DownloadSourceIdentity::new(
-                    payload.client_id.as_deref(),
-                    &payload.client_type,
-                    &payload.download_client_item_id,
-                );
-                if let Err(error) = app
-                    .services
-                    .workflow
-                    .imports
-                    .delete_manual_import_selections_for_source(&source_identity)
-                    .await
-                {
-                    worker.warn_error("cleanup_terminal_manual_import_selections", &error);
-                }
+            if manual_import_record_requires_reconciliation(&record) {
+                continue;
             }
-
-            maybe_remove_completed_manual_import_download(
-                &app,
-                outcome.completed.as_ref(),
-                outcome.title_id.as_deref(),
-                terminalized,
-            )
-            .await;
+            if !manual_import_retry_is_due(&record, Utc::now()) {
+                continue;
+            }
+            let id = record.id.clone();
+            let task_app = app.clone();
+            let task = tokio::spawn(async move {
+                process_pending_manual_import(task_app, record).await;
+            });
+            in_flight.insert(id, task);
         }
     }
+}
+
+async fn mark_manual_import_reconciliation(app: &AppUseCase, import_id: &str, message: &str) {
+    let record = match app.services.workflow.imports.get_import_by_id(import_id).await {
+        Ok(Some(record)) if record.status == ImportStatus::Processing => record,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::error!(import_id, error = %error, "failed to load interrupted manual import");
+            return;
+        }
+    };
+    let Ok(payload) = serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json)
+    else {
+        tracing::error!(import_id, "interrupted manual import payload is invalid");
+        return;
+    };
+    let file_results = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+        .map(|result| result.file_results)
+        .unwrap_or_default();
+    let result_json = manual_import_pending_result_json(
+        import_id,
+        &payload,
+        format!("Manual reconciliation required: {message}"),
+        true,
+        0,
+        None,
+        file_results,
+    );
+    if let Err(error) = app
+        .update_import_status_and_notify(import_id, ImportStatus::Pending, result_json)
+        .await
+    {
+        tracing::error!(import_id, error = %error, "failed to preserve interrupted manual import");
+    }
+}
+
+pub(crate) fn manual_import_record_requires_reconciliation(
+    record: &scryer_domain::ImportRecord,
+) -> bool {
+    let Some(result) = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+    else {
+        return false;
+    };
+    result.requires_reconciliation
+        || result.error_message.is_some_and(|message| {
+            message
+                .to_ascii_lowercase()
+                .starts_with("manual reconciliation required:")
+        })
+}
+
+fn manual_import_retry_is_due(record: &scryer_domain::ImportRecord, now: DateTime<Utc>) -> bool {
+    record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+        .and_then(|result| result.next_retry_at)
+        .is_none_or(|next_retry_at| next_retry_at <= now)
+}
+
+async fn process_pending_manual_import(app: AppUseCase, record: scryer_domain::ImportRecord) {
+    let payload = match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let result_json = manual_import_result_json(
+                &record.id,
+                &ManualImportRequestPayload {
+                    requested_by_user_id: None,
+                    title_id: None,
+                    download_client_item_id: record.source_ref.clone(),
+                    client_id: None,
+                    client_type: record.source_system.clone(),
+                    files: Vec::new(),
+                    selection_id: None,
+                    release_evidence: None,
+                    trusted_source_root: None,
+                    archive_workspace_root: None,
+                    requested_at: record.created_at.clone(),
+                },
+                ImportStatus::Failed,
+                Some(ImportErrorCode::Unknown),
+                Some(format!("invalid manual import payload: {error}")),
+                Vec::new(),
+            );
+            let _ = app
+                .update_import_status_and_notify(&record.id, ImportStatus::Failed, result_json)
+                .await;
+            return;
+        }
+    };
+
+    let previous_result = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok());
+    let previous_file_results = previous_result
+        .as_ref()
+        .map(|result| result.file_results.clone())
+        .unwrap_or_default();
+
+    let outcome = match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
+        Ok(result) => result,
+        Err(AppError::ManualReconciliationRequired(message)) => QueuedManualImportOutcome {
+            status: ImportStatus::Pending,
+            result_json: manual_import_pending_result_json(
+                &record.id,
+                &payload,
+                format!("Manual reconciliation required: {message}"),
+                true,
+                0,
+                None,
+                previous_file_results.clone(),
+            ),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_mapping_count: Some(payload.files.len()),
+            prior_import_proven: false,
+        },
+        Err(AppError::ImportEvidenceUnavailable(message)) => {
+            let retry_attempts = previous_result
+                .as_ref()
+                .map_or(1, |result| result.retry_attempts.saturating_add(1));
+            let next_retry_at =
+                Utc::now() + manual_import_recovery_retry_delay(retry_attempts);
+            QueuedManualImportOutcome {
+                status: ImportStatus::Pending,
+                result_json: manual_import_pending_result_json(
+                    &record.id,
+                    &payload,
+                    format!("Import evidence is temporarily unavailable: {message}"),
+                    false,
+                    retry_attempts,
+                    Some(next_retry_at),
+                    previous_file_results,
+                ),
+                files_imported_this_pass: 0,
+                completed: None,
+                title_id: payload.title_id.clone(),
+                expected_mapping_count: Some(payload.files.len()),
+                prior_import_proven: false,
+            }
+        }
+        Err(error) => QueuedManualImportOutcome {
+            status: ImportStatus::Failed,
+            result_json: manual_import_result_json(
+                &record.id,
+                &payload,
+                ImportStatus::Failed,
+                Some(classify_manual_import_error_message(&error.to_string())),
+                Some(error.to_string()),
+                Vec::new(),
+            ),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_mapping_count: None,
+            prior_import_proven: false,
+        },
+    };
+
+    if let Err(error) = app
+        .update_import_status_and_notify(&record.id, outcome.status, outcome.result_json.clone())
+        .await
+    {
+        tracing::warn!(import_id = %record.id, error = %error, "failed to finalize manual import request");
+        return;
+    }
+
+    let has_successful_import = outcome.files_imported_this_pass > 0
+        || outcome.status == ImportStatus::Completed
+        || outcome.prior_import_proven;
+    let terminalized = if has_successful_import {
+        let canonical_download_id = match app
+            .services
+            .workflow
+            .imports
+            .canonical_download_id_for_import(&record.id)
+            .await
+        {
+            Ok(canonical_download_id) => canonical_download_id,
+            Err(error) => {
+                tracing::warn!(import_id = %record.id, error = %error, "failed to resolve manual import canonical identity");
+                None
+            }
+        };
+        if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
+            let tracked_id = crate::tracked_downloads::tracked_download_id(
+                payload.client_id.as_deref(),
+                &payload.client_type,
+                &payload.download_client_item_id,
+            );
+            let reconciliation = if outcome.prior_import_proven {
+                handle
+                    .mark_imported_for_download(tracked_id, canonical_download_id)
+                    .await
+                    .map(|()| true)
+            } else {
+                handle
+                    .reconcile_manual_import_for_download(
+                        tracked_id,
+                        canonical_download_id,
+                        outcome.files_imported_this_pass,
+                        outcome.expected_mapping_count,
+                    )
+                    .await
+            };
+            match reconciliation {
+                Ok(terminalized) => terminalized,
+                Err(error) => {
+                    tracing::warn!(import_id = %record.id, error = %error, "failed to reconcile manual import");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if terminalized {
+        let source_identity = ClientJobLocator::for_import_artifact(
+            payload.client_id.as_deref(),
+            &payload.client_type,
+            &payload.download_client_item_id,
+        );
+        if let Err(error) = app
+            .services
+            .workflow
+            .imports
+            .delete_manual_import_selections_for_source(&source_identity)
+            .await
+        {
+            tracing::warn!(import_id = %record.id, error = %error, "failed to clean up terminal manual import selections");
+        }
+    }
+
+    maybe_remove_completed_manual_import_download(
+        &app,
+        outcome.completed.as_ref(),
+        outcome.title_id.as_deref(),
+        terminalized,
+    )
+    .await;
 }
 async fn maybe_remove_completed_manual_import_download(
     app: &AppUseCase,
@@ -222,6 +390,7 @@ async fn maybe_remove_completed_manual_import_download(
     // parks it in `ImportedSeeding`.
     let _ = reconcile_terminal_download_cleanup(
         app,
+        None,
         &completed.client_id,
         &completed.client_type,
         &completed.download_client_item_id,
@@ -295,6 +464,7 @@ pub struct ManualImportSelectionFilePreview {
 
 pub struct ManualImportSelectionPreview {
     pub selection_id: String,
+    pub archive_extraction_needed: bool,
     pub files: Vec<ManualImportSelectionFilePreview>,
     pub available_episodes: Vec<scryer_domain::Episode>,
     pub available_series_movies: Vec<ManualImportSeriesMovieTarget>,
@@ -378,7 +548,7 @@ pub(crate) async fn resolve_current_manual_import_source(
 }
 
 struct AuthorizedManualImportSource {
-    identity: DownloadSourceIdentity,
+    identity: ClientJobLocator,
     title: scryer_domain::Title,
 }
 
@@ -395,7 +565,7 @@ async fn authorize_manual_import_source(
     }
 
     let source_identity =
-        DownloadSourceIdentity::new(Some(client_id), client_type, download_client_item_id);
+        ClientJobLocator::new(Some(client_id), client_type, download_client_item_id);
     let title = app
         .services
         .catalog
@@ -431,7 +601,7 @@ async fn authorize_manual_import_source(
 
 async fn resolve_authorized_manual_import_source(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> AppResult<CompletedDownload> {
     if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
         match handle.completed_source(identity.clone()).await {
@@ -459,7 +629,7 @@ async fn resolve_authorized_manual_import_source(
 
 async fn retained_manual_import_source_is_admitted(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
     completed: &CompletedDownload,
 ) -> AppResult<bool> {
     let has_scryer_submission = app
@@ -478,7 +648,7 @@ async fn retained_manual_import_source_is_admitted(
 
 async fn resolve_live_manual_import_source(
     app: &AppUseCase,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> AppResult<CompletedDownload> {
     let completed = match app
         .resolve_manual_import_source(
@@ -503,9 +673,11 @@ async fn resolve_live_manual_import_source(
 
 fn completed_download_matches_source(
     completed: &CompletedDownload,
-    identity: &DownloadSourceIdentity,
+    identity: &ClientJobLocator,
 ) -> bool {
-    completed.client_id == identity.client_id.as_deref().unwrap_or_default()
+    completed
+        .client_id
+        .eq_ignore_ascii_case(identity.client_id.as_deref().unwrap_or_default())
         && completed
             .client_type
             .eq_ignore_ascii_case(identity.client_type.as_str())
@@ -600,6 +772,12 @@ fn canonical_manual_import_source_under_trusted_root(
             trusted_root.display()
         ))
     })?;
+    let canonical_trusted_root = std::fs::canonicalize(trusted_root).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import source root is not accessible: {} ({err})",
+            trusted_root.display()
+        ))
+    })?;
     let canonical = std::fs::canonicalize(source_path).map_err(|err| {
         AppError::Validation(format!(
             "manual import file is not accessible: {} ({err})",
@@ -608,7 +786,7 @@ fn canonical_manual_import_source_under_trusted_root(
     })?;
 
     if trusted_root_metadata.is_file() {
-        if canonical == trusted_root {
+        if canonical == canonical_trusted_root {
             return Ok(canonical);
         }
         return Err(AppError::Validation(format!(
@@ -624,14 +802,16 @@ fn canonical_manual_import_source_under_trusted_root(
     }
 
     let source_entry_location = source_entry_location_under_parent(source_path)?;
-    if source_entry_location != trusted_root && !source_entry_location.starts_with(trusted_root) {
+    if source_entry_location != canonical_trusted_root
+        && !source_entry_location.starts_with(&canonical_trusted_root)
+    {
         return Err(AppError::Validation(format!(
             "manual import file path is outside the trusted source root: {}",
             source_path.display()
         )));
     }
 
-    if canonical != trusted_root && !canonical.starts_with(trusted_root) {
+    if canonical != canonical_trusted_root && !canonical.starts_with(&canonical_trusted_root) {
         return Err(AppError::Validation(format!(
             "manual import file is outside the trusted source root: {}",
             source_path.display()
@@ -800,7 +980,7 @@ async fn discover_manual_import_video_candidates(
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
 async fn preview_manual_import(
     app: &AppUseCase,
-    completed: &CompletedDownload,
+    source_dir: &Path,
     title: &scryer_domain::Title,
     release_evidence: &ReleaseEvidence,
     available_episodes: &[scryer_domain::Episode],
@@ -1037,6 +1217,18 @@ fn manual_import_episode_label(episode: &scryer_domain::Episode) -> String {
     })
 }
 
+fn reusable_manual_archive_workspace(
+    selection: &crate::ManualImportSelection,
+) -> Option<(PathBuf, String)> {
+    let workspace = selection.archive_workspace_root.as_deref()?;
+    if selection.trusted_source_root.trim().is_empty() {
+        return None;
+    }
+    let existing_root = std::fs::canonicalize(stored_path_to_path_buf(workspace)).ok()?;
+    (existing_root == stored_path_to_path_buf(&selection.trusted_source_root))
+        .then(|| (existing_root, workspace.to_string()))
+}
+
 /// Creates a durable, server-owned selection for files from a tracked completed download.
 /// The caller receives opaque candidate IDs; canonical source paths remain in workflow storage.
 pub async fn begin_manual_import_selection(
@@ -1046,6 +1238,7 @@ pub async fn begin_manual_import_selection(
     client_type: &str,
     download_client_item_id: &str,
     title_id: &str,
+    extract_archives: bool,
 ) -> AppResult<ManualImportSelectionPreview> {
     let client_id = client_id.trim();
     let client_type = client_type.trim().to_ascii_lowercase();
@@ -1060,6 +1253,11 @@ pub async fn begin_manual_import_selection(
     )
     .await?;
     let completed = resolve_authorized_manual_import_source(app, &authorized.identity).await?;
+    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+        app,
+        crate::download_identity::observed_completed_job(&completed),
+    )
+    .await;
     let release_evidence =
         resolve_release_evidence_for_completed_download(app, &completed, None).await?;
     if let Some(submission_title_id) = release_evidence.title_id()
@@ -1072,36 +1270,123 @@ pub async fn begin_manual_import_selection(
     }
     let release_evidence_json = serde_json::to_string(&release_evidence)
         .map_err(|error| AppError::Repository(error.to_string()))?;
-    let trusted_root = std::fs::canonicalize(&completed.dest_dir)
+    let download_root = std::fs::canonicalize(&completed.dest_dir)
         .map_err(|_| manual_import_source_unavailable())?;
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(&completed.client_id),
         &completed.client_type,
         &completed.download_client_item_id,
     );
     let selection_id = scryer_domain::Id::new().0;
-    let prior_candidate_ids = app
+    let prior_selection = app
         .services
         .workflow
         .imports
-        .find_manual_import_selection(&actor.id, title_id, &source_identity)
-        .await?
+        .find_manual_import_selection_for_download(
+            canonical_download_id.as_ref(),
+            &actor.id,
+            title_id,
+            &source_identity,
+        )
+        .await?;
+    let prior_candidate_ids = prior_selection
+        .as_ref()
         .map(|selection| {
             selection
                 .candidates
-                .into_iter()
-                .map(|candidate| (candidate.canonical_path, candidate.id))
+                .iter()
+                .map(|candidate| (candidate.canonical_path.clone(), candidate.id.clone()))
                 .collect::<std::collections::HashMap<_, _>>()
         })
         .unwrap_or_default();
     let (all_episodes, available_series_movies) =
         manual_import_preview_targets(app, title_id).await?;
 
+    let mut preview_root = download_root.clone();
+    let mut trusted_root = download_root;
+    let mut archive_workspace_root = None;
+    let mut archive_extraction_needed =
+        crate::archive_extractor::archive_extraction_would_be_needed(&preview_root)?;
+
+    if archive_extraction_needed && extract_archives {
+        let destination = archive_extraction_destination_for_title(
+            app,
+            &selection_id,
+            &authorized.title,
+        )
+        .await?;
+        let extracted_root = {
+            let _archive_extraction_permit = app
+                .runtime
+                .imports
+                .execution_coordinator
+                .acquire_archive_extraction()
+                .await;
+            crate::archive_extractor::extract_archives_if_needed(
+                &preview_root,
+                Some(destination),
+                None,
+                app.services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .cloned(),
+            )
+            .await?
+        }
+        .ok_or_else(|| {
+            AppError::Validation("archive extraction did not produce importable files".to_string())
+        })?;
+        trusted_root = std::fs::canonicalize(&extracted_root).map_err(|error| {
+            AppError::Validation(format!(
+                "extracted archive workspace is not accessible: {} ({error})",
+                extracted_root.display()
+            ))
+        })?;
+        preview_root = trusted_root.clone();
+        archive_workspace_root = Some(path_to_stored_string(&trusted_root));
+        archive_extraction_needed = false;
+    } else if archive_extraction_needed
+        && let Some((existing_root, workspace)) = prior_selection
+            .as_ref()
+            .and_then(reusable_manual_archive_workspace)
+    {
+        preview_root = existing_root.clone();
+        trusted_root = existing_root;
+        archive_workspace_root = Some(workspace.to_string());
+        archive_extraction_needed = false;
+    }
+
+    if archive_extraction_needed {
+        app.services
+            .workflow
+            .imports
+            .replace_manual_import_selection_for_download(crate::ManualImportSelection {
+                id: selection_id.clone(),
+                actor_user_id: actor.id.clone(),
+                title_id: title_id.to_string(),
+                source_identity,
+                canonical_download_id: None,
+                release_evidence_json: Some(release_evidence_json),
+                trusted_source_root: path_to_stored_string(&trusted_root),
+                archive_workspace_root: None,
+                candidates: Vec::new(),
+            }, canonical_download_id.as_ref())
+            .await?;
+        return Ok(ManualImportSelectionPreview {
+            selection_id,
+            archive_extraction_needed: true,
+            files: Vec::new(),
+            available_episodes: all_episodes,
+            available_series_movies,
+        });
+    }
+
     let mut candidates = Vec::new();
     let mut files = Vec::new();
     let preview = preview_manual_import(
         app,
-        &completed,
+        &preview_root,
         &authorized.title,
         &release_evidence,
         &all_episodes,
@@ -1135,18 +1420,33 @@ pub async fn begin_manual_import_selection(
     app.services
         .workflow
         .imports
-        .replace_manual_import_selection(crate::ManualImportSelection {
+        .replace_manual_import_selection_for_download(crate::ManualImportSelection {
             id: selection_id.clone(),
             actor_user_id: actor.id.clone(),
             title_id: title_id.to_string(),
             source_identity,
+            canonical_download_id: None,
             release_evidence_json: Some(release_evidence_json),
+            trusted_source_root: path_to_stored_string(&trusted_root),
+            archive_workspace_root: archive_workspace_root.clone(),
             candidates,
-        })
+        }, canonical_download_id.as_ref())
         .await?;
+
+    if let Some(previous_workspace) = prior_selection
+        .as_ref()
+        .and_then(|selection| selection.archive_workspace_root.as_deref())
+        .filter(|workspace| Some(*workspace) != archive_workspace_root.as_deref())
+    {
+        crate::archive_extractor::cleanup_extracted_dir(
+            &stored_path_to_path_buf(previous_workspace),
+        )
+        .await;
+    }
 
     Ok(ManualImportSelectionPreview {
         selection_id,
+        archive_extraction_needed: false,
         files,
         available_episodes: all_episodes,
         available_series_movies,
@@ -1414,6 +1714,12 @@ pub struct ManualImportRequestPayload {
     /// degrade to downloader display-name or filename evidence.
     #[serde(default)]
     pub(crate) release_evidence: Option<ReleaseEvidence>,
+    /// Server-owned root that the queued candidate paths were validated against.
+    #[serde(default)]
+    pub(crate) trusted_source_root: Option<String>,
+    /// Temporary archive staging root to remove after execution.
+    #[serde(default)]
+    pub(crate) archive_workspace_root: Option<String>,
     pub requested_at: String,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1425,6 +1731,12 @@ pub struct ManualImportExecutionResult {
     pub status: ImportStatus,
     pub error_code: Option<ImportErrorCode>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub requires_reconciliation: bool,
+    #[serde(default)]
+    pub retry_attempts: u32,
+    #[serde(default)]
+    pub next_retry_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub file_results: Vec<ManualImportFileResult>,
     pub completed_at: DateTime<Utc>,
@@ -1484,11 +1796,41 @@ pub(crate) fn manual_import_result_json(
         status,
         error_code,
         error_message,
+        requires_reconciliation: false,
+        retry_attempts: 0,
+        next_retry_at: None,
         file_results,
         completed_at: Utc::now(),
     })
     .ok()
 }
+
+fn manual_import_pending_result_json(
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+    message: String,
+    requires_reconciliation: bool,
+    retry_attempts: u32,
+    next_retry_at: Option<DateTime<Utc>>,
+    file_results: Vec<ManualImportFileResult>,
+) -> Option<String> {
+    serde_json::to_string(&ManualImportExecutionResult {
+        import_id: import_id.to_string(),
+        client_type: payload.client_type.clone(),
+        download_client_item_id: payload.download_client_item_id.clone(),
+        title_id: payload.title_id.clone(),
+        status: ImportStatus::Pending,
+        error_code: Some(classify_manual_import_error_message(&message)),
+        error_message: Some(message),
+        requires_reconciliation,
+        retry_attempts,
+        next_retry_at,
+        file_results,
+        completed_at: Utc::now(),
+    })
+    .ok()
+}
+
 pub(crate) fn manual_import_source_failed_result_json(
     import_id: &str,
     payload: &ManualImportRequestPayload,
@@ -1519,7 +1861,12 @@ pub(crate) fn manual_import_request_matches_source(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if requested_client_id != payload_client_id {
+    let client_id_matches = match (requested_client_id, payload_client_id) {
+        (None, None) => true,
+        (Some(requested), Some(payload)) => requested.eq_ignore_ascii_case(payload),
+        _ => false,
+    };
+    if !client_id_matches {
         return false;
     }
 
@@ -1543,7 +1890,7 @@ pub(crate) async fn find_active_manual_import_for_source(
         .services
         .workflow
         .imports
-        .list_imports_for_identities(&[DownloadSourceIdentity::new(
+        .list_imports_for_identities(&[ClientJobLocator::new(
             client_id,
             normalized_client_type.as_str(),
             source_ref,
@@ -1600,6 +1947,8 @@ pub(crate) async fn fail_active_manual_import_for_source(
             files: Vec::new(),
             selection_id: None,
             release_evidence: None,
+            trusted_source_root: None,
+            archive_workspace_root: None,
             requested_at: record.created_at.clone(),
         });
     let message = format!("source download failed before import: {failure_reason}");
@@ -1777,10 +2126,12 @@ async fn execute_manual_series_movie_import(
         &dest_path,
         import_mode,
         None,
+        completed,
     )
     .await
     {
         Ok(file_result) => file_result,
+        Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
         Err(error) => {
             let message = error.to_string();
             return Ok(manual_import_file_result(
@@ -1802,6 +2153,10 @@ async fn execute_manual_series_movie_import(
             title_id: title.id.clone(),
             file_path: path_to_stored_string(&dest_path),
             size_bytes: file_result.size_bytes as i64,
+            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                file_result.size_bytes as i64,
+                release_evidence.announced_size_bytes(),
+            ),
             role: crate::MediaFileRole::Primary,
             quality_label: quality_label.clone(),
             scene_name: Some(parsed.raw_title.clone()),
@@ -1875,19 +2230,6 @@ async fn execute_manual_series_movie_import(
         );
     }
     maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
-    if let Err(error) =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await
-    {
-        let message = error.to_string();
-        return Ok(manual_import_file_result(
-            mapping,
-            false,
-            Some(path_to_stored_string(&dest_path)),
-            Some(classify_manual_import_error_message(&message)),
-            Some(message),
-        ));
-    }
-
     if let Some(completed) = completed {
         let linked_episode_artifacts = linked_episode.iter().cloned().collect::<Vec<_>>();
         persist_file_import_artifact(
@@ -1902,7 +2244,23 @@ async fn execute_manual_series_movie_import(
             Some(imported_media_file_id.as_str()),
             &linked_episode_artifacts,
         )
-        .await;
+        .await?;
+    }
+
+    if let Err(error) =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path, completed).await
+    {
+        if matches!(&error, AppError::ManualReconciliationRequired(_)) {
+            return Err(error);
+        }
+        let message = error.to_string();
+        return Ok(manual_import_file_result(
+            mapping,
+            false,
+            Some(path_to_stored_string(&dest_path)),
+            Some(classify_manual_import_error_message(&message)),
+            Some(message),
+        ));
     }
 
     let nfo_enabled = app
@@ -1991,6 +2349,39 @@ pub async fn execute_manual_import(
     reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
 )]
 pub(crate) async fn execute_manual_import_with_release_evidence(
+    app: &AppUseCase,
+    actor: &User,
+    import_id: &str,
+    title_id: &str,
+    completed: Option<&CompletedDownload>,
+    release_evidence: &ReleaseEvidence,
+    files: Vec<ManualImportFileMapping>,
+    trusted_source_root: Option<PathBuf>,
+) -> AppResult<Vec<ManualImportFileResult>> {
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(title_id)
+        .await;
+    execute_manual_import_with_release_evidence_locked(
+        app,
+        actor,
+        import_id,
+        title_id,
+        completed,
+        release_evidence,
+        files,
+        trusted_source_root,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
+)]
+async fn execute_manual_import_with_release_evidence_locked(
     app: &AppUseCase,
     actor: &User,
     import_id: &str,
@@ -2094,6 +2485,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
 
         let target = match manual_import_mapping_target(mapping, &title.facet) {
             Ok(target) => target,
+            Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
             Err(err) => {
                 results.push(manual_import_file_result(
                     mapping,
@@ -2182,6 +2574,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                             import_result.error_message,
                         )
                     }
+                    Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
                     Err(error) => {
                         let message = error.to_string();
                         manual_import_file_result(
@@ -2300,6 +2693,8 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             &quality_profile,
             None,
             crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck,
+            crate::import_decide::ImportOrigin::OperatorQueued,
+            release_evidence.announced_size_bytes(),
             false,
         )
         .await
@@ -2309,6 +2704,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                 imported_media_file_id,
                 reason_code,
                 size_bytes,
+                source_cleanup,
                 ..
             }) => {
                 if let Some(completed) = completed {
@@ -2324,8 +2720,15 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                         imported_media_file_id.as_deref(),
                         std::slice::from_ref(&episode),
                     )
-                    .await;
+                    .await?;
                 }
+                finalize_deferred_import_source_cleanup(
+                    app,
+                    source_cleanup.map(|guard| *guard),
+                    &crate::stored_paths::stored_path_to_path_buf(&dest_path),
+                    completed,
+                )
+                .await?;
                 if let Some(size_bytes) = size_bytes {
                     imported_size_bytes =
                         Some(imported_size_bytes.unwrap_or(0).saturating_add(size_bytes));
@@ -2365,7 +2768,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                             None,
                             std::slice::from_ref(&episode),
                         )
-                        .await;
+                        .await?;
                     }
                     results.push(manual_import_file_result(mapping, true, None, None, None));
                     continue;
@@ -2389,6 +2792,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     Some(rejection.message),
                 ));
             }
+            Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
             Err(err) => {
                 let error_message = err.to_string();
                 results.push(manual_import_file_result(
@@ -2539,8 +2943,25 @@ async fn recover_completed_manual_imports(
             continue;
         };
         let source_identity = recovery.source_identity;
+        let canonical_download_id = match app
+            .services
+            .workflow
+            .imports
+            .canonical_download_id_for_import(&record.id)
+            .await
+        {
+            Ok(canonical_download_id) => canonical_download_id,
+            Err(error) => {
+                worker.warn_error("recovered_manual_import_canonical_download_id", &error);
+                None
+            }
+        };
         match handle
-            .mark_imported_if_awaiting_import(source_identity.clone(), recovery.record_completed_at)
+            .mark_imported_if_awaiting_import_for_download(
+                source_identity.clone(),
+                canonical_download_id,
+                recovery.record_completed_at,
+            )
             .await
         {
             Ok(ManualImportRecoveryOutcome::Marked) => {
@@ -2576,7 +2997,7 @@ async fn recover_completed_manual_imports(
 }
 
 struct CompletedManualImportRecovery {
-    source_identity: DownloadSourceIdentity,
+    source_identity: ClientJobLocator,
     /// When the record reached `Completed`: `finished_at`, falling back to
     /// `updated_at`. Only a tracked download the client finished before this
     /// may be terminalized on the strength of the record.
@@ -2633,7 +3054,7 @@ fn completed_manual_import_recovery(
     // tracked download's completion, so it cannot safely recover anything.
     let record_completed_at = import_record_completed_at(record)?;
     Some(CompletedManualImportRecovery {
-        source_identity: DownloadSourceIdentity::new(
+        source_identity: ClientJobLocator::new(
             Some(client_id),
             &record.source_system,
             &record.source_ref,
@@ -2707,6 +3128,25 @@ async fn execute_queued_manual_import_with_outcome(
     import_id: &str,
     payload: &ManualImportRequestPayload,
 ) -> AppResult<QueuedManualImportOutcome> {
+    let outcome = execute_queued_manual_import_with_outcome_inner(app, import_id, payload).await;
+    if let Some(workspace_root) = payload.archive_workspace_root.as_deref() {
+        crate::archive_extractor::cleanup_extracted_dir(&stored_path_to_path_buf(workspace_root))
+            .await;
+    }
+    outcome
+}
+
+async fn execute_queued_manual_import_with_outcome_inner(
+    app: &AppUseCase,
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+) -> AppResult<QueuedManualImportOutcome> {
+    let preparation_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_preparation()
+        .await;
     let user_id = payload
         .requested_by_user_id
         .as_deref()
@@ -2720,9 +3160,6 @@ async fn execute_queued_manual_import_with_outcome(
         .ok_or_else(|| {
             AppError::Validation("manual import request actor no longer exists".into())
         })?;
-
-    app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
-        .await?;
 
     let Some(title_id) = payload
         .title_id
@@ -2789,7 +3226,11 @@ async fn execute_queued_manual_import_with_outcome(
                 .to_string(),
         ));
     }
-    let trusted_source_root = match std::fs::canonicalize(&completed.dest_dir) {
+    let trusted_source_root_result = match payload.trusted_source_root.as_deref() {
+        Some(root) => std::fs::canonicalize(stored_path_to_path_buf(root)),
+        None => std::fs::canonicalize(&completed.dest_dir),
+    };
+    let trusted_source_root = match trusted_source_root_result {
         Ok(root) => root,
         Err(_) => {
             return Ok(QueuedManualImportOutcome::source_unavailable(
@@ -2816,7 +3257,17 @@ async fn execute_queued_manual_import_with_outcome(
         });
     }
 
-    let results = execute_manual_import_with_release_evidence(
+    drop(preparation_permit);
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(title_id)
+        .await;
+    app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
+        .await?;
+
+    let results = execute_manual_import_with_release_evidence_locked(
         app,
         &actor,
         import_id,
@@ -2873,9 +3324,53 @@ pub async fn execute_queued_manual_import(
     import_id: &str,
     payload: &ManualImportRequestPayload,
 ) -> AppResult<(ImportStatus, Option<String>)> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-    let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await?;
+    let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await;
+    let outcome = outcome?;
     Ok((outcome.status, outcome.result_json))
+}
+
+#[cfg(test)]
+mod manual_archive_workspace_tests {
+    use super::*;
+
+    fn selection(workspace_root: &Path, trusted_root: &Path) -> crate::ManualImportSelection {
+        crate::ManualImportSelection {
+            id: "selection-1".to_string(),
+            actor_user_id: "user-1".to_string(),
+            title_id: "title-1".to_string(),
+            source_identity: ClientJobLocator::new(Some("client-1"), "weaver", "item-1"),
+            canonical_download_id: None,
+            release_evidence_json: None,
+            trusted_source_root: path_to_stored_string(trusted_root),
+            archive_workspace_root: Some(path_to_stored_string(workspace_root)),
+            candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reuses_archive_workspace_only_when_it_matches_the_trusted_root() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let canonical_workspace =
+            std::fs::canonicalize(workspace.path()).expect("canonical workspace root");
+        let selection = selection(&canonical_workspace, &canonical_workspace);
+
+        assert_eq!(
+            reusable_manual_archive_workspace(&selection),
+            Some((
+                canonical_workspace.clone(),
+                path_to_stored_string(&canonical_workspace),
+            ))
+        );
+    }
+
+    #[test]
+    fn refuses_archive_workspace_when_it_differs_from_the_trusted_root() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let trusted = tempfile::tempdir().expect("trusted tempdir");
+        let selection = selection(workspace.path(), trusted.path());
+
+        assert!(reusable_manual_archive_workspace(&selection).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -2970,6 +3465,9 @@ mod manual_import_recovery_tests {
             status: ImportStatus::Completed,
             error_code: None,
             error_message: None,
+            requires_reconciliation: false,
+            retry_attempts: 0,
+            next_retry_at: None,
             file_results: vec![ManualImportFileResult {
                 file_path: "/downloads/episode.mkv".to_string(),
                 episode_id: Some("episode-1".to_string()),
@@ -3017,6 +3515,23 @@ mod manual_import_recovery_tests {
             assert_eq!(identity.client_type, client_type);
             assert_eq!(identity.item_id, "download-1");
         }
+    }
+
+    #[test]
+    fn reconciliation_pending_manual_import_is_not_automatically_requeued() {
+        let mut record = completed_manual_import_record("weaver", true);
+        record.status = ImportStatus::Pending;
+        let mut result = serde_json::from_str::<ManualImportExecutionResult>(
+            record.result_json.as_deref().expect("result JSON"),
+        )
+        .expect("parse result JSON");
+        result.status = ImportStatus::Pending;
+        result.error_message = Some(
+            "Manual reconciliation required: filesystem worker was terminated".to_string(),
+        );
+        record.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
+
+        assert!(manual_import_record_requires_reconciliation(&record));
     }
 
     #[test]

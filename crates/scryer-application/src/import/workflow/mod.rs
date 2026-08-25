@@ -4,8 +4,8 @@ use crate::import_title_resolution::normalize_imdb_id;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery, AppError, AppResult,
-    AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    ImportArtifact, ParsedReleaseMetadata, SubmissionScope,
+    AppUseCase, ClientJobLocator, DownloadSubmission, DownloadSubmissionIdentity, ImportArtifact,
+    ParsedReleaseMetadata, SubmissionScope,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     apply_remote_path_mappings_to_completed_download,
@@ -71,7 +71,8 @@ pub(crate) async fn import_file_with_record_progress(
     dest: &Path,
     mode: scryer_domain::ImportMode,
     expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
-) -> AppResult<scryer_domain::ImportFileResult> {
+    completed: Option<&scryer_domain::CompletedDownload>,
+) -> AppResult<CoordinatedImportFileResult> {
     let permissions = app
         .resolve_import_file_permissions(Some(library_id), facet)
         .await?;
@@ -158,17 +159,22 @@ pub(crate) async fn import_file_with_record_progress(
         }
     });
 
+    let execution_context = crate::ImportFileExecutionContext::new(
+        completed.map_or("", |item| item.client_id.as_str()),
+        completed.map_or("", |item| item.client_type.as_str()),
+    );
     let result = app
         .services
         .workflow
         .file_importer
-        .import_file_with_progress_and_permissions(
+        .import_file_with_execution_context(
             source,
             dest,
             mode,
             expected_source,
             Some(progress_tx),
             &permissions,
+            &execution_context,
         )
         .await;
 
@@ -176,7 +182,30 @@ pub(crate) async fn import_file_with_record_progress(
         tracing::warn!(import_id, error = %error, "import transfer progress task failed");
     }
 
-    result
+    let result = result?;
+    let finalization_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_finalization()
+        .await;
+    Ok(CoordinatedImportFileResult {
+        result,
+        _finalization_permit: finalization_permit,
+    })
+}
+
+pub(crate) struct CoordinatedImportFileResult {
+    result: scryer_domain::ImportFileResult,
+    _finalization_permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl std::ops::Deref for CoordinatedImportFileResult {
+    type Target = scryer_domain::ImportFileResult;
+
+    fn deref(&self) -> &Self::Target {
+        &self.result
+    }
 }
 
 // This facade keeps the previous module scope while the former junk drawer is

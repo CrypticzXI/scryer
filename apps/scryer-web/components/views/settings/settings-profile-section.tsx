@@ -1261,6 +1261,7 @@ export function SettingsProfileSection({
         description={t("profile.passkeyDeleteConfirmDescription")}
         confirmLabel={t("label.delete")}
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-profile-delete-passkey-confirm"
         confirmButtonVariant="destructive"
         isBusy={deletingPasskeyId === pendingPasskeyDeletionId}
         onConfirm={async () => {

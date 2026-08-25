@@ -2158,9 +2158,16 @@ async fn graphql_manual_import_schema_exposes_candidate_only_contract() {
     );
     assert_eq!(
         field_names("selectionInput"),
-        ["clientId", "clientType", "downloadClientItemId", "titleId"]
+        [
+            "clientId",
+            "clientType",
+            "downloadClientItemId",
+            "titleId",
+            "extractArchives",
+        ]
     );
     assert!(field_names("selectionPayload").contains(&"selectionId"));
+    assert!(field_names("selectionPayload").contains(&"archiveExtractionNeeded"));
     let file_fields = field_names("filePayload");
     assert!(file_fields.contains(&"candidateId"));
     assert!(!file_fields.contains(&"filePath"));
@@ -3004,6 +3011,7 @@ async fn graphql_introspection_exposes_import_enums() {
         .filter_map(|value| value["name"].as_str())
         .collect();
     assert!(import_skip_reason_names.contains(&"PASSWORD_REQUIRED"));
+    assert!(import_skip_reason_names.contains(&"ARCHIVE_EXTRACTION_TIMED_OUT"));
     assert!(import_skip_reason_names.contains(&"POST_DOWNLOAD_RULE_BLOCKED"));
     assert!(import_skip_reason_names.contains(&"UNPARSEABLE_EPISODE"));
 }

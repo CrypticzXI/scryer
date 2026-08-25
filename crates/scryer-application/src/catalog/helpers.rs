@@ -122,8 +122,7 @@ pub(crate) fn parse_download_client_routing_map(
 
 pub(crate) fn build_rematched_external_ids(
     title: &Title,
-    tvdb_id: &str,
-    imdb_id: Option<&str>,
+    replacement_identity_ids: &[ExternalId],
     rematch_replaced_external_id_sources: &[&str],
 ) -> Vec<ExternalId> {
     let mut next: Vec<ExternalId> = title
@@ -137,17 +136,15 @@ pub(crate) fn build_rematched_external_ids(
         .cloned()
         .collect();
 
-    next.push(ExternalId {
-        source: "tvdb".to_string(),
-        value: tvdb_id.to_string(),
-    });
-
-    if let Some(imdb_id) = imdb_id
-        && let Some(normalized) = crate::normalize::normalize_imdb_id(imdb_id)
-    {
+    for external_id in replacement_identity_ids {
+        let source = external_id.source.trim();
+        let value = external_id.value.trim();
+        if source.is_empty() || value.is_empty() {
+            continue;
+        }
         next.push(ExternalId {
-            source: "imdb".to_string(),
-            value: normalized,
+            source: source.to_string(),
+            value: value.to_string(),
         });
     }
 

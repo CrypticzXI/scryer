@@ -59,18 +59,63 @@ pub(crate) struct DownloadFailureContext {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FailureHandlingOutcome {
-    RecoveredFromStandby,
-    RequeuedFreshSearch,
-    RequeuedDeferred,
+    /// The failed release is blocklisted and its scope is `wanted` again under
+    /// its existing coverage. The cursor walks the scope's saved search results
+    /// (`try_saved_candidates`) before it would spend an indexer query; a scope
+    /// whose saved results are exhausted simply stays converged.
+    Reopened,
+    /// The failed release was recorded and blocklisted, but no acquisition
+    /// scope changed. Operator-queued and manual-replacement grabs are outside
+    /// the automatic loop: they save no standby list, never change convergence
+    /// coverage, and never re-open or walk a scope on client failure.
     RecordedOnly,
     RecordedNoReacquire,
     AlreadyHandled,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StandbyRecoveryOutcome {
-    Recovered,
-    Deferred,
-    Exhausted,
+/// Result of walking a scope's saved search results, best first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StandbyRecoveryOutcome {
+    /// The next eligible saved result was grabbed; the scope is `grabbed`
+    /// again. Returning the submitted scope lets the cursor suppress exactly
+    /// the recovered pack's coverage without reparsing the saved release.
+    Recovered { scope: SubmissionScope },
+    /// The saved release is already active in a download client.
+    Active { scope: SubmissionScope },
+    /// The download client could not be consulted; the list is left intact for
+    /// the next cycle.
+    Deferred { scope: Option<SubmissionScope> },
+    /// A better saved result is still held by a delay profile. The promotion
+    /// lane owns it, so this walk must not take a worse release.
+    Parked { scope: Option<SubmissionScope> },
+    /// Every saved result has been tried (or is no longer eligible). Sources
+    /// whose artifact vanished are returned so the cursor can refresh only
+    /// their coverage once.
+    Exhausted { stale_indexer_ids: Vec<String> },
+}
+
+fn order_standby_releases(
+    standby_releases: &mut [PendingRelease],
+    season_pack_ids: &HashSet<String>,
+    series_pack_ids: &HashSet<String>,
+) {
+    standby_releases.sort_by_key(|release| {
+        // Episode rows always recover before packs. Among packs, whole-series
+        // rows come before plain season packs so their persisted `added_at`
+        // sequence remains the search rank they were saved with.
+        let (group, score) = if series_pack_ids.contains(&release.id) {
+            (1, 0)
+        } else if season_pack_ids.contains(&release.id) {
+            (2, release.release_score)
+        } else {
+            (0, release.release_score)
+        };
+        (
+            group,
+            std::cmp::Reverse(score),
+            release.added_at.clone(),
+            release.id.clone(),
+        )
+    });
 }
 // Canonical owner for all title-affecting failed release / blocklist side effects.
 #[expect(
@@ -620,7 +665,6 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                     remove_from_client_if_configured: true,
                     skip_reacquire: false,
                 },
-                Some(dl_snapshot),
             )
             .await;
             if outcome != FailureHandlingOutcome::AlreadyHandled {
@@ -629,18 +673,22 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         }
     }
 }
-async fn find_failed_submission(
+async fn find_failed_submission_for_download(
     app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
     context: &DownloadFailureContext,
 ) -> Option<DownloadSubmission> {
     app.services
         .workflow
         .download_submissions
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            Some(context.client_id.as_str()),
-            &context.client_type,
-            &context.client_item_id,
-        ))
+        .find_by_client_item_id_for_download(
+            canonical_download_id,
+            &ClientJobLocator::new(
+                Some(context.client_id.as_str()),
+                &context.client_type,
+                &context.client_item_id,
+            ),
+        )
         .await
         .ok()
         .flatten()
@@ -653,23 +701,23 @@ fn preferred_failed_release_title(
         .and_then(|submission| normalized_non_empty_owned(submission.source_title.clone()))
         .or_else(|| normalized_non_empty_owned(Some(context.release_title.clone())))
 }
-async fn resolve_failed_collection_episode_wanted_items(
+async fn resolve_failed_pack_episode_wanted_items(
     app: &AppUseCase,
     submission: &DownloadSubmission,
 ) -> AppResult<Vec<AcquisitionScopeState>> {
-    let SubmissionScope::Collection { collection_id } = &submission.scope else {
-        return Ok(Vec::new());
+    let episode_ids: HashSet<String> = match &submission.scope {
+        SubmissionScope::Collection { collection_id } => app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_collection(collection_id)
+            .await?
+            .into_iter()
+            .map(|episode| episode.id)
+            .collect(),
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.iter().cloned().collect(),
+        _ => return Ok(Vec::new()),
     };
-
-    let episode_ids: HashSet<String> = app
-        .services
-        .catalog
-        .shows
-        .list_episodes_for_collection(collection_id)
-        .await?
-        .into_iter()
-        .map(|episode| episode.id)
-        .collect();
 
     if episode_ids.is_empty() {
         return Ok(Vec::new());
@@ -679,12 +727,7 @@ async fn resolve_failed_collection_episode_wanted_items(
         .services
         .workflow
         .acquisition_scope_states
-        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
-            media_types: vec!["episode".into()],
-            title_id: Some(submission.title_id.clone()),
-            limit: 500,
-            ..AcquisitionScopeStatesQuery::default()
-        })
+        .list_acquisition_scope_states_for_title_ids(std::slice::from_ref(&submission.title_id))
         .await?;
 
     Ok(wanted_items
@@ -693,19 +736,33 @@ async fn resolve_failed_collection_episode_wanted_items(
             matches!(
                 item.status,
                 AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed
-            ) && item
+            ) && item.media_type == "episode"
+                && item
                 .episode_id
                 .as_ref()
                 .is_some_and(|episode_id| episode_ids.contains(episode_id))
         })
         .collect())
 }
+/// Record a client-side failed download.
+///
+/// Automatic grabs re-open their existing scope coverage so the cursor can
+/// walk saved candidates. Operator grabs are deliberately record-only: they
+/// are outside the automatic acquisition loop and must not trigger recovery.
 pub(crate) async fn process_download_failure(
     app: &AppUseCase,
     context: DownloadFailureContext,
-    snapshot: Option<&DownloadClientSnapshot>,
 ) -> FailureHandlingOutcome {
-    let failed_submission = find_failed_submission(app, &context).await;
+    process_download_failure_for_download(app, None, context).await
+}
+
+pub(crate) async fn process_download_failure_for_download(
+    app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    context: DownloadFailureContext,
+) -> FailureHandlingOutcome {
+    let failed_submission =
+        find_failed_submission_for_download(app, canonical_download_id, &context).await;
     if context.wanted_item.is_none() && failed_submission.is_none() {
         info!(
             client_id = context.client_id.as_str(),
@@ -793,8 +850,12 @@ pub(crate) async fn process_download_failure(
         return FailureHandlingOutcome::AlreadyHandled;
     }
 
-    let failed_collection_items = if let Some(submission) = failed_submission.as_ref() {
-        match resolve_failed_collection_episode_wanted_items(app, submission).await {
+    let operator_submission = failed_submission.as_ref().is_some_and(|submission| {
+        submission.purpose.is_operator_queued() || submission.purpose.is_manual_replacement()
+    });
+
+    let failed_pack_items = if let Some(submission) = failed_submission.as_ref() {
+        match resolve_failed_pack_episode_wanted_items(app, submission).await {
             Ok(items) if !items.is_empty() => Some(items),
             Ok(_) => None,
             Err(err) => {
@@ -802,7 +863,7 @@ pub(crate) async fn process_download_failure(
                     title_id = submission.title_id.as_str(),
                     download_client_item_id = context.client_item_id.as_str(),
                     error = %err,
-                    "failed to resolve wanted items for collection-scoped download failure"
+                    "failed to resolve wanted items for pack-scoped download failure"
                 );
                 None
             }
@@ -813,7 +874,7 @@ pub(crate) async fn process_download_failure(
 
     let wanted_item = match context.wanted_item.clone() {
         Some(item) => Some(item),
-        None if failed_collection_items.is_none() && failed_submission.is_some() => {
+        None if failed_pack_items.is_none() && failed_submission.is_some() => {
             resolve_failure_wanted_item(
                 app,
                 resolved_title_id.as_deref(),
@@ -823,27 +884,28 @@ pub(crate) async fn process_download_failure(
         }
         None => None,
     };
-    let failed_indexer_id = failed_submission
-        .as_ref()
-        .and_then(|submission| submission.source_provider_id.as_deref());
-    let failed_coverage_reopen = failed_indexer_id
-        .map(|indexer_id| CoverageReopen::Indexer(indexer_id.to_string()))
-        .unwrap_or(CoverageReopen::All);
     let attribution = resolve_failed_release_attribution(
         app,
         resolved_title_id.as_deref(),
         failed_submission.as_ref(),
         wanted_item.as_ref(),
-        failed_collection_items.as_deref(),
+        failed_pack_items.as_deref(),
     )
     .await;
 
     let blocklist_reason = format!("download client failure: {}", context.reason);
     let mut failure_recorded = false;
-    let mut coverage_pruned = false;
 
-    let (outcome, failure_reason) = if context.skip_reacquire {
-        if let Some(items) = failed_collection_items.as_ref() {
+    let (outcome, failure_reason) = if operator_submission {
+        (
+            FailureHandlingOutcome::RecordedOnly,
+            format!(
+                "operator download failed for '{}': {}; recorded without automatic recovery",
+                release_title_for_matching, context.reason
+            ),
+        )
+    } else if context.skip_reacquire {
+        if let Some(items) = failed_pack_items.as_ref() {
             let mut update_error = None;
             for item in items {
                 if let Err(err) = mark_wanted_item_failed_without_reacquire(app, item).await {
@@ -854,7 +916,7 @@ pub(crate) async fn process_download_failure(
                 (
                     FailureHandlingOutcome::RecordedOnly,
                     format!(
-                        "season pack download failed for '{}': {}; failed to disable reacquisition: {}",
+                        "pack download failed for '{}': {}; failed to disable reacquisition: {}",
                         release_title_for_matching, context.reason, err
                     ),
                 )
@@ -862,7 +924,7 @@ pub(crate) async fn process_download_failure(
                 (
                     FailureHandlingOutcome::RecordedNoReacquire,
                     format!(
-                        "season pack download failed for '{}': {}; recorded failure without reacquisition",
+                        "pack download failed for '{}': {}; recorded failure without reacquisition",
                         release_title_for_matching, context.reason
                     ),
                 )
@@ -893,9 +955,9 @@ pub(crate) async fn process_download_failure(
                 ),
             )
         }
-    } else if let Some(items) = failed_collection_items.as_ref() {
+    } else if let Some(items) = failed_pack_items.as_ref() {
         let message = format!(
-            "season pack download failed for '{}': {}; re-opened season episodes for individual search",
+            "pack download failed for '{}': {}; re-opened covered episodes under existing coverage",
             release_title_for_matching, context.reason
         );
         record_failed_release_outcome(
@@ -915,19 +977,11 @@ pub(crate) async fn process_download_failure(
         )
         .await;
         failure_recorded = true;
-        prune_coverage_for_failed_download(
-            app,
-            failed_submission.as_ref(),
-            wanted_item.as_ref(),
-            failed_collection_items.as_deref(),
-            failed_indexer_id,
-        )
-        .await;
-        coverage_pruned = true;
-        // A failed season pack re-opens every covered episode scope after its
-        // release is blocklisted and its episode and pack coverage are invalidated.
+        // A failed pack re-opens every covered episode scope after its
+        // release is blocklisted. Coverage is kept: the cursor walks each
+        // scope's saved search results before it would query an indexer.
         for item in items {
-            app.reopen_wanted_scope_for_acquisition(item, failed_coverage_reopen.clone())
+            app.reopen_wanted_scope_for_acquisition(item, CoverageReopen::Keep)
                 .await;
         }
 
@@ -935,96 +989,41 @@ pub(crate) async fn process_download_failure(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
             affected_wanted_items = items.len(),
             release_title = release_title_for_matching,
-            "re-opened season episode scopes after failed season-pack download"
+            "re-opened covered episode scopes after failed pack download"
         );
 
-        (FailureHandlingOutcome::RequeuedFreshSearch, message)
+        (FailureHandlingOutcome::Reopened, message)
     } else if let Some(item) = wanted_item.as_ref() {
-        let now = Utc::now();
-        let owned_snapshot = if snapshot.is_none() {
-            Some(DownloadClientSnapshot::fetch(app).await)
-        } else {
-            None
-        };
-        let active_snapshot = snapshot.or(owned_snapshot.as_ref());
+        let failure_reason = format!(
+            "download failed for '{}': {}; re-opened scope to try its saved search results",
+            release_title_for_matching, context.reason
+        );
+        record_failed_release_outcome(
+            app,
+            resolved_title_id.as_deref(),
+            &attribution,
+            normalized_source_title.clone(),
+            normalized_source_hint.clone(),
+            download_id.clone(),
+            Some(context.client_id.clone()),
+            context.client_name.clone(),
+            Some(context.client_type.clone()),
+            quality.clone(),
+            Some(failure_reason.clone()),
+            Some(blocklist_reason.clone()),
+            None,
+        )
+        .await;
+        failure_recorded = true;
+        // Blocklisted first, then re-opened under its existing coverage: the
+        // cursor walks the scope's saved search results (`try_saved_candidates`)
+        // before it would spend an indexer query, and a scope whose saved results
+        // are exhausted simply stays converged. Never a coverage prune here — a
+        // failure must not cost a re-search.
+        app.reopen_wanted_scope_for_acquisition(item, CoverageReopen::Keep)
+            .await;
 
-        if let Some(active_snapshot) = active_snapshot {
-            match recover_from_standby_candidates(
-                app,
-                item,
-                release_title_for_matching,
-                active_snapshot,
-                &now,
-            )
-            .await
-            {
-                StandbyRecoveryOutcome::Recovered => (
-                    FailureHandlingOutcome::RecoveredFromStandby,
-                    format!(
-                        "download failed for '{}': {}; recovered from standby candidate",
-                        release_title_for_matching, context.reason
-                    ),
-                ),
-                StandbyRecoveryOutcome::Deferred => (
-                    FailureHandlingOutcome::RequeuedDeferred,
-                    format!(
-                        "download failed for '{}': {}; standby candidate kept pending until download client recovers",
-                        release_title_for_matching, context.reason
-                    ),
-                ),
-                StandbyRecoveryOutcome::Exhausted => {
-                    let failure_reason = format!(
-                        "download failed for '{}': {}; standby exhausted, re-opened scope for fresh search",
-                        release_title_for_matching, context.reason
-                    );
-                    record_failed_release_outcome(
-                        app,
-                        resolved_title_id.as_deref(),
-                        &attribution,
-                        normalized_source_title.clone(),
-                        normalized_source_hint.clone(),
-                        download_id.clone(),
-                        Some(context.client_id.clone()),
-                        context.client_name.clone(),
-                        Some(context.client_type.clone()),
-                        quality.clone(),
-                        Some(failure_reason.clone()),
-                        Some(blocklist_reason.clone()),
-                        None,
-                    )
-                    .await;
-                    failure_recorded = true;
-                    prune_coverage_for_failed_download(
-                        app,
-                        failed_submission.as_ref(),
-                        Some(item),
-                        None,
-                        failed_indexer_id,
-                    )
-                    .await;
-                    coverage_pruned = true;
-                    // No standby candidate left: blocklist the failed release,
-                    // invalidate its coverage, then re-open the scope. Standby-first
-                    // and scheduler pacing keep this from tight-looping — never a
-                    // cadence write.
-                    app.reopen_wanted_scope_for_acquisition(item, failed_coverage_reopen.clone())
-                        .await;
-
-                    (
-                        FailureHandlingOutcome::RequeuedFreshSearch,
-                        failure_reason,
-                    )
-                }
-            }
-        } else {
-            (
-                FailureHandlingOutcome::RecordedOnly,
-                format!(
-                    "download failed for '{}': {}; download client snapshot unavailable",
-                    context.release_title, context.reason
-                ),
-            )
-        }
+        (FailureHandlingOutcome::Reopened, failure_reason)
     } else {
         (
             FailureHandlingOutcome::RecordedOnly,
@@ -1050,17 +1049,6 @@ pub(crate) async fn process_download_failure(
             Some(failure_reason),
             Some(blocklist_reason),
             None,
-        )
-        .await;
-    }
-
-    if !context.skip_reacquire && !coverage_pruned {
-        prune_coverage_for_failed_download(
-            app,
-            failed_submission.as_ref(),
-            wanted_item.as_ref(),
-            failed_collection_items.as_deref(),
-            failed_indexer_id,
         )
         .await;
     }
@@ -1102,7 +1090,7 @@ pub(crate) async fn process_download_failure(
         .workflow
         .download_submissions
         .update_tracked_state(
-            &DownloadSourceIdentity::new(
+            &ClientJobLocator::new(
                 Some(context.client_id.as_str()),
                 &context.client_type,
                 &context.client_item_id,
@@ -1146,34 +1134,13 @@ async fn resolve_failure_wanted_item(
     })
 }
 
-async fn prune_coverage_for_failed_download(
-    app: &AppUseCase,
-    failed_submission: Option<&DownloadSubmission>,
-    wanted_item: Option<&AcquisitionScopeState>,
-    failed_collection_items: Option<&[AcquisitionScopeState]>,
-    indexer_id: Option<&str>,
-) {
-    let mut scope_keys = HashSet::new();
-    if let Some(items) = failed_collection_items {
-        for item in items {
-            if let Some(scope_key) = crate::acquisition::convergence::convergence_scope_key_for_state(item) {
-                scope_keys.insert(scope_key);
-            }
-        }
-    } else if let Some(item) = wanted_item
-        && let Some(scope_key) = crate::acquisition::convergence::convergence_scope_key_for_state(item)
-    {
-        scope_keys.insert(scope_key);
-    }
-    if let Some(submission) = failed_submission
-        && let Some(scope_key) = convergence_scope_key(&submission.scope, &submission.title_id)
-    {
-        scope_keys.insert(scope_key);
-    }
-    for scope_key in scope_keys {
-        app.prune_scope_key_coverage(&scope_key, indexer_id).await;
-    }
-}
+/// Drop saved search results whose scope no longer needs them.
+///
+/// A scope keeps its saved results while it is `wanted` (the cursor tries them
+/// before spending an indexer query) or `grabbed` (they are the fallback if that
+/// grab fails). Anything else — completed, paused, or removed — has no use for
+/// them. There is deliberately no age or count limit: the whole ranked list is
+/// kept until one of its releases lands or every one of them has been tried.
 async fn prune_standby_candidates(app: &AppUseCase) {
     let all_standby = app
         .services
@@ -1187,18 +1154,12 @@ async fn prune_standby_candidates(app: &AppUseCase) {
         return;
     }
 
-    let now = Utc::now();
-    let cutoff = now - Duration::hours(STANDBY_RETENTION_HOURS);
-    let mut grouped: std::collections::HashMap<String, Vec<PendingRelease>> =
-        std::collections::HashMap::new();
-    for release in all_standby {
-        grouped
-            .entry(release.wanted_item_id.clone())
-            .or_default()
-            .push(release);
-    }
+    let wanted_item_ids: std::collections::HashSet<String> = all_standby
+        .into_iter()
+        .map(|release| release.wanted_item_id)
+        .collect();
 
-    for (wanted_item_id, mut releases) in grouped {
+    for wanted_item_id in wanted_item_ids {
         let wanted = app
             .services
             .workflow
@@ -1207,65 +1168,228 @@ async fn prune_standby_candidates(app: &AppUseCase) {
             .await
             .ok()
             .flatten();
-
-        let Some(wanted) = wanted else {
+        let still_useful = wanted.as_ref().is_some_and(|wanted| {
+            matches!(
+                wanted.status,
+                AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed
+            )
+        });
+        if !still_useful {
             let _ = app
                 .services
                 .workflow
                 .pending_releases
                 .delete_standby_pending_releases_for_wanted_item(&wanted_item_id)
                 .await;
-            continue;
-        };
-
-        if wanted.status != AcquisitionScopeStatus::Grabbed {
-            let _ = app
-                .services
-                .workflow
-                .pending_releases
-                .delete_standby_pending_releases_for_wanted_item(&wanted_item_id)
-                .await;
-            continue;
-        }
-
-        releases.sort_by(|left, right| right.added_at.cmp(&left.added_at));
-        for (index, release) in releases.iter().enumerate() {
-            let added_at = crate::quality_profile::parse_published_at(&release.added_at);
-            let is_stale = added_at.is_none_or(|added_at| added_at < cutoff);
-            let is_overflow = index >= MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM;
-            if is_stale || is_overflow {
-                let _ = app
-                    .services
-                    .workflow
-                    .pending_releases
-                    .update_pending_release_status(&release.id, PendingReleaseStatus::Expired, None)
-                    .await;
-            }
         }
     }
 }
-async fn recover_from_standby_candidates(
+/// Walk a scope's saved search results, best first, and grab the first one
+/// that is still eligible.
+///
+/// Every row is re-judged now, not when it was saved: against the title's
+/// blocklist, the download client's current queue, and — through
+/// `try_grab_pending_release` — the swarm and admission policy. Rows that no
+/// longer qualify are expired and skipped; the rows after a successful grab stay
+/// `Standby`, so if that grab fails too the walk continues down the same list.
+pub(crate) async fn try_saved_candidates(
     app: &AppUseCase,
     item: &AcquisitionScopeState,
-    failed_release_title: &str,
+    failed_release_title: Option<&str>,
+    excluded_episode_ids: Option<&HashSet<String>>,
     dl_snapshot: &DownloadClientSnapshot,
     now: &DateTime<Utc>,
 ) -> StandbyRecoveryOutcome {
-    let standby_releases = app
+    // A waiting row is already the chosen best candidate. Never claim a
+    // lower-ranked standby release while the delay-promotion lane owns it.
+    if !app
+        .services
+        .workflow
+        .pending_releases
+        .list_pending_releases_for_wanted_item(&item.id)
+        .await
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return StandbyRecoveryOutcome::Parked { scope: None };
+    }
+
+    let mut standby_releases = app
         .services
         .workflow
         .pending_releases
         .list_standby_pending_releases_for_wanted_item(&item.id)
         .await
         .unwrap_or_default();
+
+    let mut season_pack_ids = HashSet::new();
+    let mut series_pack_ids = HashSet::new();
+    let mut standby_scopes = HashMap::new();
+    // Title-wide standby rows only matter to an episode: movies and other
+    // non-episode scopes cannot be covered by a sibling season pack, so avoid
+    // the title-wide read and parse work entirely for them.
+    if let Some(episode_id) = item.episode_id.as_deref() {
+        let target_episode = app
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await
+            .ok()
+            .flatten();
+        // Season-pack rows belong to the anchor episode that found the pack,
+        // but every covered episode must be able to continue that same ranked
+        // list. Parse each title-wide standby row once, retaining its coverage
+        // and pack classification for both the merge and ordering passes.
+        let title = app
+            .services
+            .catalog
+            .titles
+            .get_by_id(&item.title_id)
+            .await
+            .ok()
+            .flatten();
+        if let (Some(target_episode), Some(title)) = (target_episode, title) {
+        let catalog_episodes = app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let catalog_collections = app
+            .services
+            .catalog
+            .shows
+            .list_collections_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let parse_context = crate::release_parser::build_release_parse_context_for_title(
+            &title,
+            &catalog_episodes,
+            Some(title.facet.as_str()),
+        );
+        let parse_coverage = |pending: &PendingRelease| {
+            let parsed = crate::release_parser::parse_release_metadata_for_target(
+                &pending.release_title,
+                &parse_context,
+            );
+            let is_season_pack = parsed
+                .episode
+                .as_ref()
+                .is_some_and(|episode| episode.full_season);
+            let is_series_pack = parsed
+                .episode
+                .as_ref()
+                .is_some_and(|episode| episode.is_series_pack);
+            let coverage = crate::acquisition_coverage::resolve_release_coverage(
+                &parsed,
+                &catalog_episodes,
+                &catalog_collections,
+                None,
+            );
+            let covers_item = coverage.covers_episode(&target_episode);
+            let scope = coverage.submission_scope_or(&item.submission_scope());
+            (covers_item, is_season_pack, is_series_pack, scope)
+        };
+
+        let title_pending = app
+            .services
+            .workflow
+            .pending_releases
+            .list_pending_releases_for_title(&item.title_id)
+            .await
+            .unwrap_or_default();
+        if let Some(scope) = title_pending.iter().find_map(|pending| {
+            let metadata = parse_coverage(pending);
+            (pending.status == PendingReleaseStatus::Waiting
+                && pending.wanted_item_id != item.id
+                && metadata.0)
+                .then_some(metadata.3)
+        }) {
+            return StandbyRecoveryOutcome::Parked { scope: Some(scope) };
+        }
+
+        let mut known_ids = standby_releases
+            .iter()
+            .map(|pending| pending.id.clone())
+            .collect::<HashSet<_>>();
+        let title_standby = app
+            .services
+            .workflow
+            .pending_releases
+            .list_standby_pending_releases_for_title(&item.title_id)
+            .await
+            .unwrap_or_default();
+        let mut title_standby_metadata = std::collections::HashMap::new();
+        for pending in title_standby {
+            let metadata = parse_coverage(&pending);
+            standby_scopes.insert(pending.id.clone(), metadata.3.clone());
+            let covers_item = metadata.0;
+            title_standby_metadata.insert(pending.id.clone(), metadata);
+            if known_ids.insert(pending.id.clone())
+                && pending.wanted_item_id != item.id
+                && covers_item
+            {
+                standby_releases.push(pending);
+            }
+        }
+
+            season_pack_ids.extend(
+            standby_releases
+                .iter()
+                .filter(|pending| {
+                    title_standby_metadata
+                        .get(&pending.id)
+                        .is_some_and(|metadata| metadata.1)
+                })
+                .map(|pending| pending.id.clone()),
+            );
+            series_pack_ids.extend(
+                standby_releases
+                    .iter()
+                    .filter(|pending| {
+                        title_standby_metadata
+                            .get(&pending.id)
+                            .is_some_and(|metadata| metadata.2)
+                    })
+                    .map(|pending| pending.id.clone()),
+            );
+        }
+    }
+
+    // A season pack is a whole-season acquisition. For an episode scope, all
+    // single-episode and episode-set standby releases are exhausted first; only
+    // then does the walk consider packs. Each partition keeps the canonical
+    // persistence order (score descending, then oldest first).
+    order_standby_releases(
+        &mut standby_releases,
+        &season_pack_ids,
+        &series_pack_ids,
+    );
     // Standby candidates are re-checked against the per-title blocklist (the
     // single, removable exclusion source), never the failed-attempt history.
     let db_blocklist = app
         .load_title_release_blocklist_signatures(&item.title_id)
         .await
         .source_titles;
+    let mut stale_indexer_ids = HashSet::new();
 
     for standby in standby_releases {
+        let standby_scope = standby_scopes
+            .get(&standby.id)
+            .cloned()
+            .unwrap_or_else(|| item.submission_scope());
+        if series_pack_ids.contains(&standby.id)
+            && excluded_episode_ids.is_some_and(|excluded| {
+                episode_ids_for_scope(&standby_scope)
+                    .is_some_and(|episode_ids| episode_ids.iter().any(|id| excluded.contains(id)))
+            })
+        {
+            // Keep the saved result for failure recovery, but never submit an
+            // overlapping series pack while this cycle already owns a member.
+            continue;
+        }
         let mut effective_wanted = item.clone();
         effective_wanted.grabbed_release = None;
         effective_wanted.last_search_at = None;
@@ -1313,7 +1437,9 @@ async fn recover_from_standby_candidates(
                 .pending_releases
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                 .await;
-            return StandbyRecoveryOutcome::Deferred;
+            return StandbyRecoveryOutcome::Deferred {
+                scope: Some(standby_scope),
+            };
         }
 
         if dl_snapshot.is_active(&standby.release_title) {
@@ -1323,14 +1449,16 @@ async fn recover_from_standby_candidates(
                 .pending_releases
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                 .await;
-            continue;
+            return StandbyRecoveryOutcome::Active {
+                scope: standby_scope,
+            };
         }
 
         info!(
             title_id = item.title_id.as_str(),
-            failed_release = failed_release_title,
+            failed_release = ?failed_release_title,
             standby_release = standby.release_title.as_str(),
-            "attempting standby reacquisition"
+            "trying the next saved search result"
         );
 
         // Automatic: no operator asked for this release, so it is judged against
@@ -1345,7 +1473,7 @@ async fn recover_from_standby_candidates(
             )
             .await
         {
-            Ok(super::pending::PendingGrabOutcome::Grabbed) => {
+            Ok(super::pending::PendingGrabOutcome::Grabbed { scope }) => {
                 let grabbed_at = now.to_rfc3339();
                 let _ = app
                     .services
@@ -1358,28 +1486,8 @@ async fn recover_from_standby_candidates(
                     )
                     .await;
 
-                let siblings = app
-                    .services
-                    .workflow
-                    .pending_releases
-                    .list_standby_pending_releases_for_wanted_item(&item.id)
-                    .await
-                    .unwrap_or_default();
-                for sibling in siblings {
-                    if sibling.id == standby.id {
-                        continue;
-                    }
-                    let _ = app
-                        .services
-                        .workflow
-                        .pending_releases
-                        .update_pending_release_status(
-                            &sibling.id,
-                            PendingReleaseStatus::Superseded,
-                            None,
-                        )
-                        .await;
-                }
+                // The remaining saved results stay `Standby`: if this grab fails
+                // too, the next walk continues down the same list.
 
                 if let Ok(Some(title)) = app.services.catalog.titles.get_by_id(&item.title_id).await
                 {
@@ -1399,7 +1507,7 @@ async fn recover_from_standby_candidates(
                         .await;
                 }
 
-                return StandbyRecoveryOutcome::Recovered;
+                return StandbyRecoveryOutcome::Recovered { scope };
             }
             Ok(super::pending::PendingGrabOutcome::Deferred) => {
                 info!(
@@ -1412,7 +1520,29 @@ async fn recover_from_standby_candidates(
                     .pending_releases
                     .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                     .await;
-                return StandbyRecoveryOutcome::Deferred;
+                return StandbyRecoveryOutcome::Deferred {
+                    scope: Some(standby_scope),
+                };
+            }
+            Ok(super::pending::PendingGrabOutcome::Parked) => {
+                return StandbyRecoveryOutcome::Parked {
+                    scope: Some(standby_scope),
+                };
+            }
+            Ok(super::pending::PendingGrabOutcome::SourceGone) => {
+                if let Some(indexer_id) = standby.indexer_id.as_ref() {
+                    stale_indexer_ids.insert(indexer_id.clone());
+                }
+                let _ = app
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_status(
+                        &standby.id,
+                        PendingReleaseStatus::Expired,
+                        None,
+                    )
+                    .await;
             }
             Ok(super::pending::PendingGrabOutcome::Rejected) | Err(_) => {
                 let _ = app
@@ -1425,14 +1555,16 @@ async fn recover_from_standby_candidates(
         }
     }
 
-    StandbyRecoveryOutcome::Exhausted
+    StandbyRecoveryOutcome::Exhausted {
+        stale_indexer_ids: stale_indexer_ids.into_iter().collect(),
+    }
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "standby candidate persistence carries the search context explicitly"
 )]
-async fn persist_standby_candidates(
+async fn persist_standby_candidates<F>(
     app: &AppUseCase,
     item: &AcquisitionScopeState,
     title: &Title,
@@ -1441,7 +1573,11 @@ async fn persist_standby_candidates(
     now: &DateTime<Utc>,
     failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
-) {
+    include_candidate: F,
+) -> bool
+where
+    F: Fn(&IndexerSearchResult) -> bool,
+{
     let _ = app
         .services
         .workflow
@@ -1450,16 +1586,21 @@ async fn persist_standby_candidates(
         .await;
 
     let mut persisted = 0usize;
+    let mut complete = true;
     let mut seen_source_hints = std::collections::HashSet::<String>::new();
 
-    for candidate in results.iter().skip(start_index) {
-        if persisted >= MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM {
-            break;
+    for (rank, candidate) in results.iter().enumerate().skip(start_index) {
+        if !include_candidate(candidate) {
+            continue;
         }
-
         let decision_code =
             effective_auto_decision_code_for_route(candidate, failed_routes, db_blocklist);
-        if !decision_code.is_eligible() {
+        if !decision_code.is_eligible()
+            && !matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::PendingDelay | ReleaseAutoDecisionCode::AlreadyActive
+            )
+        {
             // A fact about the *scope*, not about this candidate: the ranked
             // order is (tier, revision, score) and admission compares the same
             // three in the same order, so nothing below a rejected candidate
@@ -1521,7 +1662,8 @@ async fn persist_standby_candidates(
             indexer_source: Some(candidate.source.clone()),
             indexer_id: candidate.indexer_id.clone(),
             release_guid: candidate.guid.clone(),
-            added_at: now.to_rfc3339(),
+            added_at: (*now + chrono::Duration::microseconds(rank as i64))
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
             delay_until: now.to_rfc3339(),
             status: PendingReleaseStatus::Standby,
             grabbed_at: None,
@@ -1545,6 +1687,8 @@ async fn persist_standby_candidates(
             .is_ok()
         {
             persisted += 1;
+        } else {
+            complete = false;
         }
     }
 
@@ -1556,6 +1700,7 @@ async fn persist_standby_candidates(
             "persisted standby candidates for failed-download recovery"
         );
     }
+    complete
 }
 
 #[cfg(test)]
@@ -1576,6 +1721,160 @@ mod client_snapshot_tests {
             queue_listing_failed,
             history_listing_failed,
         }
+    }
+
+    /// The grab-side double-submit guard matches the *release title string*,
+    /// while import admission matches the *scope*. A second release for a scope
+    /// another client already has queued therefore passes the grab guard and is
+    /// then refused at import as `QueuedEqualOrBetter`.
+    #[test]
+    fn the_grab_guard_misses_a_different_release_for_an_already_queued_scope() {
+        let mut snap = snapshot(false, false);
+        // qBittorrent is holding this exact release for S01E01.
+        snap.active_titles
+            .insert("show.s01e01.720p.web-dl.av1-ntb".to_string());
+
+        // The identical release is correctly recognised as active.
+        assert!(
+            snap.is_active("Show.S01E01.720p.WEB-DL.AV1-NTb"),
+            "the same release title must be seen as already active"
+        );
+
+        // A DIFFERENT release for the SAME episode is not, so the grab proceeds
+        // and SAB downloads a second copy of a scope that is already queued.
+        assert!(
+            !snap.is_active("Show.S01E01.1080p.WEB-DL.x264-GROUP"),
+            "grab guard is title-string equality, so it cannot see that this \
+             scope is already queued under another release name"
+        );
+    }
+
+    fn standby(id: &str, score: i32, added_at: &str) -> PendingRelease {
+        PendingRelease {
+            id: id.to_string(),
+            wanted_item_id: "wanted".to_string(),
+            title_id: "title".to_string(),
+            release_title: id.to_string(),
+            release_url: None,
+            source_kind: None,
+            release_size_bytes: None,
+            release_score: score,
+            scoring_log_json: None,
+            indexer_source: None,
+            indexer_id: None,
+            release_guid: None,
+            added_at: added_at.to_string(),
+            delay_until: added_at.to_string(),
+            status: PendingReleaseStatus::Standby,
+            grabbed_at: None,
+            source_password: None,
+            published_at: None,
+            info_hash: None,
+            seed_minimums: Default::default(),
+            seeders: None,
+        }
+    }
+
+    #[test]
+    fn standby_order_tries_all_single_episode_rows_before_a_higher_scored_pack() {
+        let mut standby = vec![
+            standby("season-pack", 900, "2026-01-01T00:00:00Z"),
+            standby("single-episode", 100, "2026-01-02T00:00:00Z"),
+        ];
+        let season_pack_ids = HashSet::from(["season-pack".to_string()]);
+
+        order_standby_releases(&mut standby, &season_pack_ids, &HashSet::new());
+
+        assert_eq!(
+            standby
+                .iter()
+                .map(|pending| pending.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["single-episode", "season-pack"]
+        );
+    }
+
+    #[test]
+    fn series_pack_standby_order_preserves_persisted_search_rank() {
+        let mut standby = vec![
+            standby("rank-two", 900, "2026-01-01T00:00:00.000001000Z"),
+            standby("rank-one", 100, "2026-01-01T00:00:00.000000000Z"),
+        ];
+        let pack_ids = HashSet::from(["rank-one".to_string(), "rank-two".to_string()]);
+
+        order_standby_releases(&mut standby, &pack_ids, &pack_ids);
+
+        assert_eq!(
+            standby
+                .iter()
+                .map(|pending| pending.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rank-one", "rank-two"]
+        );
+    }
+
+    #[test]
+    fn standby_order_is_total_for_mixed_plain_and_series_packs() {
+        let mut standby = vec![
+            standby("plain", 500, "2026-01-01T00:00:05Z"),
+            standby("series-a", 100, "2026-01-01T00:00:00Z"),
+            standby("series-b", 900, "2026-01-01T00:00:01Z"),
+        ];
+        let season_pack_ids = HashSet::from([
+            "plain".to_string(),
+            "series-a".to_string(),
+            "series-b".to_string(),
+        ]);
+        let series_pack_ids = HashSet::from(["series-a".to_string(), "series-b".to_string()]);
+
+        order_standby_releases(&mut standby, &season_pack_ids, &series_pack_ids);
+
+        assert_eq!(
+            standby
+                .iter()
+                .map(|pending| pending.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["series-a", "series-b", "plain"]
+        );
+    }
+
+    #[test]
+    fn standby_order_keeps_all_groups_ordered_in_a_large_mixed_list() {
+        let mut standby = (0..8)
+            .map(|index| standby(&format!("episode-{index}"), index, &format!("2026-01-01T00:00:{index:02}Z")))
+            .chain((0..8).map(|index| {
+                standby(
+                    &format!("series-{index}"),
+                    1000 - index,
+                    &format!("2026-01-01T00:01:{index:02}Z"),
+                )
+            }))
+            .chain((0..8).map(|index| {
+                standby(
+                    &format!("season-{index}"),
+                    index,
+                    &format!("2026-01-01T00:02:{index:02}Z"),
+                )
+            }))
+            .collect::<Vec<_>>();
+        standby.reverse();
+        let season_pack_ids = (0..8)
+            .map(|index| format!("series-{index}"))
+            .chain((0..8).map(|index| format!("season-{index}")))
+            .collect::<HashSet<_>>();
+        let series_pack_ids = (0..8)
+            .map(|index| format!("series-{index}"))
+            .collect::<HashSet<_>>();
+
+        order_standby_releases(&mut standby, &season_pack_ids, &series_pack_ids);
+
+        let ids = standby
+            .iter()
+            .map(|pending| pending.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids[..8].iter().all(|id| id.starts_with("episode-")));
+        assert!(ids[8..16].iter().all(|id| id.starts_with("series-")));
+        assert!(ids[16..].iter().all(|id| id.starts_with("season-")));
     }
 
     #[test]

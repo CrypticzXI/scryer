@@ -73,6 +73,11 @@ pub(crate) enum ReleaseEvidence {
         /// fallback name when `source_title` is missing; never the identity.
         #[serde(default)]
         observed_release_name: Option<String>,
+        /// The size the indexer announced for this grab
+        /// (`download_submissions.release_size_bytes`); the import scores the
+        /// size term on it when the landed file is within the overhead band.
+        #[serde(default)]
+        release_size_bytes: Option<i64>,
         purpose: crate::DownloadSubmissionPurpose,
         scope: SubmissionScope,
     },
@@ -135,6 +140,7 @@ impl ReleaseEvidence {
             facet: submission.facet.clone(),
             source_title,
             observed_release_name,
+            release_size_bytes: submission.release_size_bytes,
             purpose: submission.purpose,
             scope: submission.scope.clone(),
         }
@@ -167,11 +173,28 @@ impl ReleaseEvidence {
         }
     }
 
+    /// The size the indexer announced for a Scryer grab; `None` for adopted
+    /// downloads and grabs recorded without one.
+    pub(crate) fn announced_size_bytes(&self) -> Option<i64> {
+        match self {
+            Self::ScryerSubmission {
+                release_size_bytes, ..
+            } => *release_size_bytes,
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
     pub(crate) fn purpose(&self) -> crate::DownloadSubmissionPurpose {
         match self {
             Self::ScryerSubmission { purpose, .. } => *purpose,
             Self::DownloaderObservation { .. } => crate::DownloadSubmissionPurpose::Standard,
         }
+    }
+
+    /// Whether a completed download was selected by an operator. Client-only
+    /// observations have no such durable intent and remain automatic.
+    pub(crate) fn import_origin(&self) -> crate::import_decide::ImportOrigin {
+        crate::import_decide::ImportOrigin::from_submission_purpose(self.purpose())
     }
 
     /// The release name to parse and score: the persisted indexer title for a
@@ -265,8 +288,8 @@ fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) 
         .is_none_or(str::is_empty)
 }
 
-fn submission_source_identity(submission: &DownloadSubmission) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::from_submission(submission)
+fn submission_source_identity(submission: &DownloadSubmission) -> ClientJobLocator {
+    ClientJobLocator::from_submission(submission)
 }
 
 async fn resolve_completed_download_submission(
@@ -327,7 +350,7 @@ async fn resolve_completed_download_submission(
 
     let mut source_identities = vec![completed_download_identity(completed)];
     if let Some(item) = item {
-        source_identities.push(DownloadSourceIdentity::new(
+        source_identities.push(ClientJobLocator::new(
             Some(item.client_id.as_str()),
             &item.client_type,
             &item.download_client_item_id,
@@ -440,6 +463,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
     completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
 ) -> AppResult<bool> {
     if matches!(
         resolution,
@@ -468,7 +492,11 @@ async fn completed_download_already_imported_for_current_attempt(
                     .services
                     .workflow
                     .imports
-                    .is_already_imported_by_download_id(&source_identity, identity)
+                    .is_already_imported_by_download_id_for_download(
+                        canonical_download_id,
+                        &source_identity,
+                        identity,
+                    )
                     .await;
             }
             source_identity
@@ -483,7 +511,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app.services
         .workflow
         .imports
-        .is_already_imported(&source_identity)
+        .is_already_imported_for_download(canonical_download_id, &source_identity)
         .await
 }
 

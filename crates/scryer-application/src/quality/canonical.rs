@@ -46,10 +46,7 @@
 //! [`crate::admission`], and what a verdict *costs* to
 //! [`crate::import::decide`]. The bar a later comparison uses is re-derived from
 //! the media row through this same function, which is why a stored score is
-//! display-only (invariants I1, I7).
-//!
-//! Design: `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model
-//! and its invariants) and §9 (the truth-verdict rules).
+//! display-only and cannot become the source of truth for later comparisons.
 
 use crate::quality_profile::{
     BLOCK_SCORE, QualityProfileDecision, ScoringEntry, ScoringSource, apply_min_score_gate,
@@ -159,9 +156,9 @@ pub(crate) enum TruthVerdict {
     ///   the profile refusing the *file*, not the release lying. A codec-silent
     ///   name against a codec blocklist, HDR or Dolby Vision read out of
     ///   `video_hdr_format`, a file rule keyed on `input.file.*` — every one of
-    ///   those fires identically for the next codec-silent release, so burning
-    ///   this one walks the whole catalogue into the blocklist. That is
-    ///   [`TruthVerdict::Vetoed`], and it holds instead of burning.
+    ///   those fires identically for the next codec-silent release. That is
+    ///   [`TruthVerdict::Vetoed`], an import failure that blocklists this
+    ///   release and lets convergence test the next candidate.
     ///
     /// Never expressible as a number either way.
     Blocked { codes: Vec<String> },
@@ -169,11 +166,9 @@ pub(crate) enum TruthVerdict {
     ///
     /// Nothing here says the release misrepresented itself; the name was simply
     /// silent about a fact the probe supplies, and the profile refuses that
-    /// fact. So the import is held for the operator (`ImportBlocked`) rather
-    /// than rejected-and-reopened: there is no better candidate to seek, and a
-    /// blocklist entry would only remove one arbitrary release from a class the
-    /// grab side should be filtering. D18 keeps the held download counted as
-    /// queued, so an equal-or-worse replacement is not fetched behind it.
+    /// fact. The import is rejected-and-reopened: each burned release is
+    /// excluded from the next search, so convergence continues until one
+    /// imports successfully.
     Vetoed { codes: Vec<String> },
 }
 
@@ -223,7 +218,7 @@ pub(crate) struct ScoredRelease {
     pub parsed_quality: Option<String>,
     /// PROPER/REPACK rank, from the **announced** parse
     /// ([`crate::acquisition::scoring::revision_rank`]). Admission compares it
-    /// between tier and score (D9).
+    /// between tier and score.
     ///
     /// Announced rather than analyzed on purpose: no probe can tell you a file
     /// is a PROPER. Carrying it here is what lets an incumbent's bar report a
@@ -351,8 +346,7 @@ pub(crate) fn score_release(evidence: &ReleaseEvidence, ctx: &ScoringContext<'_>
 ///
 /// So the veto travels as a veto: `allowed`, `block_codes` and
 /// [`TruthVerdict`] carry it, admission and the import gate act on it, and the
-/// number stays the honest sum of everything that was actually a preference
-/// (invariant I5, decision D1).
+/// number stays the honest sum of everything that was actually a preference.
 fn preference_score_without_blocks(decision: &QualityProfileDecision) -> i32 {
     decision
         .scoring_log
@@ -513,8 +507,8 @@ fn append_rule_scores(
 ///
 /// - `score_below_minimum` is Sonarr's `MinFormatScore`, a **grab** floor. It is
 ///   not an import specification there and must not become one here: a file that
-///   is on disk and correct cannot be improved by refusing it (D17: never
-///   blocklist on a score-only contradiction).
+///   is on disk and correct cannot be improved by refusing it. A score-only
+///   contradiction is not a blocklist reason.
 /// - `upgrade_blocked_by_profile` is the profile's upgrade guard, which is an
 ///   admission concern; canonical scoring hardcodes `has_existing_file = false`,
 ///   so it should never appear at all — it is listed defensively.
@@ -523,8 +517,8 @@ const POLICY_ONLY_BLOCK_CODES: &[&str] = &["score_below_minimum", "upgrade_block
 /// Did the announcement *state* the fact this veto keys on?
 ///
 /// The difference between a release that lied and a file the profile refuses.
-/// Only the first earns a blocklist (design §9, "Truth verdicts"); the second is
-/// [`TruthVerdict::Vetoed`] and is held for the operator.
+/// Both are import failures: the latter is [`TruthVerdict::Vetoed`] and is
+/// blocklisted one candidate at a time.
 ///
 /// | code | assertable | why |
 /// |---|---|---|
@@ -532,9 +526,9 @@ const POLICY_ONLY_BLOCK_CODES: &[&str] = &["score_below_minimum", "upgrade_block
 /// | `size_implausible*_for_quality` | always | both passes score the *same* bytes, so this can only be introduced when the landed quality moved — which is the quality claim again, seen through the size band. |
 /// | `video_codec_*` | iff the parse carried a codec | `H.265` in the name against an H.264 stream is a lie; a codec-silent name is not a claim. |
 /// | `audio_codec_*` | iff the parse carried an audio codec | same rule. Note the gate only fires at all when `normalized_audio_codecs` is non-empty, which for a silent name means the probe populated it. |
-/// | `hdr_not_allowed`, `dolby_vision_*` | never | derived from `video_hdr_format`; a DV profile-5 encode with a silent name is ordinary, and a profile that forbids HDR would otherwise blocklist every untagged HDR release in the catalogue. |
-/// | user/system rule blocks | never | [`run_term_pipeline`] hands the rules engine a `FileDoc` on the analyzed pass only, so any rule reading `input.file.*` is structurally analyzed-only. Operator policy, not a misrepresentation. |
-/// | anything else | never | unreachable today (`source_*`, `bd_disk_not_allowed`, `required_audio_language_missing` key on fields the analyzed pass never rewrites). Defaulting an unrecognised code to "hold" is the safe direction: a new veto cannot start burning releases until someone decides it is a claim. |
+/// | `hdr_not_allowed`, `dolby_vision_*` | never | derived from `video_hdr_format`; a profile that forbids them has refused this file, so import burns this release and convergence tries the next candidate. |
+/// | user/system rule blocks | never | [`run_term_pipeline`] hands the rules engine a `FileDoc` on the analyzed pass only, so any rule reading `input.file.*` is structurally analyzed-only. Operator policy still makes this an import failure. |
+/// | anything else | never | unreachable today (`source_*`, `bd_disk_not_allowed`, `required_audio_language_missing` key on fields the analyzed pass never rewrites). An unrecognised veto is conservatively treated as an import failure. |
 fn veto_contradicts_an_assertion(code: &str, announced: &ParsedReleaseMetadata) -> bool {
     if code.starts_with("quality_") || code.starts_with("size_implausib") {
         return true;
@@ -584,7 +578,7 @@ fn veto_contradicts_an_assertion(code: &str, announced: &ParsedReleaseMetadata) 
 /// no name is obliged to carry) and for user/system file rules, which only see
 /// `input.file.*` on the analyzed pass by construction. None of those is the
 /// release misrepresenting itself; they are the profile refusing the file, which
-/// is [`TruthVerdict::Vetoed`] — a hold, not a burn. See
+/// is [`TruthVerdict::Vetoed`] — a burn followed by another convergence search. See
 /// [`veto_contradicts_an_assertion`] for the per-code table.
 fn classify_truth(
     announced_parsed: &ParsedReleaseMetadata,
@@ -699,7 +693,10 @@ pub(crate) fn analyzed_facts_from_media_file(file: &crate::TitleMediaFile) -> An
 
     AnalyzedFacts {
         analysis,
-        actual_size_bytes: file.size_bytes,
+        // The analyzed pass sets the bar (`total` collapses to it), so it must
+        // score the same size the import scored: the announced size inside
+        // the overhead band, the real size otherwise.
+        actual_size_bytes: size_basis_bytes(file.size_bytes, file.announced_size_bytes),
         rule_file_doc: Some(rule_file_doc),
     }
 }
@@ -780,14 +777,62 @@ pub(crate) fn audio_channels_label(channels: i32) -> String {
     }
 }
 
+/// The landed-size tolerance that still counts as "the release it announced".
+///
+/// A usenet payload loses par2/RAR/container overhead between what the indexer
+/// advertised and what is written to disk, and a torrent rarely arrives with
+/// exactly its announced byte count either. Inside this band the grab and the
+/// import are looking at the same release, so the import scores the size term
+/// on the **announced** size (option c of the grab-vs-import size decision):
+/// the number the grab admitted is the number the import sees. Below it the
+/// shortfall is real — a truncated, stripped or mislabelled payload — and the
+/// import scores what actually landed.
+pub(crate) const SIZE_OVERHEAD_TOLERANCE: f64 = 0.85;
+
+/// The byte count the size term is scored on for a landed file.
+///
+/// `announced` is the release's advertised size (`download_submissions.release_size_bytes`
+/// at import, `media_files.announced_size_bytes` when the bar is re-derived);
+/// `landed` is the file on disk. Returns `announced` when the landed file is at
+/// least [`SIZE_OVERHEAD_TOLERANCE`] of it, otherwise `landed`. Both the import
+/// decision and the incumbent bar go through here so the re-derived bar
+/// reproduces the import score for this term.
+/// What the media-file row should remember as its announced size: the
+/// announced size when the import scored on it, `None` when the landed size was
+/// the basis. Persisting only the engaged case keeps the column honest — a row
+/// never carries an "announced" number it was not scored on (a pack's total on
+/// an episode row, say).
+pub(crate) fn persisted_announced_size_bytes(landed: i64, announced: Option<i64>) -> Option<i64> {
+    announced.filter(|announced| size_basis_bytes(landed, Some(*announced)) == *announced)
+}
+
+pub(crate) fn size_basis_bytes(landed: i64, announced: Option<i64>) -> i64 {
+    match announced {
+        Some(announced)
+            if announced > 0
+                && landed > 0
+                && (landed as f64) >= SIZE_OVERHEAD_TOLERANCE * (announced as f64) =>
+        {
+            announced
+        }
+        _ => landed,
+    }
+}
+
 /// Everything a stored row knows about the release it holds.
 ///
-/// The announced size is the file's real size because no other size survives on
-/// the row — which is exactly right for re-deriving a *bar*: the bar is what the
-/// file turned out to be, not what it was once advertised as.
+/// The size the row is scored on follows the import's rule ([`size_basis_bytes`]):
+/// the announced size the row remembers when the file landed inside the overhead
+/// band, otherwise the file's real size. That is what lets a re-derived bar
+/// reproduce the import score. A row that remembers no announced size —
+/// every row written before the column existed, a scanned file, an adopted
+/// download — is scored on its real size, exactly as before.
 pub(crate) fn evidence_from_media_file(file: &crate::TitleMediaFile) -> ReleaseEvidence {
-    ReleaseEvidence::announced(announced_parse_from_media_file(file), Some(file.size_bytes))
-        .with_analysis(analyzed_facts_from_media_file(file))
+    ReleaseEvidence::announced(
+        announced_parse_from_media_file(file),
+        Some(size_basis_bytes(file.size_bytes, file.announced_size_bytes)),
+    )
+    .with_analysis(analyzed_facts_from_media_file(file))
 }
 
 /// Re-derive a stored file's canonical score.

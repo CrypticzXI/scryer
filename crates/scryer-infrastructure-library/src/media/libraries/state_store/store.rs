@@ -1736,10 +1736,13 @@ impl PendingReleaseRepository for PendingReleaseStore {
             "FROM pending_releases pr"
         };
 
-        // Base set is the open-for-review statuses (`waiting` plus the parked
-        // `needs_review`), matching the list_waiting / for_wanted reads; the
-        // optional status filter narrows within that base.
-        let mut where_sql = String::from(" WHERE pr.status IN ('waiting', 'needs_review')");
+        // An explicit status filter owns the base set. Without one, preserve the
+        // historical open-for-review default (`waiting` plus `needs_review`).
+        let mut where_sql = if query.statuses.is_empty() {
+            String::from(" WHERE pr.status IN ('waiting', 'needs_review')")
+        } else {
+            String::from(" WHERE 1 = 1")
+        };
         let mut filter_args: Vec<SqlArg> = Vec::new();
         if let Some(title_id) = query.title_id.as_deref() {
             where_sql.push_str(" AND pr.title_id = {}");
@@ -1779,7 +1782,7 @@ impl PendingReleaseRepository for PendingReleaseStore {
         let order_sql = match query.sort {
             PendingReleasePageSort::DelayUntilAsc => " ORDER BY pr.delay_until ASC, pr.id ASC",
             PendingReleasePageSort::ReleaseScoreDesc => {
-                " ORDER BY pr.release_score DESC, pr.delay_until ASC, pr.id ASC"
+                " ORDER BY pr.release_score DESC, pr.added_at ASC, pr.id ASC"
             }
         };
         let page_sql = format!(
@@ -1821,6 +1824,26 @@ impl PendingReleaseRepository for PendingReleaseStore {
         Ok(())
     }
 
+    async fn update_pending_release_delay_until(
+        &self,
+        id: &str,
+        delay_until: &str,
+    ) -> AppResult<()> {
+        execute_datastore_write(
+            &self.datastore,
+            "update_pending_release_delay_until",
+            "UPDATE pending_releases
+                SET delay_until = {}
+              WHERE id = {}",
+            vec![
+                opt_timestamp_arg_for_datastore(&self.datastore, Some(delay_until))?,
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn list_standby_pending_releases_for_wanted_item(
         &self,
         wanted_item_id: &str,
@@ -1836,6 +1859,51 @@ impl PendingReleaseRepository for PendingReleaseStore {
             self.datastore.read_exec(),
             &sql,
             &[SqlArg::Text(wanted_item_id.to_string())],
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    async fn count_standby_pending_releases_for_wanted_items(
+        &self,
+        wanted_item_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, i64>> {
+        if wanted_item_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders = placeholders(wanted_item_ids.len());
+        let sql = format!(
+            "SELECT wanted_item_id, COUNT(*) AS cnt
+               FROM pending_releases
+              WHERE status = 'standby' AND wanted_item_id IN ({placeholders})
+              GROUP BY wanted_item_id"
+        );
+        let args = wanted_item_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        rows.iter()
+            .map(|row| Ok((row.text("wanted_item_id")?, row.i64("cnt")?)))
+            .collect()
+    }
+
+    async fn list_standby_pending_releases_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        let sql = format!(
+            "SELECT {PENDING_RELEASE_COLUMNS}
+               FROM pending_releases
+              WHERE title_id = {{}} AND status = 'standby'
+              ORDER BY release_score DESC, added_at ASC"
+        );
+        let encryption_key = self.encryption_key()?;
+        fetch_pending_releases(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Text(title_id.to_string())],
             encryption_key.as_ref(),
         )
         .await

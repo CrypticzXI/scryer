@@ -543,8 +543,7 @@ pub struct AppRuntimeAcquisitionState {
     pub(crate) wanted_projection_cache:
         Arc<tokio::sync::RwLock<HashMap<crate::types::WantedKind, CachedWantedProjection>>>,
     pub(crate) wanted_projection_build_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) download_client_category_admission:
-        Arc<tokio::sync::RwLock<Option<Arc<DownloadClientCategoryAdmissionSnapshot>>>>,
+    pub(crate) download_client_category_admission: DownloadClientCategorySnapshotStore,
     /// Cancellation tokens for in-flight interactive acquisition-search jobs
     ///, keyed by job-run id — mirrors the library-scan cancel map.
     pub acquisition_search_cancellation_tokens:
@@ -570,9 +569,46 @@ impl AppRuntimeAcquisitionState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct DownloadClientCategoryAdmissionSnapshot {
+pub struct DownloadClientCategoryAdmissionSnapshot {
     pub(crate) default_categories: HashSet<String>,
     pub(crate) categories_by_client: HashMap<String, HashSet<String>>,
+    pub(crate) feedback_categories_by_client: HashMap<String, Vec<String>>,
+}
+
+impl DownloadClientCategoryAdmissionSnapshot {
+    pub fn from_feedback_categories(
+        feedback_categories_by_client: HashMap<String, Vec<String>>,
+    ) -> Self {
+        Self {
+            feedback_categories_by_client,
+            ..Self::default()
+        }
+    }
+
+    pub fn feedback_scope_for_client(&self, client_id: &str) -> DownloadClientFeedbackScope {
+        DownloadClientFeedbackScope {
+            categories: self
+                .feedback_categories_by_client
+                .get(client_id)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct DownloadClientCategorySnapshotStore {
+    inner: Arc<tokio::sync::RwLock<Option<Arc<DownloadClientCategoryAdmissionSnapshot>>>>,
+}
+
+impl DownloadClientCategorySnapshotStore {
+    pub async fn snapshot(&self) -> Option<Arc<DownloadClientCategoryAdmissionSnapshot>> {
+        self.inner.read().await.clone()
+    }
+
+    pub async fn replace(&self, snapshot: DownloadClientCategoryAdmissionSnapshot) {
+        *self.inner.write().await = Some(Arc::new(snapshot));
+    }
 }
 
 pub(crate) fn normalize_download_client_category(category: &str) -> String {
@@ -678,7 +714,57 @@ mod download_client_category_admission_tests {
                 "client-2".to_string(),
                 HashSet::from(["series".to_string()]),
             )]),
+            feedback_categories_by_client: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn feedback_scopes_are_case_preserving_client_specific_and_atomically_replaceable() {
+        let store = DownloadClientCategorySnapshotStore::default();
+        store
+            .replace(
+                DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(HashMap::from([
+                    (
+                        "qbit".to_string(),
+                        vec!["Movies".to_string(), "TV / Anime".to_string()],
+                    ),
+                    ("other".to_string(), vec!["Series-HD".to_string()]),
+                ])),
+            )
+            .await;
+
+        let first = store.snapshot().await.expect("first snapshot");
+        assert_eq!(
+            first.feedback_scope_for_client("qbit").categories,
+            vec!["Movies", "TV / Anime"]
+        );
+        assert_eq!(
+            first.feedback_scope_for_client("other").categories,
+            vec!["Series-HD"]
+        );
+        assert!(
+            first
+                .feedback_scope_for_client("missing")
+                .categories
+                .is_empty()
+        );
+
+        store
+            .replace(
+                DownloadClientCategoryAdmissionSnapshot::from_feedback_categories(HashMap::from([
+                    ("qbit".to_string(), vec!["Movies-4K".to_string()]),
+                ])),
+            )
+            .await;
+        let second = store.snapshot().await.expect("replacement snapshot");
+        assert_eq!(
+            second.feedback_scope_for_client("qbit").categories,
+            vec!["Movies-4K"]
+        );
+        assert_eq!(
+            first.feedback_scope_for_client("qbit").categories,
+            vec!["Movies", "TV / Anime"]
+        );
     }
 
     #[test]
@@ -733,30 +819,165 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Default)]
+const MAX_CONCURRENT_ARCHIVE_EXTRACTIONS: usize = 1;
+const MAX_CONCURRENT_IMPORT_PREPARATIONS: usize = 8;
+const MAX_CONCURRENT_IMPORT_FINALIZATIONS: usize = 8;
+
+#[derive(Clone)]
 pub(crate) struct ImportExecutionCoordinator {
-    permit: Arc<tokio::sync::Mutex<()>>,
+    title_permits: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+        >,
+    >,
+    preparation_permit: Arc<tokio::sync::Semaphore>,
+    finalization_permit: Arc<tokio::sync::Semaphore>,
+    archive_extraction_permit: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for ImportExecutionCoordinator {
+    fn default() -> Self {
+        Self {
+            title_permits: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            preparation_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_IMPORT_PREPARATIONS,
+            )),
+            finalization_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_IMPORT_FINALIZATIONS,
+            )),
+            archive_extraction_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_ARCHIVE_EXTRACTIONS,
+            )),
+        }
+    }
 }
 
 impl ImportExecutionCoordinator {
-    pub(crate) async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.permit.clone().lock_owned().await
+    pub(crate) async fn acquire_title(&self, title_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let permit = {
+            let mut permits = self.title_permits.lock().await;
+            permits.retain(|_, permit| permit.strong_count() > 0);
+            if let Some(permit) = permits.get(title_id).and_then(std::sync::Weak::upgrade) {
+                permit
+            } else {
+                let permit = Arc::new(tokio::sync::Mutex::new(()));
+                permits.insert(title_id.to_string(), Arc::downgrade(&permit));
+                permit
+            }
+        };
+        permit.lock_owned().await
+    }
+
+    pub(crate) async fn acquire_preparation(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.preparation_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("import preparation semaphore is never closed")
+    }
+
+    pub(crate) fn try_acquire_preparation(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.preparation_permit.clone().try_acquire_owned().ok()
+    }
+
+    pub(crate) async fn acquire_finalization(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.finalization_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("import finalization semaphore is never closed")
+    }
+
+    pub(crate) async fn acquire_archive_extraction(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.archive_extraction_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("archive extraction semaphore is never closed")
     }
 }
 
 #[cfg(test)]
 mod import_execution_coordinator_tests {
-    use super::ImportExecutionCoordinator;
+    use super::{
+        ImportExecutionCoordinator, MAX_CONCURRENT_IMPORT_FINALIZATIONS,
+        MAX_CONCURRENT_IMPORT_PREPARATIONS,
+    };
     use std::time::Duration;
 
     #[tokio::test]
-    async fn permits_only_one_import_execution_at_a_time() {
+    async fn serializes_only_matching_titles() {
         let coordinator = ImportExecutionCoordinator::default();
-        let first = coordinator.acquire().await;
+        let first = coordinator.acquire_title("title-1").await;
         let waiting = tokio::spawn({
             let coordinator = coordinator.clone();
             async move {
-                let _second = coordinator.acquire().await;
+                let _second = coordinator.acquire_title("title-1").await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        let other =
+            tokio::time::timeout(Duration::from_secs(1), coordinator.acquire_title("title-2"))
+                .await
+                .expect("different title should not wait");
+        drop(other);
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("second import should acquire after the first completes")
+            .expect("waiting import task should complete");
+    }
+
+    #[tokio::test]
+    async fn preparation_and_finalization_have_independent_eight_task_limits() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let mut preparations = Vec::new();
+        let mut finalizations = Vec::new();
+        for _ in 0..MAX_CONCURRENT_IMPORT_PREPARATIONS {
+            preparations.push(coordinator.acquire_preparation().await);
+        }
+        for _ in 0..MAX_CONCURRENT_IMPORT_FINALIZATIONS {
+            finalizations.push(coordinator.acquire_finalization().await);
+        }
+
+        let waiting_preparation = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire_preparation().await }
+        });
+        let waiting_finalization = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire_finalization().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting_preparation.is_finished());
+        assert!(!waiting_finalization.is_finished());
+
+        drop(preparations.pop());
+        drop(finalizations.pop());
+        let preparation = tokio::time::timeout(Duration::from_secs(1), waiting_preparation)
+            .await
+            .expect("preparation waiter should start after one preparation finishes")
+            .expect("preparation waiter should not panic");
+        let finalization = tokio::time::timeout(Duration::from_secs(1), waiting_finalization)
+            .await
+            .expect("finalization waiter should start after one finalization finishes")
+            .expect("finalization waiter should not panic");
+        drop(preparation);
+        drop(finalization);
+    }
+
+    #[tokio::test]
+    async fn permits_only_one_archive_extraction_at_a_time() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let first = coordinator.acquire_archive_extraction().await;
+        let waiting = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                let _second = coordinator.acquire_archive_extraction().await;
             }
         });
 
@@ -766,8 +987,8 @@ mod import_execution_coordinator_tests {
         drop(first);
         tokio::time::timeout(Duration::from_secs(1), waiting)
             .await
-            .expect("second import should acquire after the first completes")
-            .expect("waiting import task should complete");
+            .expect("second extraction should acquire after the first completes")
+            .expect("waiting extraction task should complete");
     }
 }
 
@@ -796,6 +1017,13 @@ pub struct AppRuntimeJobState {
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub interactive_operation_guards: InteractiveOperationGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes destructive whole-system maintenance such as restore and
+    /// application upgrades for the lifetime of the operation.
+    pub system_maintenance_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The executable host installs this callback once it has assembled its
+    /// restart controller.
+    pub application_upgrade_restart:
+        Arc<std::sync::RwLock<Option<crate::application_upgrade::ApplicationUpgradeRestartHandle>>>,
     /// Single-flight guard for the interactive acquisition-search job — mirrors `title_deletion_lock`.
     pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -1001,7 +1229,7 @@ impl AppRuntimeState {
                 wanted_projection_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
                 wanted_projection_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 wanted_projection_build_lock: Arc::new(tokio::sync::Mutex::new(())),
-                download_client_category_admission: Arc::new(tokio::sync::RwLock::new(None)),
+                download_client_category_admission: DownloadClientCategorySnapshotStore::default(),
                 acquisition_search_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
                 interactive_release_searches: Arc::new(Mutex::new(HashMap::new())),
             },
@@ -1029,6 +1257,8 @@ impl AppRuntimeState {
                 backup_execution_guards: BackupExecutionGuardTable::default(),
                 interactive_operation_guards: InteractiveOperationGuardTable::default(),
                 title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
+                system_maintenance_lock: Arc::new(tokio::sync::Mutex::new(())),
+                application_upgrade_restart: Arc::new(std::sync::RwLock::new(None)),
                 acquisition_search_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
@@ -1052,5 +1282,47 @@ impl Default for AppRuntimeState {
             PathBuf::from("."),
             Vec::<String>::new(),
         )
+    }
+}
+
+#[cfg(test)]
+mod system_maintenance_coordinator_tests {
+    use super::AppRuntimeState;
+
+    #[tokio::test]
+    async fn upgrade_and_restore_share_one_nonblocking_maintenance_guard() {
+        let runtime = AppRuntimeState::default();
+        let upgrade_guard = runtime
+            .jobs
+            .system_maintenance_lock
+            .clone()
+            .try_lock_owned()
+            .expect("upgrade should acquire idle coordinator");
+        assert!(
+            runtime
+                .jobs
+                .system_maintenance_lock
+                .clone()
+                .try_lock_owned()
+                .is_err(),
+            "restore must be rejected while an upgrade owns maintenance"
+        );
+        drop(upgrade_guard);
+        let restore_guard = runtime
+            .jobs
+            .system_maintenance_lock
+            .clone()
+            .try_lock_owned()
+            .expect("restore should acquire after upgrade releases coordinator");
+        assert!(
+            runtime
+                .jobs
+                .system_maintenance_lock
+                .clone()
+                .try_lock_owned()
+                .is_err(),
+            "upgrade must be rejected while a restore owns maintenance"
+        );
+        drop(restore_guard);
     }
 }

@@ -84,6 +84,7 @@ impl DownloadMutations {
         let QueueDownloadInput {
             title_id,
             candidate_token,
+            size_bytes,
             scope,
             replace_in_progress,
             purpose,
@@ -99,6 +100,7 @@ impl DownloadMutations {
                 purpose
                     .map(|value| value.into_application())
                     .unwrap_or_default(),
+                size_bytes.map(i64::from),
             )
             .await
             .map_err(to_gql_error)?;
@@ -149,6 +151,7 @@ impl DownloadMutations {
         let QueueDownloadInput {
             title_id,
             candidate_token,
+            size_bytes,
             scope: _,
             replace_in_progress,
             purpose: _,
@@ -160,6 +163,7 @@ impl DownloadMutations {
                 &title_id,
                 &candidate_token,
                 SubmissionConflictPolicy::from_replace_flag(replace_in_progress.unwrap_or(true)),
+                size_bytes.map(i64::from),
             )
             .await
             .map_err(to_gql_error)?;
@@ -306,11 +310,13 @@ impl DownloadMutations {
             &input.client_type,
             &input.download_client_item_id,
             input.title_id.as_str(),
+            input.extract_archives.unwrap_or(false),
         )
         .await
         .map_err(to_gql_error)?;
         Ok(ManualImportSelectionPayload {
             selection_id: selection.selection_id.into(),
+            archive_extraction_needed: selection.archive_extraction_needed,
             files: selection
                 .files
                 .into_iter()

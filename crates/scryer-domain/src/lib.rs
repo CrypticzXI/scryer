@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod download_identity;
 mod title_sort;
 pub use title_sort::{
     title_catalog_name_tie_key, title_catalog_sort_input, title_catalog_sort_key,
@@ -1885,6 +1886,7 @@ impl ImportStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportTransferPhase {
+    Extracting,
     Copying,
     Finalizing,
 }
@@ -1892,6 +1894,7 @@ pub enum ImportTransferPhase {
 impl ImportTransferPhase {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Extracting => "extracting",
             Self::Copying => "copying",
             Self::Finalizing => "finalizing",
         }
@@ -1899,6 +1902,7 @@ impl ImportTransferPhase {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "extracting" => Some(Self::Extracting),
             "copying" => Some(Self::Copying),
             "finalizing" => Some(Self::Finalizing),
             _ => None,
@@ -2049,6 +2053,7 @@ pub enum ImportSkipReason {
     DiskFull,
     PermissionDenied,
     PasswordRequired,
+    ArchiveExtractionTimedOut,
 }
 
 impl ImportSkipReason {
@@ -2064,6 +2069,7 @@ impl ImportSkipReason {
             Self::DiskFull => "disk_full",
             Self::PermissionDenied => "permission_denied",
             Self::PasswordRequired => "password_required",
+            Self::ArchiveExtractionTimedOut => "archive_extraction_timed_out",
         }
     }
 }
@@ -2156,7 +2162,7 @@ pub struct ImportRecord {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportFileResult {
     pub strategy: ImportStrategy,
     pub source_path: std::path::PathBuf,
@@ -2165,7 +2171,7 @@ pub struct ImportFileResult {
     pub source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportSourceCleanupGuard {
     pub source_path: std::path::PathBuf,
     pub dest_path: std::path::PathBuf,
@@ -2175,26 +2181,26 @@ pub struct ImportSourceCleanupGuard {
     pub dest_proof: ImportContentProof,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportSourceSnapshot {
     pub identity: ImportSourceIdentity,
     pub proof: ImportContentProof,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportContentProof {
     pub size_bytes: u64,
     pub sample_bytes: u64,
     pub sample_blake3: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportSourceIdentity {
     pub file: ImportFileIdentity,
     pub kind: ImportSourceIdentityKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportFileIdentity {
     pub len: u64,
     pub modified: Option<std::time::SystemTime>,
@@ -2204,7 +2210,7 @@ pub struct ImportFileIdentity {
     pub ino: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ImportSourceIdentityKind {
     Regular,
     Symlink {
@@ -2738,6 +2744,8 @@ pub struct TitleRematchedEventData {
     pub title: TitleContextSnapshot,
     pub old_tvdb_id: Option<String>,
     pub new_tvdb_id: String,
+    pub smg_id: Option<i64>,
+    pub tmdb_id: Option<i64>,
     pub source: String,
 }
 

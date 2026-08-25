@@ -12,9 +12,18 @@ use crate::delay_profile::DelayProfile;
 use crate::types::{PendingRelease, PendingReleaseStatus};
 use std::collections::HashSet;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PendingGrabOutcome {
-    Grabbed,
+    Grabbed {
+        scope: SubmissionScope,
+    },
+    /// The release remains the best choice, but its delay profile still holds
+    /// it. The caller must not try a lower-ranked release.
+    Parked,
+    /// The indexer no longer serves this artifact. A standby walk expires only
+    /// that row and tries the next candidate; other callers defer without a
+    /// blocklist entry.
+    SourceGone,
     Rejected,
     Deferred,
 }
@@ -409,7 +418,7 @@ impl AppUseCase {
                     .try_grab_pending_release(&wanted, pr, &now, PendingGrabTrigger::Automatic)
                     .await
                 {
-                    Ok(PendingGrabOutcome::Grabbed) => {
+                    Ok(PendingGrabOutcome::Grabbed { .. }) => {
                         // Mark this one as grabbed
                         let _ = self
                             .services
@@ -452,6 +461,20 @@ impl AppUseCase {
                         info!(
                             release = pr.release_title.as_str(),
                             "pending release: download client unavailable, keeping release pending"
+                        );
+                        break;
+                    }
+                    Ok(PendingGrabOutcome::SourceGone) => {
+                        info!(
+                            release = pr.release_title.as_str(),
+                            "pending release: source gone outside standby walk; keeping it pending"
+                        );
+                        break;
+                    }
+                    Ok(PendingGrabOutcome::Parked) => {
+                        info!(
+                            release = pr.release_title.as_str(),
+                            "pending release: delay profile still holds the best release"
                         );
                         break;
                     }
@@ -540,6 +563,16 @@ impl AppUseCase {
         if authorized_library_ids.is_empty() {
             return Ok((Vec::new(), 0));
         }
+        let sort = if wanted_item_id.is_some()
+            && !statuses.is_empty()
+            && statuses
+                .iter()
+                .all(|status| *status == PendingReleaseStatus::Standby)
+        {
+            PendingReleasePageSort::ReleaseScoreDesc
+        } else {
+            PendingReleasePageSort::DelayUntilAsc
+        };
         let query = PendingReleasesPageQuery {
             library_ids: authorized_library_ids,
             title_id,
@@ -550,7 +583,7 @@ impl AppUseCase {
                 .collect(),
             limit,
             offset,
-            sort: PendingReleasePageSort::DelayUntilAsc,
+            sort,
         };
         self.services
             .workflow
@@ -698,7 +731,7 @@ impl AppUseCase {
         Ok(matches!(
             self.try_grab_pending_release(&wanted, &pr, &now, PendingGrabTrigger::Operator)
                 .await?,
-            PendingGrabOutcome::Grabbed
+            PendingGrabOutcome::Grabbed { .. }
         ))
     }
 
@@ -923,16 +956,96 @@ impl AppUseCase {
         );
         let pending_scope = pending_coverage.submission_scope_or(&pending_scope_fallback);
 
-        let existing_files = self
+        let is_series_pack = pending_parsed
+            .episode
+            .as_ref()
+            .is_some_and(|episode| episode.is_series_pack);
+        let existing_files = match self
             .services
             .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|file| file.role.is_primary())
-            .collect::<Vec<_>>();
+        {
+            Ok(files) => files
+                .into_iter()
+                .filter(|file| file.role.is_primary())
+                .collect::<Vec<_>>(),
+            Err(error) if is_series_pack => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "pending series pack: media ownership is unavailable; deferring retry"
+                );
+                return Ok(PendingGrabOutcome::Deferred);
+            }
+            Err(_) => Vec::new(),
+        };
+        if is_series_pack {
+            let mut owned_episode_ids = existing_files
+                .iter()
+                .filter_map(|file| file.episode_id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let submissions = match self
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&title.id)
+                .await
+            {
+                Ok(submissions) => submissions,
+                Err(error) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        error = %error,
+                        "pending series pack: submission ownership is unavailable; deferring retry"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+            };
+            let identities = submissions
+                .iter()
+                .map(crate::contracts::ClientJobLocator::from_submission)
+                .collect::<Vec<_>>();
+            let tracked_states = match self
+                .services
+                .workflow
+                .download_submissions
+                .list_identity_tracked_states_for_client_items(&identities)
+                .await
+            {
+                Ok(states) => states
+                    .into_iter()
+                    .filter_map(|(identity, state)| {
+                        scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                            .map(|state| (identity, state))
+                    })
+                    .collect(),
+                Err(error) => {
+                    warn!(
+                        title_id = title.id.as_str(),
+                        error = %error,
+                        "pending series pack: tracked submission ownership is unavailable; deferring retry"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+            };
+            owned_episode_ids.extend(
+                crate::acquisition_coverage::in_flight_series_pack_episode_ids(
+                    &catalog_episodes,
+                    &submissions,
+                    &tracked_states,
+                    &dl_snapshot,
+                ),
+            );
+            if !crate::acquisition_coverage::series_pack_missing_ratio_qualifies(
+                &pending_parsed,
+                &catalog_episodes,
+                &owned_episode_ids,
+            ) {
+                return Ok(PendingGrabOutcome::Rejected);
+            }
+        }
         let cutoff_scope = self.cutoff_scope_for(&pending_scope).await;
         let analyzed_cutoff_quality =
             crate::acquisition::decision_helpers::analyzed_cutoff_quality_for_scope(
@@ -1020,7 +1133,7 @@ impl AppUseCase {
             if !submissions.is_empty() {
                 let identities = submissions
                     .iter()
-                    .map(crate::contracts::DownloadSourceIdentity::from_submission)
+                    .map(crate::contracts::ClientJobLocator::from_submission)
                     .collect::<Vec<_>>();
                 let tracked_states = self
                     .services
@@ -1115,11 +1228,76 @@ impl AppUseCase {
             return Ok(PendingGrabOutcome::Rejected);
         }
 
-        // Submit to download client
         let source_hint = pr.release_url.clone();
         let source_kind = pr
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()));
+
+        // A pending row is not grandfathered into the old delay decision. The
+        // row may have waited because of a different profile, and an operator
+        // may lengthen that profile before the promotion or standby walk gets
+        // here. Evaluate only after admission/cooldown so a held row is one
+        // that would otherwise be grabbed.
+        if trigger == PendingGrabTrigger::Automatic {
+            let delay_profiles = self.load_delay_profiles().await;
+            if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
+                &delay_profiles,
+                &title.tags,
+                &title.facet,
+                source_kind,
+                pr.published_at
+                    .as_deref()
+                    .and_then(crate::quality_profile::parse_published_at),
+                candidate_score,
+                crate::quality_profile::parse_published_at(&pr.added_at),
+                now,
+            ) && delay_decision.should_hold()
+            {
+                let delay_until = *now + Duration::minutes(delay_decision.effective_delay_minutes);
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_delay_until(&pr.id, &delay_until.to_rfc3339())
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        release = pr.release_title.as_str(),
+                        "pending release: failed to extend delay; keeping current row intact"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .update_pending_release_status(&pr.id, PendingReleaseStatus::Waiting, None)
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        release = pr.release_title.as_str(),
+                        "pending release: failed to park delayed release"
+                    );
+                    return Ok(PendingGrabOutcome::Deferred);
+                }
+                crate::acquisition_workflow::record_pending_release_decision(
+                    self,
+                    wanted,
+                    &title,
+                    pr,
+                    candidate_score,
+                    crate::acquisition_release_search::ReleaseAutoDecisionCode::PendingDelay,
+                    admission.best_score(),
+                    now,
+                )
+                .await;
+                return Ok(PendingGrabOutcome::Parked);
+            }
+        }
+
+        // Submit to download client
         let source_title = Some(pr.release_title.clone());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
@@ -1158,10 +1336,7 @@ impl AppUseCase {
             "persisted candidate: grabbing"
         );
 
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
 
         // Season-pack detection for the seeding-goal resolver. The submission
         // scope this function derives later needs catalog lookups that only run
@@ -1228,6 +1403,10 @@ impl AppUseCase {
                 }
                 self.record_indexer_grab(pr.indexer_id.as_deref(), pr.indexer_source.as_deref());
 
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
@@ -1288,6 +1467,7 @@ impl AppUseCase {
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
@@ -1324,7 +1504,9 @@ impl AppUseCase {
                     ))
                     .await;
 
-                Ok(PendingGrabOutcome::Grabbed)
+                Ok(PendingGrabOutcome::Grabbed {
+                    scope: pending_scope,
+                })
             }
             Err(err) => {
                 warn!(
@@ -1336,10 +1518,11 @@ impl AppUseCase {
 
                 // An ambiguous submit (the request may have been accepted but
                 // the response was lost) is deferred exactly like an
-                // unavailable client: keep the release, retry next cycle, and
-                // never blocklist. Only a definitive failure expires it.
+                // unavailable client. A gone source is similarly never a
+                // blocklist reason, although a standby walk may skip that row.
                 let defer = is_download_submit_unavailable_error(&err)
                     || err.is_download_submit_ambiguous();
+                let source_gone = err.is_download_source_gone();
 
                 let _ = self
                     .services
@@ -1349,7 +1532,7 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint.clone(),
                         source_title.clone(),
-                        if defer {
+                        if defer || source_gone {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
                             ReleaseDownloadAttemptOutcome::Failed
@@ -1358,6 +1541,49 @@ impl AppUseCase {
                         source_password.clone(),
                     )
                     .await;
+
+                if err.is_download_submit_ambiguous()
+                    && let Some((client_id, client_type)) =
+                        err.ambiguous_download_submission_client()
+                {
+                    let facet = serde_json::to_string(&title.facet)
+                        .unwrap_or_else(|_| "\"other\"".to_string())
+                        .trim_matches('"')
+                        .to_string();
+                    if let Err(error) = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .record_ambiguous_submission(DownloadSubmission {
+                            download_id,
+                            title_id: title.id.clone(),
+                            facet,
+                            download_client_id: client_id.map(str::to_string),
+                            download_client_type: client_type.to_string(),
+                            download_client_item_id: String::new(),
+                            source_hint: None,
+                            source_provider_id: pr.indexer_id.clone(),
+                            source_provider_name: pr.indexer_source.clone(),
+                            source_kind: None,
+                            source_title: source_title.clone(),
+                            release_size_bytes: pr.release_size_bytes,
+                            request_signature: request_signature.clone(),
+                            purpose: crate::DownloadSubmissionPurpose::Standard,
+                            scope: pending_scope.clone(),
+                        })
+                        .await
+                    {
+                        warn!(error = %error, "ambiguous download submission persistence failed");
+                    }
+                }
+
+                if source_gone {
+                    info!(
+                        release = pr.release_title.as_str(),
+                        "pending release: download source is gone"
+                    );
+                    return Ok(PendingGrabOutcome::SourceGone);
+                }
 
                 if defer {
                     return Ok(PendingGrabOutcome::Deferred);

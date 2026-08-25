@@ -34,13 +34,22 @@ test("validateRenameTemplateSyntax rejects invalid truncate filters", () => {
   });
 });
 
-test("validateFolderTemplateSyntax accepts deterministic season padding", () => {
-  for (const template of ["Season {season}", "Season {season:0}", "Season {season:2}"]) {
+test("validateFolderTemplateSyntax accepts season padding and escaped braces", () => {
+  for (const template of [
+    "Season {season}",
+    "Season {season:0}",
+    "Season {season:2}",
+    "{{S{season}}}",
+  ]) {
     assert.equal(validateFolderTemplateSyntax(template, VALID_FOLDER_TOKENS, "season"), null);
   }
   assert.equal(
     applyRenameTemplatePreview("Season {season:2}", VALID_FOLDER_TOKENS, { season: "3" }),
     "Season 03",
+  );
+  assert.equal(
+    applyRenameTemplatePreview("{{S{season}}}", VALID_FOLDER_TOKENS, { season: "3" }),
+    "{S3}",
   );
 });
 
@@ -106,6 +115,17 @@ test("applyRenameTemplatePreview renders literal brace escapes", () => {
   );
 });
 
+test("applyRenameTemplatePreview preserves escaped folder tokens as literals", () => {
+  assert.equal(
+    applyRenameTemplatePreview(
+      "{title} ({{year}})",
+      new Set(["title", "year"]),
+      { title: "The Grey Harbor", year: "2008" },
+    ),
+    "The Grey Harbor ({year})",
+  );
+});
+
 test("applyRenameTemplatePreview renders missing sample values as empty strings", () => {
   assert.equal(
     applyRenameTemplatePreview("{title} - {season_order}.{ext}", VALID_TOKENS, SAMPLE_VALUES),
@@ -120,6 +140,16 @@ test("splitRenameTemplateSegments highlights filtered token specs", () => {
       { text: "{title|truncate:8|space:_}", isToken: true },
       { text: ".", isToken: false },
       { text: "{ext}", isToken: true },
+    ],
+  );
+});
+
+test("splitRenameTemplateSegments leaves escaped literal braces unhighlighted", () => {
+  assert.deepEqual(
+    splitRenameTemplateSegments("{title} ({{year}})", new Set(["title", "year"])),
+    [
+      { text: "{title}", isToken: true },
+      { text: " ({{year}})", isToken: false },
     ],
   );
 });

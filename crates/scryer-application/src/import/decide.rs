@@ -13,7 +13,7 @@
 //!                                            ──hold────▶ Held      (operator decides)
 //! ```
 //!
-//! `decide_import` *is* the ImportGate transition (design §2). Everything before
+//! `decide_import` *is* the ImportGate transition. Everything before
 //! it is path-specific plumbing (which file, which destination, which rename
 //! tokens); everything after it is carrying out the plan. The three paths used
 //! to hand-assemble this sequence, which is how they drifted: the title path
@@ -27,13 +27,14 @@
 //!    same canonical bar.
 //! 2. Score the landed evidence **once**, before the occupancy branch: the truth
 //!    verdict is a fact about the release, not about the scope.
-//! 3. Apply the verdict, unless an operator asked for this import by hand.
+//! 3. Apply the verdict under the submission origin's guard policy, unless an
+//!    explicit manual import asked for the bypass.
 //! 4. Run [`crate::admission::evaluate_admission`] — the same comparator the
 //!    grab used, under the import policy (ties accepted, no floor, no churn
-//!    threshold; invariant I4).
+//!    threshold).
 //! 5. Resolve the displaced incumbent *rows* by id from the caller's list. A
 //!    subject that says "occupied" against a list that has no matching row is a
-//!    rejection, never a panic (D14).
+//!    rejection, never a panic.
 //!
 //! ## What is deliberately not a rejection
 //!
@@ -41,24 +42,60 @@
 //! evidence *and* on the release name is the profile refusing the release, which
 //! is a grab-side decision; Sonarr has no import-time allow-list gate at all and
 //! neither does this. Only [`crate::canonical_scoring::TruthVerdict`] speaks
-//! here, and it distinguishes the release lying (`Blocked` → burn it) from the
-//! profile refusing an undisclosed property of the file (`Vetoed` → hold it).
-//! A file whose vetoes fired on both passes imports with its honest bar.
+//! here. Automatic lanes burn guard failures so convergence can find another
+//! release; operator-queued lanes hold them for manual import. A file whose
+//! vetoes fired on both passes imports with its honest bar.
 //!
-//! **A tie.** Import is never stricter than grab on the same facts (I4): the
+//! **A tie.** Import is never stricter than grab on the same facts: the
 //! bytes are already on disk, and discarding a file that merely matches the
 //! incumbent wastes the download.
-//!
-//! See `~/.claude/plans/canonical-scoring-state-machine.md` §2 (the model), §3
-//! (the lane table) and §4 D17 (dispositions).
 
 use crate::AppUseCase;
 use crate::post_download_gate::{
     ImportedFileAcceptance, ImportedFileRejection, PostDownloadAcquisitionDecision,
-    compute_post_download_acquisition_decision, resolve_truth_verdict_action,
+    compute_post_download_acquisition_decision, resolve_truth_verdict_action_for_origin,
 };
 use crate::quality::canonical_context::ResolvedScoringContext;
 use scryer_domain::{ImportSkipReason, Title};
+
+/// The origin determines what a failed import guard costs the release.
+/// Explicit manual import keeps its separate `operator_intent` bypass; this
+/// value describes normal post-download guard handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportOrigin {
+    Automatic,
+    OperatorQueued,
+}
+
+impl ImportOrigin {
+    pub(crate) fn from_submission_purpose(purpose: crate::DownloadSubmissionPurpose) -> Self {
+        if purpose.is_operator_queued() || purpose.is_manual_replacement() {
+            Self::OperatorQueued
+        } else {
+            Self::Automatic
+        }
+    }
+
+    fn rejection_disposition(self) -> RejectionDisposition {
+        match self {
+            Self::Automatic => RejectionDisposition::Blocklist,
+            Self::OperatorQueued => RejectionDisposition::Hold,
+        }
+    }
+
+    pub(crate) fn held_rejection(
+        self,
+        mut rejection: ImportedFileRejection,
+    ) -> ImportedFileRejection {
+        if self == Self::OperatorQueued {
+            rejection.message = format!(
+                "held for manual import because the file failed {}: {}",
+                rejection.recycle_reason, rejection.message
+            );
+        }
+        rejection
+    }
+}
 
 /// Everything the decision needs, and nothing about where the bytes go.
 ///
@@ -72,9 +109,9 @@ pub(crate) struct ImportDecisionInput<'a> {
     /// requirements a single time instead of twice.
     pub scoring_context: &'a ResolvedScoringContext,
     pub scope: &'a crate::SubmissionScope,
-    /// The D4 runtime basis for this scope: the episode span's runtime, the
-    /// title's, or the linked movie's. Size scoring is runtime-derived, so this
-    /// is what keeps the import's number comparable with the grab's.
+    /// The runtime basis for this scope: the episode span's runtime, the title's,
+    /// or the linked movie's. Size scoring is runtime-derived, so this is what
+    /// keeps the import's number comparable with the grab's.
     pub scope_runtime_minutes: Option<i32>,
     /// The **announced** evidence: the canonical import parse as it came off the
     /// release name, before the probe merged its findings in.
@@ -95,15 +132,23 @@ pub(crate) struct ImportDecisionInput<'a> {
     pub accepted: &'a ImportedFileAcceptance,
     pub prior_rescore_changes: &'a [String],
     pub landed_size_bytes: i64,
+    /// The size the release announced (`DownloadSubmission.release_size_bytes`),
+    /// when the grab recorded one. Inside the overhead band the landed pass
+    /// scores the size term on it, so grab and import agree
+    /// (`canonical_scoring::size_basis_bytes`); a real shortfall scores on what
+    /// landed.
+    pub announced_size_bytes: Option<i64>,
     pub is_filler: bool,
+    /// Guard-failure policy for the source that queued this download.
+    pub origin: ImportOrigin,
     /// `operator_initiated_import(..)` — an operator picked this file by hand.
     /// Bypasses the verdict gate (blocklisting the release they chose would
     /// fight them) and selects [`crate::admission::AdmissionPolicy::manual`].
     pub operator_intent: bool,
-    /// The superset the displaced rows are resolved from (D14/A1): every primary
-    /// file of the title on the movie and link paths, the episode-scoped list on
-    /// the episode path. Never a path-filtered list — a renamed incumbent lives
-    /// at a path this import would never guess.
+    /// The superset the displaced rows are resolved from: every primary file of
+    /// the title on the movie and link paths, the episode-scoped list on the
+    /// episode path. Never a path-filtered list — a renamed incumbent lives at a
+    /// path this import would never guess.
     pub incumbent_rows: IncumbentRows<'a>,
     /// How to name this scope in an operator-facing message ("this title",
     /// "this series-movie link", "this episode").
@@ -135,9 +180,9 @@ impl SupersededIncumbents {
 
 /// An import that must go ahead *and* burn its own release.
 ///
-/// The quality-lie case for an unoccupied scope (D2): an honest 720p beats no
-/// episode at all, but the release must never be offered back as an "upgrade"
-/// to the tier it claimed.
+/// The quality-lie case for an unoccupied scope: an honest 720p beats no episode
+/// at all, but the release must never be offered back as an "upgrade" to the
+/// tier it claimed.
 #[derive(Debug, Clone)]
 pub(crate) struct BlocklistDirective {
     pub code: &'static str,
@@ -149,7 +194,7 @@ pub(crate) struct BlocklistDirective {
 /// There is no "discard" outcome to choose from: `result_state.rs` maps every
 /// non-`Imported` decision to `TrackedDownloadState::ImportBlocked`, so the
 /// download sits waiting for an operator either way. What these three differ in
-/// is the *side effects* (design §9, D17 restated).
+/// is the *side effects*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RejectionDisposition {
     /// Blocklist the release for this title and reopen the scope's search.
@@ -216,14 +261,15 @@ pub(crate) async fn decide_import(
 
     let scored = score_landed(input, input.landed_size_bytes);
 
-    // The verdict is about the release, so it is resolved before admission —
-    // a release that lied is burned whether or not the scope had room for it.
+    // The verdict is about the release, so it is resolved before admission.
+    // Automatic failures burn; operator-queued failures are held for review.
     let mut blocklist_after_import = None;
     if !input.operator_intent {
-        match resolve_truth_verdict_action(
+        match resolve_truth_verdict_action_for_origin(
             &scored.truth_verdict,
             &input.scoring_context.profile().criteria,
             !subject.is_unoccupied(),
+            input.origin,
         ) {
             crate::post_download_gate::TruthVerdictAction::Import => {}
             crate::post_download_gate::TruthVerdictAction::ImportAndBlocklist { code, reason } => {
@@ -231,14 +277,8 @@ pub(crate) async fn decide_import(
             }
             crate::post_download_gate::TruthVerdictAction::Reject(rejection) => {
                 return ImportDecisionOutcome::Reject {
-                    rejection,
-                    disposition: RejectionDisposition::Blocklist,
-                };
-            }
-            crate::post_download_gate::TruthVerdictAction::Hold(rejection) => {
-                return ImportDecisionOutcome::Reject {
-                    rejection,
-                    disposition: RejectionDisposition::Hold,
+                    rejection: input.origin.held_rejection(rejection),
+                    disposition: input.origin.rejection_disposition(),
                 };
             }
         }
@@ -333,7 +373,7 @@ pub(crate) fn evaluate_import_admission(
 ///
 /// The bytes written can differ from the source's size (a repaired par2 set, a
 /// container remux at transfer), and the persisted bar has to be the score of
-/// what is on disk or a later re-derivation will not reproduce it (I7). This is
+/// what is on disk or a later re-derivation will not reproduce it. This is
 /// the same pipeline [`decide_import`] ran, over the same resolved context — no
 /// profile lookup, no rules load, no database round trip; only the term
 /// sequence, with one number changed.
@@ -354,7 +394,7 @@ fn score_landed(
         input.parsed,
         input.accepted,
         input.scope_runtime_minutes,
-        size_bytes,
+        crate::canonical_scoring::size_basis_bytes(size_bytes, input.announced_size_bytes),
         input.prior_rescore_changes,
         input.is_filler,
     )
@@ -389,12 +429,12 @@ pub(crate) fn disposition_for(
         // search would find candidates the same guard refuses.
         Reason::UpgradesDisabled
         // The release is fine — it just cannot be placed here without dropping
-        // coverage. That is the bounded I4 exception D8 documents: a
-        // double-episode file admitted per-member at grab, refused as a span at
-        // import. D18 keeps it from being re-grabbed while it sits held.
+        // coverage. A double-episode file can be admitted per-member at grab but
+        // refused as a span at import. Queue-aware admission keeps it from being
+        // re-grabbed while it sits held.
         | Reason::BroaderIncumbentSpan
         // Grab-only reasons, mapped honestly rather than left to a wildcard: an
-        // import policy never sets `cutoff_score` (I4) and a pack verdict cannot
+        // import policy never sets `cutoff_score`, and a pack verdict cannot
         // reach a per-file import at all. If one ever does, holding is the
         // outcome that asks a human rather than the one that shrugs.
         | Reason::FormatCutoffReached { .. }
@@ -412,17 +452,14 @@ pub(crate) fn disposition_for(
 /// user/system **rule** BLOCK at the gate is the same event `classify_truth`
 /// would classify as [`crate::canonical_scoring::TruthVerdict::Vetoed`] had
 /// the gate not fired first — operator policy on the file, not a
-/// misrepresentation — so it takes the same disposition, `Hold`. Burning it
-/// would walk every release for the title into the blocklist one codec-silent
-/// name at a time (design §9, "Truth verdicts"); the verdict test pins the
-/// scorer half of that promise, this pins the gate half.
-pub(crate) fn prepare_rejection_disposition(
+/// misrepresentation — it is still an import failure. The release is
+/// blocklisted and the scope reopens so the next search cannot retry it.
+pub(crate) fn prepare_rejection_disposition_for_origin(
     rejection: &ImportedFileRejection,
+    origin: ImportOrigin,
 ) -> RejectionDisposition {
-    match rejection.skip_reason {
-        Some(ImportSkipReason::PostDownloadRuleBlocked) => RejectionDisposition::Hold,
-        _ => RejectionDisposition::Blocklist,
-    }
+    let _ = rejection;
+    origin.rejection_disposition()
 }
 
 /// Translate a shared admission refusal into the import layer's rejection shape.
@@ -547,5 +584,65 @@ fn resolve_superseded_rows(rows: &IncumbentRows<'_>, ranked: &[String]) -> Super
                 })
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejection() -> ImportedFileRejection {
+        ImportedFileRejection {
+            message: "required audio language is missing".to_string(),
+            recycle_reason: "language_mismatch",
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            blocking_rule_codes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn operator_queued_guard_rejections_are_held_with_an_actionable_message() {
+        let held = ImportOrigin::OperatorQueued.held_rejection(rejection());
+        assert_eq!(
+            prepare_rejection_disposition_for_origin(&held, ImportOrigin::OperatorQueued),
+            RejectionDisposition::Hold
+        );
+        assert!(held.message.contains("held for manual import"));
+        assert!(held.message.contains("language_mismatch"));
+    }
+
+    #[test]
+    fn automatic_guard_rejections_still_burn_the_release() {
+        assert_eq!(
+            prepare_rejection_disposition_for_origin(&rejection(), ImportOrigin::Automatic),
+            RejectionDisposition::Blocklist
+        );
+    }
+
+    /// A perfectly good download is refused because something *still sitting in
+    /// the queue* is equal or better, and that refusal is reported as
+    /// `AlreadyImported`. Downstream that reads as a successful import, so the
+    /// client entry is cleaned up and no import/failure history is written.
+    #[test]
+    fn a_queued_equal_or_better_release_is_reported_as_already_imported() {
+        let rejection = crate::admission::AdmissionRejection {
+            reason: crate::admission::AdmissionRejectionReason::QueuedEqualOrBetter {
+                queued_title: "Show.S01E01.1080p.WEB-DL".to_string(),
+                queued_score: 100,
+                candidate_score: 100,
+            },
+            message: "already downloading for this scope and is equal or better".to_string(),
+            incumbent_file_id: String::new(),
+            incumbent_file_path: String::new(),
+        };
+
+        let imported = admission_rejection_to_import("S01E01", &rejection);
+
+        assert_eq!(
+            imported.skip_reason,
+            Some(ImportSkipReason::AlreadyImported),
+            "a queued-equal-or-better refusal must not be laundered into AlreadyImported"
+        );
+        assert_eq!(imported.recycle_reason, "already_imported");
     }
 }

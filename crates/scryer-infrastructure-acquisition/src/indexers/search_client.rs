@@ -7,15 +7,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
-    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome, IndexerRoutingPlan,
-    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
-    IndexerSearchLearningRepository, IndexerSearchOutcome, IndexerSearchResponse,
-    IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff,
-    NullIndexerProxyConfigRepository, NullIndexerSearchLearningRepository, NullUpstreamScheduler,
-    RateLimitCooldownAction, RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
-    RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate,
-    SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent,
-    SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
+    IndexerErrorOperation, IndexerPluginProvider, IndexerProxyConfigRepository,
+    IndexerQueryOutcome, IndexerRoutingPlan, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
+    IndexerSystemBackoff, NullIndexerProxyConfigRepository, NullIndexerSearchLearningRepository,
+    NullUpstreamScheduler, RateLimitCooldownAction, RateLimitSignal, ReleaseCandidateProvenance,
+    ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
+    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
+    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
     SearchLearningContext, SearchMode, UpstreamScheduler,
 };
 use scryer_domain::{
@@ -111,6 +111,7 @@ struct StrategyTierContext {
     category: Option<String>,
     per_indexer_categories: Option<Vec<String>>,
     mode: SearchMode,
+    operation: IndexerErrorOperation,
     tagged_aliases: Vec<scryer_domain::TaggedAlias>,
     cancel_token: CancellationToken,
     deadline_at: Option<tokio::time::Instant>,
@@ -1520,6 +1521,10 @@ impl MultiIndexerSearchClient {
             newznab_categories,
             indexer_routing,
             mode,
+            match mode {
+                SearchMode::Interactive => IndexerErrorOperation::InteractiveSearch,
+                SearchMode::Auto => IndexerErrorOperation::AutomaticSearch,
+            },
             season,
             episode,
             absolute_episode,
@@ -1861,6 +1866,7 @@ impl MultiIndexerSearchClient {
                     category,
                     per_indexer_categories,
                     mode,
+                    operation,
                     tagged_aliases,
                     cancel_token,
                     deadline_at,
@@ -1934,6 +1940,7 @@ impl MultiIndexerSearchClient {
                                         },
                                         None,
                                         mode,
+                                        operation,
                                         if strategy.generic_query_only {
                                             None
                                         } else {
@@ -2067,6 +2074,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         newznab_categories: Option<Vec<String>>,
         indexer_routing: Option<IndexerRoutingPlan>,
         mode: SearchMode,
+        operation: IndexerErrorOperation,
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
@@ -2127,6 +2135,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                 self.backoff_tracker.seed_persisted(&c.id, backoff).await;
             }
             let had_persisted_system_backoff = persisted_system_backoff.is_some();
+            // Every mode respects operational backoff, interactive included —
+            // Sonarr parity (`IndexerFactory.InteractiveSearchEnabled()` filters
+            // blocked indexers and logs "Temporarily ignoring indexer … due to
+            // recent failures"). Querying a backed-off indexer from the UI would
+            // extend the very ban the backoff is protecting against; the skip is
+            // logged at info for interactive so the reason stays visible.
             if let Some(backoff) = persisted_system_backoff.as_ref()
                 && backoff.disabled_until > now
             {
@@ -2827,6 +2841,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         rss_category_request.clone(),
                                         None,
                                         mode,
+                                        IndexerErrorOperation::RssSync,
                                         season,
                                         episode,
                                         absolute_episode,
@@ -3156,6 +3171,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         category: category_for_indexer.clone(),
                         per_indexer_categories: rss_category_request.clone(),
                         mode,
+                        operation,
                         tagged_aliases: tagged_aliases_for_indexer.clone(),
                         cancel_token: task_cancel_token.child_token(),
                         deadline_at,
@@ -3305,6 +3321,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             category: category_for_indexer,
                             per_indexer_categories: rss_category_request,
                             mode,
+                            operation,
                             tagged_aliases: tagged_aliases_for_indexer.clone(),
                             cancel_token: task_cancel_token.child_token(),
                             deadline_at,
@@ -3432,6 +3449,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let batch_had_rate_limit = batch_health.had_rate_limit;
                 let batch_had_solver_failure = batch_health.had_solver_failure;
                 let batch_retry_after = batch_health.retry_after;
+                let batch_rate_limit_error = batch_health.rate_limit_error.clone();
                 batch_health
                     .apply(
                         &backoff_tracker,
@@ -3453,8 +3471,19 @@ impl IndexerClient for MultiIndexerSearchClient {
                         scheduler_lease_for_task.clone(),
                         Err(if batch_had_rate_limit {
                             AppError::TemporaryUnavailable {
-                                message: "repository: all attempted indexer strategies failed"
-                                    .to_string(),
+                                // Carry the upstream rate-limit text (status and
+                                // Retry-After) with the aggregate: the interactive
+                                // per-indexer status, the logs, and text-based
+                                // rate-limit classification all read this
+                                // message, and "all strategies failed" alone
+                                // hides *why*.
+                                message: match batch_rate_limit_error.as_deref() {
+                                    Some(detail) => format!(
+                                        "repository: all attempted indexer strategies failed: {detail}"
+                                    ),
+                                    None => "repository: all attempted indexer strategies failed"
+                                        .to_string(),
+                                },
                                 retry_after: batch_retry_after,
                                 rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
                             }
@@ -4519,6 +4548,7 @@ mod tests {
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
+            _operation: IndexerErrorOperation,
             _season: Option<u32>,
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
@@ -4683,6 +4713,7 @@ mod tests {
             newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
+            _operation: IndexerErrorOperation,
             season: Option<u32>,
             episode: Option<u32>,
             absolute_episode: Option<u32>,
@@ -4774,6 +4805,7 @@ mod tests {
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
+            _operation: IndexerErrorOperation,
             _season: Option<u32>,
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
@@ -4917,6 +4949,7 @@ mod tests {
             _newznab_categories: Option<Vec<String>>,
             _indexer_routing: Option<IndexerRoutingPlan>,
             _mode: SearchMode,
+            _operation: IndexerErrorOperation,
             _season: Option<u32>,
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
@@ -5074,6 +5107,7 @@ mod tests {
                 None,
                 None,
                 SearchMode::Interactive,
+                IndexerErrorOperation::InteractiveSearch,
                 None,
                 None,
                 None,
@@ -7230,9 +7264,16 @@ mod tests {
             .await
             .expect_err("interactive search should report all-failed attempts");
 
-        assert_eq!(
-            error.to_string(),
-            "repository: repository: all attempted indexer strategies failed"
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("all attempted indexer strategies failed"),
+            "unexpected error: {rendered}"
+        );
+        // The upstream rate-limit text travels with the aggregate so a reader
+        // (the interactive per-indexer status, a log line) sees why it failed.
+        assert!(
+            rendered.contains("upstream returned 429"),
+            "rate-limit detail should be carried: {rendered}"
         );
         let signal = scryer_application::RateLimitSignal::from_error(&error)
             .expect("aggregated failure should preserve rate-limit signal");
@@ -8374,6 +8415,7 @@ mod tests {
             None,
             None,
             SearchMode::Auto,
+            IndexerErrorOperation::AutomaticSearch,
             None,
             None,
             None,

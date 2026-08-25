@@ -129,6 +129,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             form_login_enabled: false,
             password_min_length: 12,
             skip_login_for_local_ips: false,
+            api_keys_restrict_to_system_settings_users: Some(false),
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
@@ -214,6 +215,7 @@ async fn emby_totp_requirement_round_trips_through_settings_values() {
             form_login_enabled: false,
             password_min_length: 8,
             skip_login_for_local_ips: false,
+            api_keys_restrict_to_system_settings_users: Some(false),
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
@@ -336,6 +338,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
             form_login_enabled: false,
             password_min_length: 12,
             skip_login_for_local_ips: false,
+            api_keys_restrict_to_system_settings_users: Some(false),
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
@@ -877,9 +880,11 @@ async fn oauth_redirect_validation_and_code_exchange_reject_fragments() {
     let verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~abcdef";
 
     app.validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, redirect_uri)
+        .await
         .expect("fragment-free redirect should remain valid");
     match app
         .validate_oauth_redirect_uri(OAUTH_GENERIC_NATIVE_CLIENT_ID, fragment_redirect_uri)
+        .await
         .expect_err("fragment-bearing redirect should be rejected")
     {
         AppError::Validation(message) => {
@@ -1040,7 +1045,8 @@ async fn release_candidate_token_resolves_password_without_exposing_it() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some(" release-password ".to_string()),
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1106,7 +1112,8 @@ async fn release_candidate_token_rejects_missing_password_ticket() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("release-password".to_string()),
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1163,7 +1170,8 @@ async fn release_candidate_token_drops_placeholder_password_flags() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: Some("protected".to_string()),
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1212,7 +1220,8 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.S01E01-E03.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
     let scope = SubmissionScope::EpisodeSet {
@@ -1237,7 +1246,7 @@ async fn release_candidate_token_round_trips_episode_set_scope() {
 }
 
 #[tokio::test]
-async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
+async fn release_candidate_token_carries_size_and_seeder_count_to_redemption() {
     let (app, admin) = bootstrap();
     let (_created, authenticated_user) = create_authenticated_user(
         &app,
@@ -1255,6 +1264,8 @@ async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
         source_kind: Some(DownloadSourceKind::MagnetUri),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
+        size_bytes: Some(1_234_567_890),
         seeders: Some(42),
     };
 
@@ -1281,6 +1292,11 @@ async fn release_candidate_token_carries_the_seeder_count_to_redemption() {
         Some(42),
         "redemption must be able to re-judge admission from the token alone"
     );
+    assert_eq!(decoded.size_bytes, Some(1_234_567_890));
+    assert_eq!(
+        decoded.info_hash_hint.as_deref(),
+        Some("abcdef0123456789abcdef0123456789abcdef01")
+    );
 }
 
 #[tokio::test]
@@ -1305,6 +1321,8 @@ async fn a_token_minted_before_this_feature_still_redeems() {
         source_kind: Some(DownloadSourceKind::MagnetUri),
         source_title: Some("Example.Legacy.1080p.WEB-DL".to_string()),
         source_password: None,
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1327,6 +1345,7 @@ async fn a_token_minted_before_this_feature_still_redeems() {
         .expect("a token without a seeder count must still redeem");
 
     assert_eq!(decoded.seeders, None);
+    assert_eq!(decoded.info_hash_hint, None);
 }
 
 #[tokio::test]
@@ -1346,7 +1365,8 @@ async fn release_candidate_token_rejects_tampering() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1399,7 +1419,8 @@ async fn release_candidate_token_rejects_actor_title_and_scope_mismatch() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
 
@@ -1467,7 +1488,8 @@ async fn release_candidate_token_is_invalidated_by_password_rotation() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
     let token = app
@@ -1515,7 +1537,8 @@ async fn release_candidate_token_is_invalidated_by_permission_change() {
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Example.Release.1080p.WEB-DL".to_string()),
         source_password: None,
-
+        info_hash_hint: None,
+        size_bytes: None,
         seeders: None,
     };
     let token = app

@@ -1,5 +1,136 @@
 use super::*;
 
+#[derive(Default)]
+struct RecordingDownloadRegistry {
+    rows: Arc<Mutex<HashMap<ClientJobLocator, scryer_domain::download_identity::DownloadId>>>,
+    ended: Arc<Mutex<HashSet<scryer_domain::download_identity::DownloadId>>>,
+    failing_bindings: Arc<Mutex<HashSet<ClientJobLocator>>>,
+}
+
+impl RecordingDownloadRegistry {
+    async fn contains(&self, locator: &ClientJobLocator) -> bool {
+        self.rows.lock().await.contains_key(locator)
+    }
+
+    async fn bind(
+        &self,
+        locator: ClientJobLocator,
+        download_id: scryer_domain::download_identity::DownloadId,
+    ) {
+        self.rows.lock().await.insert(locator, download_id);
+    }
+
+    async fn fail_binding_lookup(&self, locator: ClientJobLocator) {
+        self.failing_bindings.lock().await.insert(locator);
+    }
+}
+
+#[async_trait]
+impl DownloadRegistryRepository for RecordingDownloadRegistry {
+    async fn resolve_observation(
+        &self,
+        observation: &ObservedClientJob,
+    ) -> AppResult<ObservationResolution> {
+        let mut rows = self.rows.lock().await;
+        let known = rows.get(&observation.locator).copied();
+        let token = observation
+            .wire_token
+            .as_deref()
+            .and_then(scryer_domain::download_identity::DownloadId::from_wire);
+        let download_id = token
+            .or(known)
+            .unwrap_or_else(scryer_domain::download_identity::DownloadId::new);
+        let newly_foreign = known.is_none() && token.is_none();
+        rows.insert(observation.locator.clone(), download_id);
+        Ok(ObservationResolution::Resolved {
+            download_id,
+            newly_foreign,
+            attached: false,
+        })
+    }
+
+    async fn load_download(
+        &self,
+        id: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadRecord>> {
+        Ok(self
+            .rows
+            .lock()
+            .await
+            .values()
+            .any(|existing| existing == id)
+            .then(|| DownloadRecord {
+                id: *id,
+                origin: DownloadOrigin::ForeignObservation,
+                created_at: Utc::now(),
+                first_observed_at: None,
+                last_observed_at: None,
+                terminal_at: None,
+            }))
+    }
+
+    async fn load_binding(
+        &self,
+        id: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        let binding = self
+            .rows
+            .lock()
+            .await
+            .iter()
+            .find_map(|(locator, existing)| (existing == id).then(|| locator.clone()));
+        let Some(locator) = binding else {
+            return Ok(None);
+        };
+        let ended_at = self.ended.lock().await.contains(id).then(Utc::now);
+        Ok(Some(DownloadClientBindingRecord {
+            download_id: *id,
+            client_config_id: locator.client_id,
+            client_type_snapshot: Some(locator.client_type),
+            client_name_snapshot: None,
+            native_item_id: Some(locator.item_id),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            ended_at,
+        }))
+    }
+
+    async fn find_active_binding_by_locator(
+        &self,
+        locator: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        if self.failing_bindings.lock().await.contains(locator) {
+            return Err(AppError::Repository(
+                "injected registry binding lookup failure".to_string(),
+            ));
+        }
+        let Some(download_id) = self.rows.lock().await.get(locator).copied() else {
+            return Ok(None);
+        };
+        if self.ended.lock().await.contains(&download_id) {
+            return Ok(None);
+        }
+        Ok(Some(DownloadClientBindingRecord {
+            download_id,
+            client_config_id: locator.client_id.clone(),
+            client_type_snapshot: Some(locator.client_type.clone()),
+            client_name_snapshot: None,
+            native_item_id: Some(locator.item_id.clone()),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            ended_at: None,
+        }))
+    }
+
+    async fn end_binding(
+        &self,
+        id: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<()> {
+        self.ended.lock().await.insert(*id);
+        Ok(())
+    }
+}
+
 async fn publish_test_download_queue_snapshot(app: &AppUseCase, items: Vec<DownloadQueueItem>) {
     app.runtime
         .acquisition
@@ -8,6 +139,193 @@ async fn publish_test_download_queue_snapshot(app: &AppUseCase, items: Vec<Downl
         .await;
     sleep(crate::services::DOWNLOAD_QUEUE_SNAPSHOT_COALESCE_WINDOW + Duration::from_millis(50))
         .await;
+}
+
+#[tokio::test]
+async fn push_snapshot_observation_is_recorded_by_the_registry_resolver() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            cancellation.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_secs(60),
+                excluded_client_types: vec!["weaver".to_string()],
+                ..Default::default()
+            },
+        ),
+    );
+
+    let mut item = queue_history_fixture_item("weaver-push-1", DownloadQueueState::Downloading, 1);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    let locator = ClientJobLocator::new(
+        Some(config.id.as_str()),
+        item.client_type.as_str(),
+        item.download_client_item_id.as_str(),
+    );
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("push snapshot should publish");
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if registry.contains(&locator).await {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("push snapshot should resolve a registry row");
+
+    cancellation.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn download_identity_shapes_keep_current_queue_and_history_projections() {
+    const TORRENT_INFO_HASH: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+
+    let mut nzbget =
+        queue_history_fixture_item("42", DownloadQueueState::Downloading, 1_700_000_000);
+    nzbget.client_id = "nzbget-primary".to_string();
+    nzbget.client_name = "NZBGet".to_string();
+    nzbget.client_type = "nzbget".to_string();
+    nzbget.download_id = Some("scryer-download:nzbget-token".to_string());
+    nzbget.is_scryer_origin = true;
+
+    let mut sabnzbd = queue_history_fixture_item(
+        "SABnzbd_nzo_abc123",
+        DownloadQueueState::Downloading,
+        1_700_000_000,
+    );
+    sabnzbd.client_id = "sabnzbd-primary".to_string();
+    sabnzbd.client_name = "SABnzbd".to_string();
+    sabnzbd.client_type = "sabnzbd".to_string();
+    sabnzbd.download_id = Some("SABnzbd_nzo_abc123".to_string());
+    sabnzbd.is_scryer_origin = false;
+
+    let mut torrent = queue_history_fixture_item(
+        "native-torrent-item",
+        DownloadQueueState::Downloading,
+        1_700_000_000,
+    );
+    torrent.id = format!("qbittorrent:{TORRENT_INFO_HASH}");
+    torrent.client_id = "torrent-primary".to_string();
+    torrent.client_name = "qBittorrent".to_string();
+    torrent.client_type = "qbittorrent".to_string();
+    torrent.download_id = Some(TORRENT_INFO_HASH.to_string());
+    torrent.is_scryer_origin = false;
+
+    let mut plugin = queue_history_fixture_item(
+        "plugin-item-1",
+        DownloadQueueState::Downloading,
+        1_700_000_000,
+    );
+    plugin.id = "plugin-client:plugin-item-1".to_string();
+    plugin.client_id = "plugin-primary".to_string();
+    plugin.client_name = "Plugin client".to_string();
+    plugin.client_type = "plugin-client".to_string();
+    plugin.download_id = Some("scryer-download:plugin-token".to_string());
+    plugin.is_scryer_origin = false;
+
+    let queue_items = vec![nzbget, sabnzbd, torrent, plugin];
+    publish_test_download_queue_snapshot(&app, queue_items.clone()).await;
+
+    let assert_identity_projection = |items: &[DownloadQueueItem]| {
+        for (client_item_id, id, download_id, is_scryer_origin) in [
+            ("42", "42", "scryer-download:nzbget-token", true),
+            (
+                "SABnzbd_nzo_abc123",
+                "SABnzbd_nzo_abc123",
+                "SABnzbd_nzo_abc123",
+                false,
+            ),
+            (
+                "native-torrent-item",
+                "qbittorrent:abcdef0123456789abcdef0123456789abcdef01",
+                "abcdef0123456789abcdef0123456789abcdef01",
+                false,
+            ),
+            (
+                "plugin-item-1",
+                "plugin-client:plugin-item-1",
+                "scryer-download:plugin-token",
+                false,
+            ),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item.download_client_item_id == client_item_id)
+                .unwrap_or_else(|| panic!("missing {client_item_id} identity projection"));
+            assert_eq!(item.id, id);
+            assert_eq!(item.download_id.as_deref(), Some(download_id));
+            assert_eq!(item.download_client_item_id, client_item_id);
+            assert_eq!(item.is_scryer_origin, is_scryer_origin);
+        }
+    };
+
+    let queue = app
+        .list_download_queue(&user, true, false, false, DownloadActivityFilter::All)
+        .await
+        .expect("queue should load");
+    assert_identity_projection(&queue);
+
+    let history_items = queue_items
+        .into_iter()
+        .map(|mut item| {
+            item.state = DownloadQueueState::Completed;
+            item.last_updated_at = Some("1700000000".to_string());
+            item
+        })
+        .collect();
+    publish_test_download_queue_snapshot(&app, history_items).await;
+
+    let history = app
+        .list_download_history_page(
+            &user,
+            50,
+            0,
+            Some(vec![DownloadHistoryFilter::All]),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("history should load");
+    assert_identity_projection(&history.items);
 }
 
 #[tokio::test]
@@ -36,6 +354,7 @@ async fn list_download_queue_reads_cached_observed_items_without_client_calls() 
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: String::new(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: String::new(),
@@ -228,6 +547,7 @@ async fn list_download_queue_for_title_filters_the_shared_cache() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-1".to_string(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -774,6 +1094,7 @@ async fn synthetic_download_import_rows_are_enriched_from_submissions_before_per
     .await;
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -863,6 +1184,7 @@ async fn find_download_queue_scope_ignores_stale_submission_titles() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "missing-title".to_string(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -909,6 +1231,7 @@ async fn find_download_queue_scope_returns_orphan_without_title_lookup() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: String::new(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -973,6 +1296,7 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: String::new(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -992,6 +1316,7 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
         .expect("record observed submission");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: managed_title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1141,6 +1466,7 @@ async fn manual_import_source_uses_retained_tracked_source_when_live_history_is_
         .expect("create selected title");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: String::new(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1284,12 +1610,15 @@ async fn queued_manual_import_rejects_observed_targets_before_consuming_or_queue
         id: Id::new().0,
         actor_user_id: user.id.clone(),
         title_id: bound_title.id.clone(),
-        source_identity: DownloadSourceIdentity {
+        source_identity: ClientJobLocator {
             client_id: Some("qbittorrent-primary".to_string()),
             client_type: "qbittorrent".to_string(),
             item_id: "observed-target-selection".to_string(),
         },
+        canonical_download_id: None,
         release_evidence_json: None,
+        trusted_source_root: "/private/tmp".to_string(),
+        archive_workspace_root: None,
         candidates: vec![crate::ManualImportSelectionCandidate {
             id: "candidate-1".to_string(),
             canonical_path: "/private/tmp/observed-target-selection.mkv".to_string(),
@@ -1383,6 +1712,7 @@ async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanu
     let item_id = "manual-race-source";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1454,6 +1784,8 @@ async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanu
         files: Vec::new(),
         selection_id: None,
         release_evidence: None,
+        trusted_source_root: None,
+        archive_workspace_root: None,
         requested_at: now,
     };
 
@@ -1516,6 +1848,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         crate::tracked_downloads::tracked_download_id(Some(client_id), "weaver", item_id);
     let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
     tracker.insert_for_tests(crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: tracked_id.clone(),
         client_id: client_id.to_string(),
         client_type: "weaver".to_string(),
@@ -1543,6 +1876,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         snapshot_missing_since: None,
     });
     let submission = DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title.id.clone(),
         purpose: DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),
@@ -1626,7 +1960,7 @@ async fn assign_tracked_download_title_preserves_the_grab_time_release_name_and_
     // persisted — it is still the release evidence the import parses and
     // scores — and it must record the scope the operator asked for.
     let mut fixture = tracked_title_assignment_fixture().await;
-    let identity = DownloadSourceIdentity::from_submission(&fixture.submission);
+    let identity = ClientJobLocator::from_submission(&fixture.submission);
     let mut grabbed = fixture.submission.clone();
     grabbed.title_id = "some-other-title".to_string();
     grabbed.source_title = Some("Grabbed.Release.2026.1080p.WEB-DL-GRP".to_string());
@@ -2105,10 +2439,11 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
         download_id: Some(download_id.to_string()),
     };
     let submission_source_identity =
-        DownloadSourceIdentity::new(Some(config.id.as_str()), "nzbget", item_id);
+        ClientJobLocator::new(Some(config.id.as_str()), "nzbget", item_id);
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id.clone(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -2278,6 +2613,7 @@ async fn external_failed_snapshot_dispatches_failure_worker_without_completed_ro
     let release_title = "Failed.External.Snapshot.2026.1080p.WEB-DL";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -3485,7 +3821,7 @@ async fn queued_manual_import_on_blocked_bridged_row_renders_as_importing() {
     .expect("unmatched observed completion should block for manual review");
 
     // The operator queues a manual import for the blocked row.
-    let source_identity = DownloadSourceIdentity::new(Some(config.id.as_str()), "weaver", item_id);
+    let source_identity = ClientJobLocator::new(Some(config.id.as_str()), "weaver", item_id);
     let manual_import_id = app
         .services
         .workflow
@@ -4043,6 +4379,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
     history_item.title_name = title.name.clone();
     history_item.facet = Some("movie".to_string());
     let tracked = crate::tracked_downloads::TrackedDownload {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         id: crate::tracked_downloads::tracked_download_id(
             Some(config.id.as_str()),
             "nzbget",
@@ -4155,6 +4492,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id.clone(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -4649,9 +4987,12 @@ async fn automatic_episode_upgrade_rejection_is_not_burned() {
         "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
         initial_source.path(),
     );
-    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
-        .await
-        .expect("initial completed import should run");
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
     assert_eq!(
         initial_result.decision,
         scryer_domain::ImportDecision::Imported
@@ -4668,9 +5009,12 @@ async fn automatic_episode_upgrade_rejection_is_not_burned() {
         "Fail.Closed.Pack.S01E01.720p.WEB-DL",
         rejected_source.path(),
     );
-    let result = crate::import::import::import_completed_download(&app, &user, &rejected)
-        .await
-        .expect("lower-quality completed import should run");
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &rejected)
+            .await
+            .expect("lower-quality completed import should run")
+    };
 
     assert_eq!(
         result.decision,
@@ -4713,9 +5057,12 @@ async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
         "Fail.Closed.Pack.S01E01.1080p.WEB-DL",
         initial_source.path(),
     );
-    let initial_result = crate::import::import::import_completed_download(&app, &user, &initial)
-        .await
-        .expect("initial completed import should run");
+    let initial_result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &initial)
+            .await
+            .expect("initial completed import should run")
+    };
     assert_eq!(
         initial_result.decision,
         scryer_domain::ImportDecision::Imported
@@ -4736,18 +5083,19 @@ async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
         "Fail.Closed.Pack.S01.1080p.WEB-DL",
         mixed_source.path(),
     );
-    let result = crate::import::import::import_completed_download(&app, &user, &mixed)
-        .await
-        .expect("mixed completed import should run");
+    let result = {
+        let _probes = probe_sequence_agrees_with_the_names([(1280, 720), (1920, 1080)]);
+        crate::import::import::import_completed_download(&app, &user, &mixed)
+            .await
+            .expect("mixed completed import should run")
+    };
 
-    if cfg!(not(feature = "runtime-media-analysis")) {
-        assert_eq!(
-            result.decision,
-            scryer_domain::ImportDecision::Imported,
-            "{result:?}"
-        );
-        assert!(!result.release_burned, "{result:?}");
-    }
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
 }
 
 #[tokio::test]
@@ -5157,7 +5505,7 @@ async fn manual_import_upgrade_reports_transfer_progress_on_its_record() {
     let source_root =
         Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root"));
     let source_identity =
-        DownloadSourceIdentity::new(Some("weaver-client"), "weaver", "pack-upgrade-progress");
+        ClientJobLocator::new(Some("weaver-client"), "weaver", "pack-upgrade-progress");
     let manual_import = |release_name: &str| {
         let source_file = write_pack_video(source_dir.path(), &format!("{release_name}.mkv"));
         let completed = series_pack_completed_download(
@@ -5310,6 +5658,7 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
         facet: "series".to_string(),
         source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
         observed_release_name: None,
+        release_size_bytes: None,
         purpose: DownloadSubmissionPurpose::Standard,
         scope: SubmissionScope::Episode {
             episode_id: grabbed_episode.id,
@@ -5374,6 +5723,7 @@ async fn record_pack_identity_submission(
 ) {
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -5803,6 +6153,96 @@ async fn automatic_import_applies_single_episode_release_to_its_sole_obfuscated_
     assert!(source_file.exists());
 }
 
+/// Option c, persisted: a file that landed inside the overhead band of its
+/// announced size remembers that announced size on its media-file row (the bar
+/// re-derives the import score from it); a real shortfall, or a grab without an
+/// announced size, remembers nothing.
+#[tokio::test]
+async fn an_imported_file_remembers_the_announced_size_it_was_scored_on() {
+    let landed = PACK_VIDEO_SIZE_BYTES as i64;
+    for (announced, remembered) in [
+        // 256 MiB landed against 264 MiB announced: 97 %, inside the band.
+        (Some(landed + 8 * 1024 * 1024), true),
+        // Half of what was announced: a real shortfall, scored on the landed size.
+        (Some(landed * 2), false),
+        (None, false),
+    ] {
+        let (
+            FailClosedPackFixture {
+                app,
+                user,
+                title,
+                episode,
+                library_dir,
+                ..
+            },
+            download_submissions,
+        ) = fail_closed_pack_fixture_with_submissions().await;
+        let _keep_library = &library_dir;
+        let item_id = "announced-size-single-file";
+        download_submissions
+            .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
+                title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: item_id.to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(PACK_IDENTITY_EPISODE_RELEASE.to_string()),
+                release_size_bytes: announced,
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: episode.id.clone(),
+                },
+            })
+            .await
+            .expect("record series submission");
+
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        let _source_file = write_pack_video(
+            source_dir.path(),
+            &format!("{PACK_IDENTITY_EPISODE_RELEASE}.mkv"),
+        );
+        let completed = series_pack_completed_download(
+            item_id,
+            &title.id,
+            PACK_IDENTITY_EPISODE_RELEASE,
+            source_dir.path(),
+        );
+
+        let result = {
+            let _probe = probe_agrees_with_the_name(1280, 720);
+            crate::import::import::import_completed_download(&app, &user, &completed)
+                .await
+                .expect("completed import should run")
+        };
+        assert_eq!(
+            result.decision,
+            scryer_domain::ImportDecision::Imported,
+            "announced={announced:?}: {result:?}"
+        );
+        let media_files = app
+            .services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files");
+        assert_eq!(media_files.len(), 1, "{media_files:?}");
+        assert_eq!(media_files[0].size_bytes, landed);
+        assert_eq!(
+            media_files[0].announced_size_bytes,
+            if remembered { announced } else { None },
+            "announced={announced:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn manual_import_allows_explicit_title_for_missing_download_id_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
@@ -5990,6 +6430,7 @@ async fn completed_import_imports_additional_series_movie_file_from_submission_s
     let item_id = "additional-series-movie-import-1";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::AdditionalFile,
             facet: "anime".to_string(),
@@ -6324,6 +6765,7 @@ async fn completed_import_uses_durable_scope_over_stale_origin_parameters() {
     let item_id = "origin-scope-conflict-1";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -6958,6 +7400,202 @@ async fn queued_delete_poller_executes_client_delete() {
 }
 
 #[tokio::test]
+async fn queue_delete_persists_bound_download_id_and_ends_binding_after_execution() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let (base_app, user) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    let locator = ClientJobLocator::new(Some("client-bound"), "nzbget", "bound-job");
+    registry.bind(locator, canonical_download_id).await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let command = app
+        .delete_download_queue_item(&user, Some("client-bound"), "NZBGet", "bound-job", false)
+        .await
+        .expect("queue delete command");
+    assert_eq!(command.canonical_download_id, Some(canonical_download_id));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if download_queue_commands
+                .get(&command.id)
+                .await
+                .is_some_and(|record| {
+                    record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                })
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bound delete should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert!(
+        registry
+            .load_binding(&canonical_download_id)
+            .await
+            .expect("load binding")
+            .is_some_and(|binding| binding.ended_at.is_some())
+    );
+}
+
+#[tokio::test]
+async fn queue_delete_registry_miss_or_error_uses_legacy_command_and_still_executes() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let (base_app, user) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let failing_locator = ClientJobLocator::new(Some("client-error"), "nzbget", "error-job");
+    registry.fail_binding_lookup(failing_locator).await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let missed = app
+        .delete_download_queue_item(&user, Some("client-miss"), "nzbget", "miss-job", false)
+        .await
+        .expect("queue legacy command after registry miss");
+    let failed = app
+        .delete_download_queue_item(&user, Some("client-error"), "nzbget", "error-job", false)
+        .await
+        .expect("queue legacy command after registry error");
+    assert_eq!(missed.canonical_download_id, None);
+    assert_eq!(failed.canonical_download_id, None);
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let missed_completed =
+                download_queue_commands
+                    .get(&missed.id)
+                    .await
+                    .is_some_and(|record| {
+                        record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                    });
+            let failed_completed =
+                download_queue_commands
+                    .get(&failed.id)
+                    .await
+                    .is_some_and(|record| {
+                        record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                    });
+            if missed_completed && failed_completed {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("legacy delete commands should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    let deleted = download_client.deleted_items.lock().await.clone();
+    assert!(deleted.contains(&("miss-job".to_string(), false)));
+    assert!(deleted.contains(&("error-job".to_string(), false)));
+}
+
+#[tokio::test]
+async fn legacy_delete_command_does_not_end_an_unrelated_binding() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let command_id = download_queue_commands
+        .seed_pending(Some("client-legacy"), "nzbget", "legacy-job", false)
+        .await;
+    let (base_app, _) =
+        bootstrap_with_delete_queue(download_client, download_queue_commands.clone());
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    registry
+        .bind(
+            ClientJobLocator::new(Some("client-legacy"), "nzbget", "legacy-job"),
+            canonical_download_id,
+        )
+        .await;
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(start_background_download_delete_poller(
+        app,
+        token.child_token(),
+    ));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if download_queue_commands
+                .get(&command_id)
+                .await
+                .is_some_and(|record| {
+                    record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                })
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("legacy delete should complete");
+    token.cancel();
+    handle.await.expect("delete poller should stop cleanly");
+
+    assert!(
+        registry
+            .load_binding(&canonical_download_id)
+            .await
+            .expect("load binding")
+            .is_some_and(|binding| binding.ended_at.is_none())
+    );
+}
+
+#[tokio::test]
+async fn mark_imported_command_carries_canonical_download_id() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let handle = crate::tracked_downloads::TrackedDownloadHandle::new(tx);
+    let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
+    let mark = tokio::spawn(async move {
+        handle
+            .mark_imported_for_download(
+                "tracked-mark-imported".to_string(),
+                Some(canonical_download_id),
+            )
+            .await
+    });
+
+    let command = rx.recv().await.expect("mark-imported command");
+    let crate::tracked_downloads::TrackedDownloadCommand::MarkImported {
+        id,
+        canonical_download_id: carried_download_id,
+        reply,
+    } = command
+    else {
+        panic!("expected a mark-imported command");
+    };
+    assert_eq!(id, "tracked-mark-imported");
+    assert_eq!(carried_download_id, Some(canonical_download_id));
+    reply.send(Ok(())).expect("reply to mark-imported command");
+    mark.await
+        .expect("mark-imported caller task")
+        .expect("mark imported");
+}
+
+#[tokio::test]
 async fn queued_delete_poller_marks_failure_and_persists_error() {
     let download_client = Arc::new(StubDownloadClient::default());
     download_client
@@ -7028,10 +7666,11 @@ async fn ignore_tracked_download_uses_durable_fallback_idempotently() {
         )
         .await
         .expect("create title");
-    let source_identity = DownloadSourceIdentity::new(None, "nzbget", "evicted-job-1");
+    let source_identity = ClientJobLocator::new(None, "nzbget", "evicted-job-1");
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id,
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -7122,13 +7761,14 @@ async fn finalize_ignore_preserves_an_imported_outcome() {
         )
         .await
         .expect("create title");
-    let source_identity = DownloadSourceIdentity::new(None, "nzbget", "done-job-1");
+    let source_identity = ClientJobLocator::new(None, "nzbget", "done-job-1");
     let identity = DownloadSubmissionIdentity {
         download_id: Some("scryer-download:done-job-1".to_string()),
     };
     download_submissions
         .record_submission_with_identity(
             DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id,
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -7237,6 +7877,8 @@ struct DispositionFixture {
     title_folder: PathBuf,
     completed: CompletedDownload,
     blocklist_repo: Arc<MockBlocklistRepo>,
+    download_submissions: Arc<TrackingDownloadSubmissionRepo>,
+    import_repo: Arc<TrackingImportRepo>,
     scope_id: String,
     _library_dir: tempfile::TempDir,
     _download_dir: tempfile::TempDir,
@@ -7264,6 +7906,74 @@ impl DispositionFixture {
             .map(|entry| entry.source_title.clone().unwrap_or_default())
             .collect()
     }
+
+    async fn set_submission_purpose(&self, purpose: crate::DownloadSubmissionPurpose) {
+        let mut submissions = self.download_submissions.store.lock().await;
+        let submission = submissions
+            .iter_mut()
+            .find(|submission| {
+                submission.download_client_item_id == self.completed.download_client_item_id
+            })
+            .expect("fixture submission exists");
+        submission.purpose = purpose;
+    }
+
+    fn tracked_import_pending(&self) -> crate::tracked_downloads::TrackedDownload {
+        let mut client_item = queue_history_fixture_item(
+            &self.completed.download_client_item_id,
+            DownloadQueueState::Completed,
+            300 * 1024 * 1024,
+        );
+        client_item.client_id = self.completed.client_id.clone();
+        client_item.client_type = self.completed.client_type.clone();
+        client_item.client_name = "Primary NZBGet".to_string();
+        client_item.title_id = Some(self.title.id.clone());
+        client_item.title_name = self.title.name.clone();
+        client_item.facet = Some("movie".to_string());
+
+        crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
+            id: crate::tracked_downloads::tracked_download_id(
+                Some(self.completed.client_id.as_str()),
+                &self.completed.client_type,
+                &self.completed.download_client_item_id,
+            ),
+            client_id: self.completed.client_id.clone(),
+            client_type: self.completed.client_type.clone(),
+            client_item,
+            completed_source: None,
+            state: TrackedDownloadState::ImportPending,
+            status: scryer_domain::TrackedDownloadStatus::Ok,
+            status_messages: Vec::new(),
+            title_id: Some(self.title.id.clone()),
+            facet: Some("movie".to_string()),
+            source_title: Some(self.completed.name.clone()),
+            indexer: None,
+            added_at: None,
+            notified_manual_interaction: false,
+            match_type: scryer_domain::TitleMatchType::Submission,
+            is_trackable: true,
+            import_attempted: false,
+            waiting_for_completed_history: false,
+            path_missing_since: None,
+            no_video_import_retry: None,
+            import_execution_retry: None,
+            import_hold: None,
+            skip_reacquire_on_failure: false,
+            burned_by_import_gate: false,
+            snapshot_missing_since: None,
+        }
+    }
+
+    async fn latest_import_result(&self) -> crate::ImportResult {
+        let records = self.import_repo.records.lock().await;
+        let result_json = records
+            .iter()
+            .rev()
+            .find_map(|record| record.result_json.as_deref())
+            .expect("completed import stores a result");
+        serde_json::from_str(result_json).expect("stored import result deserializes")
+    }
 }
 
 async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixture {
@@ -7277,9 +7987,10 @@ async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixt
     );
     let media_files = Arc::new(MockMediaFileRepo::default());
     let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let import_repo = Arc::new(TrackingImportRepo::default());
     let app = base_app.with_test_overrides(|services| {
         services
-            .with_imports(Arc::new(TrackingImportRepo::default()))
+            .with_imports(import_repo.clone())
             .with_file_importer(Arc::new(CopyingFileImporter))
             .with_media_files(media_files)
             .with_blocklist_repo(blocklist_repo.clone())
@@ -7370,6 +8081,7 @@ async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixt
     let item_id = format!("{}-1", name.to_ascii_lowercase().replace(' ', "-"));
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -7413,6 +8125,8 @@ async fn disposition_fixture(name: &str, release_title: &str) -> DispositionFixt
         title_folder,
         completed,
         blocklist_repo,
+        download_submissions,
+        import_repo,
         scope_id,
         _library_dir: library_dir,
         _download_dir: download_dir,
@@ -7462,21 +8176,33 @@ async fn seed_primary_movie_file(
 /// `post_download_gate::probe_override`), and the real probe rejects a sparse
 /// fixture for having no readable duration. Installing the agreement explicitly
 /// makes the same test mean the same thing in both builds.
-fn probe_agrees_with_the_name(
-    width: i32,
-    height: i32,
-) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+fn probe_agreement(width: i32, height: i32) -> crate::post_download_gate::ImportedFileAcceptance {
     let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
     analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
     analysis.video_width = Some(width);
     analysis.video_height = Some(height);
-    crate::post_download_gate::probe_override::install(
-        crate::post_download_gate::ImportedFileAcceptance {
-            analysis: Some(analysis),
-            scan_error: None,
-            rule_file_doc: None,
-            audio_language_warning: None,
-        },
+    crate::post_download_gate::ImportedFileAcceptance {
+        analysis: Some(analysis),
+        scan_error: None,
+        rule_file_doc: None,
+        audio_language_warning: None,
+    }
+}
+
+fn probe_agrees_with_the_name(
+    width: i32,
+    height: i32,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install(probe_agreement(width, height))
+}
+
+fn probe_sequence_agrees_with_the_names(
+    dimensions: impl IntoIterator<Item = (i32, i32)>,
+) -> crate::post_download_gate::probe_override::ProbeOverrideGuard {
+    crate::post_download_gate::probe_override::install_sequence(
+        dimensions
+            .into_iter()
+            .map(|(width, height)| probe_agreement(width, height)),
     )
 }
 
@@ -7551,13 +8277,11 @@ async fn a_release_that_lied_about_its_quality_is_blocklisted_and_the_scope_reop
     assert_eq!(primaries[0].id, incumbent_id);
 }
 
-/// **`Hold`.** A file rule the operator wrote vetoes the file over something the
-/// release name never disclosed — the rule can only see `input.file.*` on the
-/// analyzed pass, so it is structurally analyzed-only. Nothing about the release
-/// was a lie, so nothing is burned and the scope is left alone: the next release
-/// would land in exactly the same place.
+/// A file rule the operator wrote vetoes the file over something the release name
+/// never disclosed. That is an import failure, so burn this release and reopen
+/// the scope to try another candidate.
 #[tokio::test]
-async fn a_file_the_profile_vetoes_over_an_undisclosed_property_is_held() {
+async fn a_file_the_profile_vetoes_over_an_undisclosed_property_is_blocklisted() {
     let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
     let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
 
@@ -7598,32 +8322,125 @@ score_entry["operator_refuses_this_file"] := -10000 if {
         },
     );
 
-    let result = crate::import_workflow::import_completed_download(
-        &fixture.app,
-        &fixture.user,
-        &fixture.completed,
-    )
-    .await
-    .expect("the import runs to a decision");
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a burned import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
 
     assert_eq!(
         result.decision,
-        scryer_domain::ImportDecision::Skipped,
+        scryer_domain::ImportDecision::Rejected,
         "{result:?}"
     );
+    assert!(result.release_burned, "{result:?}");
+    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
     assert!(
-        fixture.blocklisted_titles().await.is_empty(),
-        "an undisclosed veto is the profile refusing the file, not the release lying: {:?}",
+        fixture.blocklisted_titles().await.contains(&expected),
+        "an undisclosed veto must burn this release: {:?}",
         fixture.blocklisted_titles().await
     );
     assert_eq!(
         fixture.scope_status().await,
-        AcquisitionScopeStatus::Grabbed,
-        "a hold must not reopen the scope; the next release would be vetoed identically"
+        AcquisitionScopeStatus::Wanted,
+        "a burned veto must reopen the scope so convergence can try another release"
     );
+    assert_eq!(tracked.state, TrackedDownloadState::Failed);
     assert!(
         primary_movie_files(&fixture).await.is_empty(),
         "a held file is not imported"
+    );
+}
+
+/// The same file-rule rejection remains a guard for an operator-chosen release,
+/// but it is held for manual import instead of being burned and retried.
+#[tokio::test]
+async fn operator_queued_file_rule_veto_is_held_without_blocklisting_or_reopening() {
+    let release_title = "Undisclosed Veto Movie.2026.1080p.WEB-DL-GRP";
+    let fixture = disposition_fixture("Undisclosed Veto Movie", release_title).await;
+    fixture
+        .set_submission_purpose(crate::DownloadSubmissionPurpose::OperatorQueued)
+        .await;
+
+    let policy = scryer_rules::UserPolicy {
+        id: "no_probe_files".to_string(),
+        name: "No probe files".to_string(),
+        rego_source: scryer_rules::rewrite_package_declaration(
+            r#"
+score_entry["operator_refuses_this_file"] := -10000 if {
+    input.file != null
+}
+"#,
+            "no_probe_files",
+        ),
+        origin: scryer_rules::PolicyOrigin::User,
+        applied_facets: vec!["movie".to_string()],
+    };
+    *fixture
+        .app
+        .services
+        .customization
+        .user_rules
+        .write()
+        .expect("user rules lock should be writable") =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("rule fixture should compile");
+
+    let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+    analysis.video_codec = crate::release_parser::VideoCodec::parse("h264");
+    analysis.video_width = Some(1920);
+    analysis.video_height = Some(1080);
+    let rule_file_doc = crate::user_rule_input::file_doc_from_analysis(&analysis);
+    let _probe = crate::post_download_gate::probe_override::install(
+        crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: Some(rule_file_doc),
+            audio_language_warning: None,
+        },
+    );
+
+    let mut tracked = fixture.tracked_import_pending();
+    assert!(
+        !crate::completed_download_handler::import(&fixture.app, &fixture.user, &mut tracked).await,
+        "a held import does not report completion"
+    );
+    let result = fixture.latest_import_result().await;
+
+    assert_eq!(
+        // A held import is `Skipped` (the manual-import hold), never `Rejected`:
+        // `result_state` parks it as ImportBlocked for the operator.
+        result.decision,
+        scryer_domain::ImportDecision::Skipped,
+        "{result:?}"
+    );
+    assert!(!result.release_burned, "{result:?}");
+    assert!(
+        result.error_message.as_deref().is_some_and(
+            |message| message.starts_with("held for manual import because the file failed")
+        ),
+        "{result:?}"
+    );
+    assert!(
+        fixture.blocklisted_titles().await.is_empty(),
+        "an operator-held release must not be blocklisted"
+    );
+    assert_eq!(
+        fixture.scope_status().await,
+        AcquisitionScopeStatus::Grabbed,
+        "a held release leaves the scope alone"
+    );
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        tracked
+            .status_messages
+            .iter()
+            .any(|message| message.starts_with("held for manual import because the file failed")),
+        "{tracked:?}"
+    );
+    assert!(
+        primary_movie_files(&fixture).await.is_empty(),
+        "held files are not imported automatically"
     );
 }
 
@@ -7875,6 +8692,7 @@ async fn series_movie_link_upgrade_finds_its_incumbent_at_another_path() {
     let item_id = "renamed-link-incumbent-1";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             // `Standard`, not `AdditionalFile`: this must take the main link
             // import path, the one that resolves an incumbent to recycle.
@@ -8221,6 +9039,7 @@ async fn a_refused_link_import_blocklists_and_reopens_the_link_scope() {
     let item_id = "refused-link-import-1";
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),

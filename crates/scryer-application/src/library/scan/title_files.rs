@@ -499,6 +499,7 @@ mod tests {
             role: crate::MediaFileRole::Primary,
             file_path: "/library/Show/Season 01/Show.S01E01.mkv".into(),
             size_bytes,
+            announced_size_bytes: None,
             source_signature_scheme: source_signature_scheme.map(str::to_string),
             source_signature_value: source_signature_value.map(str::to_string),
             quality_label: None,

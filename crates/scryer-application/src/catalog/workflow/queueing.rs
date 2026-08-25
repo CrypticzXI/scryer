@@ -153,6 +153,7 @@ fn wanted_item_candidate_for_episode_id(
 }
 fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
     DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title_id.to_string(),
         // Scope matching only; this submission is never persisted.
         release_size_bytes: None,
@@ -417,6 +418,8 @@ impl AppUseCase {
             source_kind,
             source_title,
             source_password,
+            info_hash_hint,
+            size_bytes,
             seeders,
         } = queued_release;
         let source_provider_name = if let Some(indexer_id) = indexer_id.as_deref() {
@@ -467,6 +470,8 @@ impl AppUseCase {
                         source_kind,
                         source_title,
                         source_password,
+                        info_hash_hint,
+                        size_bytes,
                         seeders,
                     },
                     reused_existing: true,
@@ -526,10 +531,7 @@ impl AppUseCase {
                 .as_deref()
                 .or(title.digital_release_date.as_deref()),
         );
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
         let job_result = self
             .services
             .integrations
@@ -552,7 +554,7 @@ impl AppUseCase {
                 release_title: None,
                 indexer_name: None,
                 indexer_id: indexer_id.clone(),
-                info_hash_hint: None,
+                info_hash_hint: info_hash_hint.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
                 // Manual/interactive queueing carries a resolved source URL,
@@ -583,13 +585,17 @@ impl AppUseCase {
                 self.record_indexer_grab(indexer_id.as_deref(), source_provider_name.as_deref());
                 let facet_str =
                     serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
                             initial_download_id: submission_identity.download_id.as_deref(),
                             source_kind,
                             source_hint: source_hint_for_attempt.as_deref(),
-                            info_hash_hint: None,
+                            info_hash_hint: info_hash_hint.as_deref(),
                             client_type: Some(grab.client_type.as_str()),
                             client_item_id: Some(grab.job_id.as_str()),
                             accepted_info_hash: grab.info_hash.as_deref(),
@@ -602,6 +608,7 @@ impl AppUseCase {
                     .download_submissions
                     .record_submission_with_identity(
                         DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             facet: facet_str.trim_matches('"').to_string(),
                             download_client_id: grab.client_id.clone(),
@@ -612,10 +619,7 @@ impl AppUseCase {
                             source_provider_name: source_provider_name.clone(),
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
-                            // An operator's selection carries no announced
-                            // size, so this submission compares size-less if it
-                            // is ever read back as a queued pseudo-incumbent.
-                            release_size_bytes: None,
+                            release_size_bytes: size_bytes,
                             request_signature: request_signature.clone(),
                             purpose,
                             scope: scope.clone(),
@@ -687,7 +691,7 @@ impl AppUseCase {
                         "queued download submission without a release title; import will parse the client-reported release name"
                     );
                 }
-                let submission_identity = DownloadSourceIdentity::new(
+                let submission_identity = ClientJobLocator::new(
                     grab.client_id.as_deref(),
                     &grab.client_type,
                     &grab.job_id,
@@ -725,8 +729,15 @@ impl AppUseCase {
                 grab
             }
             Err(error) => {
-                let submit_unavailable = is_download_submit_unavailable_error(&error);
+                let source_gone = error.is_download_source_gone();
+                let submit_unavailable = is_download_submit_unavailable_error(&error) || source_gone;
                 let error_message = error.to_string();
+                if source_gone {
+                    tracing::info!(
+                        release = ?source_title_for_attempt,
+                        "operator download source gone; leaving it unblocked"
+                    );
+                }
                 let _ = self
                     .services
                     .workflow
@@ -744,6 +755,34 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                if error.is_download_submit_ambiguous()
+                    && let Some((client_id, client_type)) =
+                        error.ambiguous_download_submission_client()
+                    && let Err(persist_error) = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .record_ambiguous_submission(DownloadSubmission {
+                            download_id,
+                            title_id: title.id.clone(),
+                            facet: title.facet.as_str().to_string(),
+                            download_client_id: client_id.map(str::to_string),
+                            download_client_type: client_type.to_string(),
+                            download_client_item_id: String::new(),
+                            source_hint: source_hint_for_attempt.clone(),
+                            source_provider_id: indexer_id.clone(),
+                            source_provider_name: source_provider_name.clone(),
+                            source_kind,
+                            source_title: source_title_for_attempt.clone(),
+                            release_size_bytes: size_bytes,
+                            request_signature: request_signature.clone(),
+                            purpose,
+                            scope: scope.clone(),
+                        })
+                        .await
+                {
+                    tracing::warn!(error = %persist_error, "ambiguous download submission persistence failed");
+                }
                 if !submit_unavailable {
                     // The per-title blocklist entry is what search-time
                     // exclusion consults (and what the operator can remove);
@@ -800,6 +839,8 @@ impl AppUseCase {
                 source_kind,
                 source_title: source_title_for_attempt,
                 source_password,
+                info_hash_hint,
+                size_bytes,
                 seeders,
             },
             reused_existing: false,
@@ -865,7 +906,7 @@ impl AppUseCase {
                 queued_release,
                 SubmissionScope::Title,
                 SubmissionConflictPolicy::Abort,
-                DownloadSubmissionPurpose::Standard,
+                DownloadSubmissionPurpose::OperatorQueued,
             )
             .await?;
         let QueueDownloadOutcome::Queued(queued) = queued else {
@@ -997,10 +1038,18 @@ impl AppUseCase {
         title_id: &str,
         candidate_token: &str,
         conflict_policy: SubmissionConflictPolicy,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_replacement_release(
                 actor,
@@ -1108,10 +1157,15 @@ impl AppUseCase {
             scope,
             conflict_policy,
             DownloadSubmissionPurpose::Standard,
+            None,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the candidate token, caller scope, queue policy, purpose, and announced size are independently validated inputs"
+    )]
     pub async fn queue_existing_title_download_from_candidate_token_with_purpose(
         &self,
         actor: &User,
@@ -1120,10 +1174,18 @@ impl AppUseCase {
         scope: SubmissionScope,
         conflict_policy: SubmissionConflictPolicy,
         purpose: DownloadSubmissionPurpose,
+        announced_size_bytes: Option<i64>,
     ) -> AppResult<QueueDownloadOutcome> {
         let (queued_release, signed_scope) = self
             .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
             .await?;
+        if let Some(announced_size_bytes) = announced_size_bytes
+            && queued_release.size_bytes != Some(announced_size_bytes)
+        {
+            return Err(AppError::Validation(
+                "release size does not match the signed candidate".into(),
+            ));
+        }
         let outcome = self
             .queue_existing_title_download_with_purpose(
                 actor,
@@ -1145,6 +1207,11 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Ask the scorer to choose a release for this scope.
+    ///
+    /// Although an operator starts this action, the scorer—not the operator—
+    /// selects the release, so its submission purpose remains `Standard` and
+    /// import guard failures use the automatic convergence policy.
     pub async fn queue_best_release(
         &self,
         actor: &User,
@@ -1269,10 +1336,19 @@ impl AppUseCase {
             )
             .await;
         }
+        let Some(best_index) = results
+            .iter()
+            .position(|candidate| candidate.auto_eligible == Some(true))
+        else {
+            return Err(AppError::NoAutoEligibleRelease {
+                candidate_count: results.len(),
+                reasons: summarize_auto_eligibility_reasons(&results),
+            });
+        };
         let best = results
             .into_iter()
-            .find(|candidate| candidate.auto_eligible == Some(true))
-            .ok_or_else(|| AppError::Validation("no auto-eligible release found".into()))?;
+            .nth(best_index)
+            .expect("eligible release index came from results");
         let queue_scope = if matches!(
             &scope,
             SubmissionScope::Collection { .. } | SubmissionScope::SeriesMovie { .. }
@@ -1320,6 +1396,12 @@ impl AppUseCase {
                 source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
+                info_hash_hint: best
+                    .extra
+                    .get("info_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                size_bytes: best.size_bytes,
                 seeders: crate::acquisition::seed_goals::seeders_from_extra(&best.extra),
             },
             queue_scope,
@@ -1328,6 +1410,41 @@ impl AppUseCase {
         .await
     }
 }
+fn summarize_auto_eligibility_reasons(
+    results: &[IndexerSearchResult],
+) -> Vec<crate::AutoEligibilityReason> {
+    let mut reasons = std::collections::BTreeMap::new();
+    for candidate in results {
+        let code = candidate
+            .auto_decision_code
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
+        let summary = candidate
+            .auto_decision_summary
+            .as_deref()
+            .unwrap_or("automatic eligibility was not evaluated")
+            .to_string();
+        reasons
+            .entry(code.clone())
+            .and_modify(|reason: &mut crate::AutoEligibilityReason| reason.count += 1)
+            .or_insert(crate::AutoEligibilityReason {
+                code,
+                summary,
+                count: 1,
+            });
+    }
+
+    let mut reasons: Vec<_> = reasons.into_values().collect();
+    reasons.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    reasons
+}
+
 fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1342,7 +1459,7 @@ fn normalize_release_attempt_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod grab_time_release_title_tests {
     use crate::{
-        AppResult, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+        AppResult, ClientJobLocator, DownloadSubmission, DownloadSubmissionRepository,
         QueuedReleaseSelection, SubmissionConflictPolicy, SubmissionScope,
     };
     use async_trait::async_trait;
@@ -1362,29 +1479,33 @@ mod grab_time_release_title_tests {
             Ok(())
         }
 
+        async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+            self.record_submission(submission).await
+        }
+
         async fn find_by_client_item_id(
             &self,
-            identity: &DownloadSourceIdentity,
+            identity: &ClientJobLocator,
         ) -> AppResult<Option<DownloadSubmission>> {
             Ok(self
                 .rows
                 .lock()
                 .await
                 .iter()
-                .find(|row| DownloadSourceIdentity::from_submission(row) == *identity)
+                .find(|row| ClientJobLocator::from_submission(row) == *identity)
                 .cloned())
         }
 
         async fn list_for_client_items(
             &self,
-            client_items: &[DownloadSourceIdentity],
+            client_items: &[ClientJobLocator],
         ) -> AppResult<Vec<DownloadSubmission>> {
             Ok(self
                 .rows
                 .lock()
                 .await
                 .iter()
-                .filter(|row| client_items.contains(&DownloadSourceIdentity::from_submission(row)))
+                .filter(|row| client_items.contains(&ClientJobLocator::from_submission(row)))
                 .cloned()
                 .collect())
         }
@@ -1426,19 +1547,19 @@ mod grab_time_release_title_tests {
             Ok(())
         }
 
-        async fn delete_by_client_item_id(&self, identity: &DownloadSourceIdentity) -> AppResult<()> {
+        async fn delete_by_client_item_id(&self, identity: &ClientJobLocator) -> AppResult<()> {
             self.rows
                 .lock()
                 .await
-                .retain(|row| DownloadSourceIdentity::from_submission(row) != *identity);
+                .retain(|row| ClientJobLocator::from_submission(row) != *identity);
             Ok(())
         }
 
-        async fn update_tracked_state(&self, _: &DownloadSourceIdentity, _: &str) -> AppResult<()> {
+        async fn update_tracked_state(&self, _: &ClientJobLocator, _: &str) -> AppResult<()> {
             Ok(())
         }
 
-        async fn get_tracked_state(&self, _: &DownloadSourceIdentity) -> AppResult<Option<String>> {
+        async fn get_tracked_state(&self, _: &ClientJobLocator) -> AppResult<Option<String>> {
             Ok(None)
         }
     }
@@ -1475,8 +1596,10 @@ mod grab_time_release_title_tests {
                 source_kind: None,
                 source_title: Some("  Paper.Lantern.2012.1080p.WEB-DL-GRP  ".to_string()),
                 source_password: None,
-            
-                seeders: None,},
+                info_hash_hint: None,
+                size_bytes: Some(1_234_567),
+                seeders: None,
+            },
             SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
         )
@@ -1487,6 +1610,7 @@ mod grab_time_release_title_tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].title_id, title.id);
         assert_eq!(rows[0].scope, SubmissionScope::Title);
+        assert_eq!(rows[0].release_size_bytes, Some(1_234_567));
         assert_eq!(
             rows[0].source_title.as_deref(),
             Some("Paper.Lantern.2012.1080p.WEB-DL-GRP"),
@@ -1514,8 +1638,10 @@ mod grab_time_release_title_tests {
                     source_kind: None,
                     source_title: None,
                     source_password: None,
-                
-                    seeders: None,},
+                    info_hash_hint: None,
+                    size_bytes: None,
+                    seeders: None,
+                },
             )
             .await
             .expect("add title and queue");

@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use scryer_application::{
-    ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
-    AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
-    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
-    DEFAULT_SEEDING_PROFILE_SETTING_KEY, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY,
-    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
-    IMAGE_CACHE_MAX_SIZE_MB_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
-    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
-    METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, API_KEYS_RESTRICT_TO_SYSTEM_SETTINGS_USERS_KEY,
+    AUDIO_PERSONA_MIGRATION_SENTINEL_KEY, AUTO_BACKUP_DAILY_TIME_LOCAL_KEY,
+    AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY, AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY,
+    BACKUP_PATH_KEY, CHOWN_GROUP_KEY, DEFAULT_SEEDING_PROFILE_SETTING_KEY,
+    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMAGE_CACHE_MAX_SIZE_MB_KEY,
+    IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
+    MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
     MINIMUM_SEEDERS_FLOOR_DEFAULT_JSON, MINIMUM_SEEDERS_FLOOR_SETTING_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
     POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
@@ -170,6 +171,22 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: "catalog.title_metadata_rehydration_017_state",
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0007_emby_plugin_compatibility::MIGRATION_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SERVICE,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0010_download_client_remove_failed_default::DOWNLOAD_CLIENT_REMOVE_FAILED_DEFAULT_FLIPPED_0018_STATE_KEY,
             data_type: "string",
             default_value_json: "\"none\"",
             is_sensitive: false,
@@ -342,6 +359,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             category: SETTINGS_CATEGORY_SECURITY,
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_SECURITY,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: API_KEYS_RESTRICT_TO_SYSTEM_SETTINGS_USERS_KEY,
             data_type: "boolean",
             default_value_json: "false",
             is_sensitive: false,
@@ -1997,6 +2022,41 @@ mod tests {
             Some("4k".to_string()),
             "a valid explicit global choice is preserved"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_migration_state_definitions_accept_writes() {
+        let keys = [
+            crate::startup_migrations::_0007_emby_plugin_compatibility::MIGRATION_STATE_KEY,
+            crate::startup_migrations::_0010_download_client_remove_failed_default::DOWNLOAD_CLIENT_REMOVE_FAILED_DEFAULT_FLIPPED_0018_STATE_KEY,
+        ];
+        for key in keys {
+            let seed = service_setting_seeds()
+                .iter()
+                .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == key)
+                .unwrap_or_else(|| {
+                    panic!("startup migration state definition should exist: {key}")
+                });
+            assert_eq!(seed.category, SETTINGS_CATEGORY_SERVICE);
+            assert_eq!(seed.data_type, "string");
+            assert_eq!(seed.default_value_json, "\"none\"");
+            assert!(!seed.is_sensitive);
+        }
+
+        let (_temp, store) = bootstrap_settings_store().await;
+        for key in keys {
+            SettingsRepository::upsert_setting_json(
+                &*store,
+                SETTINGS_SCOPE_SYSTEM,
+                key,
+                None,
+                "\"pending\"".to_string(),
+                "system",
+                None,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("startup migration state should persist: {error}"));
+        }
     }
 
     #[tokio::test]
