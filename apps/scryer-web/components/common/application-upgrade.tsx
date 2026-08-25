@@ -95,7 +95,10 @@ export function ApplicationUpgradeAction({
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const canStart =
-    status.eligible && Boolean(status.updateTag?.trim()) && Boolean(status.updateVersion?.trim());
+    status.eligible &&
+    status.updateAvailable &&
+    Boolean(status.updateTag?.trim()) &&
+    Boolean(status.updateVersion?.trim());
 
   const startUpgrade = React.useCallback(async () => {
     if (!canStart || !status.updateTag || !status.updateVersion) {

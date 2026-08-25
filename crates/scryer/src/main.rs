@@ -18,6 +18,8 @@ mod splash;
 mod startup_auth;
 mod startup_migrations;
 mod ui_assets;
+#[cfg(windows)]
+mod windows_startup;
 
 use std::ffi::OsString;
 use std::io;

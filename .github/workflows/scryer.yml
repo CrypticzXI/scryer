@@ -2080,6 +2080,9 @@ jobs:
                   set +a
                 fi
 
+                SCRYER_PACKAGE=homebrew
+                export SCRYER_PACKAGE
+
                 exec "#{opt_bin}/scryer" --data-dir "#{var}/scryer" "\$@"
               SH
 
