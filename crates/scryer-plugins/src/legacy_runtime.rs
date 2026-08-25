@@ -306,12 +306,10 @@ impl LegacyHostState {
         self.call_started_at = Instant::now();
     }
 
-    fn time_remaining(&self) -> Option<Duration> {
-        Some(
-            self.timeout
-                .checked_sub(self.call_started_at.elapsed())
-                .unwrap_or_default(),
-        )
+    fn time_remaining(&self) -> Duration {
+        self.timeout
+            .checked_sub(self.call_started_at.elapsed())
+            .unwrap_or_default()
     }
 
     fn output_bytes(&self) -> Result<Vec<u8>, String> {

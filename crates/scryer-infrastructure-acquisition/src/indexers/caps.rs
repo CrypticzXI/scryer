@@ -19,7 +19,7 @@ use scryer_domain::{
 };
 use scryer_outbound_http::{
     DestinationKey, HostKey, OutboundHttpClient, OutboundHttpError, RateLimitRegistry,
-    RequestPolicy, generic_reqwest_client,
+    RequestPolicy, indexer_reqwest_client,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -278,7 +278,7 @@ impl DirectNabCapsSnapshotRefresher {
     pub fn new() -> Self {
         Self {
             outbound_http: OutboundHttpClient::new(
-                generic_reqwest_client(),
+                indexer_reqwest_client(),
                 RateLimitRegistry::new(),
             ),
             upstream_scheduler: Arc::new(NullUpstreamScheduler),

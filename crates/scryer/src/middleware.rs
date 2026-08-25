@@ -46,7 +46,11 @@ use crate::rate_limit::{
 };
 
 const X_FORWARDED_PROTO: &str = "x-forwarded-proto";
-const GRAPHQL_POST_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
+// Keep the transport ceiling above the longest supported indexer operation and
+// the default download-client feedback gate. Resolver-specific deadlines still
+// fail faster; this guard only catches work with no narrower bound.
+const GRAPHQL_POST_EXECUTION_TIMEOUT: Duration =
+    scryer_outbound_http::LONG_RUNNING_HTTP_OPERATION_TIMEOUT;
 const GRAPHQL_POST_EXECUTION_TIMEOUT_CODE: &str = "GRAPHQL_EXECUTION_TIMEOUT";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
@@ -3495,19 +3499,19 @@ mod tests {
     }
 
     #[test]
-    fn graphql_timeout_response_reports_sixty_second_execution_timeout() {
+    fn graphql_timeout_response_reports_execution_timeout() {
         let response = graphql_execution_timeout_response();
         let body = serde_json::to_value(&response).expect("timeout response serializes");
 
         assert_eq!(
             body["errors"][0]["message"],
-            "GraphQL request timed out after 60 seconds"
+            "GraphQL request timed out after 310 seconds"
         );
         assert_eq!(
             body["errors"][0]["extensions"]["code"],
             GRAPHQL_POST_EXECUTION_TIMEOUT_CODE
         );
-        assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 60);
+        assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 310);
     }
 
     #[tokio::test]

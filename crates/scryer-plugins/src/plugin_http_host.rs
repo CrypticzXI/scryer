@@ -16,7 +16,6 @@ use scryer_application::{
 
 pub(crate) const HTTP_ENV_NAMESPACE: &str = "extism:host/env";
 const DEFAULT_MAX_HTTP_RESPONSE_BYTES: u64 = 50 * 1024 * 1024;
-const DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PLUGIN_HTTP_WORKER_RESPONSE_GRACE: Duration = Duration::from_secs(1);
 const PINNED_REQUEST_CLIENT_TTL: Duration = Duration::from_secs(5 * 60);
 type HostResult<T> = Result<T, String>;
@@ -83,7 +82,7 @@ struct PluginHttpWork {
     plugin_id: String,
     request: PluginHttpRequest,
     body: Option<Vec<u8>>,
-    timeout: Option<Duration>,
+    timeout: Duration,
     response: mpsc::SyncSender<HostResult<Vec<u8>>>,
 }
 
@@ -238,10 +237,8 @@ fn plugin_http_request_client_key(request_url: &str) -> HostResult<PluginHttpReq
     })
 }
 
-fn worker_response_timeout(timeout: Option<Duration>) -> Duration {
-    timeout
-        .unwrap_or(DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT)
-        .saturating_add(PLUGIN_HTTP_WORKER_RESPONSE_GRACE)
+fn worker_response_timeout(timeout: Duration) -> Duration {
+    timeout.saturating_add(PLUGIN_HTTP_WORKER_RESPONSE_GRACE)
 }
 
 impl PluginHttpHost {
@@ -271,7 +268,7 @@ impl PluginHttpHost {
         plugin_id: &str,
         request: PluginHttpRequest,
         body: Option<Vec<u8>>,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> HostResult<Vec<u8>> {
         let worker_key = plugin_http_request_client_key(&request.url)?;
         let allowed_hosts = self
@@ -437,7 +434,7 @@ impl PluginHttpHost {
         plugin_id: &str,
         request: PluginHttpRequest,
         body: Option<Vec<u8>>,
-        timeout: Option<Duration>,
+        timeout: Duration,
     ) -> HostResult<Vec<u8>> {
         let (
             runtime,
@@ -490,7 +487,7 @@ impl PluginHttpHost {
             &request_client,
             &request,
             body.clone(),
-            timeout,
+            Some(timeout),
             &session_headers,
             destination_cooldown_key.as_ref(),
         )?;
@@ -561,7 +558,7 @@ impl PluginHttpHost {
                 &request,
                 ChallengeSolverRequestOptions {
                     original_body: body,
-                    original_timeout: timeout,
+                    original_timeout: Some(timeout),
                     max_http_response_bytes,
                     destination_cooldown_key: destination_cooldown_key.as_ref(),
                 },
@@ -1274,7 +1271,7 @@ mod tests {
                 headers: BTreeMap::new(),
             },
             None,
-            Some(Duration::from_secs(2)),
+            Duration::from_secs(2),
         )
         .expect("accepted HTTP failure response");
         host.finish_indexer_error_capture(true);
@@ -1287,7 +1284,10 @@ mod tests {
                 "terminal completion must not duplicate 401"
             );
             assert_eq!(errors[0].response.as_ref().unwrap().status, 401);
-            assert_eq!(errors[0].response.as_ref().unwrap().body, vec![0, 255, 1, 254]);
+            assert_eq!(
+                errors[0].response.as_ref().unwrap().body,
+                vec![0, 255, 1, 254]
+            );
             assert_eq!(
                 errors[0].classification,
                 scryer_application::IndexerErrorClassification::HttpUnauthorized
@@ -1310,7 +1310,7 @@ mod tests {
                 headers: BTreeMap::new(),
             },
             None,
-            Some(Duration::from_secs(2)),
+            Duration::from_secs(2),
         )
         .expect("accepted HTTP success response");
         host.finish_indexer_error_capture(true);
@@ -1318,7 +1318,10 @@ mod tests {
         let errors = recorder.errors.lock().expect("recorded errors");
         assert_eq!(errors.len(), 2);
         assert_eq!(errors[1].response.as_ref().unwrap().status, 200);
-        assert_eq!(errors[1].response.as_ref().unwrap().body, b"malformed plugin result");
+        assert_eq!(
+            errors[1].response.as_ref().unwrap().body,
+            b"malformed plugin result"
+        );
         assert_eq!(
             errors[1].classification,
             scryer_application::IndexerErrorClassification::Unknown
@@ -1419,7 +1422,7 @@ mod tests {
                             headers: BTreeMap::new(),
                         },
                         None,
-                        Some(Duration::from_secs(2)),
+                        Duration::from_secs(2),
                     )
                     .expect("sibling child request should remain dispatchable");
                 let rate_limit_message = host.rate_limit_message("newznab").unwrap();
@@ -1462,7 +1465,7 @@ mod tests {
                         headers: BTreeMap::new(),
                     },
                     None,
-                    Some(Duration::from_secs(2)),
+                    Duration::from_secs(2),
                 )
                 .expect("plugin HTTP request should succeed from an async runtime");
 
@@ -1493,13 +1496,9 @@ mod tests {
     }
 
     #[test]
-    fn worker_response_timeout_bounds_missing_request_timeouts() {
+    fn worker_response_timeout_includes_dispatch_grace() {
         assert_eq!(
-            worker_response_timeout(None),
-            DEFAULT_PLUGIN_HTTP_REQUEST_TIMEOUT + PLUGIN_HTTP_WORKER_RESPONSE_GRACE
-        );
-        assert_eq!(
-            worker_response_timeout(Some(Duration::from_secs(5))),
+            worker_response_timeout(Duration::from_secs(5)),
             Duration::from_secs(5) + PLUGIN_HTTP_WORKER_RESPONSE_GRACE
         );
     }

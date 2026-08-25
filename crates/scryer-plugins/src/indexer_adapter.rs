@@ -563,15 +563,15 @@ fn build_runtime_inputs(
         connection_url.as_deref(),
         config.config_json.as_deref(),
     );
-    let timeout_seconds = 30
-        + indexer_proxy_config
+    let timeout = scryer_outbound_http::effective_indexer_timeout(
+        indexer_proxy_config
             .as_ref()
-            .map(|config| config.request_timeout_seconds as u64 + 5)
-            .unwrap_or(0);
+            .map(|config| config.request_timeout_seconds),
+    );
     IndexerRuntimeInputs {
         config_entries: config_entries.unwrap_or_default(),
         allowed_hosts,
-        timeout: std::time::Duration::from_secs(timeout_seconds),
+        timeout,
         indexer_proxy_policy: indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
             indexer_id: config.id.clone(),
             indexer_name: indexer_name.to_string(),
@@ -1780,6 +1780,7 @@ mod tests {
         let spec = build_legacy_spec(Vec::new(), &descriptor, "Managed Child", &config, None);
 
         assert_eq!(spec.timeout, inputs.timeout);
+        assert_eq!(inputs.timeout, scryer_outbound_http::INDEXER_HTTP_TIMEOUT);
         assert_eq!(spec.allowed_hosts, inputs.allowed_hosts);
         assert_eq!(
             spec.destination_cooldown_key,

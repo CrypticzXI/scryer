@@ -886,6 +886,41 @@ pub const DEFAULT_USER_AGENT: &str = concat!("Scryer/", env!("CARGO_PKG_VERSION"
 pub const INDEXER_PROXY_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 pub const STANDARD_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Base wall-clock budget for indexer HTTP and plugin search operations.
+pub const INDEXER_HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+/// Maximum operator-configurable request budget for an indexer proxy.
+pub const MAX_INDEXER_PROXY_TIMEOUT_SECONDS: u32 = 180;
+/// Scheduling/response grace added when an indexer may invoke a configured proxy.
+pub const INDEXER_PROXY_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
+/// Safety ceiling for coordinators that may contain any valid indexer request.
+pub const MAX_INDEXER_OPERATION_TIMEOUT: Duration = Duration::from_secs(
+    INDEXER_HTTP_TIMEOUT.as_secs()
+        + MAX_INDEXER_PROXY_TIMEOUT_SECONDS as u64
+        + INDEXER_PROXY_TIMEOUT_GRACE.as_secs(),
+);
+/// Outer request/job grace above the longest valid indexer or default download operation.
+pub const LONG_RUNNING_HTTP_OPERATION_TIMEOUT: Duration =
+    Duration::from_secs(MAX_INDEXER_OPERATION_TIMEOUT.as_secs() + 5);
+
+/// Return the canonical wall-clock budget for one indexer operation.
+///
+/// A proxied operation receives the base indexer budget plus the proxy's own
+/// configured request budget and a small handoff grace. Keeping this policy in
+/// the outbound layer prevents plugin, native-indexer, and coordinator timeouts
+/// from silently diverging.
+pub fn effective_indexer_timeout(proxy_request_timeout_seconds: Option<u32>) -> Duration {
+    let Some(proxy_request_timeout_seconds) = proxy_request_timeout_seconds else {
+        return INDEXER_HTTP_TIMEOUT;
+    };
+
+    let proxy_request_timeout_seconds =
+        proxy_request_timeout_seconds.min(MAX_INDEXER_PROXY_TIMEOUT_SECONDS);
+    INDEXER_HTTP_TIMEOUT
+        .saturating_add(Duration::from_secs(u64::from(
+            proxy_request_timeout_seconds,
+        )))
+        .saturating_add(INDEXER_PROXY_TIMEOUT_GRACE)
+}
 
 #[derive(Debug, Error)]
 pub enum OutboundDestinationError {
@@ -1429,6 +1464,21 @@ pub fn generic_reqwest_client() -> Client {
         reqwest_client_builder()
             .build()
             .expect("generic reqwest client should build")
+    });
+    CLIENT.clone()
+}
+
+/// Returns the no-redirect client for native indexer requests.
+///
+/// Request-level deadlines may shorten this budget, but native indexer paths
+/// must not inherit the shorter generic HTTP ceiling while their coordinator
+/// and plugin equivalents use `INDEXER_HTTP_TIMEOUT`.
+pub fn indexer_reqwest_client() -> Client {
+    static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+        reqwest_client_builder()
+            .timeout(INDEXER_HTTP_TIMEOUT)
+            .build()
+            .expect("indexer reqwest client should build")
     });
     CLIENT.clone()
 }
@@ -2321,11 +2371,19 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    /// Cooldown-isolation tests assert that a just-recorded cooldown is still
-    /// pending when it is read back. `wait_*_if_needed` reports `None` once the
-    /// deadline has lapsed, so the window has to outlast any scheduling stall on
-    /// a loaded CI runner; sub-100ms windows race and fail intermittently.
-    const COOLDOWN_ISOLATION_TEST_WINDOW: Duration = Duration::from_secs(1);
+    #[test]
+    fn indexer_timeout_policy_has_ordered_inner_and_outer_budgets() {
+        assert_eq!(effective_indexer_timeout(None), Duration::from_secs(120));
+        assert_eq!(
+            effective_indexer_timeout(Some(60)),
+            Duration::from_secs(185)
+        );
+        assert_eq!(
+            effective_indexer_timeout(Some(u32::MAX)),
+            MAX_INDEXER_OPERATION_TIMEOUT
+        );
+        assert!(LONG_RUNNING_HTTP_OPERATION_TIMEOUT > MAX_INDEXER_OPERATION_TIMEOUT);
+    }
 
     #[test]
     fn parses_http_date_retry_after_first() {

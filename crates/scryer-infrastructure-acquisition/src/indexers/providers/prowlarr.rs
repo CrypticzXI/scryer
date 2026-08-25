@@ -25,7 +25,7 @@ use scryer_domain::{
 };
 use scryer_outbound_http::{
     DestinationKey, OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
-    generic_reqwest_client,
+    indexer_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -525,7 +525,7 @@ impl ProwlarrManagementClient {
         config: &IndexerConfig,
         indexer_errors: Arc<dyn IndexerErrorRepository>,
     ) -> Self {
-        let http_client = generic_reqwest_client();
+        let http_client = indexer_reqwest_client();
         Self {
             parent_config_id: config.id.clone(),
             parent_indexer_name: config.name.clone(),
@@ -2330,7 +2330,10 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
         assert_eq!(errors[0].response.as_ref().unwrap().status, 500);
-        assert_eq!(errors[0].response.as_ref().unwrap().body, vec![0, 255, 1, 254]);
+        assert_eq!(
+            errors[0].response.as_ref().unwrap().body,
+            vec![0, 255, 1, 254]
+        );
         assert_eq!(
             errors[0].classification,
             scryer_application::IndexerErrorClassification::HttpServerError
@@ -2401,7 +2404,10 @@ mod tests {
         let errors = repository.errors.lock().await;
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].response.as_ref().unwrap().status, 429);
-        assert_eq!(errors[0].response.as_ref().unwrap().body, b"rate limited body");
+        assert_eq!(
+            errors[0].response.as_ref().unwrap().body,
+            b"rate limited body"
+        );
         assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
         assert_eq!(
             errors[0].classification,
@@ -2429,7 +2435,7 @@ mod tests {
                 .expect("oversized response headers");
         });
 
-        let response = generic_reqwest_client()
+        let response = indexer_reqwest_client()
             .get(format!("http://{address}/oversized"))
             .send()
             .await

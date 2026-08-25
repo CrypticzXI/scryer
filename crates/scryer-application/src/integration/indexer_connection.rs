@@ -580,7 +580,7 @@ fn format_preflight_transport_error(url: &url::Url, origin: &str, error: &str) -
 #[cfg(not(test))]
 async fn preflight_test_flight_url(url: &url::Url) -> AppResult<()> {
     let origin = url.origin().ascii_serialization();
-    let client = scryer_outbound_http::no_redirect_reqwest_client();
+    let client = scryer_outbound_http::indexer_reqwest_client();
     let outbound_http = scryer_outbound_http::OutboundHttpClient::new(
         client,
         scryer_outbound_http::RateLimitRegistry::new(),

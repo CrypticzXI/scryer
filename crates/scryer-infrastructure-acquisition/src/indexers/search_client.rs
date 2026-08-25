@@ -8,17 +8,17 @@ use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
     IndexerErrorClassification, IndexerErrorOperation, IndexerErrorRepository,
-    IndexerPluginProvider, IndexerProxyConfigRepository,
-    IndexerQueryOutcome, IndexerRoutingPlan, IndexerSearchLearningContext,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
-    IndexerSystemBackoff, NewIndexerError, NullIndexerErrorRepository,
-    NullIndexerProxyConfigRepository, NullIndexerSearchLearningRepository, NullUpstreamScheduler,
-    RateLimitCooldownAction, RateLimitSignal, ReleaseCandidateProvenance,
-    ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
-    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
-    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
-    SearchLearningContext, SearchMode, UpstreamScheduler,
+    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome, IndexerRoutingPlan,
+    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
+    IndexerSearchLearningRepository, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError,
+    NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
+    NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
+    RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
+    SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
+    SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
+    SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode,
+    UpstreamScheduler,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 
 use scryer_outbound_http::{
     DestinationKey, HostKey, HostRpsProfile, HostRpsProfileSource, LOCAL_MANAGED_HOST_RPS,
-    LOCAL_MANAGED_HOST_RPS_BURST, RateLimitRegistry,
+    LOCAL_MANAGED_HOST_RPS_BURST, RateLimitRegistry, effective_indexer_timeout,
 };
 
 /// A single search strategy dispatched as an independent parallel task.
@@ -374,7 +374,6 @@ impl StrategyBatchHealth {
     }
 }
 
-const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 120;
 /// Minimum background request budget for small installations.
 const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
 /// Each target worker can query every configured indexer without waiting on an
@@ -1174,10 +1173,7 @@ impl MultiIndexerSearchClient {
     fn effective_indexer_search_timeout(
         proxy_config: Option<&scryer_domain::IndexerProxyConfig>,
     ) -> std::time::Duration {
-        let extra_seconds = proxy_config
-            .map(|config| u64::from(config.request_timeout_seconds).saturating_add(5))
-            .unwrap_or(0);
-        std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS.saturating_add(extra_seconds))
+        effective_indexer_timeout(proxy_config.map(|config| config.request_timeout_seconds))
     }
 
     pub fn new(
@@ -2002,12 +1998,10 @@ impl MultiIndexerSearchClient {
                             Err(SearchWindowError::Cancelled) => {
                                 (Err(AppError::canceled("indexer strategy canceled")), false)
                             }
-                            Err(SearchWindowError::DeadlineExpired) => {
-                                (
-                                    Err(AppError::Repository("indexer search timed out".into())),
-                                    true,
-                                )
-                            }
+                            Err(SearchWindowError::DeadlineExpired) => (
+                                Err(AppError::Repository("indexer search timed out".into())),
+                                true,
+                            ),
                         };
                         let rate_limit_signal = response
                             .as_ref()
@@ -5570,7 +5564,9 @@ mod tests {
         );
 
         let client = MultiIndexerSearchClient::new(
-            Arc::new(MockIndexerConfigRepository { configs: Vec::new() }),
+            Arc::new(MockIndexerConfigRepository {
+                configs: Vec::new(),
+            }),
             Arc::new(MockIndexerStatsTracker),
             Arc::new(MockIndexerPluginProvider {
                 rss: false,

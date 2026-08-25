@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scryer_plugin_sdk::host::{
     HOST_ABI_MODULE, PluginConfigGetResponse, PluginHostRequest, PluginHostResponse,
@@ -30,6 +30,7 @@ const MAX_STATE_BYTES: usize = 1024 * 1024;
 pub(crate) struct CommandHost {
     state: Arc<Mutex<CommandHostState>>,
     services: Option<Arc<CommandHostServices>>,
+    request_deadline: Option<Instant>,
 }
 
 struct CommandHostState {
@@ -59,6 +60,7 @@ impl CommandHost {
                 responses: HashMap::new(),
             })),
             services: None,
+            request_deadline: None,
         }
     }
 
@@ -81,6 +83,7 @@ impl CommandHost {
                 http: PluginHttpHost::new(allowed_hosts, None, None, max_http_response_bytes),
                 timeout,
             })),
+            request_deadline: None,
         }
     }
 
@@ -119,7 +122,30 @@ impl CommandHost {
                 ),
                 timeout,
             })),
+            request_deadline: None,
         }
+    }
+
+    /// Clone this host for one command invocation and bind HTTP calls to the
+    /// invocation's remaining wall-clock budget.
+    pub(crate) fn for_invocation(&self, timeout: Duration) -> Self {
+        let now = Instant::now();
+        Self {
+            state: Arc::clone(&self.state),
+            services: self.services.clone(),
+            request_deadline: Some(now.checked_add(timeout).unwrap_or(now)),
+        }
+    }
+
+    fn remaining_http_timeout(&self, maximum: Duration) -> Result<Duration, String> {
+        let Some(deadline) = self.request_deadline else {
+            return Ok(maximum);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("command plugin HTTP deadline exhausted".to_string());
+        }
+        Ok(remaining.min(maximum))
     }
 
     pub(crate) fn rate_limit_message(&self) -> Option<String> {
@@ -218,18 +244,20 @@ impl CommandHost {
                 }))
             }
             PluginHostRequest::Http(request) => {
-                let response = services
-                    .http
-                    .request(
-                        &services.plugin_id,
-                        PluginHttpRequest {
-                            url: request.url,
-                            method: request.method,
-                            headers: request.headers,
-                        },
-                        (!request.body.is_empty()).then_some(request.body),
-                        Some(services.timeout),
-                    )
+                let response = self
+                    .remaining_http_timeout(services.timeout)
+                    .and_then(|timeout| {
+                        services.http.request(
+                            &services.plugin_id,
+                            PluginHttpRequest {
+                                url: request.url,
+                                method: request.method,
+                                headers: request.headers,
+                            },
+                            (!request.body.is_empty()).then_some(request.body),
+                            timeout,
+                        )
+                    })
                     .and_then(|body| {
                         let status = services.http.status_code(&services.plugin_id)?;
                         Ok(PluginHttpResponse {
@@ -455,6 +483,31 @@ fn write_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invocation_http_budget_uses_only_remaining_time() {
+        let host = CommandHost::disabled();
+        assert_eq!(
+            host.remaining_http_timeout(Duration::from_secs(5))
+                .expect("unbound host uses its configured maximum"),
+            Duration::from_secs(5)
+        );
+
+        let active = host.for_invocation(Duration::from_secs(30));
+        let remaining = active
+            .remaining_http_timeout(Duration::from_secs(5))
+            .expect("active invocation retains a request budget");
+        assert!(!remaining.is_zero());
+        assert!(remaining <= Duration::from_secs(5));
+
+        let expired = host.for_invocation(Duration::ZERO);
+        assert_eq!(
+            expired
+                .remaining_http_timeout(Duration::from_secs(5))
+                .unwrap_err(),
+            "command plugin HTTP deadline exhausted"
+        );
+    }
 
     #[test]
     fn disabled_host_returns_typed_unsupported_response() {
