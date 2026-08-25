@@ -76,10 +76,17 @@ pub(crate) async fn import_file_with_record_progress(
     let permissions = app
         .resolve_import_file_permissions(Some(library_id), facet)
         .await?;
+    let active_stream = app
+        .runtime
+        .imports
+        .active_streams
+        .register(import_id, library_id, facet.clone(), source, dest)
+        .await;
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ImportFileTransferProgress>();
     let progress_app = app.clone();
     let progress_import_id = import_id.to_string();
+    let progress_stream = active_stream.clone();
     let progress_task = tokio::spawn(async move {
         let mut last_phase = None;
         let mut last_bytes = 0u64;
@@ -94,6 +101,9 @@ pub(crate) async fn import_file_with_record_progress(
                     let Some(progress) = maybe_progress else {
                         break;
                     };
+                    progress_stream
+                        .update_transfer(progress.phase, progress.bytes, progress.total_bytes)
+                        .await;
                     last_progress = Some(progress.clone());
                     if !should_persist_import_transfer_progress(
                         &progress, last_phase, last_bytes, last_emit,
@@ -162,7 +172,8 @@ pub(crate) async fn import_file_with_record_progress(
     let execution_context = crate::ImportFileExecutionContext::new(
         completed.map_or("", |item| item.client_id.as_str()),
         completed.map_or("", |item| item.client_type.as_str()),
-    );
+    )
+    .with_active_import_stream(active_stream.clone());
     let result = app
         .services
         .workflow
@@ -178,9 +189,25 @@ pub(crate) async fn import_file_with_record_progress(
         )
         .await;
 
+    if matches!(&result, Err(AppError::Canceled(_))) {
+        let temporary_destination = dest.with_extension("tmp_import");
+        if let Err(error) = std::fs::remove_file(&temporary_destination)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                import_id,
+                path = %temporary_destination.display(),
+                error = %error,
+                "failed to remove cancelled import temporary destination"
+            );
+        }
+    }
+
     if let Err(error) = progress_task.await {
         tracing::warn!(import_id, error = %error, "import transfer progress task failed");
     }
+
+    active_stream.finish().await;
 
     let result = result?;
     let finalization_permit = app
@@ -193,6 +220,71 @@ pub(crate) async fn import_file_with_record_progress(
         result,
         _finalization_permit: finalization_permit,
     })
+}
+
+impl AppUseCase {
+    pub async fn list_active_import_streams(
+        &self,
+        actor: &User,
+    ) -> AppResult<Vec<crate::ActiveImportStream>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        Ok(self
+            .runtime
+            .imports
+            .active_streams
+            .snapshot()
+            .await
+            .into_iter()
+            .filter(|stream| allowed_library_ids.contains(&stream.library_id))
+            .collect())
+    }
+
+    pub async fn subscribe_active_import_streams(
+        &self,
+        actor: &User,
+    ) -> AppResult<tokio::sync::watch::Receiver<crate::ActiveImportStreamSync>> {
+        if self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .is_empty()
+        {
+            return Err(AppError::Unauthorized(
+                "You do not have access to any libraries".to_string(),
+            ));
+        }
+        Ok(self.runtime.imports.active_streams.subscribe())
+    }
+
+    pub async fn cancel_active_import_stream(
+        &self,
+        actor: &User,
+        stream_id: &str,
+    ) -> AppResult<()> {
+        let stream = self
+            .runtime
+            .imports
+            .active_streams
+            .get(stream_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("active import stream {stream_id}")))?;
+        self.require_library_permission(
+            actor,
+            &stream.library_id,
+            scryer_domain::LibraryPermission::ResolveImports,
+        )
+        .await?;
+        self.runtime
+            .imports
+            .active_streams
+            .request_cancel(stream_id)
+            .await
+            .ok_or_else(|| {
+                AppError::Validation("The import is no longer cancellable".to_string())
+            })?;
+        Ok(())
+    }
 }
 
 pub(crate) struct CoordinatedImportFileResult {

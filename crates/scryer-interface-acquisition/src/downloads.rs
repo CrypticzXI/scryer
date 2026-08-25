@@ -394,6 +394,21 @@ impl DownloadMutations {
         })
     }
 
+    /// Cancel a queued or copying import operation by its server-issued stream identity.
+    async fn cancel_active_import(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Opaque identity of the queued or active import stream.")]
+        stream_id: async_graphql::ID,
+    ) -> GqlResult<bool> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.cancel_active_import_stream(&actor, stream_id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(true)
+    }
+
     /// Mark a tracked download ignored without deleting it from the download client.
     async fn ignore_tracked_download(
         &self,

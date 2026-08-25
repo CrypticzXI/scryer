@@ -104,6 +104,108 @@ type AcquisitionSettingsPayload {
 }
 
 """
+A queued or active import operation. This reports real import work only, never worker capacity.
+"""
+type ActiveImportStreamPayload {
+	"""
+	Opaque runtime identity for this active import stream.
+	"""
+	id: ID!
+	"""
+	Identifier of the persisted import record.
+	"""
+	importId: ID!
+	"""
+	Identifier of the library receiving the import.
+	"""
+	libraryId: ID!
+	"""
+	Media category of the import target.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Filesystem path of the source file or extraction directory.
+	"""
+	sourcePath: String!
+	"""
+	Filesystem path where the import is being placed.
+	"""
+	destinationPath: String!
+	"""
+	Current runtime phase of the import.
+	"""
+	phase: ActiveImportStreamPhaseValue!
+	"""
+	Number of source bytes transferred so far.
+	"""
+	bytes: Long!
+	"""
+	Total source bytes expected for the transfer, or zero when unavailable.
+	"""
+	totalBytes: Long!
+	"""
+	Time the import entered the active worker queue.
+	"""
+	queuedAt: DateTime!
+	"""
+	Time work began, or null while the import remains queued.
+	"""
+	startedAt: DateTime
+	"""
+	Time this stream was last updated.
+	"""
+	updatedAt: DateTime!
+	"""
+	Whether this stream can still be cancelled.
+	"""
+	cancellable: Boolean!
+	"""
+	Whether cancellation has been requested and is being processed.
+	"""
+	cancellationRequested: Boolean!
+}
+
+"""
+Runtime phase for an import operation currently awaiting or using a worker lane.
+"""
+enum ActiveImportStreamPhaseValue {
+	"""
+	The import is waiting for a worker lane.
+	"""
+	QUEUED
+	"""
+	Archive extraction is running for the import.
+	"""
+	EXTRACTING
+	"""
+	A fast filesystem placement is in progress.
+	"""
+	PLACING
+	"""
+	File content is being copied to its destination.
+	"""
+	COPYING
+	"""
+	The destination is being verified and promoted.
+	"""
+	FINALIZING
+}
+
+"""
+Revision metadata for active import stream updates.
+"""
+type ActiveImportStreamSyncPayload {
+	"""
+	Monotonic revision for active import stream changes.
+	"""
+	revision: Long!
+	"""
+	Time active import streams last changed, or null before the first change.
+	"""
+	updatedAt: DateTime
+}
+
+"""
 Delivery channel associated with an activity event.
 """
 enum ActivityChannelValue {
@@ -10248,6 +10350,15 @@ type MutationRoot {
 		input: RetryImportInput!
 	): ImportResultPayload!
 	"""
+	Cancel a queued or copying import operation by its server-issued stream identity.
+	"""
+	cancelActiveImport(
+		"""
+		Opaque identity of the queued or active import stream.
+		"""
+		streamId: ID!
+	): Boolean!
+	"""
 	Mark a tracked download ignored without deleting it from the download client.
 	"""
 	ignoreTrackedDownload(
@@ -14138,6 +14249,10 @@ type QueryRoot {
 		sortDirection: SortDirectionValue! = ASC
 	): DownloadQueuePagePayload!
 	"""
+	Return queued and active filesystem import operations. Idle worker capacity is never included.
+	"""
+	activeImportStreams: [ActiveImportStreamPayload!]!
+	"""
 	Deprecated download activity listing without pagination or queue readiness metadata.
 	"""
 	downloadQueue(
@@ -16888,6 +17003,10 @@ type SubscriptionRoot {
 	activityEvents: ActivityEventPayload!
 	domainEventFeed(afterSequence: Long): DomainEventEnvelopePayload!
 	downloadQueueSync: DownloadQueueSyncPayload!
+	"""
+	Notify clients when queued or active import streams change.
+	"""
+	activeImportStreamsSync: ActiveImportStreamSyncPayload!
 	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]! @deprecated(reason: "use downloadQueueSync")
 	libraryScanState: LibraryScanProgressPayload!
 	jobRunEvents: JobRunPayload!

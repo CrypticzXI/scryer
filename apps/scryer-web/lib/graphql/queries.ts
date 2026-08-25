@@ -2219,6 +2219,32 @@ export const downloadQueueSyncSubscription = `subscription DownloadQueueSync {
   }
 }`;
 
+export const activeImportStreamsQuery = `query ActiveImportStreams {
+  activeImportStreams {
+    id
+    importId
+    libraryId
+    facet
+    sourcePath
+    destinationPath
+    phase
+    bytes
+    totalBytes
+    queuedAt
+    startedAt
+    updatedAt
+    cancellable
+    cancellationRequested
+  }
+}`;
+
+export const activeImportStreamsSyncSubscription = `subscription ActiveImportStreamsSync {
+  activeImportStreamsSync {
+    revision
+    updatedAt
+  }
+}`;
+
 export const importQueueCountQuery = `query ImportQueueCount {
   downloadImport(limit: 1, offset: 0, filter: ALL) {
     totalCount

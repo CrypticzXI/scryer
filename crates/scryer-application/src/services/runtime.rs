@@ -992,9 +992,381 @@ mod import_execution_coordinator_tests {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActiveImportStreamPhase {
+    Queued,
+    Extracting,
+    Placing,
+    Copying,
+    Finalizing,
+}
+
+impl ActiveImportStreamPhase {
+    pub const fn cancellable(self) -> bool {
+        matches!(self, Self::Queued | Self::Copying)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ActiveImportStream {
+    pub id: String,
+    pub import_id: String,
+    pub library_id: String,
+    pub facet: scryer_domain::MediaFacet,
+    pub source_path: String,
+    pub destination_path: String,
+    pub phase: ActiveImportStreamPhase,
+    pub bytes: u64,
+    pub total_bytes: u64,
+    pub queued_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+    pub cancellation_requested: bool,
+}
+
+impl ActiveImportStream {
+    pub const fn cancellable(&self) -> bool {
+        self.phase.cancellable() && !self.cancellation_requested
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveImportStreamSync {
+    pub revision: u64,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportCancellation {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl ImportCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ActiveImportStreamHandle {
+    tracker: ActiveImportStreamTracker,
+    id: String,
+    cancellation: ImportCancellation,
+}
+
+impl ActiveImportStreamHandle {
+    pub fn cancellation_token(&self) -> ImportCancellation {
+        self.cancellation.clone()
+    }
+
+    pub async fn mark_placing(&self) {
+        self.tracker
+            .update_phase(&self.id, ActiveImportStreamPhase::Placing)
+            .await;
+    }
+
+    pub async fn mark_extracting(&self) {
+        self.tracker
+            .update_phase(&self.id, ActiveImportStreamPhase::Extracting)
+            .await;
+    }
+
+    pub async fn mark_copying(&self) {
+        self.tracker
+            .update_phase(&self.id, ActiveImportStreamPhase::Copying)
+            .await;
+    }
+
+    pub async fn mark_finalizing(&self) {
+        self.tracker
+            .update_phase(&self.id, ActiveImportStreamPhase::Finalizing)
+            .await;
+    }
+
+    pub async fn update_transfer(
+        &self,
+        phase: scryer_domain::ImportTransferPhase,
+        bytes: u64,
+        total_bytes: u64,
+    ) {
+        let phase = match phase {
+            scryer_domain::ImportTransferPhase::Extracting => ActiveImportStreamPhase::Extracting,
+            scryer_domain::ImportTransferPhase::Copying => ActiveImportStreamPhase::Copying,
+            scryer_domain::ImportTransferPhase::Finalizing => ActiveImportStreamPhase::Finalizing,
+        };
+        self.tracker
+            .update_transfer(&self.id, phase, bytes, total_bytes)
+            .await;
+    }
+
+    pub async fn finish(&self) {
+        self.tracker.remove(&self.id).await;
+    }
+}
+
+struct ActiveImportStreamEntry {
+    stream: ActiveImportStream,
+    cancellation: ImportCancellation,
+}
+
+#[derive(Default)]
+struct ActiveImportStreamState {
+    streams: HashMap<String, ActiveImportStreamEntry>,
+    revision: u64,
+    last_published_bytes: HashMap<String, u64>,
+    last_published_at: HashMap<String, std::time::Instant>,
+}
+
+#[derive(Clone)]
+pub struct ActiveImportStreamTracker {
+    state: Arc<tokio::sync::Mutex<ActiveImportStreamState>>,
+    sync_tx: tokio::sync::watch::Sender<ActiveImportStreamSync>,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for ActiveImportStreamTracker {
+    fn default() -> Self {
+        let (sync_tx, _) = tokio::sync::watch::channel(ActiveImportStreamSync {
+            revision: 0,
+            updated_at: None,
+        });
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(ActiveImportStreamState::default())),
+            sync_tx,
+            next_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+}
+
+impl ActiveImportStreamTracker {
+    pub async fn register(
+        &self,
+        import_id: &str,
+        library_id: &str,
+        facet: scryer_domain::MediaFacet,
+        source_path: &std::path::Path,
+        destination_path: &std::path::Path,
+    ) -> ActiveImportStreamHandle {
+        let id = format!(
+            "import-stream-{}",
+            self.next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let cancellation = ImportCancellation::new();
+        let now = Utc::now();
+        let stream = ActiveImportStream {
+            id: id.clone(),
+            import_id: import_id.to_string(),
+            library_id: library_id.to_string(),
+            facet,
+            source_path: source_path.to_string_lossy().into_owned(),
+            destination_path: destination_path.to_string_lossy().into_owned(),
+            phase: ActiveImportStreamPhase::Queued,
+            bytes: 0,
+            total_bytes: 0,
+            queued_at: now,
+            started_at: None,
+            updated_at: now,
+            cancellation_requested: false,
+        };
+        let mut state = self.state.lock().await;
+        state.streams.insert(
+            id.clone(),
+            ActiveImportStreamEntry {
+                stream,
+                cancellation: cancellation.clone(),
+            },
+        );
+        Self::publish(&mut state, &self.sync_tx);
+        ActiveImportStreamHandle {
+            tracker: self.clone(),
+            id,
+            cancellation,
+        }
+    }
+
+    pub async fn snapshot(&self) -> Vec<ActiveImportStream> {
+        let state = self.state.lock().await;
+        let mut streams = state
+            .streams
+            .values()
+            .map(|entry| entry.stream.clone())
+            .collect::<Vec<_>>();
+        streams.sort_by_key(|stream| stream.queued_at);
+        streams
+    }
+
+    pub async fn get(&self, id: &str) -> Option<ActiveImportStream> {
+        self.state
+            .lock()
+            .await
+            .streams
+            .get(id)
+            .map(|entry| entry.stream.clone())
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<ActiveImportStreamSync> {
+        self.sync_tx.subscribe()
+    }
+
+    pub async fn request_cancel(
+        &self,
+        id: &str,
+    ) -> Option<ImportCancellation> {
+        let mut state = self.state.lock().await;
+        let entry = state.streams.get_mut(id)?;
+        if !entry.stream.cancellable() {
+            return None;
+        }
+        entry.stream.cancellation_requested = true;
+        entry.stream.updated_at = Utc::now();
+        let cancellation = entry.cancellation.clone();
+        Self::publish(&mut state, &self.sync_tx);
+        cancellation.cancel();
+        Some(cancellation)
+    }
+
+    async fn update_phase(&self, id: &str, phase: ActiveImportStreamPhase) {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.streams.get_mut(id) else {
+            return;
+        };
+        let stream = &mut entry.stream;
+        if stream.phase == phase {
+            return;
+        }
+        stream.phase = phase;
+        stream.started_at.get_or_insert_with(Utc::now);
+        stream.updated_at = Utc::now();
+        Self::publish(&mut state, &self.sync_tx);
+    }
+
+    async fn update_transfer(
+        &self,
+        id: &str,
+        phase: ActiveImportStreamPhase,
+        bytes: u64,
+        total_bytes: u64,
+    ) {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.streams.get_mut(id) else {
+            return;
+        };
+        let stream = &mut entry.stream;
+        let phase_changed = stream.phase != phase;
+        stream.phase = phase;
+        stream.started_at.get_or_insert_with(Utc::now);
+        stream.bytes = bytes;
+        stream.total_bytes = total_bytes;
+        stream.updated_at = Utc::now();
+        let now = std::time::Instant::now();
+        let last_bytes = state.last_published_bytes.get(id).copied().unwrap_or(0);
+        let should_publish = phase_changed
+            || bytes == 0
+            || (total_bytes > 0 && bytes >= total_bytes)
+            || bytes.saturating_sub(last_bytes) >= 64 * 1024 * 1024
+            || state
+                .last_published_at
+                .get(id)
+                .is_none_or(|last| now.duration_since(*last) >= std::time::Duration::from_secs(1));
+        if should_publish {
+            state.last_published_bytes.insert(id.to_string(), bytes);
+            state.last_published_at.insert(id.to_string(), now);
+            Self::publish(&mut state, &self.sync_tx);
+        }
+    }
+
+    async fn remove(&self, id: &str) {
+        let mut state = self.state.lock().await;
+        if state.streams.remove(id).is_none() {
+            return;
+        }
+        state.last_published_bytes.remove(id);
+        state.last_published_at.remove(id);
+        Self::publish(&mut state, &self.sync_tx);
+    }
+
+    fn publish(
+        state: &mut ActiveImportStreamState,
+        sync_tx: &tokio::sync::watch::Sender<ActiveImportStreamSync>,
+    ) {
+        state.revision = state.revision.wrapping_add(1);
+        sync_tx.send_replace(ActiveImportStreamSync {
+            revision: state.revision,
+            updated_at: Some(Utc::now()),
+        });
+    }
+}
+
+#[cfg(test)]
+mod active_import_stream_tracker_tests {
+    use super::{ActiveImportStreamPhase, ActiveImportStreamTracker};
+    use scryer_domain::MediaFacet;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn tracks_real_operations_and_cancels_the_shared_execution_token() {
+        let tracker = ActiveImportStreamTracker::default();
+        let handle = tracker
+            .register(
+                "import-1",
+                "library-1",
+                MediaFacet::Movie,
+                Path::new("/downloads/source.mkv"),
+                Path::new("/library/destination.mkv"),
+            )
+            .await;
+
+        let queued = tracker.snapshot().await;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].phase, ActiveImportStreamPhase::Queued);
+        assert!(queued[0].cancellable());
+
+        handle.mark_copying().await;
+        let copying = tracker.snapshot().await;
+        assert_eq!(copying[0].phase, ActiveImportStreamPhase::Copying);
+
+        let cancellation = tracker
+            .request_cancel(&copying[0].id)
+            .await
+            .expect("copying operation should be cancellable");
+        assert!(cancellation.is_cancelled());
+        assert!(handle.cancellation_token().is_cancelled());
+        assert!(tracker.snapshot().await[0].cancellation_requested);
+
+        handle.finish().await;
+        assert!(tracker.snapshot().await.is_empty());
+    }
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
     pub(crate) execution_coordinator: ImportExecutionCoordinator,
+    pub active_streams: ActiveImportStreamTracker,
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
     pub external_import_apply_lock: Arc<tokio::sync::Mutex<()>>,
     pub external_import_source_chunk_cleanup_done: Arc<tokio::sync::Mutex<bool>>,
@@ -1235,6 +1607,7 @@ impl AppRuntimeState {
             },
             imports: AppRuntimeImportState {
                 execution_coordinator: ImportExecutionCoordinator::default(),
+                active_streams: ActiveImportStreamTracker::default(),
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
                 external_import_apply_lock: Arc::new(tokio::sync::Mutex::new(())),

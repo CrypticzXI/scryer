@@ -659,6 +659,64 @@ pub struct DownloadQueuePagePayload {
     pub stale: bool,
 }
 
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+/// Runtime phase for an import operation currently awaiting or using a worker lane.
+pub enum ActiveImportStreamPhaseValue {
+    /// The import is waiting for a worker lane.
+    Queued,
+    /// Archive extraction is running for the import.
+    Extracting,
+    /// A fast filesystem placement is in progress.
+    Placing,
+    /// File content is being copied to its destination.
+    Copying,
+    /// The destination is being verified and promoted.
+    Finalizing,
+}
+
+#[derive(SimpleObject, Clone)]
+/// A queued or active import operation. This reports real import work only, never worker capacity.
+pub struct ActiveImportStreamPayload {
+    /// Opaque runtime identity for this active import stream.
+    pub id: ID,
+    /// Identifier of the persisted import record.
+    pub import_id: ID,
+    /// Identifier of the library receiving the import.
+    pub library_id: ID,
+    /// Media category of the import target.
+    pub facet: MediaFacetValue,
+    /// Filesystem path of the source file or extraction directory.
+    pub source_path: String,
+    /// Filesystem path where the import is being placed.
+    pub destination_path: String,
+    /// Current runtime phase of the import.
+    pub phase: ActiveImportStreamPhaseValue,
+    /// Number of source bytes transferred so far.
+    pub bytes: Long,
+    /// Total source bytes expected for the transfer, or zero when unavailable.
+    pub total_bytes: Long,
+    /// Time the import entered the active worker queue.
+    pub queued_at: DateTime<Utc>,
+    /// Time work began, or null while the import remains queued.
+    pub started_at: Option<DateTime<Utc>>,
+    /// Time this stream was last updated.
+    pub updated_at: DateTime<Utc>,
+    /// Whether this stream can still be cancelled.
+    pub cancellable: bool,
+    /// Whether cancellation has been requested and is being processed.
+    pub cancellation_requested: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+/// Revision metadata for active import stream updates.
+pub struct ActiveImportStreamSyncPayload {
+    /// Monotonic revision for active import stream changes.
+    pub revision: Long,
+    /// Time active import streams last changed, or null before the first change.
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
 #[derive(SimpleObject, Clone)]
 /// Queue revision metadata returned after synchronization.
 pub struct DownloadQueueSyncPayload {

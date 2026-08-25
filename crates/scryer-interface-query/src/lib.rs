@@ -35,6 +35,7 @@ use scryer_interface_media::mappers::{
     from_delete_preview, from_delete_titles_preview, from_discovery_home,
     from_discovery_home_cards, from_discovery_home_filter_options, from_discovery_item,
     from_discovery_items_result, from_domain_event, from_download_queue_item, from_episode,
+    from_active_import_stream,
     from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
@@ -2348,6 +2349,20 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_download_queue_page(page))
+    }
+
+    /// Return queued and active filesystem import operations. Idle worker capacity is never included.
+    async fn active_import_streams(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<ActiveImportStreamPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let streams = app
+            .list_active_import_streams(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(streams.into_iter().map(from_active_import_stream).collect())
     }
 
     /// Deprecated download activity listing without pagination or queue readiness metadata.

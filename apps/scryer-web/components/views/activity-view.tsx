@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/table";
 import type {
   ActivitySortKey,
+  ActiveImportStream,
   DownloadActivityStatus,
   DownloadClientFilterOption,
   DownloadImportStatus,
@@ -65,6 +66,7 @@ import {
   deriveQueueRowPresentation,
   downloadQueueItemRowSelectorKey,
   effectiveQueueItemProgress,
+  formatByteCount,
   parseByteCount,
   type QueueRowPresentation,
   queueStateLabels,
@@ -73,6 +75,7 @@ import {
 
 type ActivityViewState = {
   queueItems: DownloadQueueItem[];
+  activeImportStreams: ActiveImportStream[];
   queueLoading: boolean;
   queueLoadingMore: boolean;
   queueError: string | null;
@@ -87,6 +90,7 @@ type ActivityViewState = {
   requestResume: (item: DownloadQueueItem) => Promise<void>;
   requestDelete: (item: DownloadQueueItem) => Promise<void>;
   requestDeleteItems: (items: DownloadQueueItem[]) => Promise<void>;
+  requestCancelActiveImport: (stream: ActiveImportStream) => Promise<void>;
   activeTab: ActivityTab;
   sortConfigByTab: Record<ActivityTab, SortConfig>;
   toggleSort: (tab: ActivityTab, key: ActivitySortKey) => void;
@@ -299,6 +303,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   const isMobile = useIsMobile();
   const {
     queueItems,
+    activeImportStreams,
     queueLoading,
     queueLoadingMore,
     queueError,
@@ -313,6 +318,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     requestResume,
     requestDelete,
     requestDeleteItems,
+    requestCancelActiveImport,
     activeTab,
     sortConfigByTab,
     toggleSort,
@@ -330,6 +336,9 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   } = state;
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<DownloadQueueItem | null>(null);
+  const [cancelImportConfirmStream, setCancelImportConfirmStream] =
+    useState<ActiveImportStream | null>(null);
+  const [cancelImportInProgress, setCancelImportInProgress] = useState(false);
   const [bulkDeleteConfirmItems, setBulkDeleteConfirmItems] = useState<DownloadQueueItem[]>([]);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [bulkActionInProgress, setBulkActionInProgress] = useState<"ignore" | "delete" | null>(
@@ -377,6 +386,19 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       setDeleteConfirmItem(null);
     }
   }, [deleteConfirmItem, requestDelete, setRowBusy]);
+
+  const handleCancelActiveImport = useCallback(async () => {
+    if (!cancelImportConfirmStream) {
+      return;
+    }
+    setCancelImportInProgress(true);
+    try {
+      await requestCancelActiveImport(cancelImportConfirmStream);
+      setCancelImportConfirmStream(null);
+    } finally {
+      setCancelImportInProgress(false);
+    }
+  }, [cancelImportConfirmStream, requestCancelActiveImport]);
 
   const clearSelectedImportItems = useCallback((items: DownloadQueueItem[]) => {
     const keys = new Set(items.map(downloadQueueItemIdentityKey));
@@ -982,6 +1004,74 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       ) : null}
     </>
   );
+  const renderActiveImportRows = () =>
+    activeImportStreams.map((stream) => {
+      const progress =
+        stream.totalBytes > 0
+          ? Math.min(100, Math.round((stream.bytes / stream.totalBytes) * 100))
+          : null;
+      const startedAt = stream.startedAt ?? stream.queuedAt;
+      const status = stream.cancellationRequested
+        ? "Cancelling"
+        : stream.phase === "QUEUED"
+          ? "Queued for import"
+          : stream.phase[0] + stream.phase.slice(1).toLowerCase();
+      const destinationName = stream.destinationPath.split(/[\\/]/).pop() || stream.destinationPath;
+
+      return (
+        <TableRow key={`active-import-${stream.id}`} className="bg-[var(--scry-accent-bg)]/25">
+          <TableCell className="min-w-0 align-middle">
+            <div className="truncate font-medium text-foreground" title={stream.destinationPath}>
+              {destinationName}
+            </div>
+            <div className="truncate text-xs text-muted-foreground" title={`${stream.sourcePath} → ${stream.destinationPath}`}>
+              {stream.sourcePath} → {stream.destinationPath}
+            </div>
+          </TableCell>
+          <TableCell className="text-sm text-muted-foreground">Filesystem</TableCell>
+          <TableCell className="text-sm">
+            <div>{status}</div>
+            <div className="text-xs text-muted-foreground">
+              Started {new Date(startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+            </div>
+          </TableCell>
+          <TableCell>
+            {progress === null ? (
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {formatByteCount(stream.bytes)} / {formatByteCount(stream.totalBytes)}
+                </div>
+              </div>
+            )}
+          </TableCell>
+          <TableCell className="text-center text-sm text-muted-foreground">
+            {stream.totalBytes > 0 ? formatByteCount(stream.totalBytes) : "—"}
+          </TableCell>
+          <TableCell className="text-center">
+            {stream.cancellable ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label="Cancel import"
+                title="Cancel import"
+                onClick={() => setCancelImportConfirmStream(stream)}
+              >
+                <XCircle className="h-4 w-4 text-[var(--scry-danger-text)]" />
+              </Button>
+            ) : null}
+          </TableCell>
+        </TableRow>
+      );
+    });
+
   const activeActivityLabel =
     activeTab === "import"
       ? t("activity.import")
@@ -989,6 +1079,16 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
   return (
     <>
+      <ConfirmDialog
+        open={cancelImportConfirmStream !== null}
+        title="Cancel import?"
+        description="This stops the queued or active import. Source files are preserved and only temporary import output is removed."
+        confirmLabel="Cancel import"
+        cancelLabel={t("label.cancel")}
+        isBusy={cancelImportInProgress}
+        onConfirm={handleCancelActiveImport}
+        onCancel={() => setCancelImportConfirmStream(null)}
+      />
       <ConfirmDialog
         open={deleteConfirmItem !== null}
         title={t("queue.deleteConfirmTitle")}
@@ -1121,9 +1221,84 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
             </Popover>
           </div>
 
+          {activeTab === "activity" && activeImportStreams.length > 0 ? (
+            <div className="space-y-2 sm:hidden">
+              {activeImportStreams.map((stream) => {
+                const progress =
+                  stream.totalBytes > 0
+                    ? Math.min(100, Math.round((stream.bytes / stream.totalBytes) * 100))
+                    : null;
+                const startedAt = stream.startedAt ?? stream.queuedAt;
+                return (
+                  <div
+                    key={`active-import-mobile-${stream.id}`}
+                    className="rounded-lg border border-primary/25 bg-primary/5 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">
+                          {stream.destinationPath.split(/[\\/]/).pop() || stream.destinationPath}
+                        </div>
+                        <div
+                          className="truncate text-xs text-muted-foreground"
+                          title={`${stream.sourcePath} → ${stream.destinationPath}`}
+                        >
+                          {stream.sourcePath} → {stream.destinationPath}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {stream.cancellationRequested
+                            ? "Cancelling"
+                            : stream.phase === "QUEUED"
+                              ? "Queued for import"
+                              : stream.phase[0] + stream.phase.slice(1).toLowerCase()}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Started{" "}
+                          {new Date(startedAt).toLocaleTimeString([], {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                        {progress === null ? (
+                          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                            <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
+                          </div>
+                        ) : (
+                          <div className="mt-2 space-y-1">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-primary"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatByteCount(stream.bytes)} / {formatByteCount(stream.totalBytes)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {stream.cancellable ? (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => setCancelImportConfirmStream(stream)}
+                          aria-label="Cancel import"
+                        >
+                          <XCircle className="h-4 w-4 text-[var(--scry-danger-text)]" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
           {isMobile ? (
             sortedQueueItems.length === 0 && !queueLoading ? (
-              <p className="text-sm text-muted-foreground">{emptyStateLabel}</p>
+              activeTab === "activity" && activeImportStreams.length > 0 ? null : (
+                <p className="text-sm text-muted-foreground">{emptyStateLabel}</p>
+              )
             ) : sortedQueueItems.length === 0 ? (
               <div className={`${scrollHeightClass} overflow-y-auto pr-1`}>
                 <div className="rounded-xl border border-border/60 bg-card/30">
@@ -1203,7 +1378,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortedQueueItems.length === 0 ? (
+                  {sortedQueueItems.length === 0 &&
+                  !(activeTab === "activity" && activeImportStreams.length > 0) ? (
                     <TableRow>
                       <TableCell
                         colSpan={
@@ -1228,6 +1404,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                     </TableRow>
                   ) : (
                     <>
+                      {activeTab === "activity" ? renderActiveImportRows() : null}
                       {activeTab === "activity" && virtualPaddingTop > 0 ? (
                         <TableRow aria-hidden="true">
                           <TableCell colSpan={6} style={{ height: virtualPaddingTop, padding: 0 }} />

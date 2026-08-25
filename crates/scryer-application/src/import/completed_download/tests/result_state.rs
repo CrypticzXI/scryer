@@ -654,6 +654,40 @@ async fn apply_result_does_not_verify_unresolved_identity_rejection_as_imported(
 }
 
 #[tokio::test]
+async fn apply_result_blocks_cancelled_import_for_manual_review() {
+    let app = build_app(vec![], vec![], vec![], vec![]);
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let result = ImportResult {
+        import_id: "import-cancelled".to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: None,
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: None,
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some("Import was cancelled. Use Manual Import to resume it.".to_string()),
+        release_burned: false,
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert_eq!(
+        td.status_messages,
+        vec!["Import was cancelled. Use Manual Import to resume it.".to_string()]
+    );
+    assert!(td.import_execution_retry.is_none());
+}
+
+#[tokio::test]
 async fn apply_result_keeps_ambiguous_obfuscated_episode_blocked_with_actionable_reason() {
     let app = build_app(vec![], vec![], vec![], vec![]);
     let release =
