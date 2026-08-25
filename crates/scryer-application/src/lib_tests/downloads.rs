@@ -4921,8 +4921,8 @@ const PACK_VIDEO_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
     let path = dir.join(file_name);
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../scryer-mediainfo/tests/media/hevc_hdr10plus.mkv");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../scryer-mediainfo/tests/media/h264_aac.mkv");
     std::fs::copy(fixture, &path).expect("copy source video fixture");
     std::fs::OpenOptions::new()
         .write(true)
@@ -6571,13 +6571,10 @@ async fn path_manual_import_can_target_series_movie_link() {
         .expect("create series movie link");
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let source_file = source_dir
-        .path()
-        .join("Manual.Series.Movie.Import.Case.3.2026.1080p.WEB-DL.mkv");
-    std::fs::File::create(&source_file)
-        .expect("create source video")
-        .set_len(51 * 1024 * 1024)
-        .expect("size source video above sample threshold");
+    let source_file = write_pack_video(
+        source_dir.path(),
+        "Manual.Series.Movie.Import.Case.3.2026.1080p.WEB-DL.mkv",
+    );
 
     let results = crate::import_workflow::execute_manual_import(
         &app,

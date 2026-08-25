@@ -833,7 +833,6 @@ fn canonical_manual_import_source_under_trusted_root(
     Ok(canonical)
 }
 
-#[cfg(test)]
 pub(crate) fn validate_manual_import_source_under_trusted_root(
     source_path: &Path,
     trusted_root: &Path,
@@ -984,7 +983,6 @@ async fn preview_manual_import(
     title: &scryer_domain::Title,
     release_evidence: &ReleaseEvidence,
     available_episodes: &[scryer_domain::Episode],
-    trusted_root: &Path,
 ) -> AppResult<ManualImportPreview> {
     let title_id = title.id.as_str();
     let facet = &title.facet;
@@ -995,7 +993,7 @@ async fn preview_manual_import(
     // as skipped). Name only, never size: the automatic movie path does not
     // size-filter either, and a legitimately small movie must stay importable
     // by hand.
-    let mut video_files = discover_manual_import_video_candidates(trusted_root).await?;
+    let mut video_files = discover_manual_import_video_candidates(source_dir).await?;
     if *facet == MediaFacet::Movie {
         video_files.retain(|candidate| !is_sample_named_file(&candidate.source_entry_path));
     }
@@ -1390,7 +1388,6 @@ pub async fn begin_manual_import_selection(
         &authorized.title,
         &release_evidence,
         &all_episodes,
-        &trusted_root,
     )
     .await?;
     for file in preview.files {
