@@ -664,6 +664,33 @@ mod tests {
     }
 
     #[test]
+    fn postgres_0140_baseline_keeps_sqlite_builtin_seed_parity() {
+        let postgres = source_postgres_0140_baseline_sql();
+        let sqlite = fs::read_to_string(source_db_root().join("baselines/0140_baseline.sql"))
+            .expect("SQLite 0140 baseline should be readable");
+
+        for seed in [
+            "anime_default_library",
+            "movie_default_library",
+            "series_default_library",
+            "canonical_root_for_anime_default_library",
+            "canonical_root_for_movie_default_library",
+            "canonical_root_for_series_default_library",
+            "VALUES ('1080p', '1080P', 0, '1970-01-01T00:00:00Z')",
+            "VALUES ('1080p', '720P', 1, '1970-01-01T00:00:00Z')",
+            "VALUES ('4k', '1080P', 1, '1970-01-01T00:00:00Z')",
+            "VALUES ('4k', '2160P', 0, '1970-01-01T00:00:00Z')",
+            "VALUES ('4k', '720P', 2, '1970-01-01T00:00:00Z')",
+            "VALUES ('1080p', '1080P', 'system'",
+            "VALUES ('4k', '4K', 'system'",
+            "00000000000000000000000000000001",
+        ] {
+            assert!(sqlite.contains(seed), "SQLite baseline missing seed {seed}");
+            assert!(postgres.contains(seed), "PostgreSQL baseline missing seed {seed}");
+        }
+    }
+
+    #[test]
     fn migration_0154_declares_mapping_and_legacy_indexer_columns_for_both_engines() {
         let db_root = source_db_root();
         let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
