@@ -1,7 +1,90 @@
 use super::*;
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use scryer_runtime_info::BinaryLane;
+use tokio::sync::Mutex;
+
+#[derive(Default)]
+struct FixtureDownloadRegistry {
+    rows: Mutex<HashMap<ClientJobLocator, scryer_domain::download_identity::DownloadId>>,
+}
+
+#[async_trait]
+impl DownloadRegistryRepository for FixtureDownloadRegistry {
+    async fn resolve_observation(
+        &self,
+        observation: &ObservedClientJob,
+    ) -> AppResult<ObservationResolution> {
+        let mut rows = self.rows.lock().await;
+        let download_id = observation
+            .wire_token
+            .as_deref()
+            .and_then(scryer_domain::download_identity::DownloadId::from_wire)
+            .or_else(|| rows.get(&observation.locator).copied())
+            .unwrap_or_else(scryer_domain::download_identity::DownloadId::new);
+        let newly_foreign = !rows.contains_key(&observation.locator);
+        rows.insert(observation.locator.clone(), download_id);
+        Ok(ObservationResolution::Resolved {
+            download_id,
+            newly_foreign,
+            attached: false,
+        })
+    }
+
+    async fn load_download(
+        &self,
+        _: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadRecord>> {
+        Ok(None)
+    }
+
+    async fn load_binding(
+        &self,
+        _: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        Ok(None)
+    }
+
+    async fn find_active_binding_by_locator(
+        &self,
+        locator: &ClientJobLocator,
+    ) -> AppResult<Option<DownloadClientBindingRecord>> {
+        let Some(download_id) = self.rows.lock().await.get(locator).copied() else {
+            return Ok(None);
+        };
+        Ok(Some(DownloadClientBindingRecord {
+            download_id,
+            client_config_id: locator.client_id.clone(),
+            client_type_snapshot: Some(locator.client_type.clone()),
+            client_name_snapshot: None,
+            native_item_id: Some(locator.item_id.clone()),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            ended_at: None,
+        }))
+    }
+
+    async fn end_binding(&self, _: &scryer_domain::download_identity::DownloadId) -> AppResult<()> {
+        Ok(())
+    }
+}
 
 pub(crate) fn bootstrap() -> (AppUseCase, User) {
     bootstrap_with_user_repo(Arc::new(MockUserRepo::default()))
+}
+
+pub(crate) fn bootstrap_application_upgrade(
+    config_dir: PathBuf,
+) -> (AppUseCase, User, Arc<RecordingJobRunRepo>) {
+    let job_runs = Arc::new(RecordingJobRunRepo::default());
+    let (app, user) = bootstrap();
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_runtime_environment(BinaryLane::Portable, config_dir, Vec::<String>::new())
+            .with_job_runs(job_runs.clone())
+    });
+    (app, user, job_runs)
 }
 
 pub(super) fn test_quality_profile(id: &str) -> QualityProfile {
@@ -174,7 +257,10 @@ fn bootstrap_with_services(
             jwt_signing_salt: "test-salt".to_string(),
         },
         Arc::new(registry),
-    );
+    )
+    .with_test_overrides(|services| {
+        services.with_download_registry(Arc::new(FixtureDownloadRegistry::default()))
+    });
 
     (app, test_admin_user())
 }
@@ -451,7 +537,10 @@ pub(super) fn bootstrap_with_metadata_gateway_settings_and_titles(
             jwt_signing_salt: "test-salt".to_string(),
         },
         Arc::new(registry),
-    );
+    )
+    .with_test_overrides(|services| {
+        services.with_download_registry(Arc::new(FixtureDownloadRegistry::default()))
+    });
 
     (app, test_admin_user(), titles)
 }
@@ -594,7 +683,10 @@ pub(super) fn bootstrap_with_cleanup_tracking_and_queue_commands(
             jwt_signing_salt: "test-salt".to_string(),
         },
         Arc::new(registry),
-    );
+    )
+    .with_test_overrides(|services| {
+        services.with_download_registry(Arc::new(FixtureDownloadRegistry::default()))
+    });
 
     (app, test_admin_user())
 }
@@ -651,7 +743,10 @@ pub(super) fn bootstrap_with_cleanup_tracking_and_tracked_handle(
             jwt_signing_salt: "test-salt".to_string(),
         },
         Arc::new(registry),
-    );
+    )
+    .with_test_overrides(|services| {
+        services.with_download_registry(Arc::new(FixtureDownloadRegistry::default()))
+    });
 
     (app, test_admin_user())
 }
@@ -708,7 +803,10 @@ pub(super) fn bootstrap_with_cleanup_tracking_and_indexer(
             jwt_signing_salt: "test-salt".to_string(),
         },
         Arc::new(registry),
-    );
+    )
+    .with_test_overrides(|services| {
+        services.with_download_registry(Arc::new(FixtureDownloadRegistry::default()))
+    });
 
     (app, test_admin_user())
 }

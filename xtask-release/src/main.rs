@@ -3,8 +3,17 @@ use base64::Engine;
 use chrono::{NaiveDate, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
+use flate2::read::GzDecoder;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
-use scryer_application::PluginDescriptorLoader;
+#[cfg(test)]
+use scryer_application::application_upgrade::manifest::parse_and_validate_upgrade_manifest;
+use scryer_application::{
+    PluginDescriptorLoader,
+    application_upgrade::manifest::{
+        UPGRADE_MANIFEST_SCHEMA_VERSION, UpgradeArchitecture, UpgradeArchive, UpgradeArtifact,
+        UpgradeArtifactMember, UpgradeChannel, UpgradeManifest, UpgradePlatform,
+    },
+};
 use scryer_plugins::WasmPluginDescriptorLoader;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
@@ -38,6 +47,7 @@ use xtask_support::{
     BOLD, GREEN, RESET, TaskContext, YELLOW, command_available, ok, prefixed_ok, prefixed_step,
     require_command, run_capture, run_checked, run_streaming, step, warn,
 };
+use zip::ZipArchive;
 
 const PLUGIN_SDK_PACKAGE: &str = "scryer-plugin-sdk";
 const PLUGIN_SDK_TAG_PREFIX: &str = "plugin-sdk-v";
@@ -153,10 +163,10 @@ const WINGET_PACKAGE_IDENTIFIER: &str = "ScryerMedia.Scryer";
 const WINGET_PACKAGE_NAME: &str = "Scryer";
 const WINGET_MONIKER: &str = "scryer";
 const WINGET_MANIFEST_VERSION: &str = "1.10.0";
-const WINGET_WINDOWS_X64_ASSET: &str = "scryer-windows-x86_64.msi";
-const WINGET_WINDOWS_ARM64_ASSET: &str = "scryer-windows-arm64.msi";
-const WINGET_WINDOWS_X64_METADATA: &str = "scryer-windows-x86_64.msi.json";
-const WINGET_WINDOWS_ARM64_METADATA: &str = "scryer-windows-arm64.msi.json";
+const WINGET_WINDOWS_X64_ASSET: &str = "scryer-windows-x86_64-winget.msi";
+const WINGET_WINDOWS_ARM64_ASSET: &str = "scryer-windows-arm64-winget.msi";
+const WINGET_WINDOWS_X64_METADATA: &str = "scryer-windows-x86_64-winget.msi.json";
+const WINGET_WINDOWS_ARM64_METADATA: &str = "scryer-windows-arm64-winget.msi.json";
 const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
     "release_container_contract",
     "builtin_refresh",
@@ -313,6 +323,7 @@ struct CiArgs {
 #[derive(Subcommand)]
 enum CiCommand {
     Clippy(ClippyArgs),
+    UpgradeManifest(UpgradeManifestArgs),
     Winget(WingetArgs),
 }
 
@@ -336,6 +347,20 @@ struct WingetArgs {
     output_dir: PathBuf,
     #[arg(long, help = "Release date in YYYY-MM-DD format; defaults to today")]
     release_date: Option<String>,
+}
+
+#[derive(Args)]
+struct UpgradeManifestArgs {
+    #[arg(long, help = "Scryer version in major.minor.patch form")]
+    version: String,
+    #[arg(long, help = "Release tag that owns the upgrade assets")]
+    tag: String,
+    #[arg(long, default_value = "scryer-media/scryer")]
+    repository: String,
+    #[arg(long, default_value = "release-artifacts")]
+    artifacts_dir: PathBuf,
+    #[arg(long, help = "Destination JSON file")]
+    output: PathBuf,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, ValueEnum)]
@@ -472,6 +497,7 @@ fn main() -> Result<()> {
         },
         Commands::Ci(args) => match args.command {
             CiCommand::Clippy(args) => run_clippy_ci(&ctx, args),
+            CiCommand::UpgradeManifest(args) => run_ci_upgrade_manifest(&ctx, args),
             CiCommand::Winget(args) => run_ci_winget(&ctx, args),
         },
     }
@@ -1189,6 +1215,321 @@ fn generate_release_notes(
     validate_release_notes_output(&final_path, tag_name)?;
     let digest = release_notes_sha256(&final_path)?;
     Ok((final_path, digest))
+}
+
+#[derive(Clone, Copy)]
+struct UpgradeManifestAssetSpec {
+    platform: UpgradePlatform,
+    arch: UpgradeArchitecture,
+    channel: UpgradeChannel,
+    archive: UpgradeArchive,
+    asset_name: &'static str,
+}
+
+const UPGRADE_MANIFEST_ASSETS: [UpgradeManifestAssetSpec; 8] = [
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Linux,
+        arch: UpgradeArchitecture::X86_64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-linux-x86_64-portable.tar.gz",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Linux,
+        arch: UpgradeArchitecture::Arm64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-linux-arm64-portable.tar.gz",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Darwin,
+        arch: UpgradeArchitecture::X86_64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-darwin-x86_64-portable.tar.gz",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Darwin,
+        arch: UpgradeArchitecture::Arm64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-darwin-arm64-portable.tar.gz",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Windows,
+        arch: UpgradeArchitecture::X86_64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::Zip,
+        asset_name: "scryer-windows-x86_64.zip",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Windows,
+        arch: UpgradeArchitecture::Arm64,
+        channel: UpgradeChannel::Portable,
+        archive: UpgradeArchive::Zip,
+        asset_name: "scryer-windows-arm64.zip",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Windows,
+        arch: UpgradeArchitecture::X86_64,
+        channel: UpgradeChannel::Msi,
+        archive: UpgradeArchive::Msi,
+        asset_name: "scryer-windows-x86_64.msi",
+    },
+    UpgradeManifestAssetSpec {
+        platform: UpgradePlatform::Windows,
+        arch: UpgradeArchitecture::Arm64,
+        channel: UpgradeChannel::Msi,
+        archive: UpgradeArchive::Msi,
+        asset_name: "scryer-windows-arm64.msi",
+    },
+];
+
+fn run_ci_upgrade_manifest(ctx: &TaskContext, args: UpgradeManifestArgs) -> Result<()> {
+    step("Generating signed upgrade manifest");
+    let version = normalize_upgrade_manifest_version(&args.version)?;
+    let tag = args.tag.trim();
+    if tag.is_empty() {
+        bail!("upgrade manifest tag must not be empty");
+    }
+    let repository = normalize_github_repository(&args.repository)?;
+    let artifacts_dir = resolve_ci_path(ctx, args.artifacts_dir);
+    let output = resolve_ci_path(ctx, args.output);
+    let raw = generate_upgrade_manifest(&version, tag, &repository, &artifacts_dir)?;
+
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&output, raw).with_context(|| format!("failed to write {}", output.display()))?;
+    ok(format!(
+        "Generated upgrade manifest at {}",
+        output.display()
+    ));
+    Ok(())
+}
+
+fn resolve_ci_path(ctx: &TaskContext, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        ctx.repo_root.join(path)
+    }
+}
+
+fn normalize_upgrade_manifest_version(raw: &str) -> Result<String> {
+    let version = Version::parse(raw.trim()).with_context(|| {
+        format!("upgrade manifest version must be major.minor.patch, got {raw}")
+    })?;
+    if !version.pre.is_empty() || !version.build.is_empty() {
+        bail!("upgrade manifest version must not include prerelease or build metadata");
+    }
+    Ok(version.to_string())
+}
+
+fn generate_upgrade_manifest(
+    version: &str,
+    tag: &str,
+    repository: &str,
+    artifacts_dir: &Path,
+) -> Result<Vec<u8>> {
+    let mut artifacts = UPGRADE_MANIFEST_ASSETS
+        .iter()
+        .copied()
+        .map(|spec| collect_upgrade_manifest_artifact(spec, repository, tag, artifacts_dir))
+        .collect::<Result<Vec<_>>>()?;
+    artifacts.sort_by_key(upgrade_manifest_artifact_sort_key);
+
+    let manifest = UpgradeManifest {
+        schema: UPGRADE_MANIFEST_SCHEMA_VERSION.to_string(),
+        tag: tag.to_string(),
+        version: version.to_string(),
+        artifacts,
+    };
+    let mut raw = serde_json::to_vec_pretty(&manifest)?;
+    raw.push(b'\n');
+    Ok(raw)
+}
+
+fn collect_upgrade_manifest_artifact(
+    spec: UpgradeManifestAssetSpec,
+    repository: &str,
+    tag: &str,
+    artifacts_dir: &Path,
+) -> Result<UpgradeArtifact> {
+    let path = artifacts_dir.join(spec.asset_name);
+    let bytes = fs::read(&path).with_context(|| {
+        format!(
+            "required upgrade manifest asset is missing or unreadable: {}",
+            path.display()
+        )
+    })?;
+    let members = match spec.archive {
+        UpgradeArchive::TarGz => collect_tar_gz_members(&path, spec.asset_name)?,
+        UpgradeArchive::Zip => collect_zip_members(&path, spec.asset_name)?,
+        UpgradeArchive::Msi => Vec::new(),
+    };
+
+    Ok(UpgradeArtifact {
+        platform: spec.platform,
+        arch: spec.arch,
+        channel: spec.channel,
+        asset_name: spec.asset_name.to_string(),
+        url: format!(
+            "https://github.com/{repository}/releases/download/{tag}/{}",
+            spec.asset_name
+        ),
+        size: bytes.len() as u64,
+        blake3: blake3::hash(&bytes).to_hex().to_string(),
+        archive: spec.archive,
+        members,
+    })
+}
+
+fn collect_tar_gz_members(path: &Path, asset_name: &str) -> Result<Vec<UpgradeArtifactMember>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .with_context(|| format!("failed to read tar archive {}", path.display()))?;
+    let mut members = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.with_context(|| format!("failed to read tar entry in {}", path.display()))?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            continue;
+        }
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            bail!("upgrade archive {asset_name} contains a link entry");
+        }
+        if !entry_type.is_file() {
+            bail!("upgrade archive {asset_name} contains a non-regular entry");
+        }
+        let member_path = archive_member_path(entry.path()?.as_ref(), asset_name)?;
+        members.push(UpgradeArtifactMember {
+            path: member_path,
+            size: entry
+                .header()
+                .size()
+                .with_context(|| format!("failed to read tar member size in {asset_name}"))?,
+            executable: entry
+                .header()
+                .mode()
+                .with_context(|| format!("failed to read tar member mode in {asset_name}"))?
+                & 0o111
+                != 0,
+        });
+    }
+    sort_and_validate_archive_members(&mut members, asset_name)?;
+    Ok(members)
+}
+
+fn collect_zip_members(path: &Path, asset_name: &str) -> Result<Vec<UpgradeArtifactMember>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to read ZIP archive {}", path.display()))?;
+    let mut members = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .with_context(|| format!("failed to read ZIP entry {index} in {}", path.display()))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let unix_mode = entry.unix_mode();
+        if unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000) {
+            bail!("upgrade archive {asset_name} contains a link entry");
+        }
+        let member_path = archive_member_path(Path::new(entry.name()), asset_name)?;
+        // ZIP producers do not always set Unix external attributes. In that case,
+        // use a safe non-executable fallback rather than inferring permissions.
+        members.push(UpgradeArtifactMember {
+            path: member_path,
+            size: entry.size(),
+            executable: unix_mode.is_some_and(|mode| mode & 0o111 != 0),
+        });
+    }
+    sort_and_validate_archive_members(&mut members, asset_name)?;
+    Ok(members)
+}
+
+fn archive_member_path(path: &Path, asset_name: &str) -> Result<String> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| anyhow!("upgrade archive {asset_name} contains a non-UTF-8 member path"))?;
+    if value.is_empty()
+        || value.starts_with('/')
+        || path.is_absolute()
+        || has_windows_drive_prefix(value)
+    {
+        bail!("upgrade archive {asset_name} contains an absolute member path: {value}");
+    }
+    if value.contains('\\') {
+        bail!("upgrade archive {asset_name} contains a backslash member path: {value}");
+    }
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        bail!("upgrade archive {asset_name} contains a parent member path: {value}");
+    }
+    Ok(value.to_string())
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    path.as_bytes().get(1) == Some(&b':')
+        && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+}
+
+fn sort_and_validate_archive_members(
+    members: &mut [UpgradeArtifactMember],
+    asset_name: &str,
+) -> Result<()> {
+    members.sort_by(|left, right| left.path.cmp(&right.path));
+    if let Some(duplicate) = members
+        .windows(2)
+        .find(|pair| pair[0].path == pair[1].path)
+        .map(|pair| &pair[0].path)
+    {
+        bail!("upgrade archive {asset_name} contains duplicate member path: {duplicate}");
+    }
+    Ok(())
+}
+
+fn upgrade_manifest_artifact_sort_key(
+    artifact: &UpgradeArtifact,
+) -> (&'static str, &'static str, &'static str) {
+    (
+        upgrade_platform_name(artifact.platform),
+        upgrade_architecture_name(artifact.arch),
+        upgrade_channel_name(artifact.channel),
+    )
+}
+
+fn upgrade_platform_name(platform: UpgradePlatform) -> &'static str {
+    match platform {
+        UpgradePlatform::Darwin => "darwin",
+        UpgradePlatform::Linux => "linux",
+        UpgradePlatform::Windows => "windows",
+    }
+}
+
+fn upgrade_architecture_name(architecture: UpgradeArchitecture) -> &'static str {
+    match architecture {
+        UpgradeArchitecture::Arm64 => "arm64",
+        UpgradeArchitecture::X86_64 => "x86_64",
+    }
+}
+
+fn upgrade_channel_name(channel: UpgradeChannel) -> &'static str {
+    match channel {
+        UpgradeChannel::Msi => "msi",
+        UpgradeChannel::Portable => "portable",
+    }
 }
 
 fn run_ci_winget(ctx: &TaskContext, args: WingetArgs) -> Result<()> {
@@ -3804,6 +4145,106 @@ mod tests {
     use super::*;
 
     const TIMED_COMMAND_CHILD_ENV: &str = "SCRYER_XTASK_TIMED_COMMAND_CHILD";
+
+    fn write_upgrade_manifest_fixture(artifacts_dir: &Path) {
+        fs::create_dir_all(artifacts_dir).expect("create fixture artifact directory");
+        for spec in UPGRADE_MANIFEST_ASSETS {
+            let path = artifacts_dir.join(spec.asset_name);
+            match spec.archive {
+                UpgradeArchive::TarGz => write_fixture_tar_gz(&path, spec.asset_name),
+                UpgradeArchive::Zip => write_fixture_zip(&path, spec.asset_name),
+                UpgradeArchive::Msi => {
+                    fs::write(&path, format!("fixture MSI {}\n", spec.asset_name))
+                        .expect("write fixture MSI");
+                }
+            }
+        }
+    }
+
+    fn write_fixture_tar_gz(path: &Path, asset_name: &str) {
+        let file = fs::File::create(path).expect("create fixture tarball");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let content = format!("fixture tar member for {asset_name}\n");
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "bin/scryer", content.as_bytes())
+            .expect("append fixture tar member");
+        let encoder = builder.into_inner().expect("finish fixture tar archive");
+        encoder.finish().expect("finish fixture gzip stream");
+    }
+
+    fn write_fixture_zip(path: &Path, asset_name: &str) {
+        let file = fs::File::create(path).expect("create fixture ZIP");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default())
+            .unix_permissions(0o755);
+        writer
+            .start_file("scryer.exe", options)
+            .expect("start fixture ZIP member");
+        writer
+            .write_all(format!("fixture ZIP member for {asset_name}\n").as_bytes())
+            .expect("write fixture ZIP member");
+        writer.finish().expect("finish fixture ZIP");
+    }
+
+    #[test]
+    fn upgrade_manifest_generation_is_deterministic_and_matches_the_golden_fixture() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let artifacts_dir = tempdir.path().join("artifacts");
+        write_upgrade_manifest_fixture(&artifacts_dir);
+
+        let first = generate_upgrade_manifest(
+            "9.8.7",
+            "scryer-v9.8.7",
+            "scryer-media/scryer",
+            &artifacts_dir,
+        )
+        .expect("generate first upgrade manifest");
+        let second = generate_upgrade_manifest(
+            "9.8.7",
+            "scryer-v9.8.7",
+            "scryer-media/scryer",
+            &artifacts_dir,
+        )
+        .expect("generate second upgrade manifest");
+
+        assert_eq!(first, second);
+        parse_and_validate_upgrade_manifest(&first).expect("generated manifest is valid");
+        assert_eq!(
+            String::from_utf8(first).expect("manifest is UTF-8"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../api/upgrade/manifest.v1.example.json"
+            ))
+        );
+    }
+
+    #[test]
+    fn upgrade_manifest_generation_requires_all_expected_assets() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let artifacts_dir = tempdir.path().join("artifacts");
+        write_upgrade_manifest_fixture(&artifacts_dir);
+        let missing = artifacts_dir.join("scryer-windows-arm64.msi");
+        fs::remove_file(&missing).expect("remove required fixture asset");
+
+        let error = generate_upgrade_manifest(
+            "9.8.7",
+            "scryer-v9.8.7",
+            "scryer-media/scryer",
+            &artifacts_dir,
+        )
+        .expect_err("missing asset must fail manifest generation");
+        assert!(error.to_string().contains("scryer-windows-arm64.msi"));
+    }
 
     #[test]
     fn tracked_cargo_lockfiles_include_independent_projects() {

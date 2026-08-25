@@ -132,9 +132,9 @@ pub(crate) use scryer_infrastructure_sql::types::SettingDefinitionSeed;
 pub(crate) use scryer_infrastructure_workflow::workflow::{
     release_store::ReleaseStore,
     stores::{
-        AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
-        ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
-        WorkflowOperationStore,
+        AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadRegistryStore,
+        DownloadSubmissionStore, ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore,
+        ImportStore, WorkflowOperationStore,
     },
 };
 

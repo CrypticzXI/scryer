@@ -16,7 +16,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
         .iter()
         .filter(|item| queue_item_import_state_eligible(item))
         .map(|item| {
-            DownloadSourceIdentity::new(
+            ClientJobLocator::new(
                 Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
                 &item.client_type,
                 &item.download_client_item_id,
@@ -74,7 +74,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     let mut fallback_records = HashMap::new();
     let mut delete_records = HashMap::new();
     for record in records {
-        let key = DownloadSourceIdentity::new(
+        let key = ClientJobLocator::new(
             record.source_client_id.as_deref(),
             &record.source_system,
             &record.source_ref,
@@ -96,7 +96,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
     }
 
     for item in items.iter_mut() {
-        let import_key = DownloadSourceIdentity::new(
+        let import_key = ClientJobLocator::new(
             Some(item.client_id.as_str()).filter(|value| !value.trim().is_empty()),
             &item.client_type,
             &item.download_client_item_id,
@@ -302,10 +302,12 @@ impl AppUseCase {
             .services
             .workflow
             .imports
-            .queue_import_request(
+            .queue_import_request_with_identity_for_download(
                 source_identity.clone(),
                 ImportType::ManualImport.as_str().to_string(),
                 payload_json,
+                None,
+                selection.canonical_download_id.as_ref(),
             )
             .await?;
         let title = self

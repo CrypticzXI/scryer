@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title};
+use scryer_domain::{
+    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -556,6 +558,7 @@ fn normalize_numeric_external_id(raw: &str) -> Option<String> {
 pub struct DownloadQueueCommandRecord {
     pub id: String,
     pub action: DownloadQueueCommandAction,
+    pub canonical_download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
@@ -1378,6 +1381,8 @@ pub struct DownloadGrabResult {
     pub client_id: Option<String>,
     pub client_type: String,
     pub info_hash: Option<String>,
+    /// The pre-allocated identity used for the successful client mutation.
+    pub download_id: Option<DownloadId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2404,6 +2409,43 @@ pub struct OAuthClientRegistrationRecord {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiKeyProvisioningSource {
+    User,
+    Environment,
+}
+
+impl ApiKeyProvisioningSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Environment => "environment",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "environment" => Some(Self::Environment),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub user_id: String,
+    pub lookup_id: String,
+    pub secret_hash: String,
+    pub label: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub provisioning_source: ApiKeyProvisioningSource,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthAuthorizationCodeRecord {
     pub id: String,
@@ -3246,7 +3288,8 @@ pub struct ManualImportSelection {
     pub id: String,
     pub actor_user_id: String,
     pub title_id: String,
-    pub source_identity: crate::DownloadSourceIdentity,
+    pub source_identity: crate::ClientJobLocator,
+    pub canonical_download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub release_evidence_json: Option<String>,
     /// Server-selected root that every candidate must remain beneath.
     pub trusted_source_root: String,

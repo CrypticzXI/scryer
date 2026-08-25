@@ -127,6 +127,7 @@ async fn rejected_import_keeps_coverage_and_reopens_for_the_saved_results_walk()
     }
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),

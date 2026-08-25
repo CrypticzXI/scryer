@@ -516,6 +516,7 @@ async fn captured_response(
 }
 
 impl ProwlarrManagementClient {
+    #[cfg(test)]
     fn new(config: &IndexerConfig) -> Self {
         Self::new_with_indexer_error_repository(config, Arc::new(NullIndexerErrorRepository))
     }

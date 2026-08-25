@@ -22,7 +22,7 @@ use crate::import_workflow::{
 };
 use crate::stored_paths::path_to_stored_string;
 use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, User};
+use crate::{AppResult, AppUseCase, ClientJobLocator, DownloadSubmissionActorSnapshot, User};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };
@@ -76,5 +76,16 @@ pub(crate) async fn queue_item_identity_tracked_state(
 ) -> Option<TrackedDownloadState> {
     let identity = lookup::observed_queue_item_identity(item);
     let source_identity = lookup::queue_item_source_identity(item);
-    lookup::download_id_tracked_state(app, &identity, Some(&source_identity)).await
+    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+        app,
+        crate::download_identity::observed_queue_item_job(item),
+    )
+    .await;
+    lookup::download_id_tracked_state(
+        app,
+        canonical_download_id.as_ref(),
+        &identity,
+        Some(&source_identity),
+    )
+    .await
 }

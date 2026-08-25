@@ -30,14 +30,15 @@ use crate::postgres::{
 use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
-    DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
-    ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
-    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerErrorStore, IndexerProxyConfigStore,
-    IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
-    MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
-    NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
-    QualityProfileStore, ReleaseStore, RuleSetStore, SeedingProfileStore, SettingsStore, ShowStore,
-    SmgEnrollmentConfig, SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
+    DownloadQueueCommandStore, DownloadRegistryStore, DownloadSubmissionStore,
+    ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore,
+    HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker, IndexerConfigStore,
+    IndexerErrorStore, IndexerProxyConfigStore, IndexerSearchLearningStore, LibraryProbeStore,
+    LibraryScanUnmatchedStore, MediaFileStore, MediaRequestStore, MediaServerConnectionStore,
+    MetadataGatewayClient, MigrationMode, NotificationStore, OAuthStore, PendingReleaseStore,
+    PluginStore, PostProcessingScriptStore, QualityProfileStore, ReleaseStore, RuleSetStore,
+    SeedingProfileStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
+    SqliteLogicalBackupExporter, SqliteServices, SubtitleDownloadStore,
     SubtitleProviderConfigStore, TitleImageStore, TitleStore, TotpStore, WantedStore,
     WebauthnStore, WorkflowOperationStore,
 };
@@ -655,6 +656,7 @@ enum DatastoreStores {
         quality_profile_store: Arc<QualityProfileStore>,
         domain_event_store: Arc<DomainEventStore>,
         acquisition_store: Arc<AcquisitionStore>,
+        download_registry_store: Arc<DownloadRegistryStore>,
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
@@ -700,6 +702,7 @@ enum DatastoreStores {
         quality_profile_store: Arc<QualityProfileStore>,
         domain_event_store: Arc<DomainEventStore>,
         acquisition_store: Arc<AcquisitionStore>,
+        download_registry_store: Arc<DownloadRegistryStore>,
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
@@ -787,6 +790,7 @@ impl DatastoreAssembly {
         let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_registry_store = Arc::new(DownloadRegistryStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
@@ -838,6 +842,7 @@ impl DatastoreAssembly {
             quality_profile_store,
             domain_event_store,
             acquisition_store,
+            download_registry_store,
             download_submission_store,
             import_store,
             external_import_monitor_store,
@@ -919,6 +924,7 @@ impl DatastoreAssembly {
         let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
         let domain_event_store = Arc::new(DomainEventStore::new(datastore.clone()));
         let acquisition_store = Arc::new(AcquisitionStore::new(datastore.clone()));
+        let download_registry_store = Arc::new(DownloadRegistryStore::new(datastore.clone()));
         let download_submission_store = Arc::new(DownloadSubmissionStore::new(datastore.clone()));
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
@@ -968,6 +974,7 @@ impl DatastoreAssembly {
             quality_profile_store,
             domain_event_store,
             acquisition_store,
+            download_registry_store,
             download_submission_store,
             import_store,
             external_import_monitor_store,
@@ -1148,6 +1155,19 @@ impl DatastoreAssembly {
                 download_submission_store,
                 ..
             } => download_submission_store.clone(),
+        }
+    }
+
+    pub fn download_registry(&self) -> Arc<dyn scryer_application::DownloadRegistryRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                download_registry_store,
+                ..
+            } => download_registry_store.clone(),
+            DatastoreStores::Postgres {
+                download_registry_store,
+                ..
+            } => download_registry_store.clone(),
         }
     }
 
@@ -1369,6 +1389,7 @@ impl DatastoreAssembly {
                 plugin_store,
                 domain_event_store,
                 acquisition_store,
+                download_registry_store,
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
@@ -1432,6 +1453,7 @@ impl DatastoreAssembly {
                 .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(acquisition_store.clone())
                 .with_domain_events(domain_event_store.clone())
+                .with_download_registry(download_registry_store.clone())
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
@@ -1476,6 +1498,7 @@ impl DatastoreAssembly {
                 settings_store,
                 domain_event_store,
                 acquisition_store,
+                download_registry_store,
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
@@ -1537,6 +1560,7 @@ impl DatastoreAssembly {
                 .with_plugin_installation_store(plugin_store.clone())
                 .with_acquisition_state(acquisition_store.clone())
                 .with_domain_events(domain_event_store.clone())
+                .with_download_registry(download_registry_store.clone())
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())

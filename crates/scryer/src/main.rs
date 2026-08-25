@@ -1,8 +1,12 @@
 // async-graphql schema expansion exceeded the default macro recursion depth.
 #![recursion_limit = "256"]
 
+mod application_upgrade_evidence;
+mod application_upgrade_helper;
 mod backup_routes;
 mod base_path;
+#[cfg(any(debug_assertions, test))]
+mod dev_api_keys;
 mod http_error;
 mod init;
 mod log_buffer;
@@ -14,6 +18,8 @@ mod splash;
 mod startup_auth;
 mod startup_migrations;
 mod ui_assets;
+#[cfg(windows)]
+mod windows_startup;
 
 use std::ffi::OsString;
 use std::io;
@@ -83,7 +89,9 @@ use scryer_interface::context::{
     RestoreDatastoreEngine, RestoreDatastoreHandle, RestoreMigrationMode, RestoreRestartHandle,
     RestoreSqliteDatastoreRequest,
 };
-use scryer_interface::{LogBuffer, build_schema_with_log_buffer_and_restore};
+use scryer_interface::{
+    LogBuffer, build_schema_with_log_buffer_and_restore_and_application_upgrade,
+};
 use scryer_logging::{JsonContextFormatter, LogContextLayer, enable_context_spans};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -122,6 +130,7 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
+const DEVELOPMENT_MODE_ENV: &str = "SCRYER_DEVELOPMENT_MODE";
 const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
 const LOG_FILE_ENV: &str = "SCRYER_LOG_FILE";
 const LOG_FORMAT_ENV: &str = "SCRYER_LOG_FORMAT";
@@ -298,6 +307,20 @@ fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     Err(command.exec())
 }
 
+#[cfg(windows)]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+
+    // SAFETY: GetTickCount64 has no arguments and is safe to call for the current host.
+    let uptime_millis = unsafe { GetTickCount64() };
+    std::time::SystemTime::now().checked_sub(std::time::Duration::from_millis(uptime_millis))
+}
+
+#[cfg(not(windows))]
+fn application_upgrade_boot_time() -> Option<std::time::SystemTime> {
+    None
+}
+
 #[cfg(not(unix))]
 fn restart_current_process(spec: &RestartSpec) -> io::Result<()> {
     let mut command = Command::new(&spec.executable);
@@ -349,6 +372,17 @@ impl SelfRestartController {
         RestoreRestartHandle::new(move || controller.schedule_restart())
     }
 
+    fn application_upgrade_handle(
+        &self,
+    ) -> scryer_application::application_upgrade::ApplicationUpgradeRestartHandle {
+        let restart_controller = self.clone();
+        let exit_controller = self.clone();
+        scryer_application::application_upgrade::ApplicationUpgradeRestartHandle::new_with_exit(
+            move || restart_controller.schedule_restart(),
+            move || exit_controller.schedule_exit_only(),
+        )
+    }
+
     fn schedule_restart(&self) {
         if self.inner.scheduled.swap(true, Ordering::SeqCst) {
             tracing::info!("restore restart already scheduled");
@@ -362,6 +396,18 @@ impl SelfRestartController {
                 tracing::error!(error = %error, "failed to restart after restore");
                 inner.scheduled.store(false, Ordering::SeqCst);
             }
+        });
+    }
+
+    fn schedule_exit_only(&self) {
+        if self.inner.scheduled.swap(true, Ordering::SeqCst) {
+            tracing::info!("restart or exit already scheduled");
+            return;
+        }
+        let delay = self.inner.delay;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            std::process::exit(0);
         });
     }
 }
@@ -466,6 +512,15 @@ fn install_panic_logging_hook() {
 
 #[tokio::main]
 async fn main() {
+    match application_upgrade_helper::maybe_run_upgrade_helper() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+
     // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
     let data_dir_override = match extract_data_dir(&mut args) {
@@ -668,6 +723,10 @@ async fn main() {
     let jwt_issuer = std::env::var("SCRYER_JWT_ISSUER").unwrap_or_else(|_| "scryer".to_string());
     let jwt_access_ttl_seconds = parse_env_u64("SCRYER_JWT_ACCESS_TTL_SECONDS", 86_400);
     let bind = std::env::var("SCRYER_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let development_mode = resolve_development_mode_from_env().unwrap_or_else(|error| {
+        eprintln!("invalid {DEVELOPMENT_MODE_ENV}: {error}");
+        std::process::exit(1);
+    });
     let base_path = BasePath::from_env();
 
     // Install Prometheus metrics recorder when enabled.
@@ -687,6 +746,13 @@ async fn main() {
     };
 
     tracing::info!(version = VERSION, "starting scryer");
+
+    let application_upgrade_assessment =
+        application_upgrade_evidence::collect_installation_assessment();
+    tracing::info!(
+        kind = ?application_upgrade_assessment.kind,
+        "application upgrade installation assessment"
+    );
 
     // ValidateOnly mode: check for pending migrations and exit immediately (no server).
     if matches!(migration_mode, MigrationMode::ValidateOnly) {
@@ -721,6 +787,7 @@ async fn main() {
     // Spawn the full application bootstrap in the background.
     let bootstrap_shutdown = shutdown_token.clone();
     let bootstrap_bind = bind.clone();
+    let bootstrap_development_mode = development_mode;
     let runtime_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("scryer-bootstrap".to_string())
@@ -733,12 +800,14 @@ async fn main() {
                     jwt_issuer,
                     jwt_access_ttl_seconds,
                     bootstrap_bind,
+                    bootstrap_development_mode,
                     cors,
                     bootstrap_shutdown,
                     log_ring_buffer,
                     metrics_handle,
                     data_dir,
                     bootstrap_base_path,
+                    application_upgrade_assessment,
                 )
                 .await
                 {
@@ -823,13 +892,15 @@ async fn bootstrap_application(
     finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
-    _bind: String,
+    bind: String,
+    development_mode: bool,
     cors: CorsConfig,
     shutdown_token: CancellationToken,
     log_ring_buffer: log_buffer::LogRingBuffer,
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     data_dir: PathBuf,
     base_path: BasePath,
+    application_upgrade_assessment: scryer_application::application_upgrade::InstallationAssessment,
 ) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
     let bootstrap_start = std::time::Instant::now();
 
@@ -1441,9 +1512,29 @@ async fn bootstrap_application(
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
     spawn_plugin_catalog_refresh_task(app_use_case.clone());
 
+    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
+        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
+    app_use_case.set_application_upgrade_restart_handle(
+        restore_restart_controller.application_upgrade_handle(),
+    );
+
+    let upgrade_reconcile_exclusions = match app_use_case
+        .finalize_application_upgrade_journal_with_boot_time(application_upgrade_boot_time())
+        .await
+    {
+        Ok(exclusions) => exclusions,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to finalize application upgrade journal on startup");
+            Vec::new()
+        }
+    };
+
     // A persisted running job run whose worker died in a previous process is
     // unfinishable; fail those rows before any poller can wait on them forever.
-    if let Err(e) = app_use_case.reconcile_interrupted_job_runs().await {
+    if let Err(e) = app_use_case
+        .reconcile_interrupted_job_runs(&upgrade_reconcile_exclusions)
+        .await
+    {
         tracing::warn!(error = %e, "failed to reconcile interrupted job runs on startup");
     }
 
@@ -1499,9 +1590,6 @@ async fn bootstrap_application(
             "failed to build download-client category admission snapshot on startup; untracked observations will be deferred"
         );
     }
-    let restore_restart_controller = SelfRestartController::new(Duration::from_millis(250))
-        .map_err(|error| format!("failed to prepare restore restart controller: {error}"))?;
-
     let auth_mode = resolve_auth_mode_from_env()?;
     app_use_case.set_recovery_admin_login_enabled(auth_mode.recovery_active());
     if auth_mode.recovery_active() {
@@ -1541,7 +1629,7 @@ async fn bootstrap_application(
     });
     let log_buf_snapshot = log_ring_buffer.clone();
     let log_buf_subscribe = log_ring_buffer.clone();
-    let schema = build_schema_with_log_buffer_and_restore(
+    let schema = build_schema_with_log_buffer_and_restore_and_application_upgrade(
         app_use_case.clone(),
         auth_runtime.clone(),
         Some(LogBuffer::new(
@@ -1554,6 +1642,7 @@ async fn bootstrap_application(
             datastore: restore_datastore_handle(),
             restart: restore_restart_controller.handle(),
         }),
+        application_upgrade_assessment,
     );
     let authless_access_allowlist_raw =
         normalize_env_option(UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV).unwrap_or_default();
@@ -1565,6 +1654,18 @@ async fn bootstrap_application(
         authless_access_allowlist.is_configured(),
     )
     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+    validate_authless_runtime_config(
+        !cfg!(debug_assertions),
+        development_mode,
+        &auth_mode,
+        authless_access_allowlist_env_configured,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+    warn_about_deprecated_public_authless_release_bind(
+        !cfg!(debug_assertions),
+        &bind,
+        auth_runtime.snapshot().effective_form_login_enabled,
+    );
     if auth_mode.used_legacy_dev_auto_login {
         tracing::warn!(
             "SCRYER_DEV_AUTO_LOGIN is deprecated; use SCRYER_AUTH_ENABLED=false instead"
@@ -1615,6 +1716,11 @@ async fn bootstrap_application(
                 "running with authentication disabled; private/local clients act as admin and public clients are rejected unless explicitly allowed"
             );
         }
+    }
+    #[cfg(any(debug_assertions, test))]
+    if let Err(error) = dev_api_keys::sync_from_env(&app_use_case).await {
+        tracing::error!(error = %error, "failed to synchronize development API keys");
+        std::process::exit(1);
     }
     // Bridge coverage is decided at runtime, not at boot. Resolving the
     // weaver subscription bridge once at startup meant a weaver client added
@@ -2388,6 +2494,95 @@ fn validate_unauthenticated_public_access_allowlist_config(
     Ok(())
 }
 
+fn resolve_development_mode_from_env() -> Result<bool, String> {
+    resolve_development_mode(
+        normalize_env_option(DEVELOPMENT_MODE_ENV).as_deref(),
+        !cfg!(debug_assertions),
+    )
+}
+
+fn resolve_development_mode(raw: Option<&str>, release_build: bool) -> Result<bool, String> {
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let enabled = parse_env_bool_value(raw)
+        .ok_or_else(|| format!("expected a boolean value, received {:?}", raw.trim()))?;
+    if enabled && release_build {
+        return Err("development mode is unavailable in release builds".to_string());
+    }
+    Ok(enabled)
+}
+
+fn validate_authless_runtime_config(
+    release_build: bool,
+    development_mode: bool,
+    auth_mode: &AuthModeConfig,
+    allowlist_env_configured: bool,
+) -> Result<(), String> {
+    if release_build {
+        if auth_mode.used_legacy_dev_auto_login {
+            return Err(
+                "SCRYER_DEV_AUTO_LOGIN is unavailable in release builds; use authenticated sessions"
+                    .to_string(),
+            );
+        }
+        if auth_mode.allow_unauthenticated_public_access {
+            return Err(format!(
+                "{ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV}=true is unavailable in release builds"
+            ));
+        }
+        if allowlist_env_configured {
+            return Err(format!(
+                "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} is unavailable in release builds"
+            ));
+        }
+        if development_mode {
+            return Err("development mode is unavailable in release builds".to_string());
+        }
+        return Ok(());
+    }
+
+    if !development_mode
+        && (auth_mode.used_legacy_dev_auto_login
+            || auth_mode.allow_unauthenticated_public_access
+            || allowlist_env_configured)
+    {
+        return Err(format!(
+            "{DEVELOPMENT_MODE_ENV}=true is required for development authless access overrides"
+        ));
+    }
+    Ok(())
+}
+
+fn warn_about_deprecated_public_authless_release_bind(
+    release_build: bool,
+    bind: &str,
+    effective_form_login_enabled: bool,
+) {
+    if should_warn_about_public_authless_release_bind(
+        release_build,
+        bind,
+        effective_form_login_enabled,
+    ) {
+        tracing::warn!(
+            bind,
+            "authless browser access on a non-loopback bind is deprecated and will be disabled in a future release; set SCRYER_BIND to a loopback address and place any reverse proxy in front of it, or enable authentication"
+        );
+    }
+}
+
+fn should_warn_about_public_authless_release_bind(
+    release_build: bool,
+    bind: &str,
+    effective_form_login_enabled: bool,
+) -> bool {
+    release_build
+        && !effective_form_login_enabled
+        && bind
+            .parse::<SocketAddr>()
+            .is_ok_and(|addr| !addr.ip().is_loopback())
+}
+
 fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
@@ -3065,9 +3260,12 @@ mod tests {
         UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, bootstrap_plugin_installations,
         collect_runtime_plugin_load_candidates, comma_separated_env_has_entries, extract_data_dir,
         extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
-        invalid_log_format, load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
-        resolve_log_format, resolve_wasmtime_cache_dir, restart_spec_from_parts,
-        title_image_handler, validate_unauthenticated_public_access_allowlist_config,
+        invalid_log_format, load_runtime_plugin_state, resolve_auth_mode,
+        resolve_development_mode, resolve_log_file_config, resolve_log_format,
+        resolve_wasmtime_cache_dir, restart_spec_from_parts,
+        should_warn_about_public_authless_release_bind, title_image_handler,
+        validate_authless_runtime_config,
+        validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -3897,6 +4095,45 @@ mod tests {
     fn unauthenticated_public_access_allowlist_accepts_unset_allowlist() {
         validate_unauthenticated_public_access_allowlist_config(false, false)
             .expect("unset allowlist keeps broad public access override");
+    }
+
+    #[test]
+    fn development_mode_is_rejected_in_release_builds() {
+        assert!(resolve_development_mode(Some("true"), false).expect("debug mode"));
+        let error = resolve_development_mode(Some("true"), true)
+            .expect_err("release builds must reject development mode");
+        assert!(error.contains("unavailable in release builds"));
+    }
+
+    #[test]
+    fn release_authless_access_preserves_existing_public_bind_with_deprecation_warning() {
+        let auth_mode = resolve_auth_mode(Some("false"), None, None, None).expect("auth mode");
+
+        validate_authless_runtime_config(true, false, &auth_mode, false)
+            .expect("release authless configuration");
+
+        assert!(should_warn_about_public_authless_release_bind(
+            true,
+            "0.0.0.0:8080",
+            false
+        ));
+        assert!(!should_warn_about_public_authless_release_bind(
+            true,
+            "127.0.0.1:8080",
+            false
+        ));
+    }
+
+    #[test]
+    fn public_authless_overrides_require_explicit_development_mode() {
+        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
+
+        let error = validate_authless_runtime_config(false, false, &auth_mode, false)
+            .expect_err("public override without development mode");
+        assert!(error.contains("SCRYER_DEVELOPMENT_MODE=true"));
+
+        validate_authless_runtime_config(false, true, &auth_mode, false)
+            .expect("explicit development mode allows the override");
     }
 
     #[test]

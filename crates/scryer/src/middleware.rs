@@ -17,14 +17,14 @@ use futures_util::{
     stream::{self, BoxStream},
 };
 use scryer_application::{
-    AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
+    API_KEY_PREFIX, AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
     OAuthAuthorizationSource,
 };
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::RequestLoaders;
 use scryer_interface::context::{
-    AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
-    RequestSessionPersistence,
+    AuthRuntimeStateHandle, ConnectionAuthEpoch, InteractiveSession, MfaVerification,
+    OAuthActorSession, RequestSessionPersistence,
 };
 use scryer_logging::{ActorContext, LogContext, RequestContext, context_span, update_context};
 use std::collections::HashMap;
@@ -477,6 +477,10 @@ async fn authless_web_client_proof_decision(
     headers: &HeaderMap,
     remote_addr: Option<SocketAddr>,
 ) -> AuthlessAccessDecision {
+    if headers.contains_key(header::AUTHORIZATION) {
+        return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::AuthorizationCredential);
+    }
+
     if request_is_cross_site(headers) {
         return AuthlessAccessDecision::Reject(AuthlessAccessRejectReason::CrossSiteRequest);
     }
@@ -1018,6 +1022,17 @@ pub(crate) async fn graphql_ws_handler(
         );
         return (StatusCode::FORBIDDEN, error).into_response();
     }
+    if authorization_token_from_headers(&headers)
+        .ok()
+        .flatten()
+        .is_some_and(is_api_key_bearer)
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "API keys are not supported for WebSocket connections",
+        )
+            .into_response();
+    }
 
     let initial_actor = match resolve_actor(&state, &headers, Some(remote_addr)).await {
         Ok(actor) => actor,
@@ -1272,6 +1287,30 @@ fn oauth_access_revoked_graphql_response() -> Response {
         .unwrap()
 }
 
+fn api_key_unauthorized_graphql_response() -> Response {
+    let mut extensions = ErrorExtensionValues::default();
+    extensions.set("code", AUTHENTICATION_REQUIRED_CODE);
+    let mut error = ServerError::new("API key is invalid or no longer authorized", None);
+    error.extensions = Some(extensions);
+    let batch = async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]));
+    let body = serde_json::to_vec(&batch).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+fn rate_limited_graphql_http_response(decision: &crate::rate_limit::RateLimitDecision) -> Response {
+    let batch_response = rate_limited_graphql_response(decision);
+    let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
 fn oauth_access_revoked_http_response() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -1318,8 +1357,27 @@ pub(crate) async fn graphql_handler(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     body: async_graphql_axum::GraphQLBatchRequest,
 ) -> Response {
+    let batch = body.into_inner();
+    let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
+    let rate_limit_class = classify_graphql(&batch);
+    let precheck_login = should_precheck_graphql_login(&batch);
+    if (rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login || precheck_login)
+        && let Err(decision) = state
+            .rate_limiter
+            .check_graphql(rate_limit_class, &RateLimitKey::new(client_ip, None))
+    {
+        return rate_limited_graphql_http_response(&decision);
+    }
+
+    let api_key_bearer = authorization_token_from_headers(&headers)
+        .ok()
+        .flatten()
+        .is_some_and(is_api_key_bearer);
     let actor = match resolve_actor(&state, &headers, Some(remote_addr)).await {
         Ok(actor) => actor,
+        Err(AppError::Unauthorized(_)) if api_key_bearer => {
+            return api_key_unauthorized_graphql_response();
+        }
         Err(AppError::Unauthorized(_)) => return oauth_access_revoked_graphql_response(),
         Err(error) => {
             tracing::error!(error = %error, "failed to resolve GraphQL actor");
@@ -1337,8 +1395,10 @@ pub(crate) async fn graphql_handler(
             "Scryer web client proof is required for unauthenticated access",
         );
     }
-    let batch = body.into_inner();
-    let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
+    let rate_limit_key = RateLimitKey::new(
+        client_ip,
+        actor.as_ref().map(|actor| actor.user.id.as_str()),
+    );
     let request_span = context_span(graphql_request_log_context(
         &batch,
         actor.as_ref(),
@@ -1347,28 +1407,19 @@ pub(crate) async fn graphql_handler(
     let session_persistence = RequestSessionPersistence {
         default_persist_session: default_persist_session_for_request(&headers, Some(remote_addr)),
     };
-    let rate_limit_key = RateLimitKey::new(
-        client_ip,
-        actor.as_ref().map(|actor| actor.user.id.as_str()),
-    );
-    let rate_limit_class = classify_graphql(&batch);
-    let precheck_login = should_precheck_graphql_login(&batch);
-    if (rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login || precheck_login)
-        && let Err(decision) = state
-            .rate_limiter
-            .check_graphql(rate_limit_class, &rate_limit_key)
+    if let Some(actor) = actor.as_ref()
+        && (rate_limit_class != crate::rate_limit::GraphqlRateLimitClass::Login || precheck_login)
+        && let Err(decision) = state.rate_limiter.check_graphql(
+            rate_limit_class,
+            &RateLimitKey::new(client_ip, Some(&actor.user.id)),
+        )
     {
-        let batch_response = rate_limited_graphql_response(&decision);
-        let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
-            .unwrap();
+        return rate_limited_graphql_http_response(&decision);
     }
     touch_oauth_grant_last_used(&state.app, actor.as_ref()).await;
     let batch = if let Some(actor) = actor {
         let oauth_session = actor.oauth_session();
+        let interactive_session = actor.is_interactive_session();
         // Request-scoped dataloaders: the batch cache lives for exactly this
         // HTTP request (shared across a batched request's entries — same actor,
         // same snapshot). The WebSocket path intentionally gets none; resolvers
@@ -1380,6 +1431,9 @@ pub(crate) async fn graphql_handler(
                     .data(actor.mfa_verification())
                     .data(actor.user)
                     .data(loaders);
+                if interactive_session {
+                    req = req.data(InteractiveSession);
+                }
                 if let Some(oauth_session) = oauth_session {
                     req = req.data(oauth_session);
                 }
@@ -1392,6 +1446,9 @@ pub(crate) async fn graphql_handler(
                             .data(actor.mfa_verification())
                             .data(actor.user.clone())
                             .data(loaders.clone());
+                        if interactive_session {
+                            req = req.data(InteractiveSession);
+                        }
                         if let Some(oauth_session) = actor.oauth_session() {
                             req = req.data(oauth_session);
                         }
@@ -1638,11 +1695,13 @@ struct ResolvedActor {
     user: scryer_domain::User,
     token_claims: AuthenticatedTokenClaims,
     source: ResolvedActorSource,
+    api_key_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResolvedActorSource {
     AuthenticatedToken,
+    ApiKey,
     AuthlessDefault,
 }
 
@@ -1650,6 +1709,7 @@ impl ResolvedActorSource {
     fn as_str(self) -> &'static str {
         match self {
             Self::AuthenticatedToken => "authenticated_token",
+            Self::ApiKey => "api_key",
             Self::AuthlessDefault => "authless_default",
         }
     }
@@ -1698,8 +1758,14 @@ fn actor_log_context(actor: &ResolvedActor) -> ActorContext {
             "user".to_owned()
         },
         id: Some(actor.user.id.clone()),
-        display_name: Some(actor.user.username.clone()),
-        source: Some(actor.source.as_str().to_owned()),
+        display_name: Some(actor.audit_display_name()),
+        source: Some(
+            actor
+                .api_key_id
+                .as_ref()
+                .map(|key_id| format!("api_key:{key_id}"))
+                .unwrap_or_else(|| actor.source.as_str().to_owned()),
+        ),
     }
 }
 
@@ -1755,6 +1821,15 @@ impl ResolvedActor {
         self.source == ResolvedActorSource::AuthlessDefault
     }
 
+    fn is_interactive_session(&self) -> bool {
+        self.source == ResolvedActorSource::AuthenticatedToken
+            && !self.token_claims.is_oauth_access_token()
+    }
+
+    fn audit_display_name(&self) -> String {
+        self.user.username.clone()
+    }
+
     fn mfa_verification(&self) -> MfaVerification {
         MfaVerification {
             verified_until: self.token_claims.mfa_verified_until,
@@ -1785,6 +1860,9 @@ fn graphql_ws_connection_data(connection_epoch: u64, actor: Option<ResolvedActor
     data.insert(ConnectionAuthEpoch(connection_epoch));
     if let Some(actor) = actor {
         data.insert(actor.mfa_verification());
+        if actor.is_interactive_session() {
+            data.insert(InteractiveSession);
+        }
         if let Some(oauth_session) = actor.oauth_session() {
             data.insert(oauth_session);
         }
@@ -1860,14 +1938,17 @@ async fn resolve_ws_connection_init_actor(
     } = request;
 
     if let Some(raw) = auth_value {
-        let authless_fallback_allowed = !auth_enabled || local_bypass_active;
         return match parse_bearer_token(raw) {
+            Some(token) if is_api_key_bearer(token) => Err(async_graphql::Error::new(
+                "API keys are not supported for WebSocket connections",
+            )),
             Some(token) => match app.authenticate_token_with_claims(token).await {
                 Ok((user, token_claims)) => attach_resolved_actor(
                     app,
                     user,
                     token_claims,
                     ResolvedActorSource::AuthenticatedToken,
+                    None,
                 )
                 .await
                 .map(|actor| {
@@ -1875,25 +1956,11 @@ async fn resolve_ws_connection_init_actor(
                     Some(actor)
                 })
                 .map_err(|e| async_graphql::Error::new(format!("authentication failed: {e}"))),
-                Err(e) => resolve_ws_failed_auth_fallback(
-                    authless_fallback_allowed,
-                    initial_actor,
-                    authless_proof_required,
-                    proof_state,
-                    headers,
-                    proof_value,
-                    async_graphql::Error::new(format!("authentication failed: {e}")),
-                ),
+                Err(e) => Err(async_graphql::Error::new(format!(
+                    "authentication failed: {e}"
+                ))),
             },
-            None => resolve_ws_failed_auth_fallback(
-                authless_fallback_allowed,
-                initial_actor,
-                authless_proof_required,
-                proof_state,
-                headers,
-                proof_value,
-                async_graphql::Error::new("invalid authorization header"),
-            ),
+            None => Err(async_graphql::Error::new("invalid authorization header")),
         };
     }
 
@@ -1918,41 +1985,6 @@ async fn resolve_ws_connection_init_actor(
     Ok(None)
 }
 
-fn resolve_ws_failed_auth_fallback(
-    authless_fallback_allowed: bool,
-    initial_actor: Option<ResolvedActor>,
-    authless_proof_required: bool,
-    proof_state: &AuthlessWebClientProofState,
-    headers: &HeaderMap,
-    proof_value: Option<&str>,
-    auth_error: async_graphql::Error,
-) -> Result<Option<ResolvedActor>, async_graphql::Error> {
-    if !authless_fallback_allowed {
-        return Err(auth_error);
-    }
-    require_ws_authless_proof_if_needed(
-        authless_proof_required,
-        proof_state,
-        headers,
-        proof_value,
-    )?;
-    Ok(initial_actor)
-}
-
-fn require_ws_authless_proof_if_needed(
-    authless_proof_required: bool,
-    proof_state: &AuthlessWebClientProofState,
-    headers: &HeaderMap,
-    proof_value: Option<&str>,
-) -> Result<(), async_graphql::Error> {
-    if authless_proof_required && !proof_state.validate_headers(headers, proof_value) {
-        return Err(async_graphql::Error::new(
-            "Scryer web client proof is required for unauthenticated websocket access",
-        ));
-    }
-    Ok(())
-}
-
 async fn resolve_actor(
     state: &AuthState,
     headers: &HeaderMap,
@@ -1961,6 +1993,22 @@ async fn resolve_actor(
     let snapshot = state.auth_runtime.snapshot();
     let local_bypass = local_ip_bypass_active(&snapshot, headers, remote_addr);
     let actor = match authorization_token_from_headers(headers) {
+        Ok(Some(token)) if is_api_key_bearer(token) => {
+            match state.app.authenticate_api_key(token).await {
+                Ok(authentication) => {
+                    let mut user = authentication.user;
+                    user.username =
+                        format!("api ({}) obo {}", authentication.key_label, user.username);
+                    Some((
+                        user,
+                        AuthenticatedTokenClaims::default(),
+                        ResolvedActorSource::ApiKey,
+                        Some(authentication.key_id),
+                    ))
+                }
+                Err(error) => return Err(error),
+            }
+        }
         Ok(Some(token)) => match state.app.authenticate_token_with_claims(token).await {
             Ok((user, token_claims)) => {
                 if snapshot.effective_form_login_enabled
@@ -1968,51 +2016,41 @@ async fn resolve_actor(
                 {
                     None
                 } else {
-                    Some((user, token_claims, ResolvedActorSource::AuthenticatedToken))
+                    Some((
+                        user,
+                        token_claims,
+                        ResolvedActorSource::AuthenticatedToken,
+                        None,
+                    ))
                 }
             }
-            Err(_) if !snapshot.effective_form_login_enabled => {
-                resolve_default_user(&state.app, true).await.map(|user| {
-                    (
-                        anonymous_user(user),
-                        AuthenticatedTokenClaims::default(),
-                        ResolvedActorSource::AuthlessDefault,
-                    )
-                })
-            }
-            Err(_) if local_bypass => resolve_default_user(&state.app, false).await.map(|user| {
-                (
-                    anonymous_user(user),
-                    mfa_bypass_token_claims(),
-                    ResolvedActorSource::AuthlessDefault,
-                )
-            }),
-            Err(_) => None,
+            Err(error) => return Err(error),
         },
-        Ok(None) | Err(_) if !snapshot.effective_form_login_enabled => {
+        Ok(None) if !snapshot.effective_form_login_enabled => {
             resolve_default_user(&state.app, true).await.map(|user| {
                 (
                     anonymous_user(user),
                     AuthenticatedTokenClaims::default(),
                     ResolvedActorSource::AuthlessDefault,
+                    None,
                 )
             })
         }
-        Ok(None) | Err(_) if local_bypass => {
-            resolve_default_user(&state.app, false).await.map(|user| {
-                (
-                    anonymous_user(user),
-                    mfa_bypass_token_claims(),
-                    ResolvedActorSource::AuthlessDefault,
-                )
-            })
-        }
-        Ok(None) | Err(_) => None,
+        Ok(None) if local_bypass => resolve_default_user(&state.app, false).await.map(|user| {
+            (
+                anonymous_user(user),
+                mfa_bypass_token_claims(),
+                ResolvedActorSource::AuthlessDefault,
+                None,
+            )
+        }),
+        Ok(None) => None,
+        Err(error) => return Err(error),
     };
 
     match actor {
-        Some((user, token_claims, source)) => {
-            attach_resolved_actor(&state.app, user, token_claims, source)
+        Some((user, token_claims, source, api_key_id)) => {
+            attach_resolved_actor(&state.app, user, token_claims, source, api_key_id)
                 .await
                 .map(Some)
         }
@@ -2025,6 +2063,7 @@ async fn attach_resolved_actor(
     user: scryer_domain::User,
     token_claims: AuthenticatedTokenClaims,
     source: ResolvedActorSource,
+    api_key_id: Option<String>,
 ) -> AppResult<ResolvedActor> {
     if token_claims.is_oauth_access_token() {
         app.validate_oauth_access_token(
@@ -2042,6 +2081,7 @@ async fn attach_resolved_actor(
     let mut user = app.attach_user_authorization(user).await?;
     user.authorization.actor_capabilities = match source {
         ResolvedActorSource::AuthenticatedToken => token_claims.actor_capabilities,
+        ResolvedActorSource::ApiKey => ActorCapabilityMask::NONE,
         ResolvedActorSource::AuthlessDefault => ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
     };
     if token_claims.is_oauth_access_token() {
@@ -2055,6 +2095,7 @@ async fn attach_resolved_actor(
         user,
         token_claims,
         source,
+        api_key_id,
     })
 }
 
@@ -2095,6 +2136,12 @@ fn authorization_token_from_headers(headers: &HeaderMap) -> Result<Option<&str>,
         .ok_or_else(|| AppError::Unauthorized("invalid authorization header".into()))?;
 
     Ok(Some(token))
+}
+
+fn is_api_key_bearer(token: &str) -> bool {
+    token
+        .strip_prefix(API_KEY_PREFIX)
+        .is_some_and(|suffix| suffix.starts_with('_'))
 }
 
 pub(crate) fn parse_bearer_token(raw: &str) -> Option<&str> {
@@ -2211,6 +2258,7 @@ enum AuthlessAccessDecision {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum AuthlessAccessRejectReason {
     AuthRequired,
+    AuthorizationCredential,
     CrossSiteRequest,
     MissingRemoteAddress,
     PublicPeer(IpAddr),
@@ -2222,6 +2270,9 @@ impl std::fmt::Display for AuthlessAccessRejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AuthRequired => f.write_str("authentication is required"),
+            Self::AuthorizationCredential => {
+                f.write_str("authenticated credentials cannot request an authless web client proof")
+            }
             Self::CrossSiteRequest => {
                 f.write_str("request fetch metadata identifies a cross-site request")
             }
@@ -2504,13 +2555,7 @@ pub(crate) async fn rate_limit_http_api(
 
     let client_ip =
         request_client_ip(request.headers(), Some(remote_addr)).unwrap_or(remote_addr.ip());
-    let actor = resolve_actor(&auth_state, request.headers(), Some(remote_addr))
-        .await
-        .unwrap_or(None);
-    let key = RateLimitKey::new(
-        client_ip,
-        actor.as_ref().map(|actor| actor.user.id.as_str()),
-    );
+    let key = RateLimitKey::new(client_ip, None);
     match auth_state.rate_limiter.check_http(rate_limit_class, &key) {
         Ok(()) => next.run(request).await,
         Err(decision) => {
@@ -2574,6 +2619,9 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         )
             .into_response(),
         AppError::DownloadSubmitAmbiguous(message) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::DownloadSubmitAmbiguousWithClient { message, .. } => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
         AppError::DownloadSubmitRejected(message) => {
@@ -2654,7 +2702,7 @@ mod tests {
     use axum::Router;
     use axum::body::to_bytes;
     use axum::http::HeaderValue;
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use serde_json::Value;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::{
@@ -2897,6 +2945,261 @@ mod tests {
             .await
             .expect("avatar bytes");
         assert_eq!(avatar_bytes.as_ref(), &[1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn api_keys_cannot_manage_accounts_and_revoked_keys_are_rejected() {
+        let context = common::TestContext::new().await;
+        let admin = context
+            .app
+            .find_or_create_default_user()
+            .await
+            .expect("default administrator");
+        let created = context
+            .app
+            .create_api_key(
+                &admin,
+                scryer_application::CreateApiKey {
+                    label: "local integration".into(),
+                    expiry: scryer_application::ApiKeyExpiryPreset::Never,
+                },
+            )
+            .await
+            .expect("create API key");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", created.raw_key))
+                .expect("API key authorization header"),
+        );
+        let state = AuthState {
+            app: context.app.clone(),
+            schema: context.schema.clone(),
+            auth_runtime: context.auth_runtime.clone(),
+            rate_limiter: ScryerRateLimiter::from_env(),
+            ws_origin_policy: WebSocketOriginPolicy::default(),
+            authless_web_client_proof: AuthlessWebClientProofState::new(),
+        };
+
+        let actor = resolve_actor(
+            &state,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))),
+        )
+        .await
+        .expect("authenticate API key")
+        .expect("API-key actor");
+        assert_eq!(actor.user.username, "api (local integration) obo admin");
+        assert_eq!(
+            actor.user.authorization.actor_capabilities,
+            ActorCapabilityMask::NONE
+        );
+        assert!(matches!(
+            context.app.totp_enrollment_start(&actor.user).await,
+            Err(AppError::Unauthorized(_))
+        ));
+
+        context
+            .settings_store
+            .batch_ensure_setting_definitions(vec![
+                scryer_infrastructure_sql::types::SettingDefinitionSeed {
+                    category: "security".into(),
+                    scope: "system".into(),
+                    key_name: "auth.mfa.require_config_step_up".into(),
+                    data_type: "boolean".into(),
+                    default_value_json: "false".into(),
+                    is_sensitive: false,
+                    validation_json: None,
+                },
+            ])
+            .await
+            .expect("seed configuration MFA step-up setting");
+        context
+            .settings_store
+            .upsert_setting_value(
+                "system",
+                "auth.mfa.require_config_step_up",
+                None,
+                "true",
+                "test",
+                None,
+            )
+            .await
+            .expect("enable configuration MFA step-up");
+        context
+            .auth_runtime
+            .apply_saved_security_settings(true, false);
+        let router = Router::new()
+            .route("/graphql", post(graphql_handler))
+            .with_state(state.clone());
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", created.raw_key))
+                    .expect("API key authorization header"),
+            )
+            .body(Body::from(
+                r#"{"query":"mutation { createUser(input: { username: \"blocked\", password: \"testpass123\", appPermissions: [], libraryPermissions: [] }) { id } }"}"#,
+            ))
+            .expect("GraphQL request");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+        let response = router.oneshot(request).await.expect("GraphQL response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("GraphQL response body");
+        let body: Value = serde_json::from_slice(&body).expect("GraphQL JSON response");
+        assert_eq!(
+            body["errors"][0]["extensions"]["code"], "TOTP_ENROLLMENT_REQUIRED",
+            "API key must not satisfy configuration MFA step-up: {body}"
+        );
+
+        assert!(
+            context
+                .app
+                .revoke_api_key(&admin, &created.api_key.id)
+                .await
+                .expect("revoke API key")
+        );
+        assert!(matches!(
+            resolve_actor(
+                &state,
+                &headers,
+                Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))),
+            )
+            .await,
+            Err(AppError::Unauthorized(_))
+        ));
+
+        let router = Router::new()
+            .route("/graphql", post(graphql_handler))
+            .with_state(state);
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", created.raw_key))
+                    .expect("API key authorization header"),
+            )
+            .body(Body::from(r#"{"query":"{ __typename }"}"#))
+            .expect("GraphQL request");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+        let response = router.oneshot(request).await.expect("GraphQL response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("GraphQL response body");
+        assert!(
+            String::from_utf8_lossy(&body).contains("API key is invalid or no longer authorized")
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_bearer_never_falls_back_to_the_authless_default_actor() {
+        let context = common::TestContext::new().await;
+        let state = AuthState {
+            app: context.app.clone(),
+            schema: context.schema.clone(),
+            auth_runtime: AuthRuntimeStateHandle::new(auth_disabled_snapshot()),
+            rate_limiter: ScryerRateLimiter::from_env(),
+            ws_origin_policy: WebSocketOriginPolicy::default(),
+            authless_web_client_proof: AuthlessWebClientProofState::new(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid-session-token"),
+        );
+
+        let result = resolve_actor(
+            &state,
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))),
+        )
+        .await;
+
+        assert!(matches!(result, Err(AppError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    async fn authless_browser_session_cannot_create_an_api_key() {
+        let context = common::TestContext::new().await;
+        let proof_state = AuthlessWebClientProofState::new();
+        let state = AuthState {
+            app: context.app.clone(),
+            schema: context.schema.clone(),
+            auth_runtime: AuthRuntimeStateHandle::new(auth_disabled_snapshot()),
+            rate_limiter: ScryerRateLimiter::from_env(),
+            ws_origin_policy: WebSocketOriginPolicy::default(),
+            authless_web_client_proof: proof_state.clone(),
+        };
+        let router = Router::new()
+            .route("/graphql", post(graphql_handler))
+            .with_state(state);
+        let mut request = request_with_peer_and_authless_proof(
+            "/graphql",
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)),
+            &proof_state,
+        );
+        *request.method_mut() = Method::POST;
+        request.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        *request.body_mut() = Body::from(
+            r#"{"query":"mutation { createMyApiKey(input: { label: \"browser\", expiry: DAYS_90 }) { apiKey } }"}"#,
+        );
+
+        let response = router.oneshot(request).await.expect("GraphQL response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("GraphQL response body");
+        let body: Value = serde_json::from_slice(&body).expect("GraphQL JSON response");
+        assert!(body["data"]["createMyApiKey"].is_null());
+        assert!(
+            body["errors"][0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("interactive session is required")),
+            "unexpected authless API-key response: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_invalid_bearer_never_falls_back_to_authless_access() {
+        let context = common::TestContext::new().await;
+        let proof_state = AuthlessWebClientProofState::new();
+        let (headers, proof) = authless_ws_proof_headers(&proof_state);
+
+        let result = resolve_ws_connection_init_actor(
+            &context.app,
+            WsConnectionInitActorRequest {
+                auth_enabled: false,
+                local_bypass_active: false,
+                initial_actor: Some(authless_ws_test_actor()),
+                auth_value: Some("Bearer invalid-session-token"),
+                authless_proof_required: true,
+                proof_state: &proof_state,
+                headers: &headers,
+                proof_value: Some(&proof),
+            },
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("invalid WebSocket credentials must not fall back to authless access"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("authentication failed"));
     }
 
     fn clear_cors_env() {
@@ -3865,6 +4168,7 @@ mod tests {
             },
             token_claims: AuthenticatedTokenClaims::default(),
             source: ResolvedActorSource::AuthlessDefault,
+            api_key_id: None,
         }
     }
 
@@ -4487,6 +4791,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authless_web_client_proof_rejects_authenticated_credentials() {
+        let mut request = request_with_peer(
+            "/authless-client",
+            SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000)),
+        );
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk_test_credential"),
+        );
+
+        let response =
+            authless_web_client_test_app(auth_disabled_snapshot(), protected_authless_policy())
+                .oneshot(request)
+                .await
+                .expect("response");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
     async fn authless_web_client_proof_allows_explicit_public_authless_access() {
         let response =
             authless_web_client_test_app(auth_disabled_snapshot(), public_authless_policy())
@@ -4553,74 +4878,6 @@ mod tests {
             HeaderValue::from_static("scryer_authless_client=other"),
         );
         assert!(!proof_state.validate_headers(&headers, None));
-    }
-
-    #[test]
-    fn ws_failed_auth_fallback_requires_authless_proof_before_installing_actor() {
-        let proof_state = AuthlessWebClientProofState::new();
-        let headers = HeaderMap::new();
-        let result = resolve_ws_failed_auth_fallback(
-            true,
-            Some(authless_ws_test_actor()),
-            true,
-            &proof_state,
-            &headers,
-            None,
-            async_graphql::Error::new("authentication failed"),
-        );
-
-        let error = match result {
-            Ok(_) => panic!("missing proof should reject authless WS fallback"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .message
-                .contains("web client proof is required for unauthenticated websocket access"),
-            "unexpected WS proof error: {}",
-            error.message
-        );
-    }
-
-    #[test]
-    fn ws_failed_auth_fallback_accepts_valid_authless_proof() {
-        let proof_state = AuthlessWebClientProofState::new();
-        let (headers, proof) = authless_ws_proof_headers(&proof_state);
-        let result = resolve_ws_failed_auth_fallback(
-            true,
-            Some(authless_ws_test_actor()),
-            true,
-            &proof_state,
-            &headers,
-            Some(&proof),
-            async_graphql::Error::new("authentication failed"),
-        )
-        .expect("valid proof should allow authless WS fallback");
-
-        let actor = result.expect("authless actor");
-        assert_eq!(actor.source, ResolvedActorSource::AuthlessDefault);
-        assert_eq!(actor.user.username, "Anonymous");
-    }
-
-    #[test]
-    fn ws_failed_auth_fallback_rejects_when_authentication_is_required() {
-        let proof_state = AuthlessWebClientProofState::new();
-        let (headers, proof) = authless_ws_proof_headers(&proof_state);
-        let result = resolve_ws_failed_auth_fallback(
-            false,
-            Some(authless_ws_test_actor()),
-            true,
-            &proof_state,
-            &headers,
-            Some(&proof),
-            async_graphql::Error::new("invalid authorization header"),
-        );
-
-        let error = match result {
-            Ok(_) => panic!("auth-enabled WS should reject invalid auth header"),
-            Err(error) => error,
-        };
-        assert_eq!(error.message, "invalid authorization header");
     }
 
     #[test]

@@ -1070,6 +1070,7 @@ async fn queue_existing_title_download_conflicts_for_state(state: DownloadQueueS
         .expect("create title");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1183,6 +1184,7 @@ async fn queue_existing_title_download_additional_file_ignores_standard_blocker(
         .expect("create title");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1296,6 +1298,7 @@ async fn queue_existing_title_download_additional_file_supports_series_movie_sco
     };
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -1683,6 +1686,7 @@ async fn queue_existing_title_download_replace_early_deletes_old_submission() {
         .expect("create title");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -1768,6 +1772,7 @@ async fn queue_existing_title_download_replace_early_deletes_all_blockers() {
     for job_id in ["old-job-a", "old-job-b"] {
         download_submissions
             .record_submission(DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title.id.clone(),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 facet: "movie".to_string(),
@@ -1938,6 +1943,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
         grabbed_release: "{\"title\":\"Covered.Release.1080p.WEB-DL\"}".to_string(),
         last_search_at: Some(now.clone()),
         download_submission: DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -2034,6 +2040,7 @@ async fn trigger_title_wanted_search_conflicts_before_seeding_movie_wanted_item(
         .expect("create title");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),
@@ -2145,6 +2152,7 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -3716,6 +3724,7 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         .expect("seed saved result");
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),

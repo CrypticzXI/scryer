@@ -152,6 +152,8 @@ pub struct SecuritySettingsPayload {
     pub password_min_length: i32,
     /// Whether local IPs may skip login.
     pub skip_login_for_local_ips: bool,
+    /// Whether API keys are restricted to users with system-settings permission.
+    pub api_keys_restrict_to_system_settings_users: bool,
     /// Whether configuration changes require MFA step-up.
     pub mfa_require_config_step_up: bool,
     /// Whether password login is required alongside MFA.
@@ -834,6 +836,8 @@ pub struct UpdateSecuritySettingsInput {
     pub password_min_length: i32,
     /// Whether local IPs may skip login.
     pub skip_login_for_local_ips: bool,
+    /// Whether API keys are restricted to users with system-settings permission.
+    pub api_keys_restrict_to_system_settings_users: Option<bool>,
     /// Whether sensitive configuration changes require MFA step-up.
     pub mfa_require_config_step_up: bool,
     /// Whether password login requires MFA.

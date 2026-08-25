@@ -23,18 +23,18 @@ use std::{fs, io, path::Path};
 use scryer_interface_core as context;
 use scryer_interface_core::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission,
-    require_config_app_permission, to_gql_error,
+    application_upgrade_assessment_from_ctx, current_user_from_ctx, mfa_verification_from_ctx,
+    require_app_permission, require_config_app_permission, to_gql_error,
 };
 use scryer_interface_media::mappers;
 use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
-    discovery_items_query_from_input, from_activity_event, from_backup_info,
-    from_catalog_discovery, from_collection, from_dashboard_activity_stats, from_delete_preview,
-    from_delete_titles_preview, from_discovery_home, from_discovery_home_cards,
-    from_discovery_home_filter_options, from_discovery_item, from_discovery_items_result,
-    from_domain_event, from_download_queue_item, from_episode,
+    discovery_items_query_from_input, from_activity_event, from_application_upgrade_status,
+    from_backup_info, from_catalog_discovery, from_collection, from_dashboard_activity_stats,
+    from_delete_preview, from_delete_titles_preview, from_discovery_home,
+    from_discovery_home_cards, from_discovery_home_filter_options, from_discovery_item,
+    from_discovery_items_result, from_domain_event, from_download_queue_item, from_episode,
     from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
     from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
     from_media_request, from_media_request_counts, from_pending_import_connection,
@@ -2544,6 +2544,29 @@ impl SystemQueries {
         let _actor = actor_from_ctx(ctx)?;
         let notice = app.smg_scryer_update_notice().await.map_err(to_gql_error)?;
         Ok(notice.map(from_smg_scryer_update_notice))
+    }
+
+    /// Return application update availability and installation eligibility; requires system-settings management permission.
+    async fn application_upgrade_status(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ApplicationUpgradeStatusPayload> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let assessment = application_upgrade_assessment_from_ctx(ctx);
+        let app = app_from_ctx(ctx)?;
+        let update_notice = app.smg_scryer_update_notice().await.map_err(to_gql_error)?;
+        let (active_run, latest_run) = app
+            .application_upgrade_job_runs()
+            .await
+            .map_err(to_gql_error)?;
+
+        Ok(from_application_upgrade_status(
+            assessment,
+            scryer_application::SCRYER_VERSION.to_string(),
+            update_notice,
+            active_run,
+            latest_run,
+        ))
     }
 
     /// List recycled media items in a bounded page, optionally restricted to library IDs.

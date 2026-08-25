@@ -49,6 +49,7 @@ import { JobRunProvider } from "@/components/root/job-run-provider";
 import { LibraryScanProgressProvider } from "@/components/root/library-scan-progress-provider";
 import { ReactiveRefreshProvider } from "@/components/root/reactive-refresh-provider";
 import { RootSidebar } from "@/components/root/root-sidebar";
+import { ApplicationUpgradeAction } from "@/components/common/application-upgrade";
 import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
 import { GlobalSearchProvider } from "@/components/root/global-search-provider";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ import { backendClient } from "@/lib/graphql/urql-client";
 import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
+import { useApplicationUpgradeStatus } from "@/lib/hooks/use-application-upgrade-status";
 import { TotpCodeForm } from "@/components/auth/totp-code-form";
 import {
   Dialog,
@@ -293,10 +295,12 @@ function SmgUpgradeBanner({
 }
 
 function SmgScryerUpdateBanner({
+  canManageSystemSettings,
   notice,
   t,
   onDismiss,
 }: {
+  canManageSystemSettings: boolean;
   notice: SmgScryerUpdateNotice;
   t: TranslateFn;
   onDismiss: () => void;
@@ -304,6 +308,7 @@ function SmgScryerUpdateBanner({
   const currentVersion = notice.currentVersion.trim();
   const latestVersion = notice.latestVersion.trim();
   const releaseUrl = notice.releaseUrl?.trim() || null;
+  const { status, refresh } = useApplicationUpgradeStatus(canManageSystemSettings);
 
   return (
     <div
@@ -335,6 +340,13 @@ function SmgScryerUpdateBanner({
           >
             {t("smgUpdate.releaseNotes")}
           </a>
+        ) : null}
+        {status?.eligible ? (
+          <ApplicationUpgradeAction
+            status={status}
+            className="flex-none"
+            onStatusChanged={() => void refresh()}
+          />
         ) : null}
         <IconButton
           type="button"
@@ -1782,6 +1794,7 @@ function AuthenticatedHomePage({
 
                       {showSmgScryerUpdateReminder && smgScryerUpdateNotice ? (
                         <SmgScryerUpdateBanner
+                          canManageSystemSettings={canManageSystemSettings}
                           notice={smgScryerUpdateNotice}
                           t={t}
                           onDismiss={dismissSmgScryerUpdateReminder}

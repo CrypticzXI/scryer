@@ -95,14 +95,15 @@ pub async fn start_background_download_delete_poller(
                         .clone()
                         .map(crate::domain_events::DomainEventActor::user_id)
                         .unwrap_or_else(crate::domain_events::DomainEventActor::system);
-                    let source_identity = crate::DownloadSourceIdentity::new(
+                    let source_identity = crate::ClientJobLocator::new(
                         command.client_id.as_deref(),
                         &command.client_type,
                         &command.download_client_item_id,
                     );
-                    match crate::integration::workflow::finalize_scryer_download_ignored(
+                    match crate::integration::workflow::finalize_scryer_download_ignored_for_download(
                         &app,
                         actor,
+                        command.canonical_download_id.as_ref(),
                         source_identity,
                     )
                     .await
@@ -134,6 +135,16 @@ pub async fn start_background_download_delete_poller(
                         .await
                     {
                         worker.warn_error("mark_delete_command_completed", &error);
+                    }
+                    if let Some(canonical_download_id) = command.canonical_download_id.as_ref()
+                        && let Err(error) = app
+                            .services
+                            .workflow
+                            .download_registry
+                            .end_binding(canonical_download_id)
+                            .await
+                    {
+                        worker.warn_error("end_delete_command_download_binding", &error);
                     }
                 }
                 Err(error) => {

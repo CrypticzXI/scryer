@@ -1204,6 +1204,63 @@ scope = "all"
 
 [[migration]]
 version = 178
+description = "persist user API keys"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0178_api_keys.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0178_api_keys.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 179
+description = "canonical download identity registry"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0179_canonical_download_identity.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0179_canonical_download_identity.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "backfill_canonical_download_identity"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 180
+description = "canonical download identity finalization"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0180_canonical_download_identity_finalization.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0180_canonical_download_identity_finalization.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 181
 description = "bound unresolved movie SMG identity backfill attempts"
 checksum_algo = "blake3"
 

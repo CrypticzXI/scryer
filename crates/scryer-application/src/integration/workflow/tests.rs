@@ -75,6 +75,7 @@ mod tests {
     fn tracked_for_dispatch(id: &str) -> crate::tracked_downloads::TrackedDownload {
         let client_item = item("job-1", DownloadQueueState::Completed);
         crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: id.to_string(),
             client_id: client_item.client_id.clone(),
             client_type: client_item.client_type.clone(),
@@ -512,6 +513,7 @@ mod tests {
         client_item.client_name.clear();
         client_item.client_type.clear();
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "Weaver:job-1".to_string(),
             client_id: "Weaver".to_string(),
             client_type: "weaver".to_string(),
@@ -561,6 +563,7 @@ mod tests {
         let config = client_config("qBittorrent", "qBittorrent", "qbittorrent", 1);
         let client_item = item("torrent-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "qbittorrent:torrent-1".to_string(),
             client_id: "qBittorrent".to_string(),
             client_type: "qbittorrent".to_string(),
@@ -609,6 +612,7 @@ mod tests {
     fn apply_tracked_download_queue_metadata_backfills_missing_facet() {
         let mut queue_item = item("job-1", DownloadQueueState::Completed);
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "nzbget:job-1".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
@@ -663,6 +667,7 @@ mod tests {
         // Completed statuses.
         fn blocked_tracked(queue_item: &DownloadQueueItem) -> crate::tracked_downloads::TrackedDownload {
             crate::tracked_downloads::TrackedDownload {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 id: "weaver:job-1".to_string(),
                 client_id: "client-1".to_string(),
                 client_type: "weaver".to_string(),
@@ -788,6 +793,7 @@ mod tests {
         state: TrackedDownloadState,
     ) -> crate::tracked_downloads::TrackedDownload {
         crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: format!("qbittorrent:{}", queue_item.id),
             client_id: "client-1".to_string(),
             client_type: "qbittorrent".to_string(),
@@ -970,6 +976,7 @@ mod tests {
         let mut queue_item = item("job-1", DownloadQueueState::Downloading);
         queue_item.title_name = "Ironclad".to_string();
         let tracked = crate::tracked_downloads::TrackedDownload {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             id: "nzbget:job-1".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),

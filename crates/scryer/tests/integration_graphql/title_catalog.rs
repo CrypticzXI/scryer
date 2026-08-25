@@ -3660,6 +3660,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
     workflow_store
         .record_submission(scryer_application::DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: id.clone(),
             facet: "movie".to_string(),
             download_client_id: None,

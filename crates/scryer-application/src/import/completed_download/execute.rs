@@ -3,7 +3,9 @@ use super::lookup::{
 };
 use super::result_state::apply_import_result_with_completed;
 use super::*;
-use crate::import_workflow::import_completed_download_with_target_title;
+use crate::import_workflow::{
+    import_completed_download_with_target_title, import_tracked_completed_download,
+};
 use scryer_logging::{ActorContext, LogContext, ResourceContext, WorkflowContext, context_span};
 use tracing::Instrument;
 
@@ -140,8 +142,45 @@ async fn import_inner(
 
     let import_actor = actor_for_tracked_download_import(app, actor, td).await;
     let target_title_id = tracked_import_target_title_id(td, release_evidence.as_ref());
-    let import = match (release_evidence.as_ref(), target_title_id.as_deref()) {
-        (Some(release_evidence), _) => {
+    let import = match (
+        td.canonical_download_id(),
+        release_evidence.as_ref(),
+        target_title_id.as_deref(),
+    ) {
+        (Some(canonical_download_id), Some(release_evidence), _) => {
+            import_tracked_completed_download(
+                app,
+                &import_actor,
+                &completed,
+                Some(canonical_download_id),
+                None,
+                Some(release_evidence),
+            )
+            .await
+        }
+        (Some(canonical_download_id), None, Some(target_title_id)) => {
+            import_tracked_completed_download(
+                app,
+                &import_actor,
+                &completed,
+                Some(canonical_download_id),
+                Some(target_title_id),
+                None,
+            )
+            .await
+        }
+        (Some(canonical_download_id), None, None) => {
+            import_tracked_completed_download(
+                app,
+                &import_actor,
+                &completed,
+                Some(canonical_download_id),
+                None,
+                None,
+            )
+            .await
+        }
+        (None, Some(release_evidence), _) => {
             import_completed_download_with_release_evidence(
                 app,
                 &import_actor,
@@ -150,7 +189,7 @@ async fn import_inner(
             )
             .await
         }
-        (None, Some(target_title_id)) => {
+        (None, None, Some(target_title_id)) => {
             import_completed_download_with_target_title(
                 app,
                 &import_actor,
@@ -159,7 +198,7 @@ async fn import_inner(
             )
             .await
         }
-        (None, None) => import_completed_download(app, &import_actor, &completed).await,
+        (None, None, None) => import_completed_download(app, &import_actor, &completed).await,
     };
     match import {
         Ok(result) => {
@@ -249,7 +288,7 @@ async fn actor_for_tracked_download_import(
     fallback_actor: &User,
     td: &TrackedDownload,
 ) -> User {
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,
@@ -386,7 +425,7 @@ async fn prepare_completed_download_for_tracked_import(
 ///
 /// Returns true if all expected files are accounted for (imported or already_present).
 async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u64 {
-    let source_identity = DownloadSourceIdentity::new(
+    let source_identity = ClientJobLocator::new(
         Some(td.client_id.as_str()),
         &td.client_type,
         &td.client_item.download_client_item_id,
@@ -395,14 +434,22 @@ async fn total_successful_artifacts(app: &AppUseCase, td: &TrackedDownload) -> u
         .services
         .workflow
         .import_artifacts
-        .count_by_result_for_source_identity(&source_identity, "imported")
+        .count_by_result_for_source_identity_for_download(
+            td.canonical_download_id(),
+            &source_identity,
+            "imported",
+        )
         .await
         .unwrap_or(0);
     let already_present = app
         .services
         .workflow
         .import_artifacts
-        .count_by_result_for_source_identity(&source_identity, "already_present")
+        .count_by_result_for_source_identity_for_download(
+            td.canonical_download_id(),
+            &source_identity,
+            "already_present",
+        )
         .await
         .unwrap_or(0);
     imported + already_present
