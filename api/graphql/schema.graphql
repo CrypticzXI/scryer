@@ -1069,6 +1069,10 @@ type CalendarEpisodePayload {
 	Compact availability derived from the episode's primary media file.
 	"""
 	mediaAvailability: EpisodeMediaAvailabilityPayload!
+	"""
+	Provider-native playback links available to the current user.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
 }
 
 """
@@ -1693,6 +1697,10 @@ input CreateMediaServerConnectionInput {
 	Server base URL.
 	"""
 	baseUrl: String!
+	"""
+	Browser-facing URL used for playback deep links. Omit to disable deep links for Jellyfin and Emby.
+	"""
+	externalUrl: String
 	"""
 	Whether the connection is enabled, defaulting to true.
 	"""
@@ -5002,6 +5010,10 @@ type EpisodePayload {
 	Whether acquisition and monitoring are enabled for this episode.
 	"""
 	monitored: Boolean!
+	"""
+	Provider-native playback links for this episode, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
 	"""
 	Time when the episode record was created, in UTC.
 	"""
@@ -9305,6 +9317,10 @@ type MediaServerConnectionPayload {
 	"""
 	baseUrl: String!
 	"""
+	Browser-facing URL used for playback deep links.
+	"""
+	externalUrl: String
+	"""
 	Whether the connection is active.
 	"""
 	enabled: Boolean!
@@ -9370,6 +9386,28 @@ type MediaServerConnectionTestPayload {
 	Optional human-readable detail.
 	"""
 	message: String
+}
+
+"""
+A provider-native playback link for a server linked to the current user.
+"""
+type MediaServerPlaybackLinkPayload {
+	"""
+	Connection identity. This is not a credential or provider token.
+	"""
+	connectionId: ID!
+	"""
+	User-configured server name.
+	"""
+	displayName: String!
+	"""
+	Provider that owns the destination item.
+	"""
+	provider: MediaServerProviderValue!
+	"""
+	Browser URL for the exact provider media item.
+	"""
+	href: String!
 }
 
 """
@@ -18176,6 +18214,10 @@ type TitlePayload {
 	"""
 	monitored: Boolean!
 	"""
+	Provider-native playback links for this title, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
+	"""
 	Source tag values associated with the title.
 	"""
 	tags: [String!]!
@@ -19337,6 +19379,10 @@ input UpdateMediaServerConnectionInput {
 	Replacement base URL; omission preserves the current value.
 	"""
 	baseUrl: String
+	"""
+	Replacement browser-facing URL; omission preserves the current value and an empty value clears it.
+	"""
+	externalUrl: String
 	"""
 	Replacement enabled state; omission preserves the current value.
 	"""

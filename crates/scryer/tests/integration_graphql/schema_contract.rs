@@ -558,7 +558,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // its acceptance payload. The status run fields reuse JobRunPayload and
     // APPLICATION_UPGRADE joins the existing JobKeyValue enum: mutation +1,
     // OBJECT +1, INPUT_OBJECT +1, public types +2.
-    // Merged: query 132, mutation 193, public types 609.
+    // Media-server playback links add one object behind existing title, episode,
+    // and calendar payloads: OBJECT 314->315, public types 609->610.
+    // Query, mutation, subscription, input-object, and enum counts are unchanged.
     assert_eq!(
         query_field_count, 132,
         "query fields: {query_field_names:?}"
@@ -568,8 +570,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 609);
-    assert_eq!(kind_count("OBJECT"), 314);
+    assert_eq!(public_types.len(), 610);
+    assert_eq!(kind_count("OBJECT"), 315);
     assert_eq!(kind_count("INPUT_OBJECT"), 173);
     assert_eq!(kind_count("ENUM"), 110);
     assert_eq!(kind_count("SCALAR"), 10);
@@ -598,6 +600,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"DashboardActivityStatsPayload"));
     assert!(public_type_names.contains(&"ActivityWindowCountsPayload"));
     assert!(public_type_names.contains(&"StorageRootUsagePayload"));
+    assert!(public_type_names.contains(&"MediaServerPlaybackLinkPayload"));
     assert!(public_type_names.contains(&"PendingImportReasonClassValue"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));

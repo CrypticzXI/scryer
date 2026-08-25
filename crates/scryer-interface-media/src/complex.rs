@@ -15,6 +15,17 @@ use crate::types::*;
 
 const RELATION_PAGE_MAX_LIMIT: i32 = 300;
 
+fn from_media_server_playback_link(
+    link: scryer_application::MediaServerPlaybackLink,
+) -> MediaServerPlaybackLinkPayload {
+    MediaServerPlaybackLinkPayload {
+        connection_id: link.connection_id.into(),
+        display_name: link.display_name,
+        provider: MediaServerProviderValue::from_domain(link.provider),
+        href: link.href,
+    }
+}
+
 fn title_scope_from_facet(facet: MediaFacetValue) -> ContentScopeValue {
     match facet {
         MediaFacetValue::Movie => ContentScopeValue::Movie,
@@ -79,6 +90,28 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
+    /// Provider-native playback links for this title, when an exact catalog mapping exists.
+    async fn playback_links(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<MediaServerPlaybackLinkPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.media_server_playback_links(
+            &actor,
+            scryer_domain::MediaServerPlaybackEntityKind::Title,
+            self.id.as_ref(),
+        )
+        .await
+        .map(|links| {
+            links
+                .into_iter()
+                .map(from_media_server_playback_link)
+                .collect()
+        })
+        .map_err(to_gql_error)
+    }
+
     /// Effective target quality-profile label for the title.
     async fn quality_tier(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -1063,6 +1096,28 @@ impl CollectionPayload {
 
 #[ComplexObject]
 impl EpisodePayload {
+    /// Provider-native playback links for this episode, when an exact catalog mapping exists.
+    async fn playback_links(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<MediaServerPlaybackLinkPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.media_server_playback_links(
+            &actor,
+            scryer_domain::MediaServerPlaybackEntityKind::Episode,
+            self.id.as_ref(),
+        )
+        .await
+        .map(|links| {
+            links
+                .into_iter()
+                .map(from_media_server_playback_link)
+                .collect()
+        })
+        .map_err(to_gql_error)
+    }
+
     /// Parent title for this episode, or null if it is no longer available to the caller.
     async fn parent_title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;

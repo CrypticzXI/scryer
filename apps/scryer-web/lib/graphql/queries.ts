@@ -519,6 +519,12 @@ const MOVIE_SIDE_PANEL_TITLE_FIELDS = `
     librarySlug
     monitored
     tags
+    playbackLinks {
+      connectionId
+      displayName
+      provider
+      href
+    }
     externalIds {
       source
       value
@@ -581,6 +587,12 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     libraryId
     librarySlug
     monitored
+    playbackLinks {
+      connectionId
+      displayName
+      provider
+      href
+    }
     externalIds {
       source
       value
@@ -819,6 +831,7 @@ export const MEDIA_SERVER_CONNECTION_FIELDS = `
     provider
     displayName
     baseUrl
+    externalUrl
     enabled
     loginEnabled
     linkingEnabled
@@ -1020,6 +1033,12 @@ export const episodeSidePanelDetailQuery = `query EpisodeSidePanelDetail($titleI
     id
     overview
     imageUrl
+    playbackLinks {
+      connectionId
+      displayName
+      provider
+      href
+    }
     mediaAvailability {
       state
       primaryQualityLabel
@@ -3563,6 +3582,12 @@ export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: Date!, 
     imageUrl
     airDate
     monitored
+    playbackLinks {
+      connectionId
+      displayName
+      provider
+      href
+    }
     mediaAvailability {
       state
       primaryQualityLabel

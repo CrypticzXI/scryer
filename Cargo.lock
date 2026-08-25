@@ -6185,6 +6185,7 @@ version = "0.18.21"
 dependencies = [
  "async-graphql",
  "scryer-application",
+ "scryer-domain",
  "scryer-interface-core",
  "scryer-interface-media",
 ]

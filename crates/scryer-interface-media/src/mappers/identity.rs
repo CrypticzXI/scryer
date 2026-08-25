@@ -90,6 +90,7 @@ pub fn from_media_server_connection(
         provider: MediaServerProviderValue::from_domain(connection.provider),
         display_name: connection.display_name,
         base_url: connection.base_url,
+        external_url: connection.external_url,
         enabled: connection.enabled,
         login_enabled: connection.login_enabled,
         linking_enabled: connection.linking_enabled,

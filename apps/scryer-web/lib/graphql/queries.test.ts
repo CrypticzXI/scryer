@@ -35,6 +35,7 @@ test("API key list query includes lifecycle status fields", () => {
 test("calendar hover query includes its artwork and synopsis fields", () => {
   assert.equal(calendarEpisodesQuery.includes("overview"), true);
   assert.equal(calendarEpisodesQuery.includes("imageUrl"), true);
+  assert.equal(calendarEpisodesQuery.includes("playbackLinks {"), true);
 });
 
 test("calendar uses compact episode availability instead of querying media files", () => {
@@ -334,6 +335,10 @@ test("episode side panel detail query loads nested media files", () => {
   assert.equal(episodeSidePanelDetailQuery.includes("primaryQualityLabel"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("mediaFiles {"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("filePath"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("playbackLinks {"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("displayName"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("provider"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("href"), true);
 });
 
 test("overview queries do not export old native or panel-detail documents", async () => {

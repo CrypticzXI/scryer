@@ -336,12 +336,14 @@ pub use media_requests::{
 };
 pub use media_servers::{
     EmbyConnectionMode, EmbyLocalSetupMethod, MediaServerConnectionDraft,
-    MediaServerConnectionPatch,
+    MediaServerConnectionPatch, MediaServerPlaybackLink,
+    start_background_media_server_playback_reconciliation_loop,
 };
 pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
     RulePackTemplate,
 };
+pub use ports::{MediaServerCatalogItem, MediaServerCatalogItemKind};
 pub use security::backup::{AutoBackupRunOutcome, start_background_auto_backup_scheduler};
 pub use security::backup_bundle::{
     BACKUP_TABLE_CATALOG, BLOB_MARKER_BASE64, BLOB_MARKER_TYPE, BackupBundleExportRequest,

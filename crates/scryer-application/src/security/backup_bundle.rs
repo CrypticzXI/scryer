@@ -771,6 +771,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "media_server_playback_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "media_server_default_library_grants",
         classification: BackupTableClassification::Export,
     },

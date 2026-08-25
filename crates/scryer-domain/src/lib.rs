@@ -3798,6 +3798,9 @@ pub struct MediaServerConnection {
     pub provider: MediaServerProvider,
     pub display_name: String,
     pub base_url: String,
+    /// Browser-facing server URL used only for playback deep links.
+    #[serde(default)]
+    pub external_url: Option<String>,
     pub enabled: bool,
     pub login_enabled: bool,
     pub linking_enabled: bool,
@@ -3822,6 +3825,7 @@ impl std::fmt::Debug for MediaServerConnection {
             .field("provider", &self.provider)
             .field("display_name", &self.display_name)
             .field("base_url", &self.base_url)
+            .field("external_url", &self.external_url)
             .field("enabled", &self.enabled)
             .field("login_enabled", &self.login_enabled)
             .field("linking_enabled", &self.linking_enabled)
@@ -3845,6 +3849,39 @@ impl MediaServerConnection {
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaServerPlaybackEntityKind {
+    Title,
+    Episode,
+}
+
+impl MediaServerPlaybackEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Episode => "episode",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "title" => Some(Self::Title),
+            "episode" => Some(Self::Episode),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaServerPlaybackItem {
+    pub connection_id: String,
+    pub entity_kind: MediaServerPlaybackEntityKind,
+    pub entity_id: String,
+    pub provider_item_id: String,
+    pub last_seen_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]

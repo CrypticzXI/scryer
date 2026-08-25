@@ -2828,6 +2828,7 @@ mod tests {
                 provider: scryer_domain::MediaServerProvider::Emby,
                 display_name: "Emby".into(),
                 base_url: "https://emby.example.test".into(),
+                external_url: None,
                 enabled: true,
                 login_enabled: true,
                 linking_enabled: false,
