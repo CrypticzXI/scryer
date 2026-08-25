@@ -1672,8 +1672,9 @@ fn plex_server_url(resources_xml: &str, machine_id: &str) -> AppResult<Option<St
                             .as_deref()
                             == Some(machine_id)
                     });
-                } else if selected && element.name().as_ref() == b"Connection" {
-                    if let Some(uri) = element
+                } else if selected
+                    && element.name().as_ref() == b"Connection"
+                    && let Some(uri) = element
                         .attributes()
                         .flatten()
                         .find(|attribute| attribute.key.as_ref() == b"uri")
@@ -1681,9 +1682,8 @@ fn plex_server_url(resources_xml: &str, machine_id: &str) -> AppResult<Option<St
                             attribute.normalized_value(XmlVersion::Implicit1_0).ok()
                         })
                         .map(|value| value.into_owned())
-                    {
-                        uris.push(uri);
-                    }
+                {
+                    uris.push(uri);
                 }
             }
             Ok(Event::Empty(element)) if selected && element.name().as_ref() == b"Connection" => {

@@ -3763,13 +3763,6 @@ pub trait ImportArtifactRepository: Send + Sync {
         self.insert_artifact(artifact).await
     }
 
-    async fn insert_artifacts(&self, artifacts: Vec<ImportArtifact>) -> AppResult<()> {
-        for artifact in artifacts {
-            self.insert_artifact(artifact).await?;
-        }
-        Ok(())
-    }
-
     async fn insert_artifacts_for_download(
         &self,
         artifacts: Vec<ImportArtifact>,

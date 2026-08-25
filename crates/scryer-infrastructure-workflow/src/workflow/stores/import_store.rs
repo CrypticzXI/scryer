@@ -886,10 +886,6 @@ impl ImportArtifactRepository for ImportStore {
         .await
     }
 
-    async fn insert_artifacts(&self, artifacts: Vec<ImportArtifact>) -> AppResult<()> {
-        self.insert_artifacts_for_download(artifacts, None).await
-    }
-
     async fn insert_artifacts_for_download(
         &self,
         artifacts: Vec<ImportArtifact>,

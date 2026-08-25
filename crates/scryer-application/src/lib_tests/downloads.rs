@@ -2534,6 +2534,28 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
     *download_client.history_items.lock().await = pushed_out_history;
 
     download_client.set_delete_error(None).await;
+    // A real download client's history drops an entry the moment its
+    // deletion actually succeeds; this stub only records the call and never
+    // mutates `history_items`, so a still-listed row keeps being re-tracked
+    // and re-offered to the cleanup gate on every subsequent poll tick
+    // (`process_tracked_download_snapshot`'s per-tick refresh has no notion
+    // of "already deleted"). Left unmutated, the live poller below can string
+    // together more than one successful delete for this id before the
+    // assertions run — worse, if the test process stalls for a moment (CI
+    // contention), `tokio::time::interval`'s default burst catch-up fires the
+    // backlog of missed ticks back-to-back, each one rediscovering the row
+    // through this same stale entry. The tracked row itself does not need
+    // this listing to be reconciled — `reconcile_terminal_tracked_downloads`
+    // drives off the poller's own persisted tracker cache, which keeps the
+    // row (well within its 150s absence grace) regardless of what the client
+    // reports this tick — so dropping it here, before the retry it unblocks
+    // can run, is what makes "exactly one delete" a guarantee instead of a
+    // race against scheduling.
+    download_client
+        .history_items
+        .lock()
+        .await
+        .retain(|item| item.download_client_item_id != item_id);
 
     timeout(Duration::from_secs(5), async {
         loop {

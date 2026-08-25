@@ -462,6 +462,66 @@ type AddTitleResult {
 }
 
 """
+Expiration choices available when creating an API key.
+"""
+enum ApiKeyExpiryPresetValue {
+	"""
+	Expires in 30 days.
+	"""
+	DAYS_30
+	"""
+	Expires in 90 days.
+	"""
+	DAYS_90
+	"""
+	Expires in one year.
+	"""
+	DAYS_365
+	"""
+	Does not expire automatically.
+	"""
+	NEVER
+}
+
+"""
+Non-secret API-key metadata.
+"""
+type ApiKeyPayload {
+	"""
+	API-key record ID.
+	"""
+	id: ID!
+	"""
+	Human-readable label.
+	"""
+	label: String!
+	"""
+	Auditable identity used for requests made with this key.
+	"""
+	actor: String!
+	"""
+	UTC expiry time, or null when the key does not expire.
+	"""
+	expiresAt: DateTime
+	"""
+	UTC revocation time, or null while active.
+	"""
+	revokedAt: DateTime
+	"""
+	UTC last successful-use time, or null when unused.
+	"""
+	lastUsedAt: DateTime
+	"""
+	UTC creation time.
+	"""
+	createdAt: DateTime!
+	"""
+	Provisioning source (`user` or `environment`).
+	"""
+	provisioningSource: String!
+}
+
+"""
 Application-wide permission independent of a library.
 """
 enum AppPermissionValue {
@@ -481,6 +541,114 @@ enum AppPermissionValue {
 	Allows changing catalog settings.
 	"""
 	MANAGE_CATALOG_SETTINGS
+}
+
+"""
+Installation layout identified for the in-app upgrade surface.
+"""
+enum ApplicationInstallationKindValue {
+	"""
+	A writable standalone installation.
+	"""
+	PORTABLE
+	"""
+	A directly installed Windows MSI package.
+	"""
+	DIRECT_MSI
+	"""
+	A container-managed installation.
+	"""
+	DOCKER
+	"""
+	A Homebrew-managed installation.
+	"""
+	HOMEBREW
+	"""
+	A winget-managed Windows installation.
+	"""
+	WINGET
+	"""
+	A Windows service or session-zero installation.
+	"""
+	WINDOWS_SUPERVISED
+	"""
+	In-app upgrades disabled by the operator.
+	"""
+	DISABLED
+	"""
+	An installation layout that is not supported for in-app upgrades.
+	"""
+	UNSUPPORTED
+}
+
+"""
+Party responsible for managing application upgrades.
+"""
+enum ApplicationUpgradeOwnerValue {
+	"""
+	The application can manage its own upgrade.
+	"""
+	IN_APP
+	"""
+	The operator or an external package manager owns upgrades.
+	"""
+	OPERATOR
+}
+
+"""
+Durable job run accepted for an application upgrade.
+"""
+type ApplicationUpgradeStartPayload {
+	"""
+	The registered application-upgrade job.
+	"""
+	jobRun: JobRunPayload!
+}
+
+"""
+Current update availability and installation eligibility.
+"""
+type ApplicationUpgradeStatusPayload {
+	"""
+	Running application version.
+	"""
+	currentVersion: String!
+	"""
+	Available application version, or null when no update notice exists.
+	"""
+	updateVersion: String
+	"""
+	Available release tag, or null when no update notice exists.
+	"""
+	updateTag: String
+	"""
+	Whether the current update notice offers a newer version.
+	"""
+	updateAvailable: Boolean!
+	"""
+	Installation layout identified at startup.
+	"""
+	installationKind: ApplicationInstallationKindValue!
+	"""
+	Party responsible for managing application upgrades.
+	"""
+	managementOwner: ApplicationUpgradeOwnerValue!
+	"""
+	Whether this installation is eligible for an in-app upgrade.
+	"""
+	eligible: Boolean!
+	"""
+	Stable snake_case code explaining eligibility.
+	"""
+	eligibilityReason: String!
+	"""
+	In-memory application-upgrade job still running in this process, if any.
+	"""
+	activeRun: JobRunPayload
+	"""
+	Most recent persisted application-upgrade job, if any.
+	"""
+	latestRun: JobRunPayload
 }
 
 """
@@ -901,6 +1069,10 @@ type CalendarEpisodePayload {
 	Compact availability derived from the episode's primary media file.
 	"""
 	mediaAvailability: EpisodeMediaAvailabilityPayload!
+	"""
+	Provider-native playback links available to the current user.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
 }
 
 """
@@ -1526,6 +1698,10 @@ input CreateMediaServerConnectionInput {
 	"""
 	baseUrl: String!
 	"""
+	Browser-facing URL used for playback deep links. Omit to disable deep links for Jellyfin and Emby.
+	"""
+	externalUrl: String
+	"""
 	Whether the connection is enabled, defaulting to true.
 	"""
 	enabled: Boolean
@@ -1601,6 +1777,34 @@ input CreateMediaServerConnectionInput {
 	External-to-local filesystem path mappings.
 	"""
 	pathMappings: [MediaServerPathMappingInput!]
+}
+
+"""
+Input for creating an API key owned by the interactive actor.
+"""
+input CreateMyApiKeyInput {
+	"""
+	A human-readable label to distinguish the integration.
+	"""
+	label: String!
+	"""
+	Expiration policy. Omission uses 90 days.
+	"""
+	expiry: ApiKeyExpiryPresetValue
+}
+
+"""
+Creation result. `apiKey` is shown once and must be stored by the caller.
+"""
+type CreateMyApiKeyPayload {
+	"""
+	Generated raw API key. This is never returned again.
+	"""
+	apiKey: String!
+	"""
+	Non-secret metadata for the generated key.
+	"""
+	key: ApiKeyPayload!
 }
 
 """
@@ -4811,6 +5015,10 @@ type EpisodePayload {
 	"""
 	createdAt: DateTime!
 	"""
+	Provider-native playback links for this episode, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
+	"""
 	Parent title for this episode, or null if it is no longer available to the caller.
 	"""
 	parentTitle: TitlePayload
@@ -7401,6 +7609,10 @@ enum JobKeyValue {
 	Acquisition search.
 	"""
 	ACQUISITION_SEARCH
+	"""
+	Application upgrade.
+	"""
+	APPLICATION_UPGRADE
 }
 
 """
@@ -9105,6 +9317,10 @@ type MediaServerConnectionPayload {
 	"""
 	baseUrl: String!
 	"""
+	Browser-facing URL used for playback deep links.
+	"""
+	externalUrl: String
+	"""
 	Whether the connection is active.
 	"""
 	enabled: Boolean!
@@ -9226,6 +9442,28 @@ type MediaServerPathMappingPayload {
 	Corresponding local filesystem path.
 	"""
 	destinationPath: String!
+}
+
+"""
+A provider-native playback link for a server linked to the current user.
+"""
+type MediaServerPlaybackLinkPayload {
+	"""
+	Connection identity. This is not a credential or provider token.
+	"""
+	connectionId: ID!
+	"""
+	User-configured server name.
+	"""
+	displayName: String!
+	"""
+	Provider that owns the destination item.
+	"""
+	provider: MediaServerProviderValue!
+	"""
+	Browser URL for the exact provider media item.
+	"""
+	href: String!
 }
 
 """
@@ -9835,6 +10073,15 @@ type MovieEntityPayload {
 }
 
 type MutationRoot {
+	"""
+	Begin a signed in-application upgrade for the currently advertised release.
+	"""
+	startApplicationUpgrade(
+		"""
+		The update tag and version currently advertised by SMG.
+		"""
+		input: StartApplicationUpgradeInput!
+	): ApplicationUpgradeStartPayload!
 	"""
 	Create or reuse a title in an accessible library and return its hydration state.
 	"""
@@ -10694,6 +10941,24 @@ type MutationRoot {
 		"""
 		grantId: ID!
 	): RevokeMyOauthAppPayload!
+	"""
+	Creates an API key for the interactive actor and returns its secret once.
+	"""
+	createMyApiKey(
+		"""
+		Label and expiration policy for the new API key.
+		"""
+		input: CreateMyApiKeyInput!
+	): CreateMyApiKeyPayload!
+	"""
+	Revokes one user-created API key owned by the interactive actor.
+	"""
+	revokeMyApiKey(
+		"""
+		API-key record ID to revoke.
+		"""
+		id: ID!
+	): RevokeMyApiKeyPayload!
 	"""
 	Authenticates local credentials, optionally verifies required TOTP, and issues a session or MFA-enrollment token.
 	"""
@@ -14052,6 +14317,14 @@ type QueryRoot {
 	"""
 	myOauthApps: [OauthConnectedAppPayload!]!
 	"""
+	Lists the interactive actor's API keys without returning their secrets.
+	"""
+	myApiKeys: [ApiKeyPayload!]!
+	"""
+	Whether the interactive actor may create API keys under the active security policy.
+	"""
+	canCreateMyApiKeys: Boolean!
+	"""
 	Lists delay profiles with minute-based delays and their media-facet assignments.
 	"""
 	delayProfiles: [DelayProfilePayload!]!
@@ -14165,6 +14438,10 @@ type QueryRoot {
 	Return an available Scryer update notice from SMG, if one exists.
 	"""
 	smgScryerUpdateNotice: SmgScryerUpdateNoticePayload
+	"""
+	Return application update availability and installation eligibility; requires system-settings management permission.
+	"""
+	applicationUpgradeStatus: ApplicationUpgradeStatusPayload!
 	"""
 	List recycled media items in a bounded page, optionally restricted to library IDs.
 	"""
@@ -15363,6 +15640,20 @@ input RetryImportInput {
 }
 
 """
+Revocation result for a user-owned API key.
+"""
+type RevokeMyApiKeyPayload {
+	"""
+	ID of the revoked key.
+	"""
+	id: ID!
+	"""
+	Whether the active key was revoked.
+	"""
+	revoked: Boolean!
+}
+
+"""
 Result of revoking an OAuth grant.
 """
 type RevokeMyOauthAppPayload {
@@ -15831,6 +16122,10 @@ type SecuritySettingsPayload {
 	Whether local IPs may skip login.
 	"""
 	skipLoginForLocalIps: Boolean!
+	"""
+	Whether API keys are restricted to users with system-settings permission.
+	"""
+	apiKeysRestrictToSystemSettingsUsers: Boolean!
 	"""
 	Whether configuration changes require MFA step-up.
 	"""
@@ -16415,6 +16710,20 @@ enum SortDirectionValue {
 	Highest or latest values first.
 	"""
 	DESC
+}
+
+"""
+The exact update notice accepted by `startApplicationUpgrade`.
+"""
+input StartApplicationUpgradeInput {
+	"""
+	Release tag displayed by the current update notice.
+	"""
+	expectedTag: String!
+	"""
+	Release version displayed by the current update notice.
+	"""
+	expectedVersion: String!
 }
 
 """
@@ -18033,6 +18342,10 @@ type TitlePayload {
 	"""
 	recapPolicy: RecapPolicyValue
 	"""
+	Provider-native playback links for this title, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
+	"""
 	Effective target quality-profile label for the title.
 	"""
 	qualityTier: String
@@ -19067,6 +19380,10 @@ input UpdateMediaServerConnectionInput {
 	"""
 	baseUrl: String
 	"""
+	Replacement browser-facing URL; omission preserves the current value and an empty value clears it.
+	"""
+	externalUrl: String
+	"""
 	Replacement enabled state; omission preserves the current value.
 	"""
 	enabled: Boolean
@@ -19458,6 +19775,10 @@ input UpdateSecuritySettingsInput {
 	Whether local IPs may skip login.
 	"""
 	skipLoginForLocalIps: Boolean!
+	"""
+	Whether API keys are restricted to users with system-settings permission.
+	"""
+	apiKeysRestrictToSystemSettingsUsers: Boolean
 	"""
 	Whether sensitive configuration changes require MFA step-up.
 	"""
