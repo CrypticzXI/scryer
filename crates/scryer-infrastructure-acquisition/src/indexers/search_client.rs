@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -376,6 +376,9 @@ const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 12;
 // Queue admission, the primary tier, and the fallback tier share one deadline.
 const INTERACTIVE_CANDIDATE_TIMEOUT_WINDOWS: u32 = 3;
 const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
+/// Each target worker can query every configured indexer without waiting on an
+/// arbitrary global cap. Eight target workers × fifteen indexers is 120 leaves.
+const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_PER_CONFIGURED_INDEXER: usize = 8;
 const INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 24;
 const LEARNED_EMPTY_SUPPRESSION_THRESHOLD: u32 = 3;
 const LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS: i64 = 7;
@@ -1161,6 +1164,7 @@ pub struct MultiIndexerSearchClient {
     backoff_tracker: IndexerBackoffTracker,
     rss_feed_cache: RssFeedCache,
     background_search_limit: Arc<Semaphore>,
+    background_search_capacity: Arc<AtomicUsize>,
     interactive_search_limit: Arc<Semaphore>,
     #[cfg(test)]
     candidate_timeout_override: Option<std::time::Duration>,
@@ -1209,6 +1213,9 @@ impl MultiIndexerSearchClient {
             backoff_tracker: IndexerBackoffTracker::new(),
             rss_feed_cache: Arc::new(Mutex::new(HashMap::new())),
             background_search_limit: Arc::new(Semaphore::new(
+                BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
+            )),
+            background_search_capacity: Arc::new(AtomicUsize::new(
                 BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
             interactive_search_limit: Arc::new(Semaphore::new(
@@ -1540,6 +1547,40 @@ impl MultiIndexerSearchClient {
             self.interactive_search_limit.clone()
         } else {
             self.background_search_limit.clone()
+        }
+    }
+
+    fn background_search_capacity_for_indexer_count(indexer_count: usize) -> usize {
+        indexer_count
+            .saturating_mul(BACKGROUND_INDEXER_SEARCH_CONCURRENCY_PER_CONFIGURED_INDEXER)
+            .max(BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT)
+    }
+
+    /// Config changes are observed during ordinary searches. Capacity expands
+    /// monotonically for this process; shrinking it would require revoking
+    /// active permits and risks deadlocking already-admitted requests.
+    fn scale_background_search_capacity(&self, configured_indexer_count: usize) {
+        let desired = Self::background_search_capacity_for_indexer_count(configured_indexer_count);
+        let mut observed = self.background_search_capacity.load(Ordering::Acquire);
+        while desired > observed {
+            match self.background_search_capacity.compare_exchange_weak(
+                observed,
+                desired,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(previous) => {
+                    self.background_search_limit.add_permits(desired - previous);
+                    debug!(
+                        configured_indexer_count,
+                        previous_capacity = previous,
+                        capacity = desired,
+                        "scaled background indexer search capacity"
+                    );
+                    break;
+                }
+                Err(current) => observed = current,
+            }
         }
     }
 
@@ -2100,6 +2141,9 @@ impl IndexerClient for MultiIndexerSearchClient {
             warn!(error = %err, "failed to load indexer configs");
             vec![]
         });
+        if matches!(mode, SearchMode::Auto) {
+            self.scale_background_search_capacity(configs.len());
+        }
 
         let now = chrono::Utc::now();
         let system_backoffs = self
@@ -5007,7 +5051,7 @@ mod tests {
         let client = Arc::new(BlockingIndexerClient {
             probe: probe.clone(),
         });
-        let multi = MultiIndexerSearchClient::new(
+        let mut multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
                 configs: indexed_mock_configs(config_count),
             }),
@@ -5017,6 +5061,15 @@ mod tests {
                 caps: movie_caps(),
             }),
         );
+        if matches!(mode, SearchMode::Auto) {
+            // Keep this test focused on the shared semaphore: production
+            // scaling is covered separately below.
+            multi.background_search_capacity = Arc::new(AtomicUsize::new(
+                MultiIndexerSearchClient::background_search_capacity_for_indexer_count(
+                    config_count,
+                ),
+            ));
+        }
 
         let first = multi.clone();
         let second = multi.clone();
@@ -5534,6 +5587,37 @@ mod tests {
         let result = acquire_search_permit(search_limit, &cancel_token, None).await;
 
         assert_eq!(result.unwrap_err(), SearchPermitError::Cancelled);
+    }
+
+    #[test]
+    fn background_search_capacity_scales_with_configured_indexers() {
+        assert_eq!(
+            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(1),
+            BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT
+        );
+        assert_eq!(
+            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(15),
+            120
+        );
+
+        let client = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository { configs: Vec::new() }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: false,
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        client.scale_background_search_capacity(15);
+
+        assert_eq!(
+            client.background_search_limit.available_permits(),
+            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(15)
+        );
+        assert_eq!(
+            client.background_search_capacity.load(Ordering::Acquire),
+            120
+        );
     }
 
     #[tokio::test]

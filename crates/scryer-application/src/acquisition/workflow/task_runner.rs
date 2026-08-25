@@ -11,6 +11,10 @@ const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
 /// admits when quota is healthy — it only defers once quota tightens.
 const BACKGROUND_COLD_TARGET_VALUE: f64 = 0.25;
 
+/// Limits orchestration work, not leaf indexer requests. The indexer client
+/// owns its own dynamic request budget across every worker.
+const CONVERGENCE_TARGET_WORKER_LIMIT: usize = 8;
+
 async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
     let blocked_facets = app
         .runtime
@@ -131,27 +135,7 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     let availability = app.scheduler_availability().await;
     let indexer_hosts = app.indexer_scheduler_host_keys().await;
 
-    // Track URLs already submitted this cycle to avoid sending the same NZB
-    // multiple times after a successful or ambiguous submission.
-    let mut grabbed_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Failed attempts are deduplicated only within their source/indexer route.
-    let mut attempted_urls_by_route: Vec<(DownloadRouteKey, String)> = Vec::new();
-    // A transiently unavailable route is suppressed across every target in this cycle.
-    let mut failed_routes: Vec<DownloadRouteKey> = Vec::new();
-    let mut series_pack_state = SeriesPackCycleState::default();
-    // Track (title_id, season_num) for which a season pack search was attempted this cycle.
-    let mut season_pack_attempted: std::collections::HashSet<(String, u32)> =
-        std::collections::HashSet::new();
-    // Track (title_id, season_num) for which a season pack was successfully grabbed this cycle.
-    let mut season_pack_grabbed: std::collections::HashSet<(String, u32)> =
-        std::collections::HashSet::new();
-    // Track seasons where a viable season-pack candidate was found but not
-    // definitively failed. This avoids spending per-episode searches behind a
-    // pack that is pending delay or waiting on transient download-client state.
-    let mut season_pack_viable: std::collections::HashSet<(String, u32)> =
-        std::collections::HashSet::new();
-    let mut recent_failed_season_packs_by_title: std::collections::HashMap<String, HashSet<u32>> =
-        std::collections::HashMap::new();
+    let cycle = Arc::new(ConvergenceCycleCoordinator::default());
 
     // Count selected episode scopes per (title_id, season_num). Season pack
     // search is only worthwhile when >= 2 episodes from the same season are in
@@ -172,37 +156,99 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
         }
     }
 
-    let mut processed_in_slice = 0usize;
-    for index in selection.indices {
-        let target = &targets[index];
-        if let Err(err) = process_single_target(
-            app,
-            target,
-            &now,
-            &availability,
-            &indexer_hosts,
-            &mut grabbed_urls,
-            &mut attempted_urls_by_route,
-            &mut failed_routes,
-            &mut series_pack_state,
-            &mut season_pack_attempted,
-            &mut season_pack_grabbed,
-            &mut season_pack_viable,
-            &mut recent_failed_season_packs_by_title,
-            &season_due_counts,
-            &dl_snapshot,
-        )
-        .await
-        {
+    let (graph, mut ready) = ConvergenceWorkGraph::build(&targets, &selection.indices);
+    let mut in_flight = FuturesUnordered::new();
+    let mut completed = 0usize;
+    let availability = &availability;
+    let indexer_hosts = &indexer_hosts;
+    let season_due_counts = &season_due_counts;
+    let dl_snapshot = &dl_snapshot;
+    let now = &now;
+
+    debug!(
+        selected_count = selection.indices.len(),
+        worker_limit = CONVERGENCE_TARGET_WORKER_LIMIT,
+        initial_ready = ready.len(),
+        "convergence cycle: dispatching dependency-aware target work"
+    );
+
+    loop {
+        while in_flight.len() < CONVERGENCE_TARGET_WORKER_LIMIT {
+            let Some(work) = ready.pop_front() else {
+                break;
+            };
+            let target = &targets[work.target_index];
+            let cycle = Arc::clone(&cycle);
+            debug!(
+                scope_key = target.scope_key.as_str(),
+                title_id = target.title_id.as_str(),
+                work = ?work.kind,
+                ready = ready.len(),
+                in_flight = in_flight.len() + 1,
+                "convergence target work started"
+            );
+            in_flight.push(async move {
+                let result = process_single_target(
+                    app,
+                    target,
+                    now,
+                    availability,
+                    indexer_hosts,
+                    &cycle,
+                    season_due_counts,
+                    dl_snapshot,
+                )
+                .await;
+                (work, result)
+            });
+        }
+
+        let Some((work, result)) = in_flight.next().await else {
+            break;
+        };
+        let target = &targets[work.target_index];
+        if let Err(err) = result {
             warn!(
                 scope_key = target.scope_key.as_str(),
                 title_id = target.title_id.as_str(),
                 error = %err,
                 "failed to process acquisition target"
             );
+            metrics::counter!("scryer_convergence_target_work_total", "outcome" => "failed")
+                .increment(1);
+        } else {
+            metrics::counter!("scryer_convergence_target_work_total", "outcome" => "completed")
+                .increment(1);
         }
-        processed_in_slice += 1;
-        if processed_in_slice.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
+
+        match &work.kind {
+            ConvergenceWorkKind::TitleAnchor { title_id } => {
+                cycle.complete_title_pack_stage(title_id.as_str());
+                if let Some(group) = graph.titles.get(title_id.as_str()) {
+                    for season in &group.seasons {
+                        if season.anchor_index == work.target_index {
+                            cycle.complete_season_pack_stage(&(title_id.clone(), season.season));
+                        }
+                    }
+                }
+            }
+            ConvergenceWorkKind::SeasonAnchor { title_id, season } => {
+                cycle.complete_season_pack_stage(&(title_id.clone(), *season));
+            }
+            ConvergenceWorkKind::Scope => {}
+        }
+
+        let released = graph.release_after(&work);
+        if !released.is_empty() {
+            debug!(
+                work = ?work.kind,
+                released = released.len(),
+                "convergence target work released dependent scopes"
+            );
+            ready.extend(released);
+        }
+        completed += 1;
+        if completed.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
             tokio::task::yield_now().await;
         }
     }
@@ -274,9 +320,280 @@ impl AppUseCase {
 }
 
 #[derive(Default)]
-struct SeriesPackCycleState {
+struct ConvergenceCycleCoordinator {
+    state: Mutex<ConvergenceCycleState>,
+}
+
+#[derive(Default)]
+struct ConvergenceCycleState {
     attempted_titles: HashSet<String>,
     claimed_episode_ids: HashSet<String>,
+    season_pack_attempted: HashSet<(String, u32)>,
+    season_pack_grabbed: HashSet<(String, u32)>,
+    season_pack_viable: HashSet<(String, u32)>,
+    grabbed_urls: HashSet<String>,
+    attempted_urls_by_route: Vec<(DownloadRouteKey, String)>,
+    failed_routes: Vec<DownloadRouteKey>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubmissionClaim {
+    Granted,
+    AlreadySubmitted,
+    AlreadyAttempted,
+    RouteUnavailable,
+}
+
+impl ConvergenceCycleCoordinator {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ConvergenceCycleState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn claimed_episode_ids(&self) -> HashSet<String> {
+        self.lock().claimed_episode_ids.clone()
+    }
+
+    fn is_episode_claimed(&self, episode_id: &str) -> bool {
+        self.lock().claimed_episode_ids.contains(episode_id)
+    }
+
+    fn claim_episode_ids<I>(&self, episode_ids: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.lock().claimed_episode_ids.extend(episode_ids);
+    }
+
+    fn begin_title_pack(&self, title_id: &str) -> bool {
+        self.lock().attempted_titles.insert(title_id.to_string())
+    }
+
+    fn complete_title_pack_stage(&self, title_id: &str) {
+        self.lock().attempted_titles.insert(title_id.to_string());
+    }
+
+    fn begin_season_pack(&self, key: &(String, u32)) -> bool {
+        self.lock().season_pack_attempted.insert(key.clone())
+    }
+
+    fn complete_season_pack_stage(&self, key: &(String, u32)) {
+        self.lock().season_pack_attempted.insert(key.clone());
+    }
+
+    fn season_pack_grabbed(&self, key: &(String, u32)) -> bool {
+        self.lock().season_pack_grabbed.contains(key)
+    }
+
+    fn season_pack_viable(&self, key: &(String, u32)) -> bool {
+        self.lock().season_pack_viable.contains(key)
+    }
+
+    fn mark_season_pack_grabbed(&self, key: &(String, u32)) {
+        let mut state = self.lock();
+        state.season_pack_grabbed.insert(key.clone());
+        state.season_pack_viable.insert(key.clone());
+    }
+
+    fn mark_season_pack_viable(&self, key: &(String, u32)) {
+        self.lock().season_pack_viable.insert(key.clone());
+    }
+
+    fn clear_season_pack_viable(&self, key: &(String, u32)) {
+        self.lock().season_pack_viable.remove(key);
+    }
+
+    fn failed_routes(&self) -> Vec<DownloadRouteKey> {
+        self.lock().failed_routes.clone()
+    }
+
+    fn mark_failed_route(&self, route: DownloadRouteKey) {
+        let mut state = self.lock();
+        if !state.failed_routes.contains(&route) {
+            state.failed_routes.push(route);
+        }
+    }
+
+    fn claim_submission(&self, route: DownloadRouteKey, url: &str) -> SubmissionClaim {
+        let mut state = self.lock();
+        if state.failed_routes.contains(&route) {
+            return SubmissionClaim::RouteUnavailable;
+        }
+        if state.grabbed_urls.contains(url) {
+            return SubmissionClaim::AlreadySubmitted;
+        }
+        let attempted = (route, url.to_string());
+        if state.attempted_urls_by_route.contains(&attempted) {
+            return SubmissionClaim::AlreadyAttempted;
+        }
+        state.attempted_urls_by_route.push(attempted);
+        SubmissionClaim::Granted
+    }
+
+    fn mark_submitted(&self, url: &str) {
+        self.lock().grabbed_urls.insert(url.to_string());
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ConvergenceWorkKind {
+    TitleAnchor { title_id: String },
+    SeasonAnchor { title_id: String, season: u32 },
+    Scope,
+}
+
+#[derive(Clone, Debug)]
+struct ConvergenceWork {
+    target_index: usize,
+    kind: ConvergenceWorkKind,
+}
+
+#[derive(Debug)]
+struct SeasonWorkGroup {
+    season: u32,
+    anchor_index: usize,
+    remaining_indices: Vec<usize>,
+}
+
+#[derive(Debug)]
+struct SeriesTitleWorkGroup {
+    anchor_index: usize,
+    seasons: Vec<SeasonWorkGroup>,
+    ungrouped_indices: Vec<usize>,
+}
+
+#[derive(Default)]
+struct ConvergenceWorkGraph {
+    titles: HashMap<String, SeriesTitleWorkGroup>,
+}
+
+impl ConvergenceWorkGraph {
+    fn build(
+        targets: &[crate::acquisition::targets::AcquisitionTarget],
+        selected_indices: &[usize],
+    ) -> (Self, VecDeque<ConvergenceWork>) {
+        let mut graph = Self::default();
+        let mut ready = VecDeque::new();
+
+        for &target_index in selected_indices {
+            let target = &targets[target_index];
+            if target.media_type != "episode" {
+                ready.push_back(ConvergenceWork {
+                    target_index,
+                    kind: ConvergenceWorkKind::Scope,
+                });
+                continue;
+            }
+
+            let title_id = target.title_id.clone();
+            let group = graph
+                .titles
+                .entry(title_id.clone())
+                .or_insert_with(|| {
+                    ready.push_back(ConvergenceWork {
+                        target_index,
+                        kind: ConvergenceWorkKind::TitleAnchor {
+                            title_id: title_id.clone(),
+                        },
+                    });
+                    SeriesTitleWorkGroup {
+                        anchor_index: target_index,
+                        seasons: Vec::new(),
+                        ungrouped_indices: Vec::new(),
+                    }
+                });
+
+            let season = target
+                .season_number
+                .as_deref()
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|season| *season > 0);
+            let Some(season) = season else {
+                if target_index != group.anchor_index {
+                    group.ungrouped_indices.push(target_index);
+                }
+                continue;
+            };
+
+            if let Some(existing) = group
+                .seasons
+                .iter_mut()
+                .find(|existing| existing.season == season)
+            {
+                if target_index != existing.anchor_index {
+                    existing.remaining_indices.push(target_index);
+                }
+            } else {
+                group.seasons.push(SeasonWorkGroup {
+                    season,
+                    anchor_index: target_index,
+                    remaining_indices: Vec::new(),
+                });
+            }
+        }
+
+        (graph, ready)
+    }
+
+    fn release_after(&self, work: &ConvergenceWork) -> Vec<ConvergenceWork> {
+        match &work.kind {
+            ConvergenceWorkKind::TitleAnchor { title_id } => {
+                let Some(group) = self.titles.get(title_id) else {
+                    return Vec::new();
+                };
+                // Search every remaining season pack before letting the title's
+                // individual-episode backlog occupy the worker pool.
+                let mut season_anchors = Vec::new();
+                let mut scopes = group
+                    .ungrouped_indices
+                    .iter()
+                    .map(|&target_index| ConvergenceWork {
+                        target_index,
+                        kind: ConvergenceWorkKind::Scope,
+                    })
+                    .collect::<Vec<_>>();
+                for season in &group.seasons {
+                    if season.anchor_index == work.target_index {
+                        scopes.extend(season.remaining_indices.iter().map(|&target_index| {
+                            ConvergenceWork {
+                                target_index,
+                                kind: ConvergenceWorkKind::Scope,
+                            }
+                        }));
+                    } else {
+                        season_anchors.push(ConvergenceWork {
+                            target_index: season.anchor_index,
+                            kind: ConvergenceWorkKind::SeasonAnchor {
+                                title_id: title_id.clone(),
+                                season: season.season,
+                            },
+                        });
+                    }
+                }
+                season_anchors.sort_by_key(|next| next.target_index);
+                scopes.sort_by_key(|next| next.target_index);
+                season_anchors.extend(scopes);
+                season_anchors
+            }
+            ConvergenceWorkKind::SeasonAnchor { title_id, season } => self
+                .titles
+                .get(title_id)
+                .and_then(|group| group.seasons.iter().find(|entry| entry.season == *season))
+                .map(|entry| {
+                    entry
+                        .remaining_indices
+                        .iter()
+                        .map(|&target_index| ConvergenceWork {
+                            target_index,
+                            kind: ConvergenceWorkKind::Scope,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ConvergenceWorkKind::Scope => Vec::new(),
+        }
+    }
 }
 
 fn episode_ids_for_scope(scope: &SubmissionScope) -> Option<&[String]> {
@@ -880,14 +1197,7 @@ async fn process_single_target(
     now: &DateTime<Utc>,
     availability: &crate::acquisition::convergence::SchedulerAvailability,
     indexer_hosts: &std::collections::HashMap<String, String>,
-    grabbed_urls: &mut std::collections::HashSet<String>,
-    attempted_urls_by_route: &mut Vec<(DownloadRouteKey, String)>,
-    failed_routes: &mut Vec<DownloadRouteKey>,
-    series_pack_state: &mut SeriesPackCycleState,
-    season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
-    season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
-    season_pack_viable: &mut std::collections::HashSet<(String, u32)>,
-    recent_failed_season_packs_by_title: &mut std::collections::HashMap<String, HashSet<u32>>,
+    cycle: &ConvergenceCycleCoordinator,
     season_due_counts: &std::collections::HashMap<(String, u32), usize>,
     dl_snapshot: &DownloadClientSnapshot,
 ) -> AppResult<()> {
@@ -929,9 +1239,10 @@ async fn process_single_target(
         .collection_id
         .clone()
         .or_else(|| episode.as_ref().and_then(|ep| ep.collection_id.clone()));
-    if episode.as_ref().is_some_and(|episode| {
-        series_pack_state.claimed_episode_ids.contains(&episode.id)
-    }) {
+    if episode
+        .as_ref()
+        .is_some_and(|episode| cycle.is_episode_claimed(&episode.id))
+    {
         return Ok(());
     }
 
@@ -1046,12 +1357,13 @@ async fn process_single_target(
     // re-judged against the blocklist, the swarm and admission. Only an
     // exhausted list (or a scope that never saved one) reaches the convergence
     // gate below.
+    let claimed_episode_ids = cycle.claimed_episode_ids();
     let stale_standby_indexer_ids = if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
         match try_saved_candidates(
             app,
             item,
             None,
-            Some(&series_pack_state.claimed_episode_ids),
+            Some(&claimed_episode_ids),
             dl_snapshot,
             now,
         )
@@ -1060,9 +1372,7 @@ async fn process_single_target(
             StandbyRecoveryOutcome::Recovered { scope }
             | StandbyRecoveryOutcome::Active { scope } => {
                 if let Some(episode_ids) = episode_ids_for_scope(&scope) {
-                    series_pack_state
-                        .claimed_episode_ids
-                        .extend(episode_ids.iter().cloned());
+                    cycle.claim_episode_ids(episode_ids.iter().cloned());
                 }
                 if let SubmissionScope::Collection { collection_id } = &scope {
                     if let Ok(episodes) = app
@@ -1072,9 +1382,7 @@ async fn process_single_target(
                         .list_episodes_for_collection(collection_id)
                         .await
                     {
-                        series_pack_state
-                            .claimed_episode_ids
-                            .extend(episodes.into_iter().map(|episode| episode.id));
+                        cycle.claim_episode_ids(episodes.into_iter().map(|episode| episode.id));
                     }
                     if let Some(season) = target
                         .season_number
@@ -1082,7 +1390,7 @@ async fn process_single_target(
                         .or(episode.as_ref().and_then(|episode| episode.season_number.as_deref()))
                         .and_then(|season| season.parse::<u32>().ok())
                     {
-                        season_pack_grabbed.insert((title.id.clone(), season));
+                        cycle.mark_season_pack_grabbed(&(title.id.clone(), season));
                     }
                 }
                 info!(
@@ -1152,8 +1460,10 @@ async fn process_single_target(
     if target.media_type == "episode"
         && title.facet != MediaFacet::Movie
         && let Some(target_episode) = episode.as_ref()
-        && series_pack_state.attempted_titles.insert(title.id.clone())
+        && cycle.begin_title_pack(&title.id)
     {
+        let failed_routes = cycle.failed_routes();
+        let claimed_episode_ids = cycle.claimed_episode_ids();
         match try_series_pack_for_title(
             app,
             &title,
@@ -1163,18 +1473,16 @@ async fn process_single_target(
             availability,
             indexer_hosts,
             dl_snapshot,
-            failed_routes,
+            &failed_routes,
             &submissions,
             &tracked_states,
-            &series_pack_state.claimed_episode_ids,
+            &claimed_episode_ids,
         )
         .await
         {
             Ok(Some(episode_ids)) => {
                 let claims_target = episode_ids.contains(&target_episode.id);
-                series_pack_state
-                    .claimed_episode_ids
-                    .extend(episode_ids);
+                cycle.claim_episode_ids(episode_ids);
                 if claims_target {
                     return Ok(());
                 }
@@ -1256,6 +1564,7 @@ async fn process_single_target(
         .acquisition_scope_states
         .ensure_acquisition_scope_state(item)
         .await?;
+    let mut failed_routes = cycle.failed_routes();
 
     // Derive the download client category separately — search_category ("series")
     // is for Newznab query type, download_category ("series") is for NZBGet routing.
@@ -1274,18 +1583,9 @@ async fn process_single_target(
         // are due this cycle (mirrors Sonarr: count > 1 missing → SeasonSearchCriteria).
         let due_count = season_due_counts.get(&season_key).copied().unwrap_or(0);
 
-        if due_count >= 2 && !season_pack_attempted.contains(&season_key) {
-            season_pack_attempted.insert(season_key.clone());
-
+        if due_count >= 2 && cycle.begin_season_pack(&season_key) {
             let recent_failed_seasons =
-                if let Some(cached) = recent_failed_season_packs_by_title.get(&title.id) {
-                    cached.clone()
-                } else {
-                    let loaded =
-                        load_recent_failed_season_pack_seasons_for_title(app, &title.id, now).await;
-                    recent_failed_season_packs_by_title.insert(title.id.clone(), loaded.clone());
-                    loaded
-                };
+                load_recent_failed_season_pack_seasons_for_title(app, &title.id, now).await;
 
             if recent_failed_seasons.contains(&season_num) {
                 info!(
@@ -1400,7 +1700,7 @@ async fn process_single_target(
                         ReleaseAutoDecisionCode::PendingDelay
                             | ReleaseAutoDecisionCode::AlreadyActive
                     ) {
-                        season_pack_viable.insert(season_key.clone());
+                        cycle.mark_season_pack_viable(&season_key);
                     }
                 }
 
@@ -1422,13 +1722,12 @@ async fn process_single_target(
                         .canonical_download_source()
                         .map(|(source, _)| source);
                     let url_str = pack_url.as_deref().unwrap_or("").to_string();
-                    let pack_attempt = (pack_route.clone(), url_str.clone());
-
                     if !url_str.is_empty()
-                        && !grabbed_urls.contains(&url_str)
-                        && !attempted_urls_by_route.contains(&pack_attempt)
+                        && matches!(
+                            cycle.claim_submission(pack_route.clone(), &url_str),
+                            SubmissionClaim::Granted
+                        )
                     {
-                        attempted_urls_by_route.push(pack_attempt);
                         let download_cat = app.derive_download_category(&title.facet).await;
                         let is_recent = app.is_recent_for_queue_priority(
                             best_pack
@@ -1524,9 +1823,8 @@ async fn process_single_target(
                                             accepted_info_hash: grab.info_hash.as_deref(),
                                         },
                                 );
-                                grabbed_urls.insert(url_str.clone());
-                                season_pack_grabbed.insert(season_key.clone());
-                                season_pack_viable.insert(season_key.clone());
+                                cycle.mark_submitted(&url_str);
+                                cycle.mark_season_pack_grabbed(&season_key);
                                 let _ = app
                                     .services
                                     .workflow
@@ -1635,7 +1933,7 @@ async fn process_single_target(
                                     &pack_results,
                                     best_pack_index + 1,
                                     now,
-                                    failed_routes,
+                                    &failed_routes,
                                     &pack_blocklist,
                                     |candidate| {
                                         candidate_is_season_pack_for_season(candidate, season_num)
@@ -1692,12 +1990,13 @@ async fn process_single_target(
                                 let ambiguous = err.is_download_submit_ambiguous();
                                 if submit_unavailable && !failed_routes.contains(&pack_route) {
                                     failed_routes.push(pack_route.clone());
+                                    cycle.mark_failed_route(pack_route.clone());
                                 }
                                 if ambiguous {
-                                    grabbed_urls.insert(url_str.clone());
-                                    season_pack_viable.insert(season_key.clone());
+                                    cycle.mark_submitted(&url_str);
+                                    cycle.mark_season_pack_viable(&season_key);
                                 } else if !submit_unavailable {
-                                    season_pack_viable.remove(&season_key);
+                                    cycle.clear_season_pack_viable(&season_key);
                                 }
                                 warn!(
                                     title = title.name.as_str(),
@@ -1812,10 +2111,10 @@ async fn process_single_target(
         // If a season pack was grabbed or remains viable this cycle (by this
         // item or an earlier item for the same season), skip the individual
         // episode search unless the pack submission definitively failed.
-        if season_pack_grabbed.contains(&season_key) {
+        if cycle.season_pack_grabbed(&season_key) {
             return Ok(());
         }
-        if season_pack_viable.contains(&season_key) {
+        if cycle.season_pack_viable(&season_key) {
             info!(
                 title = title.name.as_str(),
                 season = season_num,
@@ -2019,7 +2318,7 @@ async fn process_single_target(
             .as_ref()
             .is_some_and(|decision| decision.allowed)
             && matches!(
-                effective_auto_decision_code_for_route(candidate, failed_routes, &db_blocklist),
+                effective_auto_decision_code_for_route(candidate, &failed_routes, &db_blocklist),
                 ReleaseAutoDecisionCode::AmbiguousIdentity
             )
     }) {
@@ -2047,7 +2346,7 @@ async fn process_single_target(
             .map(|d| d.allowed)
             .unwrap_or(false);
         let decision_code = if is_allowed {
-            effective_auto_decision_code_for_route(candidate, failed_routes, &db_blocklist)
+            effective_auto_decision_code_for_route(candidate, &failed_routes, &db_blocklist)
         } else {
             ReleaseAutoDecisionCode::QualityBlocked
         };
@@ -2214,28 +2513,29 @@ async fn process_single_target(
         // Successful or ambiguous submissions stay globally deduplicated, but
         // a failed URL is suppressed only within its source/indexer route.
         if let Some(url) = source_hint.as_deref() {
-            if grabbed_urls.contains(url) {
-                info!(
-                    title = title.name.as_str(),
-                    release = candidate.title.as_str(),
-                    "skipping duplicate release already submitted this cycle"
-                );
-                continue;
-            }
             let route = DownloadRouteKey::for_candidate(candidate)
                 .expect("candidate route key always exists, including unknown source kind");
-            let attempted = (route, url.to_string());
-            if attempted_urls_by_route.contains(&attempted) {
-                info!(
-                    title = title.name.as_str(),
-                    release = candidate.title.as_str(),
-                    indexer_id = ?candidate.indexer_id,
-                    source_kind = ?candidate.source_kind,
-                    "skipping duplicate release already attempted on this route"
-                );
-                continue;
+            match cycle.claim_submission(route, url) {
+                SubmissionClaim::Granted => {}
+                SubmissionClaim::AlreadySubmitted => {
+                    info!(
+                        title = title.name.as_str(),
+                        release = candidate.title.as_str(),
+                        "skipping duplicate release already submitted this cycle"
+                    );
+                    continue;
+                }
+                SubmissionClaim::AlreadyAttempted | SubmissionClaim::RouteUnavailable => {
+                    info!(
+                        title = title.name.as_str(),
+                        release = candidate.title.as_str(),
+                        indexer_id = ?candidate.indexer_id,
+                        source_kind = ?candidate.source_kind,
+                        "skipping duplicate release already attempted or unavailable this cycle"
+                    );
+                    continue;
+                }
             }
-            attempted_urls_by_route.push(attempted);
         }
 
         let source_title = Some(candidate.title.clone());
@@ -2333,7 +2633,7 @@ async fn process_single_target(
             Ok(grab) => {
                 // ── Success ─────────────────────────────────────────────────
                 if let Some(url) = source_hint.as_deref() {
-                    grabbed_urls.insert(url.to_string());
+                    cycle.mark_submitted(url);
                 }
                 {
                     let facet_label = serde_json::to_string(&title.facet)
@@ -2464,7 +2764,7 @@ async fn process_single_target(
                     &results,
                     candidate_index + 1,
                     now,
-                    failed_routes,
+                    &failed_routes,
                     &db_blocklist,
                     |_| true,
                 )
@@ -2490,7 +2790,7 @@ async fn process_single_target(
             Err(err) => {
                 if err.is_download_submit_ambiguous() {
                     if let Some(url) = source_hint.as_deref() {
-                        grabbed_urls.insert(url.to_string());
+                        cycle.mark_submitted(url);
                     }
                     warn!(
                         title = title.name.as_str(),
@@ -2624,6 +2924,7 @@ async fn process_single_target(
                 {
                     if !failed_routes.contains(&route) {
                         failed_routes.push(route.clone());
+                        cycle.mark_failed_route(route.clone());
                     }
                     info!(
                         source_kind = ?route.source_kind,
@@ -3052,6 +3353,7 @@ fn discovery_sync_delay_until(next_run_at: DateTime<Utc>) -> std::time::Duration
 #[cfg(test)]
 mod task_runner_tests {
     use super::*;
+    use crate::acquisition::targets::AcquisitionTarget;
 
     #[test]
     fn non_metadata_scheduled_job_intervals_remain_unchanged() {
@@ -3306,5 +3608,120 @@ mod task_runner_tests {
             Some(scryer_domain::TrackedDownloadState::Imported),
             true,
         ));
+    }
+
+    fn convergence_episode_target(title_id: &str, season: u32, episode: u32) -> AcquisitionTarget {
+        AcquisitionTarget {
+            scope_key: format!("{title_id}-s{season}-e{episode}"),
+            title_id: title_id.to_string(),
+            library_id: "library".to_string(),
+            facet: MediaFacet::Series,
+            media_type: "episode".to_string(),
+            episode_id: Some(format!("{title_id}-s{season}-e{episode}")),
+            collection_id: Some(format!("{title_id}-s{season}")),
+            series_movie_link_id: None,
+            season_number: Some(season.to_string()),
+            episode_number: Some(episode.to_string()),
+            is_hot: false,
+            occupied: false,
+        }
+    }
+
+    #[test]
+    fn convergence_work_graph_releases_title_then_season_then_episode_work() {
+        let targets = vec![
+            convergence_episode_target("bleach", 1, 1),
+            convergence_episode_target("bleach", 1, 2),
+            convergence_episode_target("bleach", 2, 1),
+            convergence_episode_target("bleach", 2, 2),
+        ];
+        let (graph, ready) = ConvergenceWorkGraph::build(&targets, &[0, 1, 2, 3]);
+
+        assert_eq!(ready.len(), 1);
+        let title = ready.front().expect("title work").clone();
+        assert!(matches!(
+            title.kind,
+            ConvergenceWorkKind::TitleAnchor { .. }
+        ));
+
+        let after_title = graph.release_after(&title);
+        assert_eq!(
+            after_title
+                .iter()
+                .map(|work| work.target_index)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert!(matches!(
+            after_title[0].kind,
+            ConvergenceWorkKind::SeasonAnchor { season: 2, .. }
+        ));
+        assert!(matches!(after_title[1].kind, ConvergenceWorkKind::Scope));
+
+        let after_season = graph.release_after(&after_title[0]);
+        assert_eq!(
+            after_season
+                .iter()
+                .map(|work| work.target_index)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert!(matches!(after_season[0].kind, ConvergenceWorkKind::Scope));
+    }
+
+    #[test]
+    fn convergence_cycle_submission_claims_are_atomic_and_route_scoped() {
+        let cycle = ConvergenceCycleCoordinator::default();
+        let route = DownloadRouteKey {
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            indexer_id: Some("indexer-a".to_string()),
+        };
+
+        assert_eq!(
+            cycle.claim_submission(route.clone(), "https://indexer.example/a"),
+            SubmissionClaim::Granted
+        );
+        assert_eq!(
+            cycle.claim_submission(route.clone(), "https://indexer.example/a"),
+            SubmissionClaim::AlreadyAttempted
+        );
+        cycle.mark_submitted("https://indexer.example/a");
+        assert_eq!(
+            cycle.claim_submission(route.clone(), "https://indexer.example/a"),
+            SubmissionClaim::AlreadySubmitted
+        );
+        cycle.mark_failed_route(route.clone());
+        assert_eq!(
+            cycle.claim_submission(route, "https://indexer.example/b"),
+            SubmissionClaim::RouteUnavailable
+        );
+    }
+
+    #[test]
+    fn poisoned_convergence_cycle_state_remains_recoverable() {
+        let cycle = Arc::new(ConvergenceCycleCoordinator::default());
+        let poisoned = Arc::clone(&cycle);
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoned.state.lock().expect("test lock");
+            panic!("poison the test lock");
+        })
+        .join()
+        .is_err());
+
+        assert_eq!(
+            cycle.claim_submission(
+                DownloadRouteKey {
+                    source_kind: Some(DownloadSourceKind::NzbUrl),
+                    indexer_id: Some("indexer-a".to_string()),
+                },
+                "https://indexer.example/a",
+            ),
+            SubmissionClaim::Granted
+        );
+    }
+
+    #[test]
+    fn convergence_target_worker_limit_is_eight() {
+        assert_eq!(CONVERGENCE_TARGET_WORKER_LIMIT, 8);
     }
 }

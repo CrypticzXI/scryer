@@ -21,7 +21,11 @@ use scryer_domain::{
     DomainEventPayload, DomainEventStream, DownloadFailedEventData, Id, NewDomainEvent,
     ReleaseBlocklistedEventData, ReleaseGrabbedEventData,
 };
-use std::collections::{HashMap, HashSet};
+use futures_util::{stream::FuturesUnordered, StreamExt};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex},
+};
 use tracing::{debug, info, trace, warn};
 
 // This facade keeps the previous module scope while the former junk drawer is
