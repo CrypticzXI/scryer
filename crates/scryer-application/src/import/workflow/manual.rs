@@ -8,6 +8,10 @@ const MANUAL_IMPORT_RECOVERY_WINDOW_HOURS: i64 = 24;
 const MANUAL_IMPORT_SOURCE_UNAVAILABLE: &str = "download is no longer available for manual import";
 const MANUAL_MOVIE_NO_PRIMARY_FILE: &str =
     "no primary movie file to import: every mapped video is named as a sample";
+// Opaque files have no release-name semantics for the manual candidate UI.
+// Keep small samples and sidecars out of that expanded discovery surface while
+// leaving known video files (including legitimate short specials) untouched.
+const OPAQUE_MANUAL_IMPORT_PROBE_MIN_BYTES: u64 = 16 * 1024 * 1024;
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
     token: tokio_util::sync::CancellationToken,
@@ -411,10 +415,21 @@ async fn maybe_remove_completed_manual_import_download(
 // ---------------------------------------------------------------------------
 
 /// A single file in a manual import preview with auto-detected episode info.
+#[derive(Clone, Debug)]
+pub struct ManualImportVideoFacts {
+    pub container_format: Option<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub video_width: Option<i32>,
+    pub video_height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+}
+
 struct ManualImportFilePreview {
     file_path: String,
     file_name: String,
     size_bytes: i64,
+    video_facts: Option<ManualImportVideoFacts>,
     quality: Option<String>,
     parsed_season: Option<u32>,
     parsed_episodes: Vec<u32>,
@@ -441,6 +456,7 @@ pub struct ManualImportSelectionFilePreview {
     pub candidate_id: String,
     pub file_name: String,
     pub size_bytes: i64,
+    pub video_facts: Option<ManualImportVideoFacts>,
     pub quality: Option<String>,
     pub parsed_season: Option<u32>,
     pub parsed_episodes: Vec<u32>,
@@ -749,41 +765,226 @@ fn source_entry_location_under_parent(source_path: &Path) -> AppResult<PathBuf> 
     Ok(parent.join(file_name))
 }
 
-pub(crate) fn validate_manual_import_source_under_trusted_root(
+fn canonical_manual_import_source_under_trusted_root(
     source_path: &Path,
     trusted_root: &Path,
-) -> AppResult<()> {
-    let source_entry_location = source_entry_location_under_parent(source_path)?;
-    if source_entry_location != trusted_root && !source_entry_location.starts_with(trusted_root) {
-        return Err(AppError::Validation(format!(
-            "manual import file path is outside the trusted source root: {}",
-            source_path.display()
-        )));
-    }
-
+) -> AppResult<PathBuf> {
+    let trusted_root_metadata = std::fs::metadata(trusted_root).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import source root is not accessible: {} ({err})",
+            trusted_root.display()
+        ))
+    })?;
+    let canonical_trusted_root = std::fs::canonicalize(trusted_root).map_err(|err| {
+        AppError::Validation(format!(
+            "manual import source root is not accessible: {} ({err})",
+            trusted_root.display()
+        ))
+    })?;
     let canonical = std::fs::canonicalize(source_path).map_err(|err| {
         AppError::Validation(format!(
             "manual import file is not accessible: {} ({err})",
             source_path.display()
         ))
     })?;
-    if canonical != trusted_root && !canonical.starts_with(trusted_root) {
+
+    if trusted_root_metadata.is_file() {
+        if canonical == canonical_trusted_root {
+            return Ok(canonical);
+        }
+        return Err(AppError::Validation(format!(
+            "manual import file is outside the trusted source root: {}",
+            source_path.display()
+        )));
+    }
+    if !trusted_root_metadata.is_dir() {
+        return Err(AppError::Validation(format!(
+            "manual import source root is not a file or directory: {}",
+            trusted_root.display()
+        )));
+    }
+
+    let source_entry_location = source_entry_location_under_parent(source_path)?;
+    if source_entry_location != canonical_trusted_root
+        && !source_entry_location.starts_with(&canonical_trusted_root)
+    {
+        return Err(AppError::Validation(format!(
+            "manual import file path is outside the trusted source root: {}",
+            source_path.display()
+        )));
+    }
+
+    if canonical != canonical_trusted_root && !canonical.starts_with(&canonical_trusted_root) {
         return Err(AppError::Validation(format!(
             "manual import file is outside the trusted source root: {}",
             source_path.display()
         )));
     }
 
-    let metadata = std::fs::symlink_metadata(source_path).map_err(|err| {
+    let metadata = std::fs::metadata(&canonical).map_err(|err| {
         AppError::Validation(format!(
             "manual import file is not accessible: {} ({err})",
             source_path.display()
         ))
     })?;
-    if !metadata.file_type().is_symlink() {
-        return Ok(());
+    if !metadata.is_file() {
+        return Err(AppError::Validation(format!(
+            "manual import source is not a file: {}",
+            source_path.display()
+        )));
     }
-    Ok(())
+    Ok(canonical)
+}
+
+pub(crate) fn validate_manual_import_source_under_trusted_root(
+    source_path: &Path,
+    trusted_root: &Path,
+) -> AppResult<()> {
+    canonical_manual_import_source_under_trusted_root(source_path, trusted_root).map(drop)
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct QualifiedManualImportVideo {
+    pub(crate) source_entry_path: PathBuf,
+    pub(crate) canonical_path: PathBuf,
+    pub(crate) size_bytes: i64,
+    pub(crate) video_facts: Option<ManualImportVideoFacts>,
+}
+
+pub(crate) async fn qualify_manual_import_video_candidate(
+    source_path: &Path,
+    trusted_root: &Path,
+) -> AppResult<Option<QualifiedManualImportVideo>> {
+    let canonical_path =
+        canonical_manual_import_source_under_trusted_root(source_path, trusted_root)?;
+    let metadata = std::fs::metadata(&canonical_path).map_err(|error| {
+        AppError::Validation(format!(
+            "manual import file is not accessible: {} ({error})",
+            source_path.display()
+        ))
+    })?;
+    let has_known_video_extension = is_video_file(&canonical_path);
+    if !has_known_video_extension && metadata.len() < OPAQUE_MANUAL_IMPORT_PROBE_MIN_BYTES {
+        return Ok(None);
+    }
+
+    #[cfg(feature = "runtime-media-analysis")]
+    let video_facts = {
+        let probe_path = canonical_path.clone();
+        let analysis = tokio::task::spawn_blocking(move || {
+            crate::nice_thread();
+            scryer_mediainfo::analyze_file_with_options(
+                &probe_path,
+                scryer_mediainfo::AnalyzeOptions {
+                    profile: scryer_mediainfo::AnalysisProfile::ContentProbe,
+                },
+            )
+        })
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("manual import media probe failed: {error}"))
+        })?;
+
+        match analysis {
+            Ok(analysis) if scryer_mediainfo::is_valid_video(&analysis) => {
+                Some(ManualImportVideoFacts {
+                    container_format: analysis.container_format,
+                    video_codec: analysis.video_codec,
+                    audio_codec: analysis.audio_codec,
+                    video_width: analysis.video_width,
+                    video_height: analysis.video_height,
+                    duration_seconds: analysis.duration_seconds,
+                })
+            }
+            Ok(_) | Err(scryer_mediainfo::MediaInfoError::Parse(_)) => return Ok(None),
+            Err(scryer_mediainfo::MediaInfoError::UnsupportedFormat(_))
+                if has_known_video_extension =>
+            {
+                None
+            }
+            Err(scryer_mediainfo::MediaInfoError::UnsupportedFormat(_)) => return Ok(None),
+            Err(scryer_mediainfo::MediaInfoError::Io(error)) => {
+                return Err(AppError::Validation(format!(
+                    "manual import file is not accessible: {} ({error})",
+                    source_path.display()
+                )));
+            }
+        }
+    };
+
+    #[cfg(not(feature = "runtime-media-analysis"))]
+    let video_facts = {
+        if !has_known_video_extension {
+            return Ok(None);
+        }
+        None
+    };
+
+    Ok(Some(QualifiedManualImportVideo {
+        source_entry_path: source_path.to_path_buf(),
+        canonical_path,
+        size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+        video_facts,
+    }))
+}
+
+async fn discover_manual_import_video_candidates(
+    trusted_root: &Path,
+) -> AppResult<Vec<QualifiedManualImportVideo>> {
+    let root_metadata = std::fs::metadata(trusted_root).map_err(|error| {
+        AppError::Validation(format!(
+            "manual import source root is not accessible: {} ({error})",
+            trusted_root.display()
+        ))
+    })?;
+    let paths = if root_metadata.is_file() {
+        vec![trusted_root.to_path_buf()]
+    } else {
+        crate::filesystem_walk::FilesystemWalker::new()
+            .skip_unreadable_subdirectories()
+            .confine_to_root()
+            .walk(trusted_root)?
+            .into_iter()
+            .flat_map(|entry| entry.files.into_iter())
+            .collect()
+    };
+
+    let mut candidates: Vec<QualifiedManualImportVideo> = Vec::new();
+    let mut candidate_indexes: std::collections::HashMap<PathBuf, usize> =
+        std::collections::HashMap::new();
+    let mut first_error = None;
+    for path in paths {
+        match qualify_manual_import_video_candidate(&path, trusted_root).await {
+            Ok(Some(candidate)) => {
+                if let Some(index) = candidate_indexes.get(&candidate.canonical_path).copied() {
+                    let existing = &mut candidates[index];
+                    if is_video_file(&candidate.source_entry_path)
+                        && !is_video_file(&existing.source_entry_path)
+                    {
+                        *existing = candidate;
+                    }
+                } else {
+                    candidate_indexes.insert(candidate.canonical_path.clone(), candidates.len());
+                    candidates.push(candidate);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "skipping unavailable manual import candidate"
+                );
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if candidates.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+    Ok(candidates)
 }
 
 /// Scan a completed download's directory and attempt to auto-match files to episodes.
@@ -803,9 +1004,9 @@ async fn preview_manual_import(
     // as skipped). Name only, never size: the automatic movie path does not
     // size-filter either, and a legitimately small movie must stay importable
     // by hand.
-    let mut video_files = find_video_files(source_dir, false)?;
+    let mut video_files = discover_manual_import_video_candidates(source_dir).await?;
     if *facet == MediaFacet::Movie {
-        video_files.retain(|path| !is_sample_named_file(path));
+        video_files.retain(|candidate| !is_sample_named_file(&candidate.source_entry_path));
     }
     let grabbed_episode_ids = match release_evidence.scope() {
         Some(SubmissionScope::Episode { episode_id }) => {
@@ -837,20 +1038,20 @@ async fn preview_manual_import(
     .then(|| {
         video_files
             .iter()
-            .max_by_key(|path| std::fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0))
-            .cloned()
+            .max_by_key(|candidate| candidate.size_bytes)
+            .map(|candidate| candidate.source_entry_path.clone())
     })
     .flatten();
 
     // For each file, parse and attempt auto-match
     let mut previews = Vec::new();
-    for path in &video_files {
+    for candidate in &video_files {
+        let path = &candidate.source_entry_path;
         let file_name = path
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or("unknown")
             .to_string();
-        let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
 
         // File parsing is only for user-facing episode suggestions. It must
         // not become release/quality evidence for the later import.
@@ -946,9 +1147,10 @@ async fn preview_manual_import(
         }
 
         previews.push(ManualImportFilePreview {
-            file_path: path_to_stored_string(path),
+            file_path: path_to_stored_string(&candidate.canonical_path),
             file_name,
-            size_bytes: size,
+            size_bytes: candidate.size_bytes,
+            video_facts: candidate.video_facts.clone(),
             quality,
             parsed_season,
             parsed_episodes,
@@ -1200,15 +1402,7 @@ pub async fn begin_manual_import_selection(
     )
     .await?;
     for file in preview.files {
-        let source_path = stored_path_to_path_buf(&file.file_path);
-        validate_manual_import_source_under_trusted_root(&source_path, &trusted_root)?;
-        let canonical_path =
-            path_to_stored_string(&std::fs::canonicalize(&source_path).map_err(|error| {
-                AppError::Validation(format!(
-                    "manual import file is no longer accessible: {} ({error})",
-                    source_path.display()
-                ))
-            })?);
+        let canonical_path = file.file_path.clone();
         let candidate_id = prior_candidate_ids
             .get(&canonical_path)
             .cloned()
@@ -1221,6 +1415,7 @@ pub async fn begin_manual_import_selection(
             candidate_id,
             file_name: file.file_name,
             size_bytes: file.size_bytes,
+            video_facts: file.video_facts,
             quality: file.quality,
             parsed_season: file.parsed_season,
             parsed_episodes: file.parsed_episodes,
@@ -2266,30 +2461,35 @@ async fn execute_manual_import_with_release_evidence_locked(
 
     for (mapping_index, mapping) in files.iter().enumerate() {
         let source = stored_path_to_path_buf(&mapping.file_path);
-        if let Err(err) =
-            validate_manual_import_source_under_trusted_root(&source, &trusted_source_root)
+        let qualified = match qualify_manual_import_video_candidate(&source, &trusted_source_root).await
         {
-            results.push(manual_import_file_result(
-                mapping,
-                false,
-                None,
-                Some(classify_manual_import_error_message(&err.to_string())),
-                Some(err.to_string()),
-            ));
-            continue;
-        }
-
-        // Validate file exists
-        if !source.exists() || !source.is_file() {
-            results.push(manual_import_file_result(
-                mapping,
-                false,
-                None,
-                Some(ImportErrorCode::FileNotFound),
-                Some(format!("file not found: {}", mapping.file_path)),
-            ));
-            continue;
-        }
+            Ok(Some(qualified)) => qualified,
+            Ok(None) => {
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(ImportErrorCode::PolicyMismatch),
+                    Some("manual import candidate is no longer a valid video".to_string()),
+                ));
+                continue;
+            }
+            Err(err) => {
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(if !source.exists() {
+                        ImportErrorCode::FileNotFound
+                    } else {
+                        classify_manual_import_error_message(&err.to_string())
+                    }),
+                    Some(err.to_string()),
+                ));
+                continue;
+            }
+        };
+        let source = qualified.canonical_path;
 
         let target = match manual_import_mapping_target(mapping, &title.facet) {
             Ok(target) => target,

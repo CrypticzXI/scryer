@@ -2933,15 +2933,14 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
         Arc::new(ManualImportCleanupDownloadClient::default()),
     );
     let dir = tempfile::tempdir().expect("tempdir");
+    let video_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scryer-mediainfo/tests/media/hevc_hdr10plus.mkv");
     let primary = dir.path().join("Manual.Movie.2024.1080p.WEB-DL.mkv");
-    std::fs::File::create(&primary)
-        .expect("create primary")
-        .set_len(64 * 1024 * 1024)
-        .expect("size primary past the sample threshold");
+    std::fs::copy(&video_fixture, &primary).expect("copy primary video fixture");
     let named_sample = dir.path().join("Manual.Movie.2024.1080p.WEB-DL-sample.mkv");
-    std::fs::write(&named_sample, b"sample").expect("write sample");
+    std::fs::copy(&video_fixture, &named_sample).expect("copy sample video fixture");
     let tiny_extra = dir.path().join("Manual.Movie.2024.Making.Of.mkv");
-    std::fs::write(&tiny_extra, b"extra").expect("write extra");
+    std::fs::copy(&video_fixture, &tiny_extra).expect("copy extra video fixture");
     let mut completed = test_completed_download("Manual.Movie.2024.1080p.WEB-DL", dir.path());
     completed.release_name = Some("Manual.Movie.2024.1080p.WEB-DL".to_string());
     let evidence = observation_evidence(&completed);

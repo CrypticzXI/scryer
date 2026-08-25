@@ -1118,6 +1118,17 @@ pub struct DeleteDownloadInput {
 // --- Manual Import ---
 
 #[derive(SimpleObject, Clone)]
+/// Media facts obtained while qualifying a manual-import candidate.
+pub struct ManualImportVideoFactsPayload {
+    pub container_format: Option<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub video_width: Option<i32>,
+    pub video_height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+}
+
+#[derive(SimpleObject, Clone)]
 /// Candidate file details used to preview a manual import selection.
 pub struct ManualImportFilePreviewPayload {
     /// Candidate ID within the persisted manual-import selection; use it only with that selection.
@@ -1126,6 +1137,8 @@ pub struct ManualImportFilePreviewPayload {
     pub file_name: String,
     /// Candidate file size in bytes.
     pub size_bytes: Long,
+    /// Media facts when the native content probe can identify the file.
+    pub video_facts: Option<ManualImportVideoFactsPayload>,
     /// Parsed quality label, or null when unavailable.
     pub quality: Option<String>,
     /// Parsed season number, or null when unavailable.

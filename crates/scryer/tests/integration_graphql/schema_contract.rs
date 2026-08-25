@@ -1555,6 +1555,12 @@ async fn graphql_introspection_begin_manual_import_selection_uses_input_object()
               }
             }
           }
+          manualImportFilePreview: __type(name: "ManualImportFilePreviewPayload") {
+            fields { name type { kind name } }
+          }
+          manualImportVideoFacts: __type(name: "ManualImportVideoFactsPayload") {
+            fields { name }
+          }
         }
         "#,
         json!({}),
@@ -1600,6 +1606,34 @@ async fn graphql_introspection_begin_manual_import_selection_uses_input_object()
     let title_id = input_field("titleId");
     assert_eq!(title_id["type"]["kind"], "NON_NULL");
     assert_eq!(title_id["type"]["ofType"]["name"], "ID");
+
+    let preview_fields = body["data"]["manualImportFilePreview"]["fields"]
+        .as_array()
+        .expect("ManualImportFilePreviewPayload should expose fields");
+    let video_facts = preview_fields
+        .iter()
+        .find(|field| field["name"] == "videoFacts")
+        .expect("manual import preview should expose video facts");
+    assert_eq!(video_facts["type"]["kind"], "OBJECT");
+    assert_eq!(video_facts["type"]["name"], "ManualImportVideoFactsPayload");
+
+    let fact_field_names = body["data"]["manualImportVideoFacts"]["fields"]
+        .as_array()
+        .expect("ManualImportVideoFactsPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fact_field_names,
+        vec![
+            "containerFormat",
+            "videoCodec",
+            "audioCodec",
+            "videoWidth",
+            "videoHeight",
+            "durationSeconds",
+        ]
+    );
 
     let extract_archives = input_field("extractArchives");
     assert_eq!(extract_archives["type"]["kind"], "SCALAR");

@@ -226,15 +226,21 @@ impl AppUseCase {
                 .iter()
                 .any(|mapping| mapping.candidate_id == candidate.id)
         }) {
-            crate::import_workflow::validate_manual_import_source_under_trusted_root(
+            let qualified = crate::import_workflow::qualify_manual_import_video_candidate(
                 &crate::stored_paths::stored_path_to_path_buf(&candidate.canonical_path),
                 &trusted_root,
             )
+            .await
             .map_err(|_| {
                 AppError::Validation(
                     "download is no longer available for manual import".to_string(),
                 )
             })?;
+            if qualified.is_none() {
+                return Err(AppError::Validation(
+                    "download is no longer available for manual import".to_string(),
+                ));
+            }
         }
 
         if let Some(existing) = crate::import_workflow::find_active_manual_import_for_source(
