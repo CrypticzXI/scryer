@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+#[cfg(test)]
+use scryer_application::NullIndexerErrorRecorder;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerErrorOperation,
     IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchResponse,
-    IndexerSearchResult, NullIndexerErrorRecorder, SearchMode, is_valid_magnet_uri,
-    normalize_release_password,
+    IndexerSearchResult, SearchMode, is_valid_magnet_uri, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use scryer_plugin_sdk::command::{
@@ -116,7 +117,7 @@ impl IndexerPluginWorker {
                     if command.indexer_error_capture.is_some() {
                         let operation_failed =
                             result.as_ref().map_or(true, |output| {
-                                output.as_ref().map_or(true, |output| match command.export {
+                                output.as_ref().is_none_or(|output| match command.export {
                                     EXPORT_INDEXER_SEARCH => decode_plugin_result::<
                                         PluginSearchResponse,
                                     >(
@@ -215,23 +216,6 @@ impl IndexerPluginWorker {
 }
 
 impl WasmIndexerClient {
-    pub fn new(
-        wasm_bytes: Vec<u8>,
-        descriptor: PluginDescriptor,
-        indexer_name: String,
-        config: IndexerConfig,
-        indexer_proxy_config: Option<IndexerProxyConfig>,
-    ) -> Result<Self, AppError> {
-        Self::new_with_indexer_error_recorder(
-            wasm_bytes,
-            descriptor,
-            indexer_name,
-            config,
-            indexer_proxy_config,
-            Arc::new(NullIndexerErrorRecorder),
-        )
-    }
-
     pub fn new_with_indexer_error_recorder(
         wasm_bytes: Vec<u8>,
         descriptor: PluginDescriptor,
@@ -271,6 +255,7 @@ impl WasmIndexerClient {
     /// cooldown key from exactly the same helpers the legacy path uses, so the
     /// two runtimes cannot drift on what a plugin observes — a search that
     /// worked before the migration sees byte-identical config after it.
+    #[cfg(test)]
     pub fn new_command(
         wasm_bytes: Vec<u8>,
         descriptor: PluginDescriptor,
