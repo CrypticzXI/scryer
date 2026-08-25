@@ -554,7 +554,6 @@ impl AppUseCase {
         if timed_out {
             cancel.cancel();
             set.abort_all();
-            while set.join_next().await.is_some() {}
         }
 
         let now = self.runtime.environment.now();
