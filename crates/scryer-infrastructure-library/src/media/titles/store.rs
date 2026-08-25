@@ -113,6 +113,10 @@ ON CONFLICT (id) DO UPDATE SET
     metadata_hydration_attempt_count = CASE
         WHEN {} THEN titles.metadata_hydration_attempt_count
         ELSE excluded.metadata_hydration_attempt_count
+    END,
+    smg_identity_backfill_attempt_count = CASE
+        WHEN titles.external_ids <> excluded.external_ids THEN 0
+        ELSE titles.smg_identity_backfill_attempt_count
     END";
 const RECYCLE_BIN_PATH_SEGMENT: &str = "/.scryer-recycle/";
 const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
@@ -1238,7 +1242,8 @@ impl TitleRepository for TitleStore {
                 "SELECT {TITLE_COLUMNS}
                    FROM titles
                   WHERE facet = {{}}
-                    AND id > {{}}
+                    AND (id > {{}} OR smg_identity_backfill_attempt_count = 0)
+                    AND smg_identity_backfill_attempt_count < 5
                     AND EXISTS (
                         SELECT 1
                           FROM title_external_ids
@@ -1277,6 +1282,32 @@ impl TitleRepository for TitleStore {
                 })
             })
             .collect()
+    }
+
+    async fn record_movie_smg_identity_backfill_unresolved(&self, title_id: &str) -> AppResult<()> {
+        let title_id = title_id.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "record_movie_smg_identity_backfill_unresolved",
+            move |tx| {
+                let title_id = title_id.clone();
+                Box::pin(async move {
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE titles
+                            SET smg_identity_backfill_attempt_count = smg_identity_backfill_attempt_count + 1
+                          WHERE id = {} AND facet = {}",
+                        &[
+                            SqlArg::Text(title_id),
+                            SqlArg::Text(MediaFacet::Movie.as_str().to_string()),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     async fn list_title_ids_with_metadata_hydration_due(
@@ -1322,7 +1353,8 @@ impl TitleRepository for TitleStore {
                         SqlExec::Tx(tx),
                         "UPDATE titles
                             SET metadata_hydration_next_attempt_at = {},
-                                metadata_hydration_attempt_count = 0
+                                metadata_hydration_attempt_count = 0,
+                                smg_identity_backfill_attempt_count = 0
                           WHERE id = {}",
                         &[SqlArg::Timestamp(Utc::now()), SqlArg::Text(id)],
                     )
@@ -1352,7 +1384,8 @@ impl TitleRepository for TitleStore {
                     let sql = format!(
                         "UPDATE titles
                             SET metadata_hydration_next_attempt_at = {{}},
-                                metadata_hydration_attempt_count = 0
+                                metadata_hydration_attempt_count = 0,
+                                smg_identity_backfill_attempt_count = 0
                           WHERE id IN ({placeholders})"
                     );
                     let mut args = vec![SqlArg::Timestamp(Utc::now())];

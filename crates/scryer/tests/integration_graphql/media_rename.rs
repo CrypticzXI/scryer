@@ -1860,7 +1860,7 @@ async fn graphql_media_rename_preview_scopes_returned_items_without_changing_cou
 }
 
 #[tokio::test]
-async fn graphql_media_rename_preview_refreshes_stale_title_metadata_language() {
+async fn graphql_media_rename_preview_does_not_refresh_stale_title_metadata_language() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
@@ -2003,10 +2003,14 @@ async fn graphql_media_rename_preview_refreshes_stale_title_metadata_language() 
         .await
         .expect("read metadata requests");
     assert!(
+        metadata_requests.is_empty(),
+        "preview must not hydrate: {metadata_requests:?}"
+    );
+    assert!(
         first["data"]["mediaRenamePreview"]["items"][0]["proposedPath"]
             .as_str()
-            .is_some_and(|path| path.contains("現地化された映画")),
-        "expected refreshed localized path, got {first}"
+            .is_some_and(|path| path.contains("Saved English Title")),
+        "expected persisted metadata path, got {first}"
     );
     let persisted = ctx
         .titles
@@ -2014,8 +2018,8 @@ async fn graphql_media_rename_preview_refreshes_stale_title_metadata_language() 
         .await
         .expect("load title")
         .expect("persisted title");
-    assert_eq!(persisted.name, "現地化された映画");
-    assert_eq!(persisted.metadata_language.as_deref(), Some("jpn"));
+    assert_eq!(persisted.name, "Saved English Title");
+    assert_eq!(persisted.metadata_language.as_deref(), Some("eng"));
 
     let request_count = metadata_requests.len();
     let second = preview().await;
@@ -2027,7 +2031,7 @@ async fn graphql_media_rename_preview_refreshes_stale_title_metadata_language() 
             .expect("read metadata requests")
             .len(),
         request_count,
-        "current metadata must not be refreshed again"
+        "preview must not issue a metadata request"
     );
 }
 

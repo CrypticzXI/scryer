@@ -416,6 +416,26 @@ impl AppUseCase {
         facet: MediaFacet,
         plan_fingerprint: &str,
     ) -> AppResult<RenameApplyResult> {
+        // Keep preview read-only. The execution endpoint is the only place a
+        // stale language selection may refresh and persist catalog metadata.
+        self.preview_rename_for_title(actor, title_id, facet.clone())
+            .await?;
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        let effective_languages = self
+            .resolve_metadata_languages_for_titles(std::slice::from_ref(&title))
+            .await;
+        let effective_language = effective_languages
+            .get(&title.id)
+            .map(String::as_str)
+            .unwrap_or("eng");
+        self.refresh_rename_title_metadata_if_stale(&title, effective_language)
+            .await;
         let preview = self
             .preview_rename_for_title(actor, title_id, facet)
             .await?;
@@ -429,6 +449,40 @@ impl AppUseCase {
         facet: MediaFacet,
         plan_fingerprint: &str,
     ) -> AppResult<RenameApplyResult> {
+        // Authorize and build the read-only plan before issuing any execution
+        // refreshes, then only refresh titles the actor may actually rename.
+        self.preview_rename_for_facet(actor, facet.clone()).await?;
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .list(Some(facet.clone()), None)
+            .await?;
+        let manageable = futures_util::future::join_all(titles.into_iter().map(|title| async {
+            self.require_library_permission(
+                actor,
+                &title.library_id,
+                scryer_domain::LibraryPermission::ManageTitles,
+            )
+            .await
+            .is_ok()
+            .then_some(title)
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let effective_languages = self
+            .resolve_metadata_languages_for_titles(&manageable)
+            .await;
+        for title in &manageable {
+            let effective_language = effective_languages
+                .get(&title.id)
+                .map(String::as_str)
+                .unwrap_or("eng");
+            self.refresh_rename_title_metadata_if_stale(title, effective_language)
+                .await;
+        }
         let preview = self.preview_rename_for_facet(actor, facet).await?;
         self.apply_previewed_rename_plan(actor, preview, plan_fingerprint)
             .await
@@ -984,13 +1038,11 @@ impl AppUseCase {
     async fn build_rename_plan_items_for_title(
         &self,
         title: &Title,
-        effective_language: &str,
+        _effective_language: &str,
         settings: &RenamePlanSettings,
         planning: &mut RenamePlanningState,
     ) -> AppResult<Vec<RenamePlanItem>> {
-        let title = self
-            .refresh_rename_title_metadata_if_stale(title, effective_language)
-            .await;
+        let title = title.clone();
         // Only the media root varies per title; every template and policy came
         // from `settings`, which was resolved once for the whole plan.
         let media_root = self.title_root_folder_path_override(&title).await?;

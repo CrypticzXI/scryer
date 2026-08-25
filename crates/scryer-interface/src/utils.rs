@@ -168,12 +168,23 @@ pub(crate) fn map_add_input(
             value: item.value,
         })
         .collect::<Vec<_>>();
+    if parsed_facet != scryer_domain::MediaFacet::Movie {
+        external_ids.retain(|external_id| {
+            !matches!(
+                external_id.source.to_ascii_lowercase().as_str(),
+                "smg" | "tmdb" | "imdb"
+            )
+        });
+    }
     for (source, value) in [
         ("smg", smg_id.map(|id| id.to_string())),
         ("tvdb", tvdb_id),
         ("tmdb", tmdb_id.map(|id| id.to_string())),
         ("imdb", imdb_id),
     ] {
+        if parsed_facet != scryer_domain::MediaFacet::Movie && source != "tvdb" {
+            continue;
+        }
         let Some(value) = value
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())

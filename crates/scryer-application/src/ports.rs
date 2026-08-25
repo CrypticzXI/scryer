@@ -1228,6 +1228,13 @@ pub trait TitleRepository: Send + Sync {
     ) -> AppResult<Vec<Title>> {
         Ok(Vec::new())
     }
+    /// Record a failed SMG-identity resolution attempt for a movie title.
+    async fn record_movie_smg_identity_backfill_unresolved(
+        &self,
+        _title_id: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     /// Merge an SMG title id into a title's canonical external-id set.
     async fn persist_smg_id(
         &self,
@@ -6178,22 +6185,6 @@ pub trait DownloadClient: Send + Sync {
         request: &DownloadClientMarkImportedRequest,
     ) -> AppResult<()> {
         self.mark_imported_non_destructive(request).await
-    }
-
-    async fn mark_imported_for_client_id(
-        &self,
-        _client_id: &str,
-        request: &DownloadClientMarkImportedRequest,
-    ) -> AppResult<()> {
-        self.mark_imported(request).await
-    }
-
-    async fn mark_imported_for_client(
-        &self,
-        _client_type: &str,
-        request: &DownloadClientMarkImportedRequest,
-    ) -> AppResult<()> {
-        self.mark_imported(request).await
     }
 
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {

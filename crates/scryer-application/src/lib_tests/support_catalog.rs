@@ -19,6 +19,7 @@ pub(super) type PausedDownloadRequests = Arc<Mutex<Vec<PausedDownloadRequest>>>;
 #[derive(Default)]
 pub(super) struct MockTitleRepo {
     pub(super) store: Arc<Mutex<Vec<Title>>>,
+    pub(super) smg_identity_backfill_attempts: Arc<Mutex<HashMap<String, i64>>>,
     pub(super) create_or_get_existing_error: Arc<Mutex<Option<String>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
     pub(super) pending_import_items: Option<Arc<Mutex<Vec<LibraryScanUnmatchedItem>>>>,
@@ -558,6 +559,7 @@ impl TitleRepository for MockTitleRepo {
         limit: usize,
     ) -> AppResult<Vec<Title>> {
         let after_id = after_id.unwrap_or_default().trim().to_string();
+        let attempts = self.smg_identity_backfill_attempts.lock().await.clone();
         let mut titles = self
             .store
             .lock()
@@ -565,7 +567,9 @@ impl TitleRepository for MockTitleRepo {
             .iter()
             .filter(|title| {
                 title.facet == MediaFacet::Movie
-                    && title.id > after_id
+                    && (title.id > after_id
+                        || attempts.get(&title.id).copied().unwrap_or_default() == 0)
+                    && attempts.get(&title.id).copied().unwrap_or_default() < 5
                     && title.external_ids.iter().any(|external_id| {
                         matches!(
                             external_id.source.to_ascii_lowercase().as_str(),
@@ -582,6 +586,12 @@ impl TitleRepository for MockTitleRepo {
         titles.sort_by(|left, right| left.id.cmp(&right.id));
         titles.truncate(limit);
         Ok(titles)
+    }
+
+    async fn record_movie_smg_identity_backfill_unresolved(&self, title_id: &str) -> AppResult<()> {
+        let mut attempts = self.smg_identity_backfill_attempts.lock().await;
+        *attempts.entry(title_id.to_string()).or_default() += 1;
+        Ok(())
     }
 
     async fn persist_smg_id(
@@ -607,6 +617,10 @@ impl TitleRepository for MockTitleRepo {
             source: "smg".to_string(),
             value: smg_id.to_string(),
         });
+        self.smg_identity_backfill_attempts
+            .lock()
+            .await
+            .remove(title_id);
         Ok(())
     }
 

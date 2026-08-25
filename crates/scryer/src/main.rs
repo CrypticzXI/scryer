@@ -583,13 +583,9 @@ async fn run_application() {
 
     load_env_file(Some(&data_dir), false);
 
-    let log_format = match resolve_log_format(normalize_env_option(LOG_FORMAT_ENV).as_deref()) {
-        Ok(format) => format,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
+    let configured_log_format = normalize_env_option(LOG_FORMAT_ENV);
+    let invalid_log_format = invalid_log_format(configured_log_format.as_deref());
+    let log_format = resolve_log_format(configured_log_format.as_deref());
 
     scryer_outbound_http::install_default_rustls_provider();
 
@@ -678,6 +674,13 @@ async fn run_application() {
         }
     }
     install_panic_logging_hook();
+    if let Some(value) = invalid_log_format {
+        tracing::warn!(
+            value,
+            default = "json",
+            "unrecognized SCRYER_LOG_FORMAT; falling back to the default log format"
+        );
+    }
     if let Some(path) = file_logging_path.as_ref() {
         tracing::info!(path = %path.display(), "file logging enabled");
     }
@@ -2247,14 +2250,16 @@ enum LogFormat {
     Text,
 }
 
-fn resolve_log_format(value: Option<&str>) -> Result<LogFormat, String> {
+fn resolve_log_format(value: Option<&str>) -> LogFormat {
     match value.unwrap_or("json").trim().to_ascii_lowercase().as_str() {
-        "json" => Ok(LogFormat::Json),
-        "text" => Ok(LogFormat::Text),
-        value => Err(format!(
-            "{LOG_FORMAT_ENV} must be either `json` or `text`, got `{value}`"
-        )),
+        "json" => LogFormat::Json,
+        "text" => LogFormat::Text,
+        _ => LogFormat::Json,
     }
+}
+
+fn invalid_log_format(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "json" | "text"))
 }
 
 fn resolve_log_file_config(
@@ -3265,7 +3270,7 @@ mod tests {
         UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, bootstrap_plugin_installations,
         collect_runtime_plugin_load_candidates, comma_separated_env_has_entries, extract_data_dir,
         extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
-        load_runtime_plugin_state, resolve_auth_mode, resolve_development_mode,
+        invalid_log_format, load_runtime_plugin_state, resolve_auth_mode, resolve_development_mode,
         resolve_log_file_config, resolve_log_format, resolve_wasmtime_cache_dir,
         restart_spec_from_parts, should_warn_about_public_authless_release_bind,
         title_image_handler, validate_authless_runtime_config,
@@ -3561,15 +3566,15 @@ mod tests {
 
     #[test]
     fn log_format_defaults_to_json_and_allows_explicit_text() {
-        assert_eq!(resolve_log_format(None), Ok(LogFormat::Json));
-        assert_eq!(resolve_log_format(Some("JSON")), Ok(LogFormat::Json));
-        assert_eq!(resolve_log_format(Some("text")), Ok(LogFormat::Text));
+        assert_eq!(resolve_log_format(None), LogFormat::Json);
+        assert_eq!(resolve_log_format(Some("JSON")), LogFormat::Json);
+        assert_eq!(resolve_log_format(Some("text")), LogFormat::Text);
     }
 
     #[test]
-    fn log_format_rejects_unknown_values() {
-        let error = resolve_log_format(Some("logfmt")).expect_err("invalid format must fail");
-        assert!(error.contains("SCRYER_LOG_FORMAT"));
+    fn log_format_falls_back_to_json_for_unknown_values() {
+        assert_eq!(resolve_log_format(Some("logfmt")), LogFormat::Json);
+        assert_eq!(invalid_log_format(Some("logfmt")), Some("logfmt"));
     }
 
     #[derive(Default)]

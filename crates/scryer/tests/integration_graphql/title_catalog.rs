@@ -1415,6 +1415,44 @@ async fn graphql_add_movie_accepts_smg_and_tmdb_identity_without_tvdb() {
     );
 }
 
+#[tokio::test]
+async fn graphql_add_series_discards_movie_identities_from_search_input() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) {
+                title { externalIds { source value } }
+            }
+        }"#,
+        json!({
+            "input": {
+                "name": "Series Search Result",
+                "facet": "SERIES",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [
+                    { "source": "smg", "value": "202" },
+                    { "source": "tmdb", "value": "2020" },
+                    { "source": "imdb", "value": "tt0202020" },
+                    { "source": "tvdb", "value": "12345" }
+                ],
+                "smgId": 202,
+                "tvdbId": "12345",
+                "tmdbId": 2020,
+                "imdbId": "tt0202020"
+            }
+        }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["addTitle"]["title"]["externalIds"],
+        json!([{ "source": "tvdb", "value": "12345" }])
+    );
+}
+
 /// `addTitle` accepted an identity-less movie before the title-id surface
 /// existed: the title simply parks unhydrated until an identity arrives.
 /// Teaching the mutation to reject one would be a non-additive change to an

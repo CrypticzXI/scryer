@@ -237,6 +237,14 @@ fn decode_scoped_command_result<T>(
     provider_type: &str,
 ) -> AppResult<Vec<T>> {
     let response = decode_command_result(result, context)?;
+    if response.failures.is_empty() {
+        return Ok(response.items);
+    }
+    let failed_categories = response
+        .failures
+        .iter()
+        .map(|failure| failure.category.clone())
+        .collect::<Vec<_>>();
     for failure in response.failures {
         warn!(
             client_id,
@@ -247,7 +255,14 @@ fn decode_scoped_command_result<T>(
             "download-client category feedback read returned a partial snapshot"
         );
     }
-    Ok(response.items)
+    Err(AppError::Repository(format!(
+        "{context}: category feedback read was partial for {}",
+        failed_categories.join(", ")
+    )))
+}
+
+fn feedback_scope_is_empty(scope: &DownloadClientFeedbackScope) -> bool {
+    scope.categories.is_empty()
 }
 
 fn decode_download_add_result<T>(result: PluginResult<T>, context: &str) -> AppResult<T> {
@@ -1113,7 +1128,7 @@ impl DownloadClient for WasmDownloadClient {
         &self,
         scope: &DownloadClientFeedbackScope,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        if !self.supports_category_scoped_feedback() {
+        if feedback_scope_is_empty(scope) || !self.supports_category_scoped_feedback() {
             return self.list_queue().await;
         }
         let Some(result) = self
@@ -1264,7 +1279,7 @@ impl DownloadClient for WasmDownloadClient {
         &self,
         scope: &DownloadClientFeedbackScope,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        if !self.supports_category_scoped_feedback() {
+        if feedback_scope_is_empty(scope) || !self.supports_category_scoped_feedback() {
             return self.list_history().await;
         }
         let Some(result) = self
@@ -1391,7 +1406,7 @@ impl DownloadClient for WasmDownloadClient {
         &self,
         scope: &DownloadClientFeedbackScope,
     ) -> AppResult<Vec<CompletedDownload>> {
-        if !self.supports_category_scoped_feedback() {
+        if feedback_scope_is_empty(scope) || !self.supports_category_scoped_feedback() {
             return self.list_completed_downloads().await;
         }
         let Some(result) = self
@@ -1576,7 +1591,7 @@ impl DownloadClient for WasmDownloadClient {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        if !self.supports_category_scoped_feedback() {
+        if feedback_scope_is_empty(scope) || !self.supports_category_scoped_feedback() {
             return self.list_recent_completed_downloads(limit).await;
         }
         let Some(result) = self
@@ -1957,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_scoped_response_keeps_successful_items() {
+    fn partial_scoped_response_is_not_reported_as_complete() {
         let item = queue_filter_item(DownloadItemState::Downloading);
         let items = decode_scoped_command_result(
             PluginResult::Ok(PluginDownloadScopedListResponse {
@@ -1976,10 +1991,19 @@ mod tests {
             "qbit",
             "qbittorrent",
         )
-        .expect("one successful category is a usable partial snapshot");
+        .expect_err("a failed category must not be reported as a complete snapshot");
 
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].client_item_id, item.client_item_id);
+        assert!(items.to_string().contains("TV / Anime"));
+    }
+
+    #[test]
+    fn empty_feedback_scope_uses_the_unfiltered_poll_path() {
+        assert!(feedback_scope_is_empty(&DownloadClientFeedbackScope {
+            categories: Vec::new(),
+        }));
+        assert!(!feedback_scope_is_empty(&DownloadClientFeedbackScope {
+            categories: vec!["series".to_string()],
+        }));
     }
 
     #[test]

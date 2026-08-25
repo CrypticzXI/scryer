@@ -12,6 +12,8 @@ const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
 const MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH: usize = 200;
+const MOVIE_SMG_IDENTITY_BACKFILL_MAX_ATTEMPTS: i64 = 5;
+const MOVIE_SMG_IDENTITY_BACKFILL_TICK_INTERVAL: Duration = Duration::from_secs(5);
 const MOVIE_SMG_IDENTITY_BACKFILL_RESUME_AFTER_KEY: &str =
     "catalog.movie_smg_identity_backfill_resume_after";
 
@@ -97,27 +99,27 @@ pub(crate) async fn run_movie_smg_identity_backfill_tick(
     };
 
     if titles.is_empty() {
-        if after_id.is_some()
-            && let Err(error) = tokio::select! {
-                _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
-                result = app.store_movie_smg_identity_backfill_resume_position(None) => result,
-            }
-        {
-            return MovieSmgIdentityBackfillTick::Failed(error);
-        }
         return MovieSmgIdentityBackfillTick::Completed(MovieSmgIdentityBackfillSummary::default());
     }
 
-    let next_cursor = (titles.len() == limit)
-        .then(|| titles.last().map(|title| title.id.clone()))
-        .flatten();
+    let next_cursor = titles
+        .last()
+        .map(|title| title.id.clone())
+        .and_then(|candidate| {
+            after_id
+                .as_deref()
+                .filter(|after_id| candidate.as_str() <= *after_id)
+                .map(str::to_string)
+                .or(Some(candidate))
+        });
     let mut summary = MovieSmgIdentityBackfillSummary::default();
+    let mut unresolved_title_ids = Vec::new();
     let candidates = titles
         .into_iter()
         .filter_map(|title| match movie_title_ref(&title) {
             Some(reference) => Some((title, reference)),
             None => {
-                summary.unresolved += 1;
+                unresolved_title_ids.push(title.id);
                 None
             }
         })
@@ -145,11 +147,11 @@ pub(crate) async fn run_movie_smg_identity_backfill_tick(
 
         for (index, (title, _)) in candidates.iter().enumerate() {
             let Some(resolution) = resolutions.get(&index) else {
-                summary.unresolved += 1;
+                unresolved_title_ids.push(title.id.clone());
                 continue;
             };
             let Some(smg_id) = resolution.resolved.then_some(resolution.smg_id).flatten() else {
-                summary.unresolved += 1;
+                unresolved_title_ids.push(title.id.clone());
                 continue;
             };
             let persisted = tokio::select! {
@@ -171,6 +173,23 @@ pub(crate) async fn run_movie_smg_identity_backfill_tick(
         }
     }
 
+    for title_id in unresolved_title_ids {
+        summary.unresolved += 1;
+        let recorded = tokio::select! {
+            _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
+            result = app.services.catalog.titles.record_movie_smg_identity_backfill_unresolved(&title_id) => result,
+        };
+        if let Err(error) = recorded {
+            summary.errors += 1;
+            warn!(
+                title_id = %title_id,
+                max_attempts = MOVIE_SMG_IDENTITY_BACKFILL_MAX_ATTEMPTS,
+                error = %error,
+                "movie SMG identity backfill: failed to record unresolved identity attempt"
+            );
+        }
+    }
+
     if let Err(error) = tokio::select! {
         _ = token.cancelled() => return MovieSmgIdentityBackfillTick::Cancelled,
         result = app.store_movie_smg_identity_backfill_resume_position(next_cursor.as_deref()) => result,
@@ -185,10 +204,17 @@ async fn run_movie_smg_identity_backfill_phase(
     app: &AppUseCase,
     token: &tokio_util::sync::CancellationToken,
     enabled: &mut bool,
+    last_tick: &mut Option<std::time::Instant>,
 ) -> bool {
     if !*enabled {
         return true;
     }
+    if last_tick
+        .is_some_and(|last_tick| last_tick.elapsed() < MOVIE_SMG_IDENTITY_BACKFILL_TICK_INTERVAL)
+    {
+        return true;
+    }
+    *last_tick = Some(std::time::Instant::now());
 
     match run_movie_smg_identity_backfill_tick(app, token, MOVIE_SMG_IDENTITY_BACKFILL_MAX_BATCH)
         .await
@@ -238,6 +264,7 @@ pub async fn start_background_title_hydration_loop(
 ) {
     let worker = PollingWorker::new("title_hydration", token.clone());
     let mut movie_smg_identity_backfill_enabled = true;
+    let mut movie_smg_identity_backfill_last_tick = None;
     info!(
         max_batch = TITLE_HYDRATION_MAX_BATCH,
         idle_poll_secs = TITLE_HYDRATION_IDLE_POLL_INTERVAL.as_secs(),
@@ -279,6 +306,7 @@ pub async fn start_background_title_hydration_loop(
                     &app,
                     &token,
                     &mut movie_smg_identity_backfill_enabled,
+                    &mut movie_smg_identity_backfill_last_tick,
                 )
                 .await
             {
@@ -390,6 +418,7 @@ pub async fn start_background_title_hydration_loop(
                     &app,
                     &token,
                     &mut movie_smg_identity_backfill_enabled,
+                    &mut movie_smg_identity_backfill_last_tick,
                 )
                 .await
             {
@@ -498,6 +527,7 @@ pub async fn start_background_title_hydration_loop(
                 &app,
                 &token,
                 &mut movie_smg_identity_backfill_enabled,
+                &mut movie_smg_identity_backfill_last_tick,
             )
             .await
         {
