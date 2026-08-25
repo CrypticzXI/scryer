@@ -4,8 +4,6 @@ import {
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
-  CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   CircleOff,
   CircleAlert,
@@ -49,7 +47,6 @@ import type {
   ActivitySortKey,
   DownloadActivityStatus,
   DownloadClientFilterOption,
-  DownloadHistoryStatus,
   DownloadImportStatus,
   DownloadQueueItem,
   SortConfig,
@@ -95,26 +92,13 @@ type ActivityViewState = {
   toggleSort: (tab: ActivityTab, key: ActivitySortKey) => void;
   activityScryerSubmittedOnly: boolean;
   toggleActivityScryerSubmittedOnly: () => void;
-  historyScryerSubmittedOnly: boolean;
-  toggleHistoryScryerSubmittedOnly: () => void;
   selectedImportStatuses: DownloadImportStatus[];
   toggleImportStatus: (status: DownloadImportStatus) => void;
   selectedActivityStatuses: DownloadActivityStatus[];
   toggleActivityStatus: (status: DownloadActivityStatus) => void;
-  selectedHistoryStatuses: DownloadHistoryStatus[];
-  toggleHistoryStatus: (status: DownloadHistoryStatus) => void;
   activityAvailableClients: DownloadClientFilterOption[];
   selectedActivityClientIds: string[];
   toggleActivityClientId: (clientId: string) => void;
-  historyAvailableClients: DownloadClientFilterOption[];
-  selectedHistoryClientIds: string[];
-  toggleHistoryClientId: (clientId: string) => void;
-  historyPage: number;
-  historyTotalPages: number;
-  goToPreviousHistoryPage: () => Promise<void>;
-  goToNextHistoryPage: () => Promise<void>;
-  historyHasPreviousPage: boolean;
-  historyHasNextPage: boolean;
   visibleHasMore: boolean;
   requestMoreItems: () => Promise<void>;
 };
@@ -183,21 +167,6 @@ const activityFilterOptions: ActivityFilterChipOption<DownloadActivityStatus>[] 
     labelKey: "activity.activityFilter.warning",
     icon: CircleAlert,
     iconClassName: "text-[var(--scry-warning-text)]",
-  },
-];
-
-const historyFilterOptions: ActivityFilterChipOption<DownloadHistoryStatus>[] = [
-  {
-    value: "SUCCESS",
-    labelKey: "activity.historyFilter.success",
-    icon: CheckCircle2,
-    iconClassName: "text-[var(--scry-success-text-soft)]",
-  },
-  {
-    value: "FAILED",
-    labelKey: "activity.historyFilter.failed",
-    icon: XCircle,
-    iconClassName: "text-[var(--scry-danger-text-soft)]",
   },
 ];
 
@@ -349,26 +318,13 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     toggleSort,
     activityScryerSubmittedOnly,
     toggleActivityScryerSubmittedOnly,
-    historyScryerSubmittedOnly,
-    toggleHistoryScryerSubmittedOnly,
     selectedImportStatuses,
     toggleImportStatus,
     selectedActivityStatuses,
     toggleActivityStatus,
-    selectedHistoryStatuses,
-    toggleHistoryStatus,
     activityAvailableClients,
     selectedActivityClientIds,
     toggleActivityClientId,
-    historyAvailableClients,
-    selectedHistoryClientIds,
-    toggleHistoryClientId,
-    historyPage,
-    historyTotalPages,
-    goToPreviousHistoryPage,
-    goToNextHistoryPage,
-    historyHasPreviousPage,
-    historyHasNextPage,
     visibleHasMore,
     requestMoreItems,
   } = state;
@@ -493,7 +449,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     (event: UIEvent<HTMLDivElement>) => {
       const element = event.currentTarget;
       if (
-        activeTab !== "history" &&
         !queueLoadingMore &&
         visibleHasMore &&
         !queueLoading &&
@@ -514,9 +469,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   const emptyStateLabel =
     activeTab === "import"
       ? t("activity.importEmpty")
-      : activeTab === "history"
-        ? t("activity.historyEmpty")
-        : t("activity.activityEmpty");
+      : t("activity.activityEmpty");
   const activeSortConfig = sortConfigByTab[activeTab];
 
   const handleSort = useCallback(
@@ -567,7 +520,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   );
 
   const sortedQueueItems = useMemo(() => {
-    if (activeTab === "history" || activeTab === "activity") {
+    if (activeTab === "activity") {
       return queueItems;
     }
 
@@ -779,34 +732,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
       );
     }
 
-    if (activeTab === "history") {
-      return (
-        <div className="flex flex-col gap-4">
-          <ActivityFilterSection
-            title={t("queue.status")}
-            options={historyFilterOptions}
-            selectedValues={selectedHistoryStatuses}
-            onToggle={(value) => toggleHistoryStatus(value as DownloadHistoryStatus)}
-            t={t}
-          />
-          <ActivityBooleanFilterSection
-            title={t("queue.source")}
-            label={t("activity.scryerSubmitted")}
-            checked={historyScryerSubmittedOnly}
-            onToggle={toggleHistoryScryerSubmittedOnly}
-          />
-          {historyAvailableClients.length > 0 ? (
-            <ActivityClientFilterSection
-              title={t("queue.client")}
-              options={historyAvailableClients}
-              selectedValues={selectedHistoryClientIds}
-              onToggle={toggleHistoryClientId}
-            />
-          ) : null}
-        </div>
-      );
-    }
-
     return (
       <div className="flex flex-col gap-4">
         <ActivityFilterSection
@@ -838,19 +763,12 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     activityScryerSubmittedOnly,
     selectedActivityClientIds,
     selectedActivityStatuses,
-    historyScryerSubmittedOnly,
-    selectedHistoryClientIds,
-    selectedHistoryStatuses,
     selectedImportStatuses,
     t,
     toggleActivityClientId,
     toggleActivityScryerSubmittedOnly,
     toggleActivityStatus,
-    toggleHistoryClientId,
-    toggleHistoryScryerSubmittedOnly,
-    toggleHistoryStatus,
     toggleImportStatus,
-    historyAvailableClients,
   ]);
 
   const buildQueueRowProps = useCallback(
@@ -1067,9 +985,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   const activeActivityLabel =
     activeTab === "import"
       ? t("activity.import")
-      : activeTab === "history"
-        ? t("activity.history")
-        : t("activity.activity");
+      : t("activity.activity");
 
   return (
     <>
@@ -1332,37 +1248,6 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               </Table>
             </div>
           )}
-          {activeTab === "history" && historyTotalPages > 1 ? (
-            <div className="flex items-center justify-end gap-2 border-t border-border/60 pt-3">
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                disabled={!historyHasPreviousPage || queueLoading}
-                onClick={() => {
-                  void goToPreviousHistoryPage();
-                }}
-              >
-                <ChevronLeft className="h-4 w-4" />
-                {t("wanted.prev")}
-              </Button>
-              <span className="min-w-16 text-center text-xs text-muted-foreground">
-                {historyPage} / {historyTotalPages}
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                disabled={!historyHasNextPage || queueLoading}
-                onClick={() => {
-                  void goToNextHistoryPage();
-                }}
-              >
-                {t("wanted.next")}
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
-          ) : null}
           </CardContent>
         </Card>
         </div>

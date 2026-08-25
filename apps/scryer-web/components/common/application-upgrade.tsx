@@ -97,6 +97,7 @@ export function ApplicationUpgradeAction({
   const canStart =
     status.eligible &&
     status.updateAvailable &&
+    !status.activeRun &&
     Boolean(status.updateTag?.trim()) &&
     Boolean(status.updateVersion?.trim());
 

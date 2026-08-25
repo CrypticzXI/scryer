@@ -4,6 +4,7 @@ import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import { ApplicationUpgradeSection } from "@/components/common/application-upgrade";
+import { LazyCodeEditor } from "@/components/common/lazy-code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -94,6 +95,7 @@ const SYSTEM_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const SYSTEM_INSET_CLASS =
   "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
 const SYSTEM_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+const ignoreReadOnlyCodeChange = () => {};
 
 function detectLogLevel(line: string): string {
   const match = String(line ?? "").match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i);
@@ -671,9 +673,14 @@ function LogViewer() {
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3" data-code-font>
             {selectedJson ? (
-              <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-zinc-700 dark:text-zinc-200" style={{ fontFamily: CODE_FONT }}>
-                {selectedJson}
-              </pre>
+              <LazyCodeEditor
+                id="service-log-event-json"
+                value={selectedJson}
+                onChange={ignoreReadOnlyCodeChange}
+                readOnly
+                language="javascript"
+                height={isMobile ? "45vh" : "min(55vh, 640px)"}
+              />
             ) : selectedLine ? (
               <p className="text-xs text-[var(--scry-muted3)]">This legacy text log line has no JSON event payload.</p>
             ) : (

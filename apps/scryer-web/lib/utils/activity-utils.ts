@@ -10,7 +10,7 @@ import { isImportedSeedingRow } from "@/lib/utils/seeding-progress";
 
 export type TranslateFn = ReturnType<typeof useTranslate>;
 
-export type ActivityTab = ActivitySection;
+export type ActivityTab = Exclude<ActivitySection, "history">;
 
 export const queueStateClasses: Record<string, string> = {
   queued: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
@@ -81,18 +81,6 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
           return 2;
         case "import_failed":
           return 3;
-        default:
-          return 99;
-      }
-    case "history":
-      switch (displayState.toLowerCase()) {
-        case "completed":
-          return 0;
-        case "ignored":
-          return 1;
-        case "failed":
-        case "remove_failed":
-          return 2;
         default:
           return 99;
       }

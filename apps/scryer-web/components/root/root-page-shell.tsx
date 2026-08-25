@@ -154,6 +154,12 @@ const ActivityContainer = lazy(() =>
   })),
 );
 
+const TitleHistoryContainer = lazy(() =>
+  import("@/components/containers/title-history-container").then((m) => ({
+    default: m.TitleHistoryContainer,
+  })),
+);
+
 const SystemContainer = lazy(() =>
   import("@/components/containers/system-container").then((m) => ({
     default: m.SystemContainer,
@@ -506,8 +512,11 @@ function MainContent({
     if (!canAccessActivity) {
       return <ViewLoadingFallback />;
     }
+    if (activitySection === "history") {
+      return <TitleHistoryContainer key="activity-history" showRetryActions={false} />;
+    }
     return (
-      <ActivityContainer key="activity" activitySection={activitySection} />
+      <ActivityContainer key={`activity-${activitySection}`} activitySection={activitySection} />
     );
   }
   if (view === "calendar") {
@@ -534,12 +543,10 @@ function MainContent({
     return <RequestsContainer key="requests" facet={null} />;
   }
   if (view === "wanted") {
-    const resolvedWantedSection =
-      wantedSection === "history" && !canManageTitle ? "wanted" : wantedSection;
     return (
       <WantedContainer
-        key={`wanted-${resolvedWantedSection}`}
-        wantedSection={resolvedWantedSection}
+        key={`wanted-${wantedSection}`}
+        wantedSection={wantedSection}
         onOpenOverview={handleOpenOverview}
       />
     );
@@ -1655,32 +1662,6 @@ function AuthenticatedHomePage({
     navigateToAccessibleDefault,
     routeIsCanonical,
     view,
-  ]);
-
-  useEffect(() => {
-    if (
-      !routeIsCanonical ||
-      view !== "wanted" ||
-      wantedSection !== "history" ||
-      canManageTitle
-    ) {
-      return;
-    }
-
-    if (!canViewCatalog) {
-      navigateToAccessibleDefault();
-      return;
-    }
-
-    navigateTo("wanted", undefined, undefined, undefined, "wanted");
-  }, [
-    canManageTitle,
-    canViewCatalog,
-    navigateTo,
-    navigateToAccessibleDefault,
-    routeIsCanonical,
-    view,
-    wantedSection,
   ]);
 
   useEffect(() => {

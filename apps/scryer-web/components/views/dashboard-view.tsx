@@ -779,7 +779,7 @@ function RecentlyImportedPanel({ items }: { items: DashboardImportedItem[] }) {
     <DashboardPanel
       icon={Download}
       title={t("dashboard.recentlyImported")}
-      linkTo={buildViewPath("wanted", undefined, undefined, undefined, "history")}
+      linkTo={buildViewPath("activity", undefined, undefined, undefined, undefined, "history")}
       linkLabel={t("dashboard.viewAll")}
       bodyClassName={PREVIEW_PANE_CLASS}
     >

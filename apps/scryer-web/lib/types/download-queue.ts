@@ -88,10 +88,8 @@ export type DownloadImportFilter =
   | "BLOCKED"
   | "FAILED";
 
-export type DownloadHistoryFilter = "ALL" | "SUCCESS" | "FAILED";
 export type DownloadActivityStatus = Exclude<DownloadActivityFilter, "ALL">;
 export type DownloadImportStatus = Exclude<DownloadImportFilter, "ALL">;
-export type DownloadHistoryStatus = Exclude<DownloadHistoryFilter, "ALL">;
 export type ActivitySortKey = "TITLE" | "CLIENT" | "STATUS" | "PROGRESS" | "SIZE";
 export type SortDirection = "ASC" | "DESC";
 export type SortConfig = {

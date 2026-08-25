@@ -422,7 +422,6 @@ type WantedViewProps = {
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
   pendingState: PendingViewState;
-  historyContent?: React.ReactNode;
   onOpenOverview?: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -435,38 +434,52 @@ export function WantedView({
   wantedState,
   cutoffState,
   pendingState,
-  historyContent,
   onOpenOverview,
 }: WantedViewProps) {
   const t = useTranslate();
-  const wantedNav = [
+  const wantedNav: Array<{
+    section: WantedSection | "history";
+    label: string;
+    count: number | null;
+    icon: typeof ListChecks;
+    to: string;
+    active: boolean;
+  }> = [
     {
-      section: "wanted" as const,
+      section: "wanted",
       label: t("wanted.title"),
       count: wantedState.total,
       icon: ListChecks,
+      to: buildViewPath("wanted", undefined, undefined, undefined, "wanted"),
+      active: section === "wanted",
     },
     {
-      section: "cutoff" as const,
+      section: "cutoff",
       label: t("cutoff.title"),
       count: cutoffState.total,
       icon: Gauge,
+      to: buildViewPath("wanted", undefined, undefined, undefined, "cutoff"),
+      active: section === "cutoff",
     },
     {
-      section: "pending" as const,
+      section: "pending",
       label: t("pending.title"),
       count: pendingState.total,
       icon: Clock,
+      to: buildViewPath("wanted", undefined, undefined, undefined, "pending"),
+      active: section === "pending",
     },
     {
-      section: "history" as const,
+      section: "history",
       label: t("history.title"),
       count: null,
       icon: History,
+      to: buildViewPath("activity", undefined, undefined, undefined, undefined, "history"),
+      active: false,
     },
   ];
   const activeWantedNavItem =
-    wantedNav.find((item) => item.section === section) ?? wantedNav[0]!;
+    wantedNav.find((item) => item.active) ?? wantedNav[0]!;
   const ActiveWantedIcon = activeWantedNavItem.icon;
 
   return (
@@ -478,11 +491,11 @@ export function WantedView({
         >
           {wantedNav.map((item) => {
             const Icon = item.icon;
-            const active = section === item.section;
+            const active = item.active;
             return (
               <Link
                 key={item.section}
-                to={buildViewPath("wanted", undefined, undefined, undefined, item.section)}
+                to={item.to}
                 className={cn(
                   "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
                   active &&
@@ -533,11 +546,7 @@ export function WantedView({
             </div>
           </div>
           <div className="min-h-0 flex-1">
-            {section === "history" ? (
-              historyContent ?? (
-                <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-              )
-            ) : section === "cutoff" ? (
+            {section === "cutoff" ? (
               <CutoffUnmetView state={cutoffState} />
             ) : section === "pending" ? (
               <PendingReleasesCard state={pendingState} />

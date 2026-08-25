@@ -15,10 +15,6 @@ type DownloadQueueModule = {
     item: Pick<DownloadQueueItem, "displayState">,
     statuses: string[],
   ) => boolean;
-  matchesHistoryStatuses: (
-    item: Pick<DownloadQueueItem, "displayState">,
-    statuses: string[],
-  ) => boolean;
   sortDownloadQueueItems: (items: DownloadQueueItem[]) => DownloadQueueItem[];
 };
 
@@ -138,7 +134,7 @@ test("a warned row is still replaced once the client recovers", () => {
   assert.equal(recovered[0].displayState, "DOWNLOADING");
 });
 
-test("a warned row filters with the activity chips, never with failed history", () => {
+test("a warned row filters with the activity chips", () => {
   const item = { displayState: "WARNING" as const };
 
   assert.equal(downloadQueue.matchesActivityStatuses(item, ["WARNING"]), true);
@@ -146,7 +142,6 @@ test("a warned row filters with the activity chips, never with failed history", 
     downloadQueue.matchesActivityStatuses(item, ["DOWNLOADING", "QUEUED"]),
     false,
   );
-  assert.equal(downloadQueue.matchesHistoryStatuses(item, ["FAILED"]), false);
 });
 
 test("warned rows sort with the other attention states", () => {

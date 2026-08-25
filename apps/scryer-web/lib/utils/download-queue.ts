@@ -1,7 +1,6 @@
 import type {
   DownloadActivityStatus,
   DownloadClientFilterOption,
-  DownloadHistoryStatus,
   DownloadImportStatus,
   DownloadQueueItem,
 } from "@/lib/types";
@@ -542,25 +541,6 @@ export function matchesActivityStatuses(
     // activity it is part of rather than with the failed history.
     case "WARNING":
       return statuses.includes("WARNING");
-    default:
-      return false;
-  }
-}
-
-export function matchesHistoryStatuses(
-  item: Pick<DownloadQueueItem, "displayState">,
-  statuses: DownloadHistoryStatus[],
-): boolean {
-  if (statuses.length === 0) {
-    return false;
-  }
-
-  switch (item.displayState) {
-    case "COMPLETED":
-      return statuses.includes("SUCCESS");
-    case "FAILED":
-    case "REMOVE_FAILED":
-      return statuses.includes("FAILED");
     default:
       return false;
   }

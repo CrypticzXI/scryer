@@ -20,7 +20,6 @@ import {
   deleteDownloadMutation,
 } from "@/lib/graphql/mutations";
 import { downloadClientsQuery } from "@/lib/graphql/queries";
-import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadImport } from "@/lib/hooks/use-download-import";
 import { useDownloadQueuePage } from "@/lib/hooks/use-download-queue-page";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
@@ -30,7 +29,6 @@ import type {
   DownloadClientRecord,
   DownloadActivityStatus,
   DownloadClientFilterOption,
-  DownloadHistoryStatus,
   DownloadImportStatus,
   DownloadQueueItem,
   SortConfig,
@@ -44,8 +42,7 @@ import {
   directMovieManualImportMappings,
 } from "@/lib/utils/manual-import-actions";
 
-const HISTORY_STATES = new Set(["completed", "failed", "import_pending", "importpending"]);
-type ActivityTab = ActivitySection;
+type ActivityTab = Exclude<ActivitySection, "history">;
 type SortConfigByTab = Record<ActivityTab, SortConfig>;
 
 const IMPORT_STATUS_OPTIONS: DownloadImportStatus[] = [
@@ -61,11 +58,9 @@ const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
   "POST_PROCESSING",
   "WARNING",
 ];
-const HISTORY_STATUS_OPTIONS: DownloadHistoryStatus[] = ["SUCCESS", "FAILED"];
 const DEFAULT_SORT_CONFIG_BY_TAB: SortConfigByTab = {
   import: { key: "STATUS", direction: "ASC" },
   activity: { key: "STATUS", direction: "ASC" },
-  history: { key: "STATUS", direction: "ASC" },
 };
 
 function arraysEqual<T>(left: T[], right: T[]): boolean {
@@ -90,10 +85,6 @@ function uniqueQueueItems(items: DownloadQueueItem[]): DownloadQueueItem[] {
     uniqueItems.push(item);
   }
   return uniqueItems;
-}
-
-function isHistoryQueueItem(item: DownloadQueueItem): boolean {
-  return HISTORY_STATES.has(item.state.trim().toLowerCase());
 }
 
 function mergeDownloadClientFilterOptions(
@@ -122,7 +113,7 @@ function mergeDownloadClientFilterOptions(
 export const ActivityContainer = memo(function ActivityContainer({
   activitySection,
 }: {
-  activitySection: ActivitySection;
+  activitySection: ActivityTab;
 }) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -141,22 +132,14 @@ export const ActivityContainer = memo(function ActivityContainer({
   const activeTab = activitySection;
   const importTabActive = activeTab === "import";
   const activityTabActive = activeTab === "activity";
-  const historyTabActive = activeTab === "history";
   const [selectedImportStatuses, setSelectedImportStatuses] = useState<DownloadImportStatus[]>([
     ...IMPORT_STATUS_OPTIONS,
   ]);
   const [selectedActivityStatuses, setSelectedActivityStatuses] = useState<
     DownloadActivityStatus[]
   >([...ACTIVITY_STATUS_OPTIONS]);
-  const [selectedHistoryStatuses, setSelectedHistoryStatuses] = useState<DownloadHistoryStatus[]>(
-    [...HISTORY_STATUS_OPTIONS],
-  );
   const [activityScryerSubmittedOnly, setActivityScryerSubmittedOnly] = useState(true);
-  const [historyScryerSubmittedOnly, setHistoryScryerSubmittedOnly] = useState(true);
   const [selectedActivityClientIds, setSelectedActivityClientIds] = useState<string[] | null>(
-    null,
-  );
-  const [selectedHistoryClientIds, setSelectedHistoryClientIds] = useState<string[] | null>(
     null,
   );
   const [sortConfigByTab, setSortConfigByTab] =
@@ -164,7 +147,6 @@ export const ActivityContainer = memo(function ActivityContainer({
   const [configuredClientOptions, setConfiguredClientOptions] = useState<
     DownloadClientFilterOption[]
   >([]);
-  const [historyPage, setHistoryPage] = useState(1);
   const [manualImportItem, setManualImportItem] = useState<DownloadQueueItem | null>(null);
   const [assignTitleItem, setAssignTitleItem] = useState<DownloadQueueItem | null>(null);
   const [optimisticallyRemovedKeys, setOptimisticallyRemovedKeys] = useState<
@@ -206,23 +188,6 @@ export const ActivityContainer = memo(function ActivityContainer({
     enabled: importTabActive,
     filter: "ALL",
   });
-  const {
-    historyItems,
-    historyLoading,
-    historyError,
-    historyTotalPages,
-    historyAvailableClients,
-    lastRefreshedAt: historyLastRefreshedAt,
-    refreshHistory,
-  } = useDownloadHistory({
-    enabled: historyTabActive,
-    filters: selectedHistoryStatuses,
-    clientIds: selectedHistoryClientIds,
-    scryerSubmittedOnly: historyScryerSubmittedOnly,
-    page: historyPage,
-    sort: sortConfigByTab.history,
-  });
-
   const filteredImportItems = useMemo(() => {
     return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
   }, [importItems, selectedImportStatuses]);
@@ -232,16 +197,11 @@ export const ActivityContainer = memo(function ActivityContainer({
       queueAvailableClients,
     );
   }, [configuredClientOptions, queueAvailableClients]);
-  const mergedHistoryAvailableClients = useMemo<DownloadClientFilterOption[]>(() => {
-    return mergeDownloadClientFilterOptions(configuredClientOptions, historyAvailableClients);
-  }, [configuredClientOptions, historyAvailableClients]);
   const visibleItems = useMemo(() => {
     const sourceItems =
       activeTab === "import"
         ? filteredImportItems
-        : activeTab === "history"
-          ? historyItems
-          : activityQueueItems;
+        : activityQueueItems;
     return sourceItems
       .filter((item) => !optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)])
       .map((item) => {
@@ -252,22 +212,17 @@ export const ActivityContainer = memo(function ActivityContainer({
     activeTab,
     activityQueueItems,
     filteredImportItems,
-    historyItems,
     optimisticQueueStates,
     optimisticallyRemovedKeys,
   ]);
   const initialImportLoading =
     importLoading && filteredImportItems.length === 0 && importLastRefreshedAt === null;
-  const initialHistoryLoading =
-    historyLoading && historyItems.length === 0 && historyLastRefreshedAt === null;
   const initialActivityLoading =
     queueLoading && activityQueueItems.length === 0 && queueLastRefreshedAt === null;
   const visibleLoading =
     activeTab === "import"
       ? initialImportLoading
-      : activeTab === "history"
-        ? initialHistoryLoading
-        : initialActivityLoading;
+      : initialActivityLoading;
   const visibleLoadingMore =
     activeTab === "import" ? importLoadingMore : activeTab === "activity" ? queueLoadingMore : false;
   const visibleHasMore =
@@ -275,11 +230,7 @@ export const ActivityContainer = memo(function ActivityContainer({
   const visibleError =
     activeTab === "import"
       ? importError
-      : activeTab === "history"
-      ? historyError
       : queueError;
-  const historyHasPreviousPage = historyPage > 1;
-  const historyHasNextPage = historyPage < historyTotalPages;
 
   const refreshConfiguredClients = useCallback(async () => {
     try {
@@ -303,11 +254,11 @@ export const ActivityContainer = memo(function ActivityContainer({
   }, [client, setGlobalStatus, t]);
 
   useEffect(() => {
-    if (!activityTabActive && !historyTabActive) {
+    if (!activityTabActive) {
       return;
     }
     void refreshConfiguredClients();
-  }, [activityTabActive, historyTabActive, refreshConfiguredClients]);
+  }, [activityTabActive, refreshConfiguredClients]);
 
   useEffect(() => {
     const availableClientIds = activityAvailableClients.map((client) => client.clientId);
@@ -326,53 +277,17 @@ export const ActivityContainer = memo(function ActivityContainer({
     });
   }, [activityAvailableClients]);
 
-  useEffect(() => {
-    const availableClientIds = mergedHistoryAvailableClients.map((client) => client.clientId);
-    setSelectedHistoryClientIds((current) => {
-      if (availableClientIds.length === 0) {
-        if (current === null || current.length === 0) {
-          return current;
-        }
-        return [];
-      }
-      if (current === null) {
-        return availableClientIds;
-      }
-      const next = current.filter((clientId) => availableClientIds.includes(clientId));
-      return arraysEqual(current, next) ? current : next;
-    });
-  }, [mergedHistoryAvailableClients]);
-
-  useEffect(() => {
-    setHistoryPage(1);
-  }, [
-    selectedHistoryStatuses,
-    selectedHistoryClientIds,
-    historyScryerSubmittedOnly,
-    sortConfigByTab.history.direction,
-    sortConfigByTab.history.key,
-  ]);
-
-  useEffect(() => {
-    if (historyTotalPages > 0 && historyPage > historyTotalPages) {
-      setHistoryPage(historyTotalPages);
-    }
-  }, [historyPage, historyTotalPages]);
-
   const refreshVisibleTab = useCallback(async () => {
     switch (activeTab) {
       case "activity":
         await Promise.all([refreshQueue(), refreshConfiguredClients()]);
-        break;
-      case "history":
-        await Promise.all([refreshHistory(), refreshConfiguredClients()]);
         break;
       case "import":
       default:
         await refreshImport();
         break;
     }
-  }, [activeTab, refreshConfiguredClients, refreshHistory, refreshImport, refreshQueue]);
+  }, [activeTab, refreshConfiguredClients, refreshImport, refreshQueue]);
 
   const refreshImportDrivenViews = useCallback(async () => {
     if (importTabActive) {
@@ -380,16 +295,7 @@ export const ActivityContainer = memo(function ActivityContainer({
       return;
     }
 
-    if (historyTabActive) {
-      await Promise.all([refreshHistory(), refreshConfiguredClients()]);
-    }
-  }, [
-    historyTabActive,
-    importTabActive,
-    refreshConfiguredClients,
-    refreshHistory,
-    refreshImport,
-  ]);
+  }, [importTabActive, refreshImport]);
 
   useImportHistorySubscription(() => {
     void refreshImportDrivenViews();
@@ -400,7 +306,7 @@ export const ActivityContainer = memo(function ActivityContainer({
       return;
     }
 
-    const authoritativeItems = [...activityQueueItems, ...importItems, ...historyItems];
+    const authoritativeItems = [...activityQueueItems, ...importItems];
     const authoritativeByKey = new Map(
       authoritativeItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
     );
@@ -419,7 +325,7 @@ export const ActivityContainer = memo(function ActivityContainer({
 
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-  }, [activityQueueItems, historyItems, importItems, optimisticallyRemovedKeys]);
+  }, [activityQueueItems, importItems, optimisticallyRemovedKeys]);
 
   useEffect(() => {
     if (Object.keys(optimisticQueueStates).length === 0) {
@@ -701,7 +607,7 @@ export const ActivityContainer = memo(function ActivityContainer({
           clientId: item.clientId,
           clientType: item.clientType,
           downloadClientItemId: item.downloadClientItemId,
-          isHistory: isHistoryQueueItem(item),
+          isHistory: false,
         },
       });
       if (result.error) {
@@ -719,12 +625,10 @@ export const ActivityContainer = memo(function ActivityContainer({
       setGlobalStatus(t("queue.deleteQueued"));
       void refreshQueue();
       void refreshImport();
-      void refreshHistory();
     },
     [
       decrementImportBadges,
       executeDeleteDownload,
-      refreshHistory,
       refreshImport,
       refreshQueue,
       setGlobalStatus,
@@ -746,7 +650,7 @@ export const ActivityContainer = memo(function ActivityContainer({
             clientId: item.clientId,
             clientType: item.clientType,
             downloadClientItemId: item.downloadClientItemId,
-            isHistory: isHistoryQueueItem(item),
+            isHistory: false,
           },
         ]),
       );
@@ -788,12 +692,10 @@ export const ActivityContainer = memo(function ActivityContainer({
 
       void refreshQueue();
       void refreshImport();
-      void refreshHistory();
     },
     [
       client,
       decrementImportBadges,
-      refreshHistory,
       refreshImport,
       refreshQueue,
       setGlobalStatus,
@@ -846,10 +748,6 @@ export const ActivityContainer = memo(function ActivityContainer({
           toggleActivityScryerSubmittedOnly: () => {
             setActivityScryerSubmittedOnly((current) => !current);
           },
-          historyScryerSubmittedOnly,
-          toggleHistoryScryerSubmittedOnly: () => {
-            setHistoryScryerSubmittedOnly((current) => !current);
-          },
           selectedImportStatuses,
           toggleImportStatus: (status) => {
             setSelectedImportStatuses((current) => toggleSelectedValue(current, status));
@@ -857,10 +755,6 @@ export const ActivityContainer = memo(function ActivityContainer({
           selectedActivityStatuses,
           toggleActivityStatus: (status) => {
             setSelectedActivityStatuses((current) => toggleSelectedValue(current, status));
-          },
-          selectedHistoryStatuses,
-          toggleHistoryStatus: (status) => {
-            setSelectedHistoryStatuses((current) => toggleSelectedValue(current, status));
           },
           activityAvailableClients,
           selectedActivityClientIds:
@@ -870,35 +764,11 @@ export const ActivityContainer = memo(function ActivityContainer({
               toggleSelectedValue(current ?? activityAvailableClients.map((client) => client.clientId), clientId),
             );
           },
-          historyAvailableClients: mergedHistoryAvailableClients,
-          selectedHistoryClientIds:
-            selectedHistoryClientIds ??
-            mergedHistoryAvailableClients.map((client) => client.clientId),
-          toggleHistoryClientId: (clientId) => {
-            setSelectedHistoryClientIds((current) =>
-              toggleSelectedValue(
-                current ?? mergedHistoryAvailableClients.map((client) => client.clientId),
-                clientId,
-              ),
-            );
-          },
-          historyPage,
-          historyTotalPages,
-          goToPreviousHistoryPage: async () => {
-            setHistoryPage((current) => Math.max(1, current - 1));
-          },
-          goToNextHistoryPage: async () => {
-            setHistoryPage((current) => Math.min(historyTotalPages, current + 1));
-          },
-          historyHasPreviousPage,
-          historyHasNextPage,
           visibleHasMore,
           requestMoreItems:
             activeTab === "import"
               ? loadMoreImport
-              : activeTab === "activity"
-                ? loadMoreQueue
-                : async () => {},
+              : loadMoreQueue,
         }}
       />
       {manualImportItem?.titleId ? (

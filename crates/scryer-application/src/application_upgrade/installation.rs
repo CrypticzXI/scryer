@@ -31,6 +31,8 @@ pub struct InstallationEvidence {
     pub os: InstallationOs,
     /// Whether the Windows process runs in session zero.
     pub windows_session_zero: bool,
+    /// Whether Task Scheduler directly launched the Windows process.
+    pub windows_task_scheduler_parent: bool,
     /// `DistributionOwner` from the Scryer machine registry key, when present.
     pub windows_distribution_owner: Option<String>,
     /// Whether the executable path is contained by Program Files.
@@ -133,7 +135,9 @@ pub fn classify_installation(evidence: &InstallationEvidence) -> InstallationAss
         );
     }
 
-    if evidence.os == InstallationOs::Windows && evidence.windows_session_zero {
+    if evidence.os == InstallationOs::Windows
+        && (evidence.windows_session_zero || evidence.windows_task_scheduler_parent)
+    {
         return operator_assessment(
             InstallationKind::WindowsSupervised,
             EligibilityReason::WindowsSupervised,
@@ -322,6 +326,17 @@ mod tests {
         supervised.windows_session_zero = true;
         assert_assessment(
             supervised,
+            InstallationKind::WindowsSupervised,
+            ManagementOwner::Operator,
+            false,
+            EligibilityReason::WindowsSupervised,
+        );
+
+        let mut task_scheduler = evidence();
+        task_scheduler.os = InstallationOs::Windows;
+        task_scheduler.windows_task_scheduler_parent = true;
+        assert_assessment(
+            task_scheduler,
             InstallationKind::WindowsSupervised,
             ManagementOwner::Operator,
             false,

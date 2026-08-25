@@ -217,9 +217,7 @@ fn wait_for_file_release(
 
 #[cfg(windows)]
 fn apply_portable_replacements(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> {
-    use scryer_application::application_upgrade::{
-        portable_replacement_operations, portable_replacement_rollback_operations,
-    };
+    use scryer_application::application_upgrade::portable_replacement_operations;
 
     let mut completed = Vec::new();
     for replacement in &plan.replace {
@@ -298,7 +296,9 @@ fn run_msi_installer(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> 
     execute.lpParameters = parameters.as_ptr();
     execute.lpDirectory = ptr::null();
     execute.nShow = SW_HIDE;
-    execute.Anonymous = SHELLEXECUTEINFOW_0 { hIcon: 0 };
+    execute.Anonymous = SHELLEXECUTEINFOW_0 {
+        hIcon: ptr::null_mut(),
+    };
     // SAFETY: `execute` is fully initialized for ShellExecuteExW and remains valid
     // through the call. The returned process handle is closed below.
     if unsafe { ShellExecuteExW(&mut execute) } == 0 {

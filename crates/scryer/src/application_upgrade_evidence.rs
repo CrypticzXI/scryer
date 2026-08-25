@@ -24,6 +24,7 @@ pub fn collect_installation_assessment() -> InstallationAssessment {
         docker_env_present: Path::new("/.dockerenv").exists(),
         os: current_os(),
         windows_session_zero: windows_session_zero(),
+        windows_task_scheduler_parent: windows_task_scheduler_parent(),
         windows_executable_under_program_files: executable_under_program_files(
             executable_path.as_deref(),
         ),
@@ -85,11 +86,112 @@ fn executable_dir_writable(executable_path: Option<&Path>) -> bool {
 
 #[cfg(windows)]
 fn windows_session_zero() -> bool {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcessId, ProcessIdToSessionId};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> i32;
+    }
 
     let mut session_id = u32::MAX;
     // SAFETY: The process ID is valid and `session_id` points to writable memory.
-    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session_id) != 0 && session_id == 0 }
+    unsafe { ProcessIdToSessionId(std::process::id(), &mut session_id) != 0 && session_id == 0 }
+}
+
+#[cfg(windows)]
+fn windows_task_scheduler_parent() -> bool {
+    use std::mem::size_of;
+
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> isize;
+        fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return false;
+    }
+    let mut processes = Vec::new();
+    let mut entry = ProcessEntry32W {
+        dw_size: size_of::<ProcessEntry32W>() as u32,
+        cnt_usage: 0,
+        th32_process_id: 0,
+        th32_default_heap_id: 0,
+        th32_module_id: 0,
+        cnt_threads: 0,
+        th32_parent_process_id: 0,
+        pc_pri_class_base: 0,
+        dw_flags: 0,
+        sz_exe_file: [0; 260],
+    };
+    // SAFETY: The snapshot handle is valid and `entry` is initialized with its size.
+    let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
+    while next != 0 {
+        let name_end = entry
+            .sz_exe_file
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(entry.sz_exe_file.len());
+        processes.push((
+            entry.th32_process_id,
+            entry.th32_parent_process_id,
+            String::from_utf16_lossy(&entry.sz_exe_file[..name_end]),
+        ));
+        entry.dw_size = size_of::<ProcessEntry32W>() as u32;
+        // SAFETY: The snapshot handle and entry buffer remain valid for iteration.
+        next = unsafe { Process32NextW(snapshot, &mut entry) };
+    }
+    // SAFETY: This function owns the snapshot handle returned above.
+    unsafe { CloseHandle(snapshot) };
+
+    let current = std::process::id();
+    let parent = processes
+        .iter()
+        .find(|(process_id, _, _)| *process_id == current)
+        .map(|(_, parent_process_id, _)| *parent_process_id);
+    parent
+        .and_then(|parent_process_id| {
+            processes
+                .iter()
+                .find(|(process_id, _, _)| *process_id == parent_process_id)
+        })
+        .is_some_and(|(_, _, image)| is_windows_task_scheduler_parent_image(image))
+}
+
+#[cfg(not(windows))]
+fn windows_task_scheduler_parent() -> bool {
+    false
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_windows_task_scheduler_parent_image(image: &str) -> bool {
+    matches!(
+        image
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(image)
+            .to_ascii_lowercase()
+            .as_str(),
+        "taskeng.exe" | "taskhost.exe" | "taskhostw.exe"
+    )
 }
 
 #[cfg(not(windows))]
@@ -214,6 +316,20 @@ fn executable_under_program_files(_executable_path: Option<&Path>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_task_scheduler_parent_images() {
+        for image in [
+            "taskeng.exe",
+            "TASKHOST.EXE",
+            "C:\\Windows\\System32\\taskhostw.exe",
+        ] {
+            assert!(is_windows_task_scheduler_parent_image(image));
+        }
+        for image in ["explorer.exe", "scryer-tray.exe", "taskhost-helper.exe"] {
+            assert!(!is_windows_task_scheduler_parent_image(image));
+        }
+    }
 
     #[test]
     fn canonicalization_falls_back_to_the_raw_path() {

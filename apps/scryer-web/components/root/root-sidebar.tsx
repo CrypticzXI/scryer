@@ -414,7 +414,6 @@ const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
   { id: "wanted", labelKey: "wanted.tabWanted" },
   { id: "cutoff", labelKey: "wanted.tabCutoff" },
   { id: "pending", labelKey: "wanted.tabPending" },
-  { id: "history", labelKey: "history.title" },
 ];
 
 const SIDEBAR_COLLAPSED_GROUPS_STORAGE_KEY = "scryer:sidebar-collapsed-groups";
@@ -873,13 +872,7 @@ function RootSidebarContent({
     () => visibleActivitySubPages.some((entry) => entry.id !== "activity"),
     [visibleActivitySubPages],
   );
-  const visibleWantedSubPages = React.useMemo(
-    () =>
-      WANTED_SUB_PAGES.filter(
-        (entry) => entry.id !== "history" || canManageTitle,
-      ),
-    [canManageTitle],
-  );
+  const visibleWantedSubPages = WANTED_SUB_PAGES;
 
   const handleNavigate = React.useCallback(
     (

@@ -146,7 +146,6 @@ export function TitleHistoryView({
             <HistoryEventTable
               events={events}
               showTitle
-              showFacet
               showActor
               onRetry={onRetry}
               emptyMessage={t("history.empty")}

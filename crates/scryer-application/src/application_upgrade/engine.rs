@@ -105,9 +105,37 @@ pub struct ApplicationUpgradeJournal {
 /// These are resolved before anything is moved so the durable journal can be
 /// written ahead of the promotion it describes.
 #[derive(Clone, Debug)]
+#[cfg_attr(windows, allow(dead_code))]
 struct PortableUpgradePaths {
     executable_path: PathBuf,
     backup_path: PathBuf,
+}
+
+/// Failure state of a portable promotion after its journal was written.
+///
+/// Once the current executable has moved aside, a failed restoration must keep
+/// the journal and backup paths available for recovery on the next boot.
+#[cfg_attr(windows, allow(dead_code))]
+enum PortablePromotionFailure {
+    Restored(AppError),
+    RecoveryRequired(AppError),
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+impl From<AppError> for PortablePromotionFailure {
+    fn from(error: AppError) -> Self {
+        Self::Restored(error)
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+impl PortablePromotionFailure {
+    fn into_parts(self) -> (AppError, bool) {
+        match self {
+            Self::Restored(error) => (error, true),
+            Self::RecoveryRequired(error) => (error, false),
+        }
+    }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -495,7 +523,7 @@ impl AppUseCase {
             // between must never leave a promoted executable that the next boot
             // has no record of.
             write_journal(&journal_path, &journal)?;
-            if let Err(error) = apply_portable_upgrade(
+            if let Err(failure) = apply_portable_upgrade(
                 &extracted_dir,
                 &artifact,
                 &paths,
@@ -503,10 +531,19 @@ impl AppUseCase {
                 dependencies.ensure_available_space,
                 dependencies.rename,
             ) {
-                if let Err(cleanup_error) = remove_file_if_exists(&journal_path) {
-                    tracing::warn!(
-                        error = %cleanup_error,
-                        "failed to remove the application upgrade journal after a failed promotion"
+                let (error, restored) = failure.into_parts();
+                if restored {
+                    if let Err(cleanup_error) = remove_file_if_exists(&journal_path) {
+                        tracing::warn!(
+                            error = %cleanup_error,
+                            "failed to remove the application upgrade journal after a restored promotion failure"
+                        );
+                    }
+                } else {
+                    tracing::error!(
+                        journal_path = %journal_path.display(),
+                        backup_path = %paths.backup_path.display(),
+                        "portable application upgrade could not restore the previous executable; preserving recovery journal"
                     );
                 }
                 return Err(error);
@@ -1482,7 +1519,7 @@ fn apply_portable_upgrade(
     expected_version: &str,
     ensure_available_space: UpgradeSpaceCheck,
     rename: UpgradeRename,
-) -> AppResult<()> {
+) -> Result<(), PortablePromotionFailure> {
     #[cfg(unix)]
     {
         let executable_dir = paths.executable_path.parent().ok_or_else(|| {
@@ -1506,17 +1543,25 @@ fn apply_portable_upgrade(
             let _ = fs::remove_file(&new_path);
             return Err(AppError::Repository(format!(
                 "failed to retain current executable backup: {error}"
-            )));
+            ))
+            .into());
         }
         if let Err(error) = rename(&new_path, &paths.executable_path) {
-            let rollback_error = rename(&paths.backup_path, &paths.executable_path).err();
-            let detail = rollback_error.map_or_else(String::new, |rollback| {
-                format!("; rollback failed: {rollback}")
-            });
-            let _ = fs::remove_file(&new_path);
-            return Err(AppError::Repository(format!(
-                "failed to replace application executable: {error}{detail}"
-            )));
+            return match rename(&paths.backup_path, &paths.executable_path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&new_path);
+                    Err(AppError::Repository(format!(
+                        "failed to replace application executable: {error}; the previous executable was restored"
+                    ))
+                    .into())
+                }
+                Err(rollback_error) => Err(PortablePromotionFailure::RecoveryRequired(
+                    AppError::Repository(format!(
+                        "failed to replace application executable: {error}; failed to restore the previous executable from '{}': {rollback_error}",
+                        paths.backup_path.display()
+                    )),
+                )),
+            };
         }
         Ok(())
     }
@@ -1532,14 +1577,16 @@ fn apply_portable_upgrade(
         );
         Err(AppError::Validation(
             "portable replacement is not available on this platform".to_string(),
-        ))
+        )
+        .into())
     }
 }
 
 /// Undo a completed promotion after a later step failed.
 ///
-/// The backup is moved back over the newly installed executable and the journal
-/// is removed, so the failed run leaves the installation exactly as it started.
+/// The backup is moved back over the newly installed executable. The journal is
+/// removed only after that restoration succeeds so an interrupted rollback
+/// retains the paths needed for recovery.
 #[cfg(not(windows))]
 fn roll_back_portable_promotion(
     paths: &PortableUpgradePaths,
@@ -1547,18 +1594,21 @@ fn roll_back_portable_promotion(
     rename: UpgradeRename,
     error: AppError,
 ) -> AppError {
-    let mut outcome = match rename(&paths.backup_path, &paths.executable_path) {
-        Ok(()) => "the previous executable was restored".to_string(),
+    let outcome = match rename(&paths.backup_path, &paths.executable_path) {
+        Ok(()) => {
+            let mut outcome = "the previous executable was restored".to_string();
+            if let Err(cleanup_error) = remove_file_if_exists(journal_path) {
+                outcome.push_str(&format!(
+                    "; the application upgrade journal could not be removed: {cleanup_error}"
+                ));
+            }
+            outcome
+        }
         Err(rollback_error) => format!(
-            "the previous executable could not be restored from '{}': {rollback_error}",
+            "the previous executable could not be restored from '{}': {rollback_error}; the recovery journal was retained",
             paths.backup_path.display()
         ),
     };
-    if let Err(cleanup_error) = remove_file_if_exists(journal_path) {
-        outcome.push_str(&format!(
-            "; the application upgrade journal could not be removed: {cleanup_error}"
-        ));
-    }
     AppError::Repository(format!(
         "application upgrade failed after the executable was replaced: {error}; {outcome}"
     ))
@@ -1892,11 +1942,62 @@ fn write_journal(path: &Path, journal: &ApplicationUpgradeJournal) -> AppResult<
             ))
         })?;
     }
-    fs::rename(&temporary, path).map_err(|error| {
+    activate_journal(&temporary, path).map_err(|error| {
         AppError::Repository(format!(
             "failed to activate application upgrade journal: {error}"
         ))
     })
+}
+
+#[cfg(not(windows))]
+fn activate_journal(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, path)
+}
+
+/// Atomically replace an existing journal on Windows.
+///
+/// `std::fs::rename` cannot replace an existing destination there. `MoveFileExW`
+/// does, and `MOVEFILE_WRITE_THROUGH` keeps the helper's terminal state durable
+/// before it relaunches the application.
+#[cfg(windows)]
+fn activate_journal(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let existing = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both paths are NUL-terminated UTF-16 buffers that outlive the call.
+    if unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            replacement.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Resolve a path through symlinks, falling back to the path as given.
@@ -2393,6 +2494,32 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn fail_replacement_and_rollback_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+        let name = from.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with(".scryer-upgrade-new-") || name.contains(".pre-upgrade-") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected replacement and rollback rename failure",
+            ));
+        }
+        fs::rename(from, to)
+    }
+
+    #[cfg(unix)]
+    fn fail_post_promotion_rollback_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+        if from
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".pre-upgrade-"))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected post-promotion rollback rename failure",
+            ));
+        }
+        fs::rename(from, to)
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn pipeline_happy_path_replaces_portable_executable_and_writes_restart_journal() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2720,6 +2847,63 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn pipeline_preserves_the_journal_when_apply_rollback_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable_path = temp.path().join("bin/scryer");
+        fs::create_dir_all(executable_path.parent().expect("executable parent"))
+            .expect("create executable directory");
+        fs::write(&executable_path, b"old executable").expect("write old executable");
+        let new_binary = b"new executable";
+        let archive = tar_gz(&[("scryer", new_binary, 0o755)]);
+        let manifest = portable_manifest(&archive, vec![executable_member(new_binary)]);
+        let (_server, artifact_url) = artifact_server(archive).await;
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let request = test_request(executable_path.clone());
+        let mut run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let client = test_http_client();
+
+        let error = run_pipeline_and_finish_failure(
+            &app,
+            &mut run,
+            &request,
+            &manifest,
+            UpgradePipelineDependencies {
+                client: &client,
+                artifact_url_override: Some(&artifact_url),
+                ensure_available_space,
+                rename: fail_replacement_and_rollback_rename,
+            },
+        )
+        .await;
+
+        let backup_path = PathBuf::from(format!(
+            "{}.pre-upgrade-{SCRYER_VERSION}",
+            executable_path.display()
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to restore the previous executable")
+        );
+        assert_eq!(run.status, JobRunStatus::Failed);
+        assert!(
+            !executable_path.exists(),
+            "failed restoration leaves no live executable"
+        );
+        assert_eq!(
+            fs::read(&backup_path).expect("preserved backup"),
+            b"old executable"
+        );
+        assert!(
+            app.application_upgrade_journal_path().exists(),
+            "a failed restoration must retain the recovery journal"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn pipeline_rolls_the_promotion_back_when_a_post_promotion_step_fails() {
         let temp = tempfile::tempdir().expect("tempdir");
         let executable_path = temp.path().join("bin/scryer");
@@ -2774,6 +2958,63 @@ mod tests {
         assert!(
             !app.application_upgrade_journal_path().exists(),
             "a rolled-back promotion must leave no journal"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipeline_retains_recovery_state_when_post_promotion_rollback_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable_path = temp.path().join("bin/scryer");
+        fs::create_dir_all(executable_path.parent().expect("executable parent"))
+            .expect("create executable directory");
+        fs::write(&executable_path, b"old executable").expect("write old executable");
+        let new_binary = b"new executable";
+        let archive = tar_gz(&[("scryer", new_binary, 0o755)]);
+        let manifest = portable_manifest(&archive, vec![executable_member(new_binary)]);
+        let (_server, artifact_url) = artifact_server(archive).await;
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let request = test_request(executable_path.clone());
+        let mut run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let client = test_http_client();
+
+        let error = run_pipeline_and_finish_failure(
+            &app,
+            &mut run,
+            &request,
+            &manifest,
+            UpgradePipelineDependencies {
+                client: &client,
+                artifact_url_override: Some(&artifact_url),
+                ensure_available_space,
+                rename: fail_post_promotion_rollback_rename,
+            },
+        )
+        .await;
+
+        let backup_path = PathBuf::from(format!(
+            "{}.pre-upgrade-{SCRYER_VERSION}",
+            executable_path.display()
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("the recovery journal was retained")
+        );
+        assert_eq!(run.status, JobRunStatus::Failed);
+        assert_eq!(
+            fs::read(&executable_path).expect("promoted executable"),
+            new_binary
+        );
+        assert_eq!(
+            fs::read(&backup_path).expect("preserved backup"),
+            b"old executable"
+        );
+        assert!(
+            app.application_upgrade_journal_path().exists(),
+            "a failed rollback must retain the recovery journal"
         );
     }
 
