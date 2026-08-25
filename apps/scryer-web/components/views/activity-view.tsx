@@ -116,12 +116,6 @@ type ActivityFilterChipOption<T extends string> = {
 
 const importFilterOptions: ActivityFilterChipOption<DownloadImportStatus>[] = [
   {
-    value: "IMPORTING",
-    labelKey: "activity.importFilter.importing",
-    icon: HardDrive,
-    iconClassName: "text-[var(--scry-info-text-soft)]",
-  },
-  {
     value: "PENDING",
     labelKey: "activity.importFilter.pending",
     icon: Clock3,

@@ -83,13 +83,14 @@ export type DownloadActivityFilter =
 
 export type DownloadImportFilter =
   | "ALL"
+  | "ATTENTION"
   | "IMPORTING"
   | "PENDING"
   | "BLOCKED"
   | "FAILED";
 
 export type DownloadActivityStatus = Exclude<DownloadActivityFilter, "ALL">;
-export type DownloadImportStatus = Exclude<DownloadImportFilter, "ALL">;
+export type DownloadImportStatus = Exclude<DownloadImportFilter, "ALL" | "ATTENTION">;
 export type ActivitySortKey = "TITLE" | "CLIENT" | "STATUS" | "PROGRESS" | "SIZE";
 export type SortDirection = "ASC" | "DESC";
 export type SortConfig = {

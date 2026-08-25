@@ -448,8 +448,14 @@ export function isManualImportRequiredQueueItem(
   queueItem: DownloadQueueDisplayStateInput,
 ): boolean {
   const state = deriveDownloadQueueDisplayState(queueItem);
-  return state === "import_blocked" || state === "importing" || state === "import_failed";
+  return state === "import_blocked" || state === "import_failed";
 }
+
+export const IMPORT_ATTENTION_STATUSES: DownloadImportStatus[] = [
+  "PENDING",
+  "BLOCKED",
+  "FAILED",
+];
 
 export function downloadQueueClientFilterKey(
   item: Pick<DownloadQueueItem, "id" | "clientId" | "clientType">,

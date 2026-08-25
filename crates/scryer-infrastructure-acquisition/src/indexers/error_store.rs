@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use crate::queries::sql_runtime::{SqlArg, SqlRow, SqlRuntime, StoreDatastore};
 
-const PAYLOAD_FORMAT_VERSION: i32 = 1;
+const PAYLOAD_FORMAT_VERSION: i32 = 2;
+// The original schema requires a status. Zero cannot be an HTTP status and
+// represents a transport error with no response.
+const TRANSPORT_ERROR_HTTP_STATUS: u16 = 0;
 
 #[derive(Clone)]
 pub struct IndexerErrorStore {
@@ -63,7 +66,7 @@ impl IndexerErrorRecorder for BlockingIndexerErrorRecorder {
 #[serde(rename_all = "camelCase")]
 struct StoredResponseEnvelope {
     version: i32,
-    status: u16,
+    status: Option<u16>,
     headers: Vec<StoredResponseHeader>,
     body_base64: String,
 }
@@ -78,7 +81,10 @@ struct StoredResponseHeader {
 #[async_trait]
 impl IndexerErrorRepository for IndexerErrorStore {
     async fn record(&self, error: NewIndexerError) -> AppResult<()> {
-        let http_status = error.response.status;
+        let http_status = error
+            .response
+            .as_ref()
+            .map_or(TRANSPORT_ERROR_HTTP_STATUS, |response| response.status);
         let payload = encode_response(error.response).await?;
         SqlRuntime::execute_write(
             &self.datastore,
@@ -172,21 +178,27 @@ impl IndexerErrorRepository for IndexerErrorStore {
     }
 }
 
-async fn encode_response(mut response: CapturedIndexerHttpResponse) -> AppResult<Vec<u8>> {
-    redact_indexer_response_headers(&mut response);
+async fn encode_response(response: Option<CapturedIndexerHttpResponse>) -> AppResult<Vec<u8>> {
+    let response = response.map(|mut response| {
+        redact_indexer_response_headers(&mut response);
+        response
+    });
     tokio::task::spawn_blocking(move || {
+        let (status, headers, body) = match response {
+            Some(response) => (Some(response.status), response.headers, response.body),
+            None => (None, Vec::new(), Vec::new()),
+        };
         let envelope = StoredResponseEnvelope {
             version: PAYLOAD_FORMAT_VERSION,
-            status: response.status,
-            headers: response
-                .headers
+            status,
+            headers: headers
                 .into_iter()
                 .map(|header| StoredResponseHeader {
                     name: header.name,
                     value_base64: BASE64.encode(header.value),
                 })
                 .collect(),
-            body_base64: BASE64.encode(response.body),
+            body_base64: BASE64.encode(body),
         };
         let json = serde_json::to_vec(&envelope).map_err(|error| {
             AppError::Repository(format!("encode indexer error response: {error}"))
@@ -209,7 +221,9 @@ fn row_to_summary(row: &SqlRow) -> AppResult<IndexerErrorSummary> {
         operation: IndexerErrorOperation::parse(&row.text("operation")?)
             .ok_or_else(|| AppError::Repository("invalid indexer_errors.operation".to_string()))?,
         occurred_at: row.timestamp("occurred_at")?,
-        http_status: checked_u16(row.i32("http_status")?, "http_status")?,
+        http_status: (row.i32("http_status")? != i32::from(TRANSPORT_ERROR_HTTP_STATUS))
+            .then(|| checked_u16(row.i32("http_status")?, "http_status"))
+            .transpose()?,
         classification: IndexerErrorClassification::parse(&row.text("classification")?)
             .ok_or_else(|| {
                 AppError::Repository("invalid indexer_errors.classification".to_string())
@@ -232,13 +246,13 @@ fn row_to_detail(row: SqlRow) -> AppResult<IndexerErrorDetail> {
     Ok(IndexerErrorDetail { summary, response })
 }
 
-fn decode_response(payload: &[u8]) -> AppResult<CapturedIndexerHttpResponse> {
+fn decode_response(payload: &[u8]) -> AppResult<Option<CapturedIndexerHttpResponse>> {
     let json = zstd::decode_all(payload).map_err(|error| {
         AppError::Repository(format!("decompress indexer error response: {error}"))
     })?;
     let envelope: StoredResponseEnvelope = serde_json::from_slice(&json)
         .map_err(|error| AppError::Repository(format!("decode indexer error response: {error}")))?;
-    if envelope.version != PAYLOAD_FORMAT_VERSION {
+    if !(1..=PAYLOAD_FORMAT_VERSION).contains(&envelope.version) {
         return Err(AppError::Repository(format!(
             "unsupported indexer error payload version {}",
             envelope.version
@@ -262,11 +276,11 @@ fn decode_response(payload: &[u8]) -> AppResult<CapturedIndexerHttpResponse> {
     let body = BASE64
         .decode(envelope.body_base64)
         .map_err(|error| AppError::Repository(format!("decode indexer response body: {error}")))?;
-    Ok(CapturedIndexerHttpResponse {
-        status: envelope.status,
+    Ok(envelope.status.map(|status| CapturedIndexerHttpResponse {
+        status,
         headers,
         body,
-    })
+    }))
 }
 
 #[derive(Clone)]
@@ -345,7 +359,7 @@ mod tests {
             provider_error_code: None,
             message: "Indexer rate limit reached".to_string(),
             content_type: Some("application/octet-stream".to_string()),
-            response: CapturedIndexerHttpResponse {
+            response: Some(CapturedIndexerHttpResponse {
                 status: 429,
                 headers: vec![
                     CapturedIndexerHttpHeader {
@@ -362,14 +376,14 @@ mod tests {
                     },
                 ],
                 body: vec![0, 1, 255, b'x'],
-            },
+            }),
             occurred_at,
         }
     }
 
     #[tokio::test]
     async fn stored_response_round_trips_binary_body_and_duplicate_headers() {
-        let encoded = encode_response(CapturedIndexerHttpResponse {
+        let encoded = encode_response(Some(CapturedIndexerHttpResponse {
             status: 429,
             headers: vec![
                 CapturedIndexerHttpHeader {
@@ -390,11 +404,12 @@ mod tests {
                 },
             ],
             body: vec![0, 1, 255, b'x'],
-        })
+        }))
         .await
         .expect("response encodes as zstd");
 
         let decoded = decode_response(&encoded).expect("response decodes");
+        let decoded = decoded.expect("response is present");
         assert_eq!(decoded.status, 429);
         assert_eq!(decoded.body, vec![0, 1, 255, b'x']);
         assert_eq!(decoded.headers.len(), 4);
@@ -412,7 +427,7 @@ mod tests {
             indexer_name: "Example".to_string(),
             operation: IndexerErrorOperation::InteractiveSearch,
             occurred_at: "2026-08-23T10:00:00Z".parse().expect("timestamp"),
-            http_status: 500,
+            http_status: Some(500),
             classification: IndexerErrorClassification::HttpServerError,
             provider_error_code: None,
             message: "HTTP server error".to_string(),
@@ -424,6 +439,37 @@ mod tests {
         assert_eq!(decoded.id, summary.id);
         assert_eq!(decoded.occurred_at, summary.occurred_at);
         assert!(decode_cursor("not a cursor").is_err());
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_persists_transport_error_without_response() {
+        let (store, pool) = test_store().await;
+        sqlx::query("INSERT INTO indexers (id) VALUES (?)")
+            .bind("indexer-a")
+            .execute(&pool)
+            .await
+            .expect("indexer row");
+
+        let mut error = error_event("transport", "indexer-a", Utc::now());
+        error.classification = IndexerErrorClassification::HttpRequestTimeout;
+        error.message = "Indexer search timed out".to_string();
+        error.content_type = None;
+        error.response = None;
+        store.record(error).await.expect("transport event");
+
+        let page = store.list(Some("indexer-a"), 10, None).await.expect("page");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].http_status, None);
+        assert_eq!(
+            page.items[0].classification,
+            IndexerErrorClassification::HttpRequestTimeout
+        );
+        let detail = store
+            .get_detail("transport")
+            .await
+            .expect("detail query")
+            .expect("detail");
+        assert_eq!(detail.response, None);
     }
 
     #[tokio::test]
@@ -492,11 +538,12 @@ mod tests {
             .await
             .expect("detail query")
             .expect("detail");
-        assert_eq!(detail.response.body, vec![0, 1, 255, b'x']);
-        assert_eq!(detail.response.headers.len(), 3);
-        assert_eq!(detail.response.headers[0].value, vec![0, 255]);
-        assert_eq!(detail.response.headers[1].value, b"second");
-        assert!(detail.response.headers[2].value.is_empty());
+        let response = detail.response.expect("captured response");
+        assert_eq!(response.body, vec![0, 1, 255, b'x']);
+        assert_eq!(response.headers.len(), 3);
+        assert_eq!(response.headers[0].value, vec![0, 255]);
+        assert_eq!(response.headers[1].value, b"second");
+        assert!(response.headers[2].value.is_empty());
 
         assert_eq!(
             store

@@ -13,7 +13,7 @@ export type IndexerErrorSummary = {
   indexerName: string;
   operation: IndexerErrorOperation;
   occurredAt: string;
-  httpStatus: number;
+  httpStatus: number | null;
   classification: string;
   providerErrorCode: number | null;
   message: string;
@@ -34,7 +34,7 @@ export type IndexerErrorResponse = {
 
 export type IndexerErrorDetail = {
   error: IndexerErrorSummary;
-  response: IndexerErrorResponse;
+  response: IndexerErrorResponse | null;
 };
 
 export type IndexerErrorConnection = {

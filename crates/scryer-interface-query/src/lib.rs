@@ -611,7 +611,7 @@ enum IndexerErrorClassificationValue {
     Unknown,
 }
 
-/// List-safe metadata for a persisted indexer HTTP error.
+/// List-safe metadata for a persisted indexer error.
 #[derive(SimpleObject)]
 struct IndexerErrorSummaryPayload {
     /// Stable error-event identifier.
@@ -624,8 +624,8 @@ struct IndexerErrorSummaryPayload {
     operation: IndexerErrorOperationValue,
     /// RFC 3339 time at which the response was accepted.
     occurred_at: String,
-    /// HTTP response status code.
-    http_status: i32,
+    /// HTTP response status code, when the upstream returned a response.
+    http_status: Option<i32>,
     /// Safe error classification derived from the response.
     classification: IndexerErrorClassificationValue,
     /// Newznab provider code when a known Newznab error was recognized.
@@ -658,16 +658,16 @@ struct IndexerErrorResponsePayload {
     body_base64: String,
 }
 
-/// A persisted error event together with its complete HTTP response.
+/// A persisted error event and, when available, its complete HTTP response.
 #[derive(SimpleObject)]
 struct IndexerErrorDetailPayload {
     /// List-safe metadata for the error event.
     error: IndexerErrorSummaryPayload,
-    /// Complete response data available only through this detail query.
-    response: IndexerErrorResponsePayload,
+    /// Complete response data when the upstream returned one.
+    response: Option<IndexerErrorResponsePayload>,
 }
 
-/// A newest-first page of persisted indexer HTTP errors.
+/// A newest-first page of persisted indexer errors.
 #[derive(SimpleObject)]
 struct IndexerErrorConnectionPayload {
     /// Error events in newest-first order.
@@ -780,7 +780,7 @@ fn from_indexer_error_summary(
         indexer_name: error.indexer_name,
         operation: indexer_error_operation_value(error.operation),
         occurred_at: error.occurred_at.to_rfc3339(),
-        http_status: i32::from(error.http_status),
+        http_status: error.http_status.map(i32::from),
         classification: indexer_error_classification_value(error.classification),
         provider_error_code: error.provider_error_code.map(i32::from),
         message: error.message,
@@ -793,10 +793,9 @@ fn from_indexer_error_detail(
 ) -> IndexerErrorDetailPayload {
     IndexerErrorDetailPayload {
         error: from_indexer_error_summary(detail.summary),
-        response: IndexerErrorResponsePayload {
-            status: i32::from(detail.response.status),
-            headers: detail
-                .response
+        response: detail.response.map(|response| IndexerErrorResponsePayload {
+            status: i32::from(response.status),
+            headers: response
                 .headers
                 .into_iter()
                 .map(|header| IndexerErrorHeaderPayload {
@@ -805,8 +804,8 @@ fn from_indexer_error_detail(
                     value_base64: BASE64.encode(header.value),
                 })
                 .collect(),
-            body_base64: BASE64.encode(detail.response.body),
-        },
+            body_base64: BASE64.encode(response.body),
+        }),
     }
 }
 
@@ -877,14 +876,14 @@ mod indexer_error_payload_tests {
                 indexer_id: "indexer-1".to_string(),
                 indexer_name: "Test indexer".to_string(),
                 operation: scryer_application::IndexerErrorOperation::InteractiveSearch,
-                http_status: 500,
+                http_status: Some(500),
                 classification: scryer_application::IndexerErrorClassification::HttpServerError,
                 provider_error_code: None,
                 message: "Indexer server error".to_string(),
                 content_type: Some("application/octet-stream".to_string()),
                 occurred_at,
             },
-            response: scryer_application::CapturedIndexerHttpResponse {
+            response: Some(scryer_application::CapturedIndexerHttpResponse {
                 status: 500,
                 headers: vec![
                     scryer_application::CapturedIndexerHttpHeader {
@@ -897,19 +896,42 @@ mod indexer_error_payload_tests {
                     },
                 ],
                 body: vec![255, 0],
-            },
+            }),
         });
 
         assert_eq!(payload.error.id.as_str(), "error-1");
-        assert_eq!(payload.response.status, 500);
-        assert_eq!(payload.response.body_base64, "/wA=");
+        let response = payload.response.expect("captured response");
+        assert_eq!(response.status, 500);
+        assert_eq!(response.body_base64, "/wA=");
         assert_eq!(
-            payload.response.headers[0].value.as_deref(),
+            response.headers[0].value.as_deref(),
             Some("visible")
         );
-        assert_eq!(payload.response.headers[0].value_base64, "dmlzaWJsZQ==");
-        assert_eq!(payload.response.headers[1].value, None);
-        assert_eq!(payload.response.headers[1].value_base64, "/w==");
+        assert_eq!(response.headers[0].value_base64, "dmlzaWJsZQ==");
+        assert_eq!(response.headers[1].value, None);
+        assert_eq!(response.headers[1].value_base64, "/w==");
+    }
+
+    #[test]
+    fn detail_payload_preserves_transport_errors_without_an_http_response() {
+        let payload = from_indexer_error_detail(scryer_application::IndexerErrorDetail {
+            summary: scryer_application::IndexerErrorSummary {
+                id: "error-transport".to_string(),
+                indexer_id: "indexer-1".to_string(),
+                indexer_name: "Test indexer".to_string(),
+                operation: scryer_application::IndexerErrorOperation::AutomaticSearch,
+                http_status: None,
+                classification: scryer_application::IndexerErrorClassification::HttpRequestTimeout,
+                provider_error_code: None,
+                message: "Indexer search timed out".to_string(),
+                content_type: None,
+                occurred_at: chrono::Utc::now(),
+            },
+            response: None,
+        });
+
+        assert_eq!(payload.error.http_status, None);
+        assert!(payload.response.is_none());
     }
 }
 
@@ -1980,7 +2002,7 @@ impl ActivityQueries {
         };
         let activity_import_count = async {
             if can_resolve_imports {
-                app.count_download_import_items(&actor, DownloadImportFilter::All)
+                app.count_download_import_items(&actor, DownloadImportFilter::Attention)
                     .await
             } else {
                 Ok(0)

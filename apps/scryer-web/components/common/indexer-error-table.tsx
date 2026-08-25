@@ -19,7 +19,11 @@ import {
 import { LazyCodeEditor } from "@/components/common/lazy-code-editor";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
-import type { IndexerErrorDetail, IndexerErrorSummary } from "@/lib/types";
+import type {
+  IndexerErrorDetail,
+  IndexerErrorResponse,
+  IndexerErrorSummary,
+} from "@/lib/types";
 import { formatUiDate, formatUiTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 import {
@@ -43,12 +47,15 @@ function formatByteCount(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function downloadResponseBody(detail: IndexerErrorDetail) {
+function downloadResponseBody(
+  detail: IndexerErrorDetail,
+  response: IndexerErrorResponse,
+) {
   const presentation = presentIndexerErrorBody(
-    detail.response.bodyBase64,
+    response.bodyBase64,
     detail.error.contentType,
   );
-  const bytes = decodeIndexerErrorBody(detail.response.bodyBase64);
+  const bytes = decodeIndexerErrorBody(response.bodyBase64);
   const blob = new Blob([Uint8Array.from(bytes).buffer], {
     type: detail.error.contentType ?? "application/octet-stream",
   });
@@ -64,9 +71,28 @@ function downloadResponseBody(detail: IndexerErrorDetail) {
 
 function IndexerErrorResponseDetail({ detail }: { detail: IndexerErrorDetail }) {
   const t = useTranslate();
+  if (detail.response == null) {
+    return (
+      <div className="rounded-lg border border-border/60 bg-background/60 p-4 text-sm text-muted-foreground">
+        {t("indexerErrors.noHttpResponse")}
+      </div>
+    );
+  }
+
+  return <IndexerHttpResponseDetail detail={detail} response={detail.response} />;
+}
+
+function IndexerHttpResponseDetail({
+  detail,
+  response,
+}: {
+  detail: IndexerErrorDetail;
+  response: IndexerErrorResponse;
+}) {
+  const t = useTranslate();
   const presentation = React.useMemo(
-    () => presentIndexerErrorBody(detail.response.bodyBase64, detail.error.contentType),
-    [detail],
+    () => presentIndexerErrorBody(response.bodyBase64, detail.error.contentType),
+    [detail.error.contentType, response.bodyBase64],
   );
   const [showFormatted, setShowFormatted] = React.useState(
     presentation.formattedText != null,
@@ -88,7 +114,7 @@ function IndexerErrorResponseDetail({ detail }: { detail: IndexerErrorDetail }) 
             {t("indexerErrors.response")}
           </h4>
           <p className="mt-1 text-xs text-muted-foreground">
-            HTTP {detail.response.status} · {formatByteCount(presentation.byteLength)}
+            HTTP {response.status} · {formatByteCount(presentation.byteLength)}
           </p>
         </div>
         <Button
@@ -96,7 +122,7 @@ function IndexerErrorResponseDetail({ detail }: { detail: IndexerErrorDetail }) 
           size="sm"
           variant="secondary"
           className="gap-2"
-          onClick={() => downloadResponseBody(detail)}
+          onClick={() => downloadResponseBody(detail, response)}
         >
           <Download className="h-4 w-4" />
           {t("indexerErrors.downloadFullBody")}
@@ -107,11 +133,11 @@ function IndexerErrorResponseDetail({ detail }: { detail: IndexerErrorDetail }) 
         <h5 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {t("indexerErrors.headers")}
         </h5>
-        {detail.response.headers.length === 0 ? (
+        {response.headers.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t("indexerErrors.noHeaders")}</p>
         ) : (
           <div className="overflow-hidden rounded-md border border-border/60">
-            {detail.response.headers.map((header, index) => {
+            {response.headers.map((header, index) => {
               const sensitive = isSensitiveIndexerErrorHeader(header.name);
               return (
                 <div
@@ -271,7 +297,7 @@ export function IndexerErrorTable({
                   ) : null}
                   <TableCell className="align-top text-sm">{humanizeEnum(item.operation)}</TableCell>
                   <TableCodeCell className="align-top text-center text-sm">
-                    {item.httpStatus}
+                    {item.httpStatus ?? "—"}
                   </TableCodeCell>
                   <TableCell className="align-top text-sm">
                     <div>{humanizeEnum(item.classification)}</div>

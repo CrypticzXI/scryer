@@ -318,6 +318,14 @@ fn matches_download_import_filter(item: &DownloadQueueItem, filter: DownloadImpo
 
     match filter {
         DownloadImportFilter::All => true,
+        DownloadImportFilter::Attention => matches!(
+            classified.import_filter,
+            Some(
+                DownloadImportFilter::Pending
+                    | DownloadImportFilter::Blocked
+                    | DownloadImportFilter::Failed
+            )
+        ),
         _ => classified.import_filter == Some(filter),
     }
 }

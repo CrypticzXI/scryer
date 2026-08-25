@@ -26,6 +26,8 @@ const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::
 const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
 const DEFAULT_SERVE_FRONTEND_PORT: u16 = 3000;
 const DEFAULT_SERVE_BACKEND_RUST_MIN_STACK: &str = "16777216";
+const XTASK_SERVE_DEV_API_KEY_SEED: &str =
+    "admin|xtask-serve|ska_AAAAAAAAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|never";
 
 #[cfg(unix)]
 struct SignalForwarder {
@@ -1147,6 +1149,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Vite dev server: {frontend_url}");
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
+    println!("   Development API key: seeded for admin (label: xtask-serve)");
     println!("   Backend RUST_MIN_STACK: {backend_rust_min_stack}");
     println!("   Metrics: {metrics} (/metrics)");
     println!("   WebAuthn RP ID: {webauthn_rp_id}");
@@ -1179,6 +1182,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     }
     serve
         .env("SCRYER_DISABLE_PLATFORM_KEYSTORE", "1")
+        .env("SCRYER_DEV_API_KEYS", XTASK_SERVE_DEV_API_KEY_SEED)
         .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
         .env("SCRYER_METRICS", &metrics)
         .env("SCRYER_OPEN_BROWSER", "false")

@@ -342,6 +342,9 @@ impl PluginHttpHost {
             return;
         };
         let Some(response) = capture.final_response else {
+            if operation_failed {
+                Self::record_transport_failure(&capture.context);
+            }
             return;
         };
         if operation_failed && (200..300).contains(&response.status) {
@@ -681,7 +684,7 @@ impl PluginHttpHost {
             provider_error_code: classified.provider_error_code,
             message: classified.message.to_string(),
             content_type: indexer_response_content_type(&response),
-            response,
+            response: Some(response),
             occurred_at: chrono::Utc::now(),
         };
         if let Err(error) = capture.recorder.record(error) {
@@ -689,6 +692,33 @@ impl PluginHttpHost {
                 indexer_id = capture.indexer_id.as_str(),
                 error = %error,
                 "failed to persist captured indexer HTTP response"
+            );
+        }
+    }
+
+    fn record_transport_failure(capture: &IndexerErrorCaptureContext) {
+        tracing::warn!(
+            indexer_id = capture.indexer_id.as_str(),
+            operation = capture.operation.as_str(),
+            "indexer plugin operation failed without an HTTP response"
+        );
+        let error = scryer_application::NewIndexerError {
+            id: uuid::Uuid::new_v4().to_string(),
+            indexer_id: capture.indexer_id.clone(),
+            indexer_name: capture.indexer_name.clone(),
+            operation: capture.operation,
+            classification: scryer_application::IndexerErrorClassification::Unknown,
+            provider_error_code: None,
+            message: "Indexer plugin command failed without an HTTP response".to_string(),
+            content_type: None,
+            response: None,
+            occurred_at: chrono::Utc::now(),
+        };
+        if let Err(error) = capture.recorder.record(error) {
+            tracing::warn!(
+                indexer_id = capture.indexer_id.as_str(),
+                error = %error,
+                "failed to persist indexer transport error"
             );
         }
     }
@@ -1256,8 +1286,8 @@ mod tests {
                 1,
                 "terminal completion must not duplicate 401"
             );
-            assert_eq!(errors[0].response.status, 401);
-            assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
+            assert_eq!(errors[0].response.as_ref().unwrap().status, 401);
+            assert_eq!(errors[0].response.as_ref().unwrap().body, vec![0, 255, 1, 254]);
             assert_eq!(
                 errors[0].classification,
                 scryer_application::IndexerErrorClassification::HttpUnauthorized
@@ -1287,11 +1317,37 @@ mod tests {
 
         let errors = recorder.errors.lock().expect("recorded errors");
         assert_eq!(errors.len(), 2);
-        assert_eq!(errors[1].response.status, 200);
-        assert_eq!(errors[1].response.body, b"malformed plugin result");
+        assert_eq!(errors[1].response.as_ref().unwrap().status, 200);
+        assert_eq!(errors[1].response.as_ref().unwrap().body, b"malformed plugin result");
         assert_eq!(
             errors[1].classification,
             scryer_application::IndexerErrorClassification::Unknown
+        );
+    }
+
+    #[test]
+    fn capture_scope_records_failed_operations_without_an_http_response() {
+        let recorder = Arc::new(RecordingIndexerErrorRecorder::default());
+        let host = PluginHttpHost::new(vec![], None, None, Some(64 * 1024));
+        host.begin_indexer_error_capture(IndexerErrorCaptureContext {
+            indexer_id: "indexer-1".to_string(),
+            indexer_name: "Test indexer".to_string(),
+            operation: IndexerErrorOperation::AutomaticSearch,
+            recorder: recorder.clone(),
+        });
+
+        host.finish_indexer_error_capture(true);
+
+        let errors = recorder.errors.lock().expect("recorded errors");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].response, None);
+        assert_eq!(
+            errors[0].classification,
+            scryer_application::IndexerErrorClassification::Unknown
+        );
+        assert_eq!(
+            errors[0].message,
+            "Indexer plugin command failed without an HTTP response"
         );
     }
 

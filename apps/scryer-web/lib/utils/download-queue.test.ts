@@ -7,11 +7,17 @@ import { createServer, type ViteDevServer } from "vite";
 const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 type DownloadQueueModule = {
+  IMPORT_ATTENTION_STATUSES: string[];
+  isManualImportRequiredQueueItem: (item: DownloadQueueItem) => boolean;
   mergeAuthoritativeQueueItems: (
     authoritativeItems: DownloadQueueItem[],
     previousItems: DownloadQueueItem[],
   ) => DownloadQueueItem[];
   matchesActivityStatuses: (
+    item: Pick<DownloadQueueItem, "displayState">,
+    statuses: string[],
+  ) => boolean;
+  matchesImportStatuses: (
     item: Pick<DownloadQueueItem, "displayState">,
     statuses: string[],
   ) => boolean;
@@ -140,6 +146,31 @@ test("a warned row filters with the activity chips", () => {
   assert.equal(downloadQueue.matchesActivityStatuses(item, ["WARNING"]), true);
   assert.equal(
     downloadQueue.matchesActivityStatuses(item, ["DOWNLOADING", "QUEUED"]),
+    false,
+  );
+});
+
+test("active imports are exclusive to the live Activity stream", () => {
+  assert.deepEqual(downloadQueue.IMPORT_ATTENTION_STATUSES, [
+    "PENDING",
+    "BLOCKED",
+    "FAILED",
+  ]);
+  assert.equal(
+    downloadQueue.matchesImportStatuses(
+      { displayState: "IMPORTING" },
+      downloadQueue.IMPORT_ATTENTION_STATUSES,
+    ),
+    false,
+  );
+  assert.equal(
+    downloadQueue.isManualImportRequiredQueueItem(
+      queueItem({
+        importStatus: "RUNNING",
+        state: "COMPLETED",
+        displayState: "IMPORTING",
+      }),
+    ),
     false,
   );
 });

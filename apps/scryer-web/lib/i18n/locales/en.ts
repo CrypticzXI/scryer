@@ -3079,9 +3079,9 @@ const en: LocaleDictionary = {
   "indexerErrors.detailLoadError": "The captured response could not be loaded.",
   "indexerErrors.detailMissing": "This captured response is no longer available.",
   "indexerErrors.empty":
-    "No HTTP error responses were captured in the last 30 days. Transport failures without an HTTP response are not retained.",
+    "No indexer errors were recorded in the last 30 days.",
   "indexerErrors.retentionNotice":
-    "Captured HTTP responses are retained for 30 days. Expand a row to inspect headers and the response body.",
+    "Indexer errors are retained for 30 days. HTTP responses include captured headers and body; transport failures retain diagnostics only.",
   "indexerErrors.occurred": "Occurred",
   "indexerErrors.indexer": "Indexer",
   "indexerErrors.operation": "Operation",
@@ -3093,6 +3093,7 @@ const en: LocaleDictionary = {
   "indexerErrors.expand": "Expand captured response",
   "indexerErrors.collapse": "Collapse captured response",
   "indexerErrors.response": "Captured HTTP response",
+  "indexerErrors.noHttpResponse": "No HTTP response was received; this transport failure has diagnostic details only.",
   "indexerErrors.headers": "Response headers",
   "indexerErrors.noHeaders": "No response headers were captured.",
   "indexerErrors.body": "Response body",

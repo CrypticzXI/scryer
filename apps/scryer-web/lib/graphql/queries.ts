@@ -2246,7 +2246,7 @@ export const activeImportStreamsSyncSubscription = `subscription ActiveImportStr
 }`;
 
 export const importQueueCountQuery = `query ImportQueueCount {
-  downloadImport(limit: 1, offset: 0, filter: ALL) {
+  downloadImport(limit: 1, offset: 0, filter: ATTENTION) {
     totalCount
   }
 }`;

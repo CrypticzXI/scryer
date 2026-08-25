@@ -778,6 +778,7 @@ pub enum DownloadActivityFilter {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DownloadImportFilter {
     All,
+    Attention,
     Importing,
     Pending,
     Blocked,
@@ -1962,7 +1963,7 @@ impl IndexerErrorOperation {
     }
 }
 
-/// Stable, operator-facing classification for a persisted indexer HTTP error.
+/// Stable, operator-facing classification for a persisted indexer error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexerErrorClassification {
     NewznabInvalidApiKey,
@@ -2078,7 +2079,8 @@ pub struct NewIndexerError {
     pub provider_error_code: Option<u16>,
     pub message: String,
     pub content_type: Option<String>,
-    pub response: CapturedIndexerHttpResponse,
+    /// Present only when the upstream returned an HTTP response.
+    pub response: Option<CapturedIndexerHttpResponse>,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -2088,7 +2090,8 @@ pub struct IndexerErrorSummary {
     pub indexer_id: String,
     pub indexer_name: String,
     pub operation: IndexerErrorOperation,
-    pub http_status: u16,
+    /// Present only when the upstream returned an HTTP response.
+    pub http_status: Option<u16>,
     pub classification: IndexerErrorClassification,
     pub provider_error_code: Option<u16>,
     pub message: String,
@@ -2099,7 +2102,8 @@ pub struct IndexerErrorSummary {
 #[derive(Clone, Debug)]
 pub struct IndexerErrorDetail {
     pub summary: IndexerErrorSummary,
-    pub response: CapturedIndexerHttpResponse,
+    /// Present only when the upstream returned an HTTP response.
+    pub response: Option<CapturedIndexerHttpResponse>,
 }
 
 #[derive(Clone, Debug)]

@@ -349,7 +349,7 @@ pub struct NavigationBadgeCountsPayload {
     pub pending_import_counts: PendingImportCountsPayload,
     /// Pending media requests visible to the caller.
     pub pending_media_request_counts: MediaRequestCountsPayload,
-    /// Count of import activity visible to the caller.
+    /// Count of imports awaiting operator attention and visible to the caller.
     pub activity_import_count: i32,
     /// Count of available plugin updates visible to the caller.
     pub plugin_update_count: i32,

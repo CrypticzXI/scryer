@@ -415,7 +415,7 @@ impl ProwlarrErrorCapture {
             provider_error_code: classified.provider_error_code,
             message: classified.message.to_string(),
             content_type: indexer_response_content_type(&response),
-            response,
+            response: Some(response),
             occurred_at: chrono::Utc::now(),
         };
         if let Err(error) = self.indexer_errors.record(error).await {
@@ -2323,8 +2323,8 @@ mod tests {
         let errors = repository.errors.lock().await;
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
-        assert_eq!(errors[0].response.status, 500);
-        assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
+        assert_eq!(errors[0].response.as_ref().unwrap().status, 500);
+        assert_eq!(errors[0].response.as_ref().unwrap().body, vec![0, 255, 1, 254]);
         assert_eq!(
             errors[0].classification,
             scryer_application::IndexerErrorClassification::HttpServerError
@@ -2346,8 +2346,8 @@ mod tests {
         assert!(matches!(error, ProwlarrRequestError::Unsupported(_)));
         let errors = repository.errors.lock().await;
         assert_eq!(errors.len(), 2);
-        assert_eq!(errors[1].response.status, 200);
-        assert_eq!(errors[1].response.body, b"not-json");
+        assert_eq!(errors[1].response.as_ref().unwrap().status, 200);
+        assert_eq!(errors[1].response.as_ref().unwrap().body, b"not-json");
         assert_eq!(
             errors[1].classification,
             scryer_application::IndexerErrorClassification::Unknown
@@ -2394,8 +2394,8 @@ mod tests {
 
         let errors = repository.errors.lock().await;
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].response.status, 429);
-        assert_eq!(errors[0].response.body, b"rate limited body");
+        assert_eq!(errors[0].response.as_ref().unwrap().status, 429);
+        assert_eq!(errors[0].response.as_ref().unwrap().body, b"rate limited body");
         assert_eq!(errors[0].operation, IndexerErrorOperation::ConnectionTest);
         assert_eq!(
             errors[0].classification,

@@ -4316,6 +4316,10 @@ enum DownloadImportFilterValue {
 	"""
 	ALL
 	"""
+	Include imports awaiting attention rather than actively executing.
+	"""
+	ATTENTION
+	"""
 	Include imports currently running.
 	"""
 	IMPORTING
@@ -11967,7 +11971,7 @@ type NavigationBadgeCountsPayload {
 	"""
 	pendingMediaRequestCounts: MediaRequestCountsPayload!
 	"""
-	Count of import activity visible to the caller.
+	Count of imports awaiting operator attention and visible to the caller.
 	"""
 	activityImportCount: Int!
 	"""

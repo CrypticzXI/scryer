@@ -919,12 +919,26 @@ async fn count_download_import_items_matches_selected_filter() {
         .count_download_import_items(&user, DownloadImportFilter::All)
         .await
         .expect("all import count");
+    let attention_page = app
+        .list_download_import_page(&user, 50, 0, DownloadImportFilter::Attention)
+        .await
+        .expect("attention import page");
+    let attention_count = app
+        .count_download_import_items(&user, DownloadImportFilter::Attention)
+        .await
+        .expect("attention import count");
     let pending_count = app
         .count_download_import_items(&user, DownloadImportFilter::Pending)
         .await
         .expect("pending import count");
 
     assert_eq!(all_count, all_page.total_count as i64);
+    assert_eq!(attention_count, attention_page.total_count as i64);
+    assert_eq!(attention_count, 2);
+    assert!(attention_page
+        .items
+        .iter()
+        .all(|item| item.download_client_item_id != "importing-1"));
     assert_eq!(pending_count, 1);
     assert_eq!(pending.download_client_item_id, "pending-1");
 }

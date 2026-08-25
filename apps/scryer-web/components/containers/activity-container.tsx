@@ -38,6 +38,7 @@ import type {
 } from "@/lib/types";
 import {
   downloadQueueItemIdentityKey,
+  IMPORT_ATTENTION_STATUSES,
   matchesImportStatuses,
 } from "@/lib/utils/download-queue";
 import {
@@ -48,12 +49,6 @@ import {
 type ActivityTab = Exclude<ActivitySection, "history">;
 type SortConfigByTab = Record<ActivityTab, SortConfig>;
 
-const IMPORT_STATUS_OPTIONS: DownloadImportStatus[] = [
-  "IMPORTING",
-  "PENDING",
-  "BLOCKED",
-  "FAILED",
-];
 const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
   "DOWNLOADING",
   "QUEUED",
@@ -138,7 +133,7 @@ export const ActivityContainer = memo(function ActivityContainer({
   const activityTabActive = activeTab === "activity";
   const { streams: activeImportStreams } = useActiveImportStreams(activityTabActive);
   const [selectedImportStatuses, setSelectedImportStatuses] = useState<DownloadImportStatus[]>([
-    ...IMPORT_STATUS_OPTIONS,
+    ...IMPORT_ATTENTION_STATUSES,
   ]);
   const [selectedActivityStatuses, setSelectedActivityStatuses] = useState<
     DownloadActivityStatus[]
@@ -191,7 +186,7 @@ export const ActivityContainer = memo(function ActivityContainer({
     loadMoreImport,
   } = useDownloadImport({
     enabled: importTabActive,
-    filter: "ALL",
+    filter: "ATTENTION",
   });
   const filteredImportItems = useMemo(() => {
     return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
@@ -624,7 +619,7 @@ export const ActivityContainer = memo(function ActivityContainer({
         ...current,
         [downloadQueueItemIdentityKey(item)]: true,
       }));
-      if (matchesImportStatuses(item, IMPORT_STATUS_OPTIONS)) {
+      if (matchesImportStatuses(item, IMPORT_ATTENTION_STATUSES)) {
         decrementImportBadges();
       }
       setGlobalStatus(t("queue.deleteQueued"));
@@ -680,7 +675,7 @@ export const ActivityContainer = memo(function ActivityContainer({
           return next;
         });
         const importSucceeded = succeededItems.filter((item) =>
-          matchesImportStatuses(item, IMPORT_STATUS_OPTIONS),
+          matchesImportStatuses(item, IMPORT_ATTENTION_STATUSES),
         ).length;
         if (importSucceeded > 0) {
           decrementImportBadges(importSucceeded);

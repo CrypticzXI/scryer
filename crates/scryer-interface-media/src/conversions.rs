@@ -172,6 +172,7 @@ impl IntoApplication<scryer_application::DownloadImportFilter> for DownloadImpor
     fn into_application(self) -> scryer_application::DownloadImportFilter {
         match self {
             Self::All => scryer_application::DownloadImportFilter::All,
+            Self::Attention => scryer_application::DownloadImportFilter::Attention,
             Self::Importing => scryer_application::DownloadImportFilter::Importing,
             Self::Pending => scryer_application::DownloadImportFilter::Pending,
             Self::Blocked => scryer_application::DownloadImportFilter::Blocked,

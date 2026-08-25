@@ -185,7 +185,7 @@ export function DashboardContainer() {
       .query(downloadImportQuery, {
         limit: PREVIEW_FETCH_LIMIT,
         offset: 0,
-        filter: "ALL",
+        filter: "ATTENTION",
       })
       .toPromise();
     if (error) throw error;

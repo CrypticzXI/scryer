@@ -547,6 +547,8 @@ pub enum DownloadActivityFilterValue {
 pub enum DownloadImportFilterValue {
     /// Include every import state.
     All,
+    /// Include imports awaiting attention rather than actively executing.
+    Attention,
     /// Include imports currently running.
     Importing,
     /// Include imports awaiting action.

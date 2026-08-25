@@ -260,7 +260,7 @@ export function HistoryEventTable({
 
   if (events.length === 0) {
     return (
-      <p className="py-4 text-sm text-muted-foreground">
+      <p className="px-4 py-4 text-sm text-muted-foreground">
         {emptyMessage ?? t("history.empty")}
       </p>
     );

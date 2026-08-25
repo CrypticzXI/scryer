@@ -7,12 +7,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
     AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
-    IndexerErrorOperation, IndexerPluginProvider, IndexerProxyConfigRepository,
+    IndexerErrorClassification, IndexerErrorOperation, IndexerErrorRepository,
+    IndexerPluginProvider, IndexerProxyConfigRepository,
     IndexerQueryOutcome, IndexerRoutingPlan, IndexerSearchLearningContext,
     IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
     IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, IndexerStatsTracker,
-    IndexerSystemBackoff, NullIndexerProxyConfigRepository, NullIndexerSearchLearningRepository,
-    NullUpstreamScheduler, RateLimitCooldownAction, RateLimitSignal, ReleaseCandidateProvenance,
+    IndexerSystemBackoff, NewIndexerError, NullIndexerErrorRepository,
+    NullIndexerProxyConfigRepository, NullIndexerSearchLearningRepository, NullUpstreamScheduler,
+    RateLimitCooldownAction, RateLimitSignal, ReleaseCandidateProvenance,
     ReleaseSearchSubjectKind, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
     SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
     SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
@@ -75,6 +77,7 @@ struct StrategyExecutionOutcome {
     elapsed: std::time::Duration,
     retry_after: Option<std::time::Duration>,
     rate_limited: bool,
+    timed_out: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -372,9 +375,10 @@ impl StrategyBatchHealth {
     }
 }
 
-const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 12;
+const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 60;
 // Queue admission, the primary tier, and the fallback tier share one deadline.
 const INTERACTIVE_CANDIDATE_TIMEOUT_WINDOWS: u32 = 3;
+/// Minimum background request budget for small installations.
 const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
 /// Each target worker can query every configured indexer without waiting on an
 /// arbitrary global cap. Eight target workers × fifteen indexers is 120 leaves.
@@ -1158,6 +1162,7 @@ pub struct MultiIndexerSearchClient {
     indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
     stats_tracker: Arc<dyn IndexerStatsTracker>,
     search_learning: Arc<dyn IndexerSearchLearningRepository>,
+    indexer_errors: Arc<dyn IndexerErrorRepository>,
     plugin_provider: Arc<dyn IndexerPluginProvider>,
     upstream_scheduler: Arc<dyn UpstreamScheduler>,
     rate_limiter: IndexerRateLimiter,
@@ -1207,6 +1212,7 @@ impl MultiIndexerSearchClient {
             indexer_proxy_configs: Arc::new(NullIndexerProxyConfigRepository),
             stats_tracker,
             search_learning: Arc::new(NullIndexerSearchLearningRepository),
+            indexer_errors: Arc::new(NullIndexerErrorRepository),
             plugin_provider,
             upstream_scheduler: Arc::new(NullUpstreamScheduler),
             rate_limiter: IndexerRateLimiter::new(),
@@ -1239,6 +1245,14 @@ impl MultiIndexerSearchClient {
         search_learning: Arc<dyn IndexerSearchLearningRepository>,
     ) -> Self {
         self.search_learning = search_learning;
+        self
+    }
+
+    pub fn with_indexer_error_repository(
+        mut self,
+        indexer_errors: Arc<dyn IndexerErrorRepository>,
+    ) -> Self {
+        self.indexer_errors = indexer_errors;
         self
     }
 
@@ -1935,6 +1949,7 @@ impl MultiIndexerSearchClient {
                                     elapsed: std::time::Duration::ZERO,
                                     retry_after: None,
                                     rate_limited: false,
+                                    timed_out: false,
                                 };
                             }
                             Err(SearchWindowError::DeadlineExpired) => {
@@ -1948,6 +1963,7 @@ impl MultiIndexerSearchClient {
                                     elapsed: std::time::Duration::ZERO,
                                     retry_after: None,
                                     rate_limited: false,
+                                    timed_out: false,
                                 };
                             }
                         }
@@ -1956,7 +1972,7 @@ impl MultiIndexerSearchClient {
                         let request_deadline =
                             effective_request_deadline(search_timeout, deadline_at);
                         let mut request_fired = false;
-                        let response = match within_search_window(
+                        let (response, timed_out) = match within_search_window(
                             async {
                                 request_fired = true;
                                 client
@@ -2008,12 +2024,15 @@ impl MultiIndexerSearchClient {
                         )
                         .await
                         {
-                            Ok(response) => response,
+                            Ok(response) => (response, false),
                             Err(SearchWindowError::Cancelled) => {
-                                Err(AppError::canceled("indexer strategy canceled"))
+                                (Err(AppError::canceled("indexer strategy canceled")), false)
                             }
                             Err(SearchWindowError::DeadlineExpired) => {
-                                Err(AppError::Repository("indexer search timed out".into()))
+                                (
+                                    Err(AppError::Repository("indexer search timed out".into())),
+                                    true,
+                                )
                             }
                         };
                         let rate_limit_signal = response
@@ -2033,6 +2052,7 @@ impl MultiIndexerSearchClient {
                             elapsed: start.elapsed(),
                             retry_after,
                             rate_limited,
+                            timed_out,
                         };
                     }
                     Err(SearchPermitError::Cancelled) => {
@@ -2054,6 +2074,7 @@ impl MultiIndexerSearchClient {
                     elapsed: std::time::Duration::ZERO,
                     retry_after: None,
                     rate_limited: false,
+                    timed_out: false,
                 }
             });
         }
@@ -2072,6 +2093,7 @@ impl MultiIndexerSearchClient {
                         elapsed: std::time::Duration::ZERO,
                         retry_after: None,
                         rate_limited: false,
+                        timed_out: false,
                     });
                     break;
                 }
@@ -2095,6 +2117,7 @@ impl MultiIndexerSearchClient {
                     elapsed: std::time::Duration::ZERO,
                     retry_after: None,
                     rate_limited: false,
+                    timed_out: false,
                 }),
             }
         }
@@ -3178,6 +3201,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             let learning_context = learning_context.clone();
             let backoff_tracker = self.backoff_tracker.clone();
             let indexer_configs = self.indexer_configs.clone();
+            let indexer_errors = self.indexer_errors.clone();
             let client = client.clone();
             let primary_strategies = primary_strategies.clone();
             let fallback_strategies = fallback_strategies.clone();
@@ -3201,6 +3225,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let mut any_strategy_fired = false;
                 let mut primary_attempted = false;
                 let mut primary_had_error = false;
+                let mut batch_had_timeout = false;
                 let mut batch_health = StrategyBatchHealth::default();
                 let mut quota_observation = IndexerQuotaObservation::default();
 
@@ -3226,6 +3251,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                 .await;
 
                 for outcome in primary_outcomes {
+                    batch_had_timeout |= outcome.timed_out;
                     if !outcome.request_fired {
                         if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                             return (
@@ -3376,6 +3402,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     .await;
 
                     for outcome in fallback_outcomes {
+                        batch_had_timeout |= outcome.timed_out;
                         if !outcome.request_fired {
                             if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                                 return (
@@ -3503,6 +3530,28 @@ impl IndexerClient for MultiIndexerSearchClient {
                         had_persisted_system_backoff,
                     )
                     .await;
+
+                if batch_had_timeout && !batch_had_success {
+                    let error = NewIndexerError {
+                        id: scryer_domain::Id::new().0,
+                        indexer_id: indexer_id.clone(),
+                        indexer_name: indexer_name.clone(),
+                        operation,
+                        classification: IndexerErrorClassification::HttpRequestTimeout,
+                        provider_error_code: None,
+                        message: "Indexer search timed out".to_string(),
+                        content_type: None,
+                        response: None,
+                        occurred_at: Utc::now(),
+                    };
+                    if let Err(error) = indexer_errors.record(error).await {
+                        warn!(
+                            indexer = indexer_name.as_str(),
+                            error = %error,
+                            "failed to persist indexer transport error"
+                        );
+                    }
+                }
 
                 if mode == SearchMode::Interactive
                     && collected_results.is_empty()
@@ -4292,6 +4341,14 @@ mod tests {
 
         assert!(entry.claim_feedback());
         assert!(!entry.claim_feedback());
+    }
+
+    #[test]
+    fn direct_indexer_search_deadline_is_sixty_seconds() {
+        assert_eq!(
+            MultiIndexerSearchClient::effective_indexer_search_timeout(None),
+            std::time::Duration::from_secs(60)
+        );
     }
 
     #[test]
