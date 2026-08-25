@@ -8135,6 +8135,18 @@ input ManualImportCandidateMappingInput {
 }
 
 """
+Media facts obtained while qualifying a manual-import candidate.
+"""
+type ManualImportVideoFactsPayload {
+	containerFormat: String
+	videoCodec: String
+	audioCodec: String
+	videoWidth: Int
+	videoHeight: Int
+	durationSeconds: Int
+}
+
+"""
 Candidate file details used to preview a manual import selection.
 """
 type ManualImportFilePreviewPayload {
@@ -8150,6 +8162,10 @@ type ManualImportFilePreviewPayload {
 	Candidate file size in bytes.
 	"""
 	sizeBytes: Long!
+	"""
+	Media facts when the native content probe can identify the file.
+	"""
+	videoFacts: ManualImportVideoFactsPayload
 	"""
 	Parsed quality label, or null when unavailable.
 	"""

@@ -4583,8 +4583,13 @@ const PACK_VIDEO_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 fn write_pack_video(dir: &Path, file_name: &str) -> std::path::PathBuf {
     let path = dir.join(file_name);
-    std::fs::File::create(&path)
-        .expect("create source video")
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scryer-mediainfo/tests/media/hevc_hdr10plus.mkv");
+    std::fs::copy(fixture, &path).expect("copy source video fixture");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open source video fixture")
         .set_len(PACK_VIDEO_SIZE_BYTES)
         .expect("size source video above the sample threshold and the minimum-size veto");
     path

@@ -34,6 +34,10 @@ import {
   queueManualImportMutation,
 } from "@/lib/graphql/mutations";
 import { selectorId } from "@/lib/utils/dom-ids";
+import {
+  formatManualImportVideoFacts,
+  type ManualImportVideoFacts,
+} from "@/lib/utils/manual-import-video-facts";
 import { buildViewPath } from "@/lib/utils/routing";
 import { useNavigate } from "react-router";
 import { useClient } from "urql";
@@ -48,6 +52,7 @@ type FilePreview = {
   candidateId: string;
   fileName: string;
   sizeBytes: number;
+  videoFacts: ManualImportVideoFacts | null;
   quality: string | null;
   parsedSeason: number | null;
   parsedEpisodes: number[];
@@ -357,11 +362,16 @@ export function ManualImportDialog({
                       id={selectorId("activity-manual-import-file-row", file.candidateId)}
                     >
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <FileVideo className="h-4 w-4 shrink-0 text-muted-foreground/60" />
-                          <span className="max-w-[280px] truncate font-[var(--font-code)] text-xs text-card-foreground" title={file.fileName}>
-                            {file.fileName}
-                          </span>
+                        <div className="flex items-start gap-2">
+                          <FileVideo className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/60" />
+                          <div className="min-w-0">
+                            <span className="block max-w-[280px] truncate font-[var(--font-code)] text-xs text-card-foreground" title={file.fileName}>
+                              {file.fileName}
+                            </span>
+                            <span className="mt-0.5 block max-w-[340px] truncate text-[10px] text-muted-foreground" title={formatManualImportVideoFacts(file.videoFacts)}>
+                              {formatManualImportVideoFacts(file.videoFacts)}
+                            </span>
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-[var(--font-code)] text-xs text-muted-foreground">

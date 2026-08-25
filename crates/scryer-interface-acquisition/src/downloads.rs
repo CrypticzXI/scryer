@@ -318,6 +318,14 @@ impl DownloadMutations {
                     candidate_id: file.candidate_id.into(),
                     file_name: file.file_name,
                     size_bytes: Long::from(file.size_bytes),
+                    video_facts: file.video_facts.map(|facts| ManualImportVideoFactsPayload {
+                        container_format: facts.container_format,
+                        video_codec: facts.video_codec,
+                        audio_codec: facts.audio_codec,
+                        video_width: facts.video_width,
+                        video_height: facts.video_height,
+                        duration_seconds: facts.duration_seconds,
+                    }),
                     quality: file.quality,
                     parsed_season: file.parsed_season.map(|value| value as i32),
                     parsed_episodes: file

@@ -1301,6 +1301,14 @@ export const beginManualImportSelectionMutation = `mutation BeginManualImportSel
       candidateId
       fileName
       sizeBytes
+      videoFacts {
+        containerFormat
+        videoCodec
+        audioCodec
+        videoWidth
+        videoHeight
+        durationSeconds
+      }
       quality
       parsedSeason
       parsedEpisodes
