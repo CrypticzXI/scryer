@@ -1014,7 +1014,9 @@ fn execute_challenge_solver_request(
     let provider = policy.config.provider_type;
     let provider_name = solver::solver_provider_name(provider);
     let endpoint = solver::solver_solve_endpoint(&policy.config.base_url);
-    let solver_timeout = Duration::from_secs(policy.config.request_timeout_seconds as u64 + 5);
+    let solver_timeout = scryer_outbound_http::effective_indexer_proxy_request_timeout(
+        policy.config.request_timeout_seconds,
+    );
     let solver_deadline = Instant::now() + solver_timeout;
     tracing::debug!(
         indexer_id = policy.indexer_id.as_str(),

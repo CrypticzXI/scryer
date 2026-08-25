@@ -30,7 +30,8 @@ use super::{
 
 // NZBGet can take a while to serialize large queue and history responses. Safe reads may make
 // three attempts, so 90 seconds per attempt still fits beneath the default 300-second client gate.
-const NZBGET_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+const NZBGET_HTTP_REQUEST_TIMEOUT: Duration =
+    scryer_outbound_http::DOWNLOAD_CLIENT_HTTP_TIMEOUT;
 
 #[derive(Clone)]
 pub struct NzbgetDownloadClient {

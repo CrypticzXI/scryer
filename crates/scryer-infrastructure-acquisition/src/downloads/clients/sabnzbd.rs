@@ -119,7 +119,8 @@ enum SabApiAuth {
 const SAB_ADDFILE_UPLOAD_FIELD: &str = "nzbfile";
 // Safe reads may make three attempts. Ninety seconds per attempt plus the
 // bounded retry backoff remains below the default 300-second feedback gate.
-const SABNZBD_HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+const SABNZBD_HTTP_REQUEST_TIMEOUT: std::time::Duration =
+    scryer_outbound_http::DOWNLOAD_CLIENT_HTTP_TIMEOUT;
 const SAB_SECRET_QUERY_KEYS: &[&str] = &["apikey", "api_key", "ma_password", "password"];
 
 #[derive(Clone)]

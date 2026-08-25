@@ -1183,7 +1183,7 @@ export function SettingsIndexersSection({
             <Input
               id="settings-indexer-proxy-timeout"
               min={1}
-              max={180}
+              max={120}
               {...signedIntegerInputProps}
               value={indexerProxyDraft.requestTimeoutSeconds}
               onChange={(event) =>

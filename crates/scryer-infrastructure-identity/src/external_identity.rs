@@ -25,7 +25,6 @@ const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct HttpExternalIdentityVerifier {
     client: reqwest::Client,
-    emby_client: reqwest::Client,
     plex_base_url: Url,
     emby_connect_base_url: Url,
 }
@@ -34,12 +33,6 @@ impl HttpExternalIdentityVerifier {
     pub fn new() -> Self {
         Self {
             client: generic_reqwest_client(),
-            emby_client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .expect("Emby HTTP client should build"),
             plex_base_url: Url::parse(PLEX_BASE_URL).expect("valid Plex base URL"),
             emby_connect_base_url: Url::parse("https://connect.emby.media/service/")
                 .expect("valid Emby Connect base URL"),
@@ -58,12 +51,6 @@ impl HttpExternalIdentityVerifier {
     fn with_plex_base_url(plex_base_url: Url) -> Self {
         Self {
             client: generic_reqwest_client(),
-            emby_client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .expect("Emby HTTP client should build"),
             plex_base_url,
             emby_connect_base_url: Url::parse("https://connect.emby.media/service/")
                 .expect("valid Emby Connect base URL"),
@@ -603,7 +590,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         connection_id: &str,
         base_url: &str,
     ) -> AppResult<EmbyServerIdentity> {
-        super::emby::resolve_api_base(&self.emby_client, connection_id, base_url).await
+        super::emby::resolve_api_base(&self.client, connection_id, base_url).await
     }
 
     async fn test_emby_api_key(
@@ -614,7 +601,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         expected_server_id: Option<&str>,
     ) -> AppResult<EmbyServerIdentity> {
         super::emby::test_api_key(
-            &self.emby_client,
+            &self.client,
             connection_id,
             base_url,
             api_key,
@@ -631,7 +618,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         password: &str,
     ) -> AppResult<EmbyApiKeyExchange> {
         super::emby::exchange_local_admin_api_key(
-            &self.emby_client,
+            &self.client,
             connection_id,
             base_url,
             username,
@@ -646,7 +633,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         password: &str,
     ) -> AppResult<Vec<EmbyConnectServer>> {
         super::emby::discover_connect_servers(
-            &self.emby_client,
+            &self.client,
             &self.emby_connect_base_url,
             username_or_email,
             password,
@@ -663,7 +650,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         password: &str,
     ) -> AppResult<EmbyApiKeyExchange> {
         super::emby::exchange_connect_admin_api_key(
-            &self.emby_client,
+            &self.client,
             &self.emby_connect_base_url,
             connection_id,
             base_url,
@@ -681,7 +668,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         compensate_created_key: bool,
     ) {
         super::emby::finish_api_key_exchange(
-            &self.emby_client,
+            &self.client,
             connection_id,
             cleanup,
             compensate_created_key,
@@ -698,7 +685,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         password: &str,
     ) -> AppResult<VerifiedExternalIdentity> {
         super::emby::verify_local_identity(
-            &self.emby_client,
+            &self.client,
             connection_id,
             base_url,
             expected_server_id,
@@ -717,7 +704,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         password: &str,
     ) -> AppResult<EmbyConnectIdentityVerification> {
         super::emby::verify_connect_identity(
-            &self.emby_client,
+            &self.client,
             &self.emby_connect_base_url,
             connection_id,
             base_url,
@@ -753,7 +740,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         api_key: &str,
         search: Option<&str>,
     ) -> AppResult<Vec<EmbyServerUser>> {
-        super::emby::list_users(&self.emby_client, connection_id, base_url, api_key, search).await
+        super::emby::list_users(&self.client, connection_id, base_url, api_key, search).await
     }
 
     async fn fetch_emby_user_avatar(
@@ -764,7 +751,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
         user_id: &str,
         image_tag: &str,
     ) -> AppResult<Option<EmbyAvatar>> {
-        super::emby::fetch_avatar(&self.emby_client, base_url, api_key, user_id, image_tag).await
+        super::emby::fetch_avatar(&self.client, base_url, api_key, user_id, image_tag).await
     }
 
     async fn list_plex_users(

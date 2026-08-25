@@ -49,7 +49,7 @@ use crate::wasmtime_host::{CommandInvocation, process_command};
 // Keep plugin work below the outer download-feedback gate while leaving enough
 // room for large client responses on slower hosts.
 pub(crate) const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(240);
+    scryer_outbound_http::DOWNLOAD_CLIENT_PLUGIN_TIMEOUT;
 pub struct WasmDownloadClient {
     plugin: Option<Arc<Mutex<LegacyPlugin>>>,
     command: Option<Arc<CommandDownloadClient>>,

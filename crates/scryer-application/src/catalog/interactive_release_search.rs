@@ -21,7 +21,7 @@ use tracing::{Instrument, info};
 
 /// Overall deadline for a job; stragglers past this are marked failed.
 const INTERACTIVE_RELEASE_SEARCH_DEADLINE: std::time::Duration =
-    scryer_outbound_http::LONG_RUNNING_HTTP_OPERATION_TIMEOUT;
+    scryer_outbound_http::INDEXER_HTTP_TIMEOUT;
 /// Terminal jobs are evicted this long after completion.
 const COMPLETED_JOB_TTL_MINUTES: i64 = 5;
 /// Defensive cap: running jobs older than this are cancelled and evicted.

@@ -885,41 +885,38 @@ impl Default for RateLimitRegistry {
 pub const DEFAULT_USER_AGENT: &str = concat!("Scryer/", env!("CARGO_PKG_VERSION"));
 pub const INDEXER_PROXY_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+/// Transport timeouts are per attempt; workflow-level guards own aggregate deadlines.
 pub const STANDARD_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Per-attempt budget for native SABnzbd and NZBGet requests.
+pub const DOWNLOAD_CLIENT_HTTP_TIMEOUT: Duration = Duration::from_secs(90);
 /// Base wall-clock budget for indexer HTTP and plugin search operations.
 pub const INDEXER_HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+/// Total invocation budget for download-client plugin operations.
+pub const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(240);
+/// Default workflow deadline for reading download-client feedback.
+pub const DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT: Duration = Duration::from_secs(300);
 /// Maximum operator-configurable request budget for an indexer proxy.
-pub const MAX_INDEXER_PROXY_TIMEOUT_SECONDS: u32 = 180;
+pub const MAX_INDEXER_PROXY_TIMEOUT_SECONDS: u32 = 120;
 /// Scheduling/response grace added when an indexer may invoke a configured proxy.
 pub const INDEXER_PROXY_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
-/// Safety ceiling for coordinators that may contain any valid indexer request.
-pub const MAX_INDEXER_OPERATION_TIMEOUT: Duration = Duration::from_secs(
-    INDEXER_HTTP_TIMEOUT.as_secs()
-        + MAX_INDEXER_PROXY_TIMEOUT_SECONDS as u64
-        + INDEXER_PROXY_TIMEOUT_GRACE.as_secs(),
-);
-/// Outer request/job grace above the longest valid indexer or default download operation.
-pub const LONG_RUNNING_HTTP_OPERATION_TIMEOUT: Duration =
-    Duration::from_secs(MAX_INDEXER_OPERATION_TIMEOUT.as_secs() + 5);
+/// Budget for bounded operations that legitimately outlive an ordinary request.
+pub const LONG_RUNNING_HTTP_OPERATION_TIMEOUT: Duration = Duration::from_secs(310);
 
 /// Return the canonical wall-clock budget for one indexer operation.
 ///
-/// A proxied operation receives the base indexer budget plus the proxy's own
-/// configured request budget and a small handoff grace. Keeping this policy in
-/// the outbound layer prevents plugin, native-indexer, and coordinator timeouts
-/// from silently diverging.
-pub fn effective_indexer_timeout(proxy_request_timeout_seconds: Option<u32>) -> Duration {
-    let Some(proxy_request_timeout_seconds) = proxy_request_timeout_seconds else {
-        return INDEXER_HTTP_TIMEOUT;
-    };
-
-    let proxy_request_timeout_seconds =
-        proxy_request_timeout_seconds.min(MAX_INDEXER_PROXY_TIMEOUT_SECONDS);
+/// Proxies do not extend this budget; all indexer paths share the same ceiling.
+pub fn effective_indexer_timeout(_proxy_request_timeout_seconds: Option<u32>) -> Duration {
     INDEXER_HTTP_TIMEOUT
-        .saturating_add(Duration::from_secs(u64::from(
-            proxy_request_timeout_seconds,
-        )))
+}
+
+/// Return the bounded request budget for a solver or proxy-health request.
+pub fn effective_indexer_proxy_request_timeout(request_timeout_seconds: u32) -> Duration {
+    Duration::from_secs(u64::from(request_timeout_seconds.clamp(
+        1,
+        MAX_INDEXER_PROXY_TIMEOUT_SECONDS,
+    )))
         .saturating_add(INDEXER_PROXY_TIMEOUT_GRACE)
+        .min(INDEXER_HTTP_TIMEOUT)
 }
 
 #[derive(Debug, Error)]
@@ -1510,7 +1507,6 @@ pub fn indexer_proxy_health_reqwest_client(timeout: Duration) -> Result<Client, 
 
 pub fn external_arr_reqwest_client() -> Client {
     let mut builder = reqwest_client_builder()
-        .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none());
     if let Ok(proxy_url) = std::env::var("SCRYER_EXTERNAL_ARR_PROXY_URL")
         && !proxy_url.trim().is_empty()
@@ -2372,17 +2368,25 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn indexer_timeout_policy_has_ordered_inner_and_outer_budgets() {
+    fn indexer_timeout_policy_is_fixed_for_direct_and_proxied_requests() {
         assert_eq!(effective_indexer_timeout(None), Duration::from_secs(120));
         assert_eq!(
             effective_indexer_timeout(Some(60)),
-            Duration::from_secs(185)
+            INDEXER_HTTP_TIMEOUT
         );
         assert_eq!(
             effective_indexer_timeout(Some(u32::MAX)),
-            MAX_INDEXER_OPERATION_TIMEOUT
+            INDEXER_HTTP_TIMEOUT
         );
-        assert!(LONG_RUNNING_HTTP_OPERATION_TIMEOUT > MAX_INDEXER_OPERATION_TIMEOUT);
+        assert_eq!(
+            effective_indexer_proxy_request_timeout(60),
+            Duration::from_secs(65)
+        );
+        assert_eq!(
+            effective_indexer_proxy_request_timeout(u32::MAX),
+            INDEXER_HTTP_TIMEOUT
+        );
+        assert!(LONG_RUNNING_HTTP_OPERATION_TIMEOUT > INDEXER_HTTP_TIMEOUT);
     }
 
     #[test]

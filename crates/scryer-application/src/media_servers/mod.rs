@@ -1,7 +1,8 @@
 use super::*;
 
 #[cfg(not(test))]
-const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration =
+    scryer_outbound_http::STANDARD_HTTP_TIMEOUT;
 #[cfg(test)]
 const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
 

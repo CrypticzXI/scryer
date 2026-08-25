@@ -39,21 +39,19 @@ use super::{
 
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
-const DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 300;
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS_ENV: &str =
     "SCRYER_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS";
 const DOWNLOAD_CLIENT_FEEDBACK_POLL_CONCURRENCY: usize = 4;
-const DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const SOLVER_RESPONSE_MAX_BYTES: usize = PROXIED_TORRENT_FILE_MAX_BYTES * 2;
 
-fn download_client_feedback_timeout() -> Duration {
+pub fn download_client_feedback_timeout() -> Duration {
     static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
         let raw = std::env::var(DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS_ENV).ok();
         parse_download_client_feedback_timeout(
             raw.as_deref(),
-            Duration::from_secs(DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS),
+            scryer_outbound_http::DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT,
         )
     })
 }
@@ -1304,7 +1302,7 @@ impl PrioritizedDownloadClientRouter {
                     "indexer",
                     download_url,
                     &[],
-                    DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT,
+                    scryer_outbound_http::STANDARD_HTTP_TIMEOUT,
                 )
                 .await?;
             return self.prepare_resolved_request(
@@ -1429,7 +1427,9 @@ impl PrioritizedDownloadClientRouter {
                 provider_name,
                 download_url,
                 &session_headers,
-                Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
+                scryer_outbound_http::effective_indexer_proxy_request_timeout(
+                    proxy_config.request_timeout_seconds,
+                ),
             )
             .await
         {
@@ -1471,7 +1471,9 @@ impl PrioritizedDownloadClientRouter {
         }
 
         let endpoint = solver::solver_solve_endpoint(&proxy_config.base_url);
-        let solver_timeout = Duration::from_secs(proxy_config.request_timeout_seconds as u64 + 5);
+        let solver_timeout = scryer_outbound_http::effective_indexer_proxy_request_timeout(
+            proxy_config.request_timeout_seconds,
+        );
         let solver_deadline = tokio::time::Instant::now() + solver_timeout;
         let response = tokio::time::timeout_at(
             solver_deadline,
@@ -1588,7 +1590,9 @@ impl PrioritizedDownloadClientRouter {
                     provider_name,
                     download_url,
                     &retry_headers,
-                    Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
+                    scryer_outbound_http::effective_indexer_proxy_request_timeout(
+                        proxy_config.request_timeout_seconds,
+                    ),
                 )
                 .await?;
             solver::SolvedSessionCache::shared().store_solution(
@@ -1620,7 +1624,9 @@ impl PrioritizedDownloadClientRouter {
                     provider_name,
                     download_url,
                     &retry_headers,
-                    Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
+                    scryer_outbound_http::effective_indexer_proxy_request_timeout(
+                        proxy_config.request_timeout_seconds,
+                    ),
                 )
                 .await?;
             return Self::classify_resolved_download_artifact(
@@ -1653,7 +1659,9 @@ impl PrioritizedDownloadClientRouter {
                         provider_name,
                         download_url,
                         &retry_headers,
-                        Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
+                        scryer_outbound_http::effective_indexer_proxy_request_timeout(
+                            proxy_config.request_timeout_seconds,
+                        ),
                     )
                     .await?;
                 Self::classify_resolved_download_artifact(
@@ -9127,7 +9135,7 @@ mod tests {
 
     #[test]
     fn download_client_feedback_timeout_configuration_uses_positive_seconds() {
-        let default = Duration::from_secs(DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS);
+        let default = scryer_outbound_http::DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT;
 
         assert_eq!(
             parse_download_client_feedback_timeout(None, default),
