@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Edit,
+  History,
   Lock,
   Plus,
   Power,
@@ -9,6 +10,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import {
+  IndexerErrorHistoryModal,
+  type IndexerErrorHistoryScope,
+} from "@/components/common/indexer-error-history-modal";
 import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -204,7 +209,13 @@ function formatIndexerProxyHealth(status: string | null | undefined): string {
   return "Unknown";
 }
 
-function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
+function IndexerStatusCell({
+  indexer,
+  onOpenErrorHistory,
+}: {
+  indexer: IndexerRecord;
+  onOpenErrorHistory?: () => void;
+}) {
   const t = useTranslate();
   if (!indexer.isEnabled) {
     return <span className="text-muted-foreground">{t("label.disabled")}</span>;
@@ -227,6 +238,25 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
   }
 
   if (indexer.lastErrorAt) {
+    const content = t("settings.indexerLastError", {
+      time: formatRelativeTime(indexer.lastErrorAt),
+    });
+    if (onOpenErrorHistory) {
+      return (
+        <button
+          type="button"
+          className="text-left text-[var(--scry-danger-text-soft)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title={
+            indexer.lastErrorMessage
+              ? `${indexer.lastErrorMessage}\n${indexer.lastErrorAt}`
+              : indexer.lastErrorAt
+          }
+          onClick={onOpenErrorHistory}
+        >
+          {content}
+        </button>
+      );
+    }
     return (
       <span
         className="text-[var(--scry-danger-text-soft)]"
@@ -236,9 +266,7 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
             : indexer.lastErrorAt
         }
       >
-        {t("settings.indexerLastError", {
-          time: formatRelativeTime(indexer.lastErrorAt),
-        })}
+        {content}
       </span>
     );
   }
@@ -829,6 +857,8 @@ export function SettingsIndexersSection({
   startCreateIndexer,
 }: SettingsIndexersSectionProps) {
   const t = useTranslate();
+  const [errorHistoryIndexer, setErrorHistoryIndexer] =
+    React.useState<IndexerErrorHistoryScope | null>(null);
   const normalizedProviderType = indexerDraft.providerType.trim().toLowerCase();
   const isManagedSyncProvider = normalizedProviderType === "prowlarr";
   const isEditing = editorMode === "edit";
@@ -1391,10 +1421,27 @@ export function SettingsIndexersSection({
                     )}
                   </TableCell>
                   <TableCell>
-                    <IndexerStatusCell indexer={indexer} />
+                    <IndexerStatusCell
+                      indexer={indexer}
+                      onOpenErrorHistory={() => setErrorHistoryIndexer({
+                        id: indexer.id,
+                        name: indexer.name,
+                      })}
+                    />
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-error-history", indexer.name)}
+                        tone="search"
+                        onClick={() => setErrorHistoryIndexer({
+                          id: indexer.id,
+                          name: indexer.name,
+                        })}
+                        label={t("indexerErrors.history")}
+                      >
+                        <History className="h-4 w-4" />
+                      </IndexerActionButton>
                       {indexer.isManaged ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
                           <Lock className="h-3 w-3" />
@@ -1785,6 +1832,13 @@ export function SettingsIndexersSection({
       )}
       </>
       ) : null}
+      <IndexerErrorHistoryModal
+        open={errorHistoryIndexer != null}
+        onOpenChange={(open) => {
+          if (!open) setErrorHistoryIndexer(null);
+        }}
+        indexer={errorHistoryIndexer}
+      />
     </div>
   );
 }
