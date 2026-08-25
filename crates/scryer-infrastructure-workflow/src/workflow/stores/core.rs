@@ -23,6 +23,8 @@ use crate::queries::sql_runtime::{
 };
 use crate::types::WorkflowOperationRecord;
 
+use super::download_submission_store::claim_or_create_binding_download_id_tx;
+
 pub const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
 pub const DOWNLOAD_SUBMISSION_COLUMNS: &str = "id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, release_size_bytes, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
@@ -133,17 +135,13 @@ pub async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
-    let submission_recorded =
+    let effective_download_id =
         record_download_submission_tx(tx, &commit.download_submission).await?;
-    if submission_recorded
+    if let Some(effective_download_id) = effective_download_id
         && let Some(submission_identity) = commit.download_submission_identity.as_ref()
     {
-        record_download_submission_identity_tx(
-            tx,
-            &commit.download_submission.download_id,
-            submission_identity,
-        )
-        .await?;
+        record_download_submission_identity_tx(tx, &effective_download_id, submission_identity)
+            .await?;
     }
     let mut wanted_item_ids = commit.covered_wanted_item_ids.clone();
     if !wanted_item_ids
@@ -222,7 +220,7 @@ pub async fn commit_successful_grab_tx(
 pub async fn record_download_submission_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
-) -> AppResult<bool> {
+) -> AppResult<Option<DownloadId>> {
     record_download_submission_tx_inner(tx, submission).await
 }
 
@@ -345,16 +343,25 @@ pub async fn record_ambiguous_download_submission_tx(
 async fn record_download_submission_tx_inner(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
-) -> AppResult<bool> {
+) -> AppResult<Option<DownloadId>> {
+    let mut submission = submission.clone();
+    let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
+    if !download_client_id.is_empty()
+        && !submission.download_client_type.trim().is_empty()
+        && !submission.download_client_item_id.trim().is_empty()
+    {
+        let locator = ClientJobLocator::from_submission(&submission);
+        submission.download_id =
+            claim_or_create_binding_download_id_tx(tx, &locator, Some(submission.download_id))
+                .await?;
+    }
     let (episode_id, collection_id, series_movie_link_id) =
         persisted_submission_scope(&submission.scope);
-    let download_client_id = normalize_download_client_id(submission.download_client_id.as_deref());
-    assert_active_binding_matches_submission_tx(tx, submission, &download_client_id).await?;
     let is_orphan = matches!(&submission.scope, SubmissionScope::Orphan)
         && submission.title_id.trim().is_empty();
     ensure_submission_download_tx(
         tx,
-        submission,
+        &submission,
         if is_orphan {
             "foreign_observation"
         } else {
@@ -416,7 +423,7 @@ async fn record_download_submission_tx_inner(
     )
     .await?;
     if rows_affected == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     replace_download_submission_episode_links_tx(
         tx,
@@ -424,48 +431,7 @@ async fn record_download_submission_tx_inner(
         persisted_episode_set_ids(&submission.scope),
     )
     .await?;
-    Ok(true)
-}
-
-async fn assert_active_binding_matches_submission_tx(
-    tx: &mut SqlTx<'_>,
-    submission: &DownloadSubmission,
-    normalized_client_id: &str,
-) -> AppResult<()> {
-    if normalized_client_id.is_empty()
-        || submission.download_client_type.trim().is_empty()
-        || submission.download_client_item_id.trim().is_empty()
-    {
-        return Ok(());
-    }
-    let existing_download_id = SqlRuntime::fetch_optional(
-        SqlExec::Tx(tx),
-        "SELECT download_id
-         FROM download_client_bindings
-         WHERE ended_at IS NULL
-           AND native_item_id IS NOT NULL
-           AND client_config_id = {}
-           AND client_type_snapshot = {}
-           AND native_item_id = {}
-         LIMIT 1",
-        &[
-            SqlArg::Text(normalized_client_id.to_string()),
-            SqlArg::Text(submission.download_client_type.clone()),
-            SqlArg::Text(submission.download_client_item_id.clone()),
-        ],
-    )
-    .await?
-    .map(|row| row.text("download_id"))
-    .transpose()?;
-    if let Some(existing_download_id) = existing_download_id
-        && existing_download_id != submission.download_id.to_string()
-    {
-        return Err(AppError::Repository(format!(
-            "active canonical download binding collision: existing download id {existing_download_id}, new download id {}",
-            submission.download_id
-        )));
-    }
-    Ok(())
+    Ok(Some(submission.download_id))
 }
 
 pub async fn record_download_submission_identity_tx(
@@ -503,11 +469,13 @@ pub async fn record_download_submission_with_identity_tx(
     tx: &mut SqlTx<'_>,
     submission: &DownloadSubmission,
     submission_identity: &DownloadSubmissionIdentity,
-) -> AppResult<()> {
-    if !record_download_submission_tx_inner(tx, submission).await? {
-        return Ok(());
-    }
-    record_download_submission_identity_tx(tx, &submission.download_id, submission_identity).await
+) -> AppResult<Option<DownloadId>> {
+    let Some(effective_download_id) = record_download_submission_tx_inner(tx, submission).await?
+    else {
+        return Ok(None);
+    };
+    record_download_submission_identity_tx(tx, &effective_download_id, submission_identity).await?;
+    Ok(Some(effective_download_id))
 }
 
 pub async fn replace_download_submission_episode_links_tx(

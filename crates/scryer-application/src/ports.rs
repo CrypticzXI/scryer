@@ -3342,8 +3342,11 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     /// row. Called from the download-client choke point the moment the client
     /// accepts the torrent, which is before the acquisition layer records the
     /// submission itself, so implementations must upsert rather than update.
-    async fn record_seed_goals(&self, _record: SeedGoalGrabRecord) -> AppResult<()> {
-        Ok(())
+    /// Returns the effective canonical id after claiming the client locator.
+    /// A prior foreign observation of a reused locator is adopted rather than
+    /// creating a second registry row.
+    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
+        Ok(record.download_id)
     }
 
     /// Read the goals a torrent was grabbed under, by download-client identity.

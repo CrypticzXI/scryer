@@ -97,28 +97,59 @@ async fn active_binding_download_id(
     .transpose()
 }
 
-async fn active_or_create_binding_download_id_tx(
+/// Resolve a locator to its active canonical download, or bind a new canonical
+/// row to it. A caller-provided id denotes an accepted Scryer submission;
+/// existing locator bindings are adopted and their parent is upgraded to
+/// `scryer_submission`. Without one, this preserves the tracked-state stub
+/// behavior by creating a foreign-observation parent.
+pub(super) async fn claim_or_create_binding_download_id_tx(
     tx: &mut SqlTx<'_>,
     locator: &ClientJobLocator,
+    requested_download_id: Option<DownloadId>,
 ) -> AppResult<DownloadId> {
     if let Some(download_id) = active_binding_download_id(SqlExec::Tx(tx), locator).await? {
+        if requested_download_id.is_some() {
+            SqlRuntime::execute(
+                SqlExec::Tx(tx),
+                "UPDATE downloads
+                 SET origin = 'scryer_submission'
+                 WHERE id = {}",
+                &[SqlArg::Text(download_id.to_string())],
+            )
+            .await?;
+        }
         return Ok(download_id);
     }
 
-    let download_id = DownloadId::new();
     let now = Utc::now();
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO downloads (id, origin, created_at, first_observed_at, last_observed_at)
-         VALUES ({}, 'foreign_observation', {}, {}, {})",
-        &[
-            SqlArg::Text(download_id.to_string()),
-            SqlArg::Timestamp(now),
-            SqlArg::Timestamp(now),
-            SqlArg::Timestamp(now),
-        ],
-    )
-    .await?;
+    let download_id = requested_download_id.unwrap_or_else(DownloadId::new);
+    if requested_download_id.is_some() {
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES ({}, 'scryer_submission', {})
+             ON CONFLICT(id) DO UPDATE SET origin = 'scryer_submission'",
+            &[
+                SqlArg::Text(download_id.to_string()),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    } else {
+        SqlRuntime::execute(
+            SqlExec::Tx(tx),
+            "INSERT INTO downloads (id, origin, created_at, first_observed_at, last_observed_at)
+             VALUES ({}, 'foreign_observation', {}, {}, {})",
+            &[
+                SqlArg::Text(download_id.to_string()),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+    let client_name_snapshot = client_name_snapshot_tx(tx, locator).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO download_client_bindings (
@@ -129,7 +160,7 @@ async fn active_or_create_binding_download_id_tx(
             SqlArg::Text(download_id.to_string()),
             SqlArg::OptText(locator.client_id.clone()),
             SqlArg::Text(locator.client_type.clone()),
-            SqlArg::Text(locator.client_type.clone()),
+            SqlArg::OptText(client_name_snapshot),
             SqlArg::Text(locator.item_id.clone()),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
@@ -137,6 +168,25 @@ async fn active_or_create_binding_download_id_tx(
     )
     .await?;
     Ok(download_id)
+}
+
+async fn client_name_snapshot_tx(
+    tx: &mut SqlTx<'_>,
+    locator: &ClientJobLocator,
+) -> AppResult<Option<String>> {
+    let configured_name = match locator.client_id.as_deref() {
+        Some(client_id) if !client_id.trim().is_empty() => SqlRuntime::fetch_optional(
+            SqlExec::Tx(tx),
+            "SELECT name FROM download_clients WHERE id = {} LIMIT 1",
+            &[SqlArg::Text(client_id.to_string())],
+        )
+        .await?
+        .map(|row| row.text("name"))
+        .transpose()?,
+        _ => None,
+    };
+    Ok(configured_name
+        .or_else(|| (!locator.client_type.trim().is_empty()).then(|| locator.client_type.clone())))
 }
 
 fn canonical_tracked_state_key(canonical_download_id: &DownloadId) -> String {
@@ -998,7 +1048,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             let tracked_state = tracked_state.clone();
             Box::pin(async move {
                 let canonical_download_id =
-                    active_or_create_binding_download_id_tx(tx, &identity).await?;
+                    claim_or_create_binding_download_id_tx(tx, &identity, None).await?;
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "INSERT INTO download_submissions
@@ -1046,22 +1096,22 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     /// carries the title/facet/purpose the router already knows, so the row is
     /// never a bare orphan stub, and `record_download_submission_tx` later
     /// conflict-updates the remaining columns without touching the seed ones.
-    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<()> {
+    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
         SqlRuntime::run_in_transaction(
             &self.datastore,
             "record_download_submission_seed_goals",
             move |tx| {
                 let record = record.clone();
                 Box::pin(async move {
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "INSERT INTO downloads (id, origin, created_at)
-                         VALUES ({}, 'scryer_submission', {})
-                         ON CONFLICT(id) DO NOTHING",
-                        &[
-                            SqlArg::Text(record.download_id.to_string()),
-                            SqlArg::Timestamp(Utc::now()),
-                        ],
+                    let locator = ClientJobLocator::new(
+                        record.client_id.as_deref(),
+                        &record.client_type,
+                        &record.client_item_id,
+                    );
+                    let effective_download_id = claim_or_create_binding_download_id_tx(
+                        tx,
+                        &locator,
+                        Some(record.download_id),
                     )
                     .await?;
                     SqlRuntime::execute(
@@ -1072,7 +1122,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                           seed_goal_seconds, seed_never_remove, seed_goal_met_action,
                           seed_post_import_tracking, seed_goal_source, seed_info_hash)
                          VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-                         ON CONFLICT(id) DO UPDATE
+                        ON CONFLICT(id) DO UPDATE
                          SET seeding_profile_id = excluded.seeding_profile_id,
                              seed_goal_ratio = excluded.seed_goal_ratio,
                              seed_goal_seconds = excluded.seed_goal_seconds,
@@ -1082,7 +1132,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                              seed_goal_source = excluded.seed_goal_source,
                              seed_info_hash = excluded.seed_info_hash",
                         &[
-                            SqlArg::Text(record.download_id.to_string()),
+                            SqlArg::Text(effective_download_id.to_string()),
                             SqlArg::Text(record.title_id.clone()),
                             SqlArg::Text(record.facet.clone()),
                             SqlArg::Text(normalize_download_client_id(record.client_id.as_deref())),
@@ -1111,7 +1161,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                         ],
                     )
                     .await?;
-                    Ok(())
+                    Ok(effective_download_id)
                 })
             },
         )
@@ -1494,7 +1544,7 @@ mod seed_goal_tests {
     }
 
     #[tokio::test]
-    async fn tuple_batch_projections_choose_the_latest_submission_with_id_tie_breaking() {
+    async fn active_locator_reuses_the_first_canonical_submission_for_seed_goal_updates() {
         let store = store().await;
         let first_id = DownloadId::parse("00000000-0000-4000-8000-000000000001")
             .expect("first fixed download id should parse");
@@ -1507,46 +1557,37 @@ mod seed_goal_tests {
         second.download_id = second_id;
         second.goals.seed_goal_ratio = Some(2.0);
 
-        store
+        let first_effective_download_id = store
             .record_seed_goals(first)
             .await
             .expect("first submission should persist");
-        store
+        let second_effective_download_id = store
             .record_seed_goals(second)
             .await
-            .expect("second submission should persist");
-        SqlRuntime::execute(
-            store.datastore.read_exec(),
-            "UPDATE download_submissions
-             SET submitted_at = '2026-08-24T12:00:00Z'
-             WHERE download_client_item_id = {}",
-            &[SqlArg::Text(identity().item_id)],
-        )
-        .await
-        .expect("submissions should share a submitted timestamp");
+            .expect("second submission should reuse the active binding");
+        assert_eq!(first_effective_download_id, first_id);
+        assert_eq!(second_effective_download_id, first_id);
 
-        for (download_id, state) in [(first_id, "old"), (second_id, "new")] {
-            store
-                .record_identity_tracked_state_for_download(
-                    Some(&download_id),
-                    &DownloadSubmissionIdentity {
-                        download_id: Some(format!("legacy-{download_id}")),
-                    },
-                    Some(&identity()),
-                    state,
-                    None,
-                    None,
-                )
-                .await
-                .expect("identity state should persist");
-        }
+        store
+            .record_identity_tracked_state_for_download(
+                Some(&first_id),
+                &DownloadSubmissionIdentity {
+                    download_id: Some(format!("legacy-{first_id}")),
+                },
+                Some(&identity()),
+                "new",
+                None,
+                None,
+            )
+            .await
+            .expect("identity state should persist");
 
         let submissions = store
             .list_for_client_items(&[identity()])
             .await
             .expect("submission projection should load");
         assert_eq!(submissions.len(), 1);
-        assert_eq!(submissions[0].download_id, second_id);
+        assert_eq!(submissions[0].download_id, first_id);
 
         let seed_goals = store
             .list_seed_goals_for_client_items(&[identity()])

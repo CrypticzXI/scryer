@@ -2419,16 +2419,12 @@ impl PrioritizedDownloadClientRouter {
         config: &DownloadClientConfig,
         grab: &DownloadGrabResult,
         seed_goals: &ResolvedSeedGoals,
-    ) {
+    ) -> Option<scryer_domain::download_identity::DownloadId> {
         if !seed_goals.is_resolved() {
-            return;
+            return None;
         }
-        let Some(download_id) = request.download_id else {
-            return;
-        };
-        let Some(submissions) = self.download_submissions.as_ref() else {
-            return;
-        };
+        let download_id = request.download_id?;
+        let submissions = self.download_submissions.as_ref()?;
         let record = SeedGoalGrabRecord {
             download_id,
             client_id: Some(config.id.clone()),
@@ -2451,13 +2447,17 @@ impl PrioritizedDownloadClientRouter {
                     .or_else(|| request.info_hash_hint.clone()),
             },
         };
-        if let Err(error) = submissions.record_seed_goals(record).await {
-            warn!(
-                client_id = config.id.as_str(),
-                client_item_id = grab.job_id.as_str(),
-                error = %error,
-                "failed to persist resolved seeding goals for accepted torrent"
-            );
+        match submissions.record_seed_goals(record).await {
+            Ok(effective_download_id) => Some(effective_download_id),
+            Err(error) => {
+                warn!(
+                    client_id = config.id.as_str(),
+                    client_item_id = grab.job_id.as_str(),
+                    error = %error,
+                    "failed to persist resolved seeding goals for accepted torrent"
+                );
+                None
+            }
         }
     }
 
@@ -3306,7 +3306,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         "submit_success",
                     )
                     .await;
-                    let grab = DownloadGrabResult {
+                    let mut grab = DownloadGrabResult {
                         download_id: effective_request.download_id,
                         job_id: result.job_id,
                         client_id: Some(config.id.clone()),
@@ -3315,13 +3315,17 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                             .info_hash
                             .or_else(|| resolved_v1_info_hash(&effective_request)),
                     };
-                    self.persist_seed_goals(
-                        &effective_request,
-                        &config,
-                        &grab,
-                        &resolved_seed_goals,
-                    )
-                    .await;
+                    if let Some(effective_download_id) = self
+                        .persist_seed_goals(
+                            &effective_request,
+                            &config,
+                            &grab,
+                            &resolved_seed_goals,
+                        )
+                        .await
+                    {
+                        grab.download_id = Some(effective_download_id);
+                    }
                     return Ok(grab);
                 }
                 Err(error) => {
@@ -7537,6 +7541,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingDownloadSubmissionRepository {
         seed_goals: Mutex<Vec<SeedGoalGrabRecord>>,
+        effective_seed_goal_download_id:
+            Mutex<Option<scryer_domain::download_identity::DownloadId>>,
     }
 
     #[async_trait]
@@ -7612,9 +7618,14 @@ mod tests {
             Ok(None)
         }
 
-        async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<()> {
+        async fn record_seed_goals(
+            &self,
+            record: SeedGoalGrabRecord,
+        ) -> AppResult<scryer_domain::download_identity::DownloadId> {
+            let download_id = record.download_id;
             self.seed_goals.lock().unwrap().push(record);
-            Ok(())
+            let effective_download_id = *self.effective_seed_goal_download_id.lock().unwrap();
+            Ok(effective_download_id.unwrap_or(download_id))
         }
     }
 
@@ -7768,6 +7779,35 @@ mod tests {
         assert_eq!(
             recorded.goals.info_hash.as_deref(),
             Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01")
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_download_propagates_the_effective_seed_goal_download_id() {
+        let primary = Arc::new(MockDownloadClient::default());
+        let submissions = Arc::new(RecordingDownloadSubmissionRepository::default());
+        let adopted_download_id = scryer_domain::download_identity::DownloadId::new();
+        *submissions.effective_seed_goal_download_id.lock().unwrap() = Some(adopted_download_id);
+        let router = seeding_router(
+            primary,
+            "qbittorrent",
+            vec!["torrent_file".to_string(), "magnet_uri".to_string()],
+            r#"{"primary": {"enabled": true, "seedingProfileId": "routing-profile"}}"#,
+            submissions.clone(),
+        );
+
+        let request = torrent_add_request(Some("indexer-1"));
+        let requested_download_id = request.download_id.expect("test request has an ID");
+        let grab = router
+            .submit_download(&request)
+            .await
+            .expect("torrent request should route");
+
+        assert_ne!(requested_download_id, adopted_download_id);
+        assert_eq!(grab.download_id, Some(adopted_download_id));
+        assert_eq!(
+            submissions.seed_goals.lock().unwrap()[0].download_id,
+            requested_download_id
         );
     }
 
