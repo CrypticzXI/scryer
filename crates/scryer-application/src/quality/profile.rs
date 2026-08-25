@@ -353,6 +353,42 @@ pub fn builtin_1080p_profile() -> QualityProfile {
     }
 }
 
+pub fn builtin_anime_profile() -> QualityProfile {
+    QualityProfile {
+        id: "anime".to_string(),
+        name: "Anime".to_string(),
+        criteria: QualityProfileCriteria {
+            quality_tiers: vec![
+                "1080P".to_string(),
+                "720P".to_string(),
+                "576P".to_string(),
+            ],
+            archival_quality: Some("1080P".to_string()),
+            allow_unknown_quality: false,
+            source_allowlist: Vec::new(),
+            source_blocklist: Vec::new(),
+            video_codec_allowlist: Vec::new(),
+            video_codec_blocklist: Vec::new(),
+            audio_codec_allowlist: Vec::new(),
+            audio_codec_blocklist: Vec::new(),
+            atmos_preferred: false,
+            dolby_vision_allowed: true,
+            detected_hdr_allowed: true,
+            prefer_remux: false,
+            allow_bd_disk: false,
+            allow_upgrades: true,
+            prefer_dual_audio: false,
+            required_audio_languages: vec![],
+            scoring_persona: ScoringPersona::default(),
+            scoring_overrides: ScoringOverrides::default(),
+            cutoff_tier: None,
+            min_score_to_grab: None,
+            cutoff_score: None,
+            facet_persona_overrides: HashMap::new(),
+        },
+    }
+}
+
 fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, serde_json::Error> {
     let criteria = raw.criteria;
     let quality_tiers = normalize_list(criteria.quality_tiers);
@@ -1156,6 +1192,7 @@ fn expected_bitrate_mbps(
             Some("2160P") => movie_2160p_bitrate_mbps,
             Some("1080P") => 9.1,
             Some("720P") => 3.4,
+            Some("576P") => 2.4,
             Some("480P") => 1.4,
             _ => 6.8,
         },
@@ -1164,6 +1201,7 @@ fn expected_bitrate_mbps(
             Some("2160P") => 22.0,
             Some("1080P") => 8.5,
             Some("720P") => 3.3,
+            Some("576P") => 2.4,
             Some("480P") => 1.4,
             _ => 5.5,
         },
@@ -1172,6 +1210,7 @@ fn expected_bitrate_mbps(
             Some("2160P") => 28.0,
             Some("1080P") => 8.5,
             Some("720P") => 3.4,
+            Some("576P") => 2.4,
             Some("480P") => 1.4,
             _ => 5.7,
         },

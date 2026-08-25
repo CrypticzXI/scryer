@@ -112,6 +112,7 @@
     ],
     "kind": "indexer",
     "provider_type": "newznab",
+    "search_semantics_version": 1,
     "source_kind": "usenet"
   },
   "sdk_constraint": ">=3.8.0, <4.0.0",

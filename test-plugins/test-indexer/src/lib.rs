@@ -38,6 +38,7 @@ pub fn scryer_describe(_input: String) -> FnResult<String> {
             }],
             allowed_hosts: vec![],
             rate_limit_seconds: None,
+            search_semantics_version: Some(1),
         }),
     };
     Ok(serde_json::to_string(&descriptor)?)

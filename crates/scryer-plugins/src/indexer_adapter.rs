@@ -4,14 +4,17 @@ use scryer_application::NullIndexerErrorRecorder;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerErrorOperation,
     IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchResponse,
-    IndexerSearchResult, SearchMode, is_valid_magnet_uri, normalize_release_password,
+    IndexerSearchCompletion, IndexerSearchResult, SearchMode, is_valid_magnet_uri,
+    normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use scryer_plugin_sdk::command::{
     PluginActionRequest, PluginActionResponse, PluginCommand, PluginCommandRequest,
     PluginCommandResult, PluginIndexerCommand, PluginIndexerCommandResult,
 };
-use scryer_plugin_sdk::{PluginError, PluginResult};
+use scryer_plugin_sdk::{
+    IndexerSearchPluginError, PluginError, PluginErrorDetails, PluginResult, ProviderDescriptor,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, mpsc},
@@ -64,6 +67,11 @@ struct CommandIndexer {
     /// requests leave in order. Dropping the lock would change upstream
     /// request patterns as a side effect of a runtime migration.
     invocation_lock: tokio::sync::Mutex<()>,
+}
+
+struct PluginSearchCallResponse {
+    response: PluginSearchResponse,
+    completion: IndexerSearchCompletion,
 }
 
 struct IndexerPluginWorker {
@@ -449,7 +457,12 @@ impl WasmIndexerClient {
         request: &PluginSearchRequest,
         operation: IndexerErrorOperation,
         cancel_token: CancellationToken,
-    ) -> AppResult<PluginSearchResponse> {
+    ) -> AppResult<PluginSearchCallResponse> {
+        let attested = matches!(
+            &self.descriptor.provider,
+            ProviderDescriptor::Indexer(descriptor)
+                if descriptor.search_semantics_version.is_some()
+        );
         if let Some(indexer) = self.command.as_ref() {
             indexer
                 .command_host
@@ -472,7 +485,7 @@ impl WasmIndexerClient {
                             "indexer indexer_search: plugin error RateLimited: {message}"
                         )))
                     } else {
-                        decode_command_result(result, "indexer indexer_search")
+                        decode_search_result(result, attested, "indexer indexer_search")
                     }
                 }
                 Ok(Some(_)) => Err(AppError::Repository(
@@ -500,7 +513,14 @@ impl WasmIndexerClient {
             .call_search(input, cancel_token, self.indexer_error_capture(operation))
             .await?;
 
-        decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)
+        let result = serde_json::from_str::<PluginResult<PluginSearchResponse>>(&output).map_err(
+            |error| {
+                AppError::Repository(format!(
+                    "{EXPORT_INDEXER_SEARCH}: plugin returned invalid result envelope: {error}"
+                ))
+            },
+        )?;
+        decode_search_result(result, attested, EXPORT_INDEXER_SEARCH)
     }
 }
 
@@ -513,6 +533,50 @@ fn decode_command_result<T>(result: PluginResult<T>, context: &str) -> AppResult
             ..
         }) => Err(AppError::Repository(format!(
             "{context}: plugin error {code:?}: {public_message}"
+        ))),
+    }
+}
+
+fn decode_search_result(
+    result: PluginResult<PluginSearchResponse>,
+    attested: bool,
+    context: &str,
+) -> AppResult<PluginSearchCallResponse> {
+    match result {
+        PluginResult::Ok(response) => Ok(PluginSearchCallResponse {
+            response,
+            completion: if attested {
+                IndexerSearchCompletion::Complete
+            } else {
+                IndexerSearchCompletion::Partial
+            },
+        }),
+        PluginResult::Err(PluginError {
+            details:
+                Some(PluginErrorDetails::IndexerSearch(
+                    IndexerSearchPluginError::PartialResults { response, .. },
+                )),
+            ..
+        }) => Ok(PluginSearchCallResponse {
+            response: *response,
+            completion: IndexerSearchCompletion::Partial,
+        }),
+        PluginResult::Err(PluginError {
+            details:
+                Some(PluginErrorDetails::IndexerSearch(IndexerSearchPluginError::Deferred {
+                    reason,
+                    retry_after_seconds,
+                })),
+            ..
+        }) => Err(AppError::temporary_unavailable(
+            format!("indexer search deferred: {reason:?}"),
+            retry_after_seconds
+                .and_then(|seconds| u64::try_from(seconds).ok())
+                .map(std::time::Duration::from_secs),
+        )),
+        PluginResult::Err(error) => Err(AppError::Repository(format!(
+            "{context}: plugin error {:?}: {}",
+            error.code, error.public_message
         ))),
     }
 }
@@ -1267,7 +1331,8 @@ impl IndexerClient for WasmIndexerClient {
             .await
         {
             Ok(response)
-                if response.results.is_empty() && should_try_generic_search_fallback(&request) =>
+                if response.response.results.is_empty()
+                    && should_try_generic_search_fallback(&request) =>
             {
                 let fallback_request = generic_search_fallback_request(&request, mode);
                 self.call_search_request(&fallback_request, operation, cancel_token.child_token())
@@ -1289,6 +1354,10 @@ impl IndexerClient for WasmIndexerClient {
             }
             Err(error) => return Err(error),
         };
+        let PluginSearchCallResponse {
+            response,
+            completion,
+        } = response;
 
         let source = format!(
             "{} ({})",
@@ -1354,6 +1423,7 @@ impl IndexerClient for WasmIndexerClient {
         Ok(IndexerSearchResponse {
             results,
             indexer_outcomes: Vec::new(),
+            completion,
             api_current: response.api_current,
             api_max: response.api_max,
             grab_current: response.grab_current,
@@ -1707,6 +1777,7 @@ mod tests {
                 }],
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
         }
     }

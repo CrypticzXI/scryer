@@ -459,9 +459,11 @@ pub use ports::{
     ImportFileExecutionContext, ImportFilePermissions, ImportFileTransferProgress,
     ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
     IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
-    IndexerProxyConfigRepository, IndexerSearchLearningContext, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker,
-    IndexerSystemBackoff, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
+    IndexerProxyConfigRepository, IndexerSearchCandidateWrite, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerSearchRunWrite, IndexerStatsTracker, NormalizedIndexerSearchCandidate,
+    ReusableIndexerSearchCandidate, IndexerSystemBackoff, JellyfinServerUser,
+    JobRunRepository, LibraryProbeRepository,
     LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
     MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
     MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
@@ -501,8 +503,8 @@ pub use quality_profile::{
     QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileCriteria,
     QualityProfileDecision, REQUEST_QUALITY_PROFILE_IDS_KEY, ScoringConfig, ScoringEntry,
     ScoringSource, apply_age_scoring, apply_size_scoring_for_category, builtin_4k_profile,
-    builtin_8k_profile, builtin_1080p_profile, builtin_default_quality_profile,
-    evaluate_against_profile, parse_profile_catalog_from_json,
+    builtin_8k_profile, builtin_1080p_profile, builtin_anime_profile,
+    builtin_default_quality_profile, evaluate_against_profile, parse_profile_catalog_from_json,
 };
 pub use rate_limit_signal::{RateLimitSignal, RateLimitSignalSource};
 pub use services::{
@@ -608,9 +610,10 @@ pub use types::{
 pub use types::{
     CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, IndexerErrorClassification,
     IndexerErrorDetail, IndexerErrorOperation, IndexerErrorPage, IndexerErrorSummary,
-    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
-    IndexerSearchResult, NewIndexerError, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
-    ReleaseStrategyKind, extract_magnet_info_hash, is_valid_magnet_uri,
+    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchCompletion,
+    IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, NewIndexerError,
+    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    extract_magnet_info_hash, is_valid_magnet_uri,
 };
 pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,

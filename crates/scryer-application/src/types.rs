@@ -1877,29 +1877,32 @@ mod canonical_download_source_tests {
     }
 }
 
-/// Per-indexer outcome of a single search query. Determines
-/// which routed indexers may be recorded as coverage: only an indexer that actually
-/// fired a query and returned a response (empty included) counts — never one the
-/// scheduler deferred/skipped, and never one whose query errored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IndexerSearchCompletion {
+    #[default]
+    Complete,
+    Partial,
+}
+
+/// Per-indexer outcome of a single search query. Only a validated, complete
+/// response is eligible for convergence coverage. Partial responses may still
+/// contribute candidates, but must be retried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexerSearchOutcome {
-    /// The query executed and returned a response — `empty` distinguishes a
-    /// zero-result response (still coverage) from a populated one.
-    Fired { empty: bool },
-    /// The scheduler declined to query this indexer this cycle. A cooldown
-    /// carries the remaining wait so interactive callers can explain it.
+    Complete { empty: bool },
+    Partial { empty: bool },
+    Deferred {
+        retry_after: Option<std::time::Duration>,
+    },
     Skipped {
         retry_after: Option<std::time::Duration>,
     },
-    /// The query was attempted but failed (rate-limited / transport / provider).
     Errored,
 }
 
 impl IndexerSearchOutcome {
-    /// Whether this indexer actually executed a query and returned a response.
-    /// Only a fired indexer may be recorded as convergence coverage.
-    pub fn fired(&self) -> bool {
-        matches!(self, Self::Fired { .. })
+    pub fn coverage_eligible(&self) -> bool {
+        matches!(self, Self::Complete { .. })
     }
 }
 
@@ -1915,6 +1918,7 @@ pub struct IndexerQueryOutcome {
 #[derive(Clone, Debug)]
 pub struct IndexerSearchResponse {
     pub results: Vec<IndexerSearchResult>,
+    pub completion: IndexerSearchCompletion,
     pub api_current: Option<u32>,
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,

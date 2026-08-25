@@ -1980,6 +1980,7 @@ mod tests {
                 failures: vec![scryer_plugin_sdk::PluginDownloadScopeFailure {
                     category: "TV / Anime".to_string(),
                     error: PluginError {
+                        details: None,
                         code: PluginErrorCode::UpstreamUnavailable,
                         public_message: "category request timed out".to_string(),
                         debug_message: None,
@@ -2359,6 +2360,7 @@ mod tests {
     fn command_add_permanent_plugin_error_is_rejected_without_losing_its_message() {
         let error = decode_download_add_result::<()>(
             PluginResult::Err(PluginError {
+                details: None,
                 code: PluginErrorCode::Permanent,
                 public_message: "rTorrent add requires an info hash from the release".to_string(),
                 debug_message: None,
@@ -2385,6 +2387,7 @@ mod tests {
         ] {
             let error = decode_download_add_result::<()>(
                 PluginResult::Err(PluginError {
+                    details: None,
                     code,
                     public_message: "client is temporarily unavailable".to_string(),
                     debug_message: None,
@@ -2402,6 +2405,7 @@ mod tests {
     fn legacy_add_permanent_plugin_error_is_rejected() {
         let output = serde_json::to_string(&PluginResult::<PluginDownloadClientAddResponse>::Err(
             PluginError {
+                details: None,
                 code: PluginErrorCode::Permanent,
                 public_message: "download source is invalid".to_string(),
                 debug_message: None,

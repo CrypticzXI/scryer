@@ -1504,6 +1504,10 @@ async fn bootstrap_application(
         bootstrap_settings_store.clone(),
     )
     .await;
+    startup_migrations::_0011_long_tail_reconverge_default::migrate(
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),

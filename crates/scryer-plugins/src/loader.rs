@@ -684,6 +684,12 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             .map(|loaded| loaded.descriptor.version.clone())
     }
 
+    fn search_semantics_version_for_provider(&self, provider_type: &str) -> Option<u32> {
+        self.get_loaded(provider_type)
+            .and_then(|loaded| loaded.descriptor.indexer())
+            .and_then(|indexer| indexer.search_semantics_version)
+    }
+
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
         self.get_loaded(provider_type)
             .map(|loaded| loaded.descriptor.sdk_version.clone())
@@ -996,6 +1002,14 @@ impl IndexerPluginProvider for DynamicPluginProvider {
             .read()
             .expect("DynamicPluginProvider lock poisoned");
         guard.plugin_version_for_provider(provider_type)
+    }
+
+    fn search_semantics_version_for_provider(&self, provider_type: &str) -> Option<u32> {
+        let guard = self
+            .inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned");
+        guard.search_semantics_version_for_provider(provider_type)
     }
 
     fn plugin_sdk_version_for_provider(&self, provider_type: &str) -> Option<String> {
@@ -3880,6 +3894,7 @@ mod tests {
                 config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
             "usenet_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "test".to_string(),
@@ -3890,6 +3905,7 @@ mod tests {
                 config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
             "torrent_indexer" => ProviderDescriptor::Indexer(IndexerDescriptor {
                 provider_type: "test".to_string(),
@@ -3900,6 +3916,7 @@ mod tests {
                 config_fields: indexer_config_fields(),
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
             "notification" => ProviderDescriptor::Notification(NotificationDescriptor {
                 provider_type: "test".to_string(),

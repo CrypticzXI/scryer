@@ -331,6 +331,7 @@ struct ConvergenceCycleState {
     season_pack_attempted: HashSet<(String, u32)>,
     season_pack_grabbed: HashSet<(String, u32)>,
     season_pack_viable: HashSet<(String, u32)>,
+    season_candidates: HashMap<(String, u32), Vec<IndexerSearchResult>>,
     grabbed_urls: HashSet<String>,
     attempted_urls_by_route: Vec<(DownloadRouteKey, String)>,
     failed_routes: Vec<DownloadRouteKey>,
@@ -380,6 +381,33 @@ impl ConvergenceCycleCoordinator {
 
     fn complete_season_pack_stage(&self, key: &(String, u32)) {
         self.lock().season_pack_attempted.insert(key.clone());
+    }
+
+    fn cache_season_candidates(
+        &self,
+        key: &(String, u32),
+        candidates: impl IntoIterator<Item = IndexerSearchResult>,
+    ) {
+        let mut state = self.lock();
+        let cached = state.season_candidates.entry(key.clone()).or_default();
+        for candidate in candidates {
+            let duplicate = cached.iter().any(|existing| {
+                existing.indexer_id == candidate.indexer_id
+                    && existing.guid == candidate.guid
+                    && existing.title == candidate.title
+            });
+            if !duplicate {
+                cached.push(candidate);
+            }
+        }
+    }
+
+    fn season_candidates(&self, key: &(String, u32)) -> Vec<IndexerSearchResult> {
+        self.lock()
+            .season_candidates
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn season_pack_grabbed(&self, key: &(String, u32)) -> bool {
@@ -1686,6 +1714,16 @@ async fn process_single_target(
                     }
                 };
 
+                cycle.cache_season_candidates(
+                    &season_key,
+                    pack_results
+                        .iter()
+                        .filter(|candidate| {
+                            !candidate_is_season_pack_for_season(candidate, season_num)
+                        })
+                        .cloned(),
+                );
+
                 for candidate in pack_results
                     .iter()
                     .filter(|candidate| candidate_is_season_pack_for_season(candidate, season_num))
@@ -2148,32 +2186,55 @@ async fn process_single_target(
         "background acquisition: searching indexers"
     );
 
-    // Search and score releases against the uncovered indexer subset only —
-    // covered indexers hold no new information for this scope (§D2).
-    let results = match app
-        .search_and_evaluate_subject_restricted(
-            &search_title,
-            &subject,
-            "background_acquisition",
-            SearchMode::Auto,
-            tokio_util::sync::CancellationToken::new(),
-            Some(uncovered),
-            Some(if target.is_hot {
-                BACKGROUND_HOT_TARGET_VALUE
-            } else {
-                BACKGROUND_COLD_TARGET_VALUE
-            }),
-        )
-        .await
+    let cached_results = search_season
+        .map(|season| cycle.season_candidates(&(title.id.clone(), season)))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|candidate| {
+            candidate
+                .indexer_id
+                .as_ref()
+                .is_some_and(|indexer_id| uncovered.contains(indexer_id))
+        })
+        .collect::<Vec<_>>();
+    let cached_results = app
+        .evaluate_search_results_for_subject(&search_title, &subject, cached_results)
+        .await;
+
+    // A complete season query already discovered these episode candidates.
+    // Search the individual episode only when that reusable corpus has no
+    // eligible result for this scope.
+    let results = if cached_results
+        .iter()
+        .any(|candidate| candidate.auto_eligible == Some(true))
     {
-        Ok(r) => r,
-        Err(err) => {
-            warn!(
-                title_id = title.id.as_str(),
-                error = %err,
-                "background search failed"
-            );
-            return Ok(());
+        cached_results
+    } else {
+        match app
+            .search_and_evaluate_subject_restricted(
+                &search_title,
+                &subject,
+                "background_acquisition",
+                SearchMode::Auto,
+                tokio_util::sync::CancellationToken::new(),
+                Some(uncovered),
+                Some(if target.is_hot {
+                    BACKGROUND_HOT_TARGET_VALUE
+                } else {
+                    BACKGROUND_COLD_TARGET_VALUE
+                }),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(err) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %err,
+                    "background search failed"
+                );
+                return Ok(());
+            }
         }
     };
 

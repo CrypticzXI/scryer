@@ -633,6 +633,20 @@ impl PluginHttpHost {
             .map(|response| response.headers.clone()))
     }
 
+    pub(crate) fn take_response_metadata(
+        &self,
+        plugin_id: &str,
+    ) -> HostResult<(u16, BTreeMap<String, String>)> {
+        let response = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?
+            .last_responses
+            .remove(plugin_id)
+            .unwrap_or_default();
+        Ok((response.status_code, response.headers))
+    }
+
     pub(crate) fn rate_limit_message(&self, plugin_id: &str) -> HostResult<Option<String>> {
         let host_state = self
             .state

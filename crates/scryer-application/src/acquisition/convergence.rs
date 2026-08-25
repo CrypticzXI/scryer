@@ -14,7 +14,7 @@ use super::*;
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
 use crate::app_usecase_discovery::QualityProfileLookup;
 use crate::quality_profile::QualityProfileCriteria;
-use scryer_domain::Title;
+use scryer_domain::{IndexerConfig, Title};
 
 /// Per-tick evaluation cost ceiling for the convergence cursor (§D3): how many
 /// scopes the cursor may *evaluate* per cycle (coverage lookup, routing resolve,
@@ -26,12 +26,13 @@ pub(crate) const ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY: &str =
 
 /// Optional slow re-converge backstop: coverage older than this many days is
 /// treated as stale and re-converged (insurance against a lossy RSS feed).
-/// `0` = off — the default and the intended steady state (§D6): we trust RSS,
-/// and this knob exists only as break-glass for a feed that proves incomplete.
+/// `0` remains an explicit opt-out. Missing scopes otherwise revalidate on a
+/// slow cadence so a previously complete empty result cannot live forever.
 pub(crate) const ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY: &str =
     "acquisition.long_tail_reconverge_days";
 
 pub(crate) const DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE: i64 = 500;
+pub(crate) const DEFAULT_LONG_TAIL_RECONVERGE_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConvergenceSettings {
@@ -53,7 +54,7 @@ impl AppUseCase {
         let reconverge_days = self
             .read_setting_i64_value(ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY, None)
             .await?
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_LONG_TAIL_RECONVERGE_DAYS);
         let long_tail_reconverge = (reconverge_days > 0)
             .then(|| chrono::Duration::days(reconverge_days))
             .filter(|d| *d > chrono::Duration::zero());
@@ -355,13 +356,69 @@ pub(crate) fn compute_search_fingerprint(
     langs.sort();
     langs.dedup();
     let canonical = format!(
-        "v2;profile={};version={};audio={};match={}",
+        "v3;profile={};version={};audio={};match={}",
         profile_id.trim(),
         profile_version.trim(),
         langs.join(","),
         match_identity.trim(),
     );
     crate::sha256_hex(canonical)
+}
+
+fn search_relevant_caps(raw: Option<&str>) -> serde_json::Value {
+    let Some(object) = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return serde_json::Value::Null;
+    };
+    let mut projected = serde_json::Map::new();
+    for key in [
+        "search",
+        "tv_search",
+        "movie_search",
+        "categories",
+        "limits",
+    ] {
+        if let Some(value) = object.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(projected)
+}
+
+fn indexer_coverage_fingerprint(
+    scope_fingerprint: &str,
+    config: &IndexerConfig,
+    search_semantics_version: Option<u32>,
+) -> String {
+    let config_json = config
+        .config_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let managed_metadata = config
+        .managed_metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let secret_fingerprint = config
+        .api_key_encrypted
+        .as_deref()
+        .map(|secret| crate::sha256_hex(format!("indexer-secret-v1:{secret}")));
+    let identity = serde_json::json!({
+        "version": 2,
+        "scope": scope_fingerprint,
+        "provider": config.provider_type.trim().to_ascii_lowercase(),
+        "endpoint": config.base_url.trim().trim_end_matches('/'),
+        "config": config_json,
+        "secret_fingerprint": secret_fingerprint,
+        "proxy": config.indexer_proxy_config_id,
+        "routing": managed_metadata,
+        "caps": search_relevant_caps(config.caps_snapshot_json.as_deref()),
+        "search_semantics": search_semantics_version,
+    });
+    crate::sha256_hex(canonical_json_string(&identity))
 }
 
 /// Canonical identity of a scope's SMG match — its resolved external ids. A rematch
@@ -393,7 +450,7 @@ impl AppUseCase {
     pub(crate) async fn uncovered_indexers_for_scope(
         &self,
         scope_key: &str,
-        facet: &str,
+        _facet: &str,
         fingerprint: &str,
         routed_indexer_ids: &[String],
     ) -> AppResult<Vec<String>> {
@@ -405,17 +462,42 @@ impl AppUseCase {
             .await?
             .long_tail_reconverge
             .map(|window| chrono::Utc::now() - window);
-        let covered: std::collections::HashSet<String> = self
+        let coverage_rows = self
             .services
             .integrations
             .scope_indexer_coverage
-            .covered_indexers(scope_key, facet, fingerprint, stale_before)
+            .list_coverage_for_scope_keys(&[scope_key.to_string()])
+            .await?;
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
             .await?
             .into_iter()
-            .collect();
+            .map(|config| (config.id.clone(), config))
+            .collect::<std::collections::HashMap<_, _>>();
+        let provider = self.services.integrations.plugin_provider.available();
         Ok(routed_indexer_ids
             .iter()
-            .filter(|id| !covered.contains(id.as_str()))
+            .filter(|id| {
+                let Some(config) = configs.get(id.as_str()) else {
+                    return true;
+                };
+                let semantics = provider.as_ref().and_then(|provider| {
+                    provider.search_semantics_version_for_provider(&config.provider_type)
+                });
+                let expected = indexer_coverage_fingerprint(fingerprint, config, semantics);
+                !coverage_rows.iter().any(|row| {
+                    row.indexer_id == **id
+                        && row.fingerprint == expected
+                        && stale_before.is_none_or(|cutoff| {
+                            chrono::DateTime::parse_from_rfc3339(&row.searched_at)
+                                .map(|searched_at| searched_at.with_timezone(&chrono::Utc) >= cutoff)
+                                .unwrap_or(false)
+                        })
+                })
+            })
             .cloned()
             .collect())
     }
@@ -725,10 +807,29 @@ impl AppUseCase {
         // retries it.
         let fired: std::collections::HashSet<&str> =
             fired_indexer_ids.iter().map(String::as_str).collect();
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|config| (config.id.clone(), config))
+            .collect::<std::collections::HashMap<_, _>>();
+        let provider = self.services.integrations.plugin_provider.available();
         for indexer_id in &convergence.routed_indexer_ids {
             if !fired.contains(indexer_id.as_str()) {
                 continue;
             }
+            let Some(config) = configs.get(indexer_id) else {
+                continue;
+            };
+            let semantics = provider.as_ref().and_then(|provider| {
+                provider.search_semantics_version_for_provider(&config.provider_type)
+            });
+            let fingerprint =
+                indexer_coverage_fingerprint(&convergence.fingerprint, config, semantics);
             if let Err(error) = self
                 .services
                 .integrations
@@ -737,7 +838,7 @@ impl AppUseCase {
                     &convergence.scope_key,
                     &convergence.facet,
                     indexer_id,
-                    &convergence.fingerprint,
+                    &fingerprint,
                 )
                 .await
             {

@@ -30,6 +30,7 @@ impl IndexerClient for MockIndexerClient {
             tracing::info!(imdb_id = %imdb, category = ?category, "mock nzbgeek search");
         }
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -236,7 +237,7 @@ impl IndexerClient for TrackingIndexerClient {
                 .filter(|(_, entry)| entry.enabled)
                 .map(|(indexer_id, _)| crate::IndexerQueryOutcome {
                     indexer_id,
-                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
+                    outcome: crate::IndexerSearchOutcome::Complete { empty: false },
                 })
                 .collect()
         } else {
@@ -265,6 +266,7 @@ impl IndexerClient for TrackingIndexerClient {
             };
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes,
             results: release_titles
                 .into_iter()
@@ -404,13 +406,14 @@ impl IndexerClient for FixedReleaseIndexerClient {
             .iter()
             .map(|id| crate::IndexerQueryOutcome {
                 indexer_id: id.clone(),
-                outcome: crate::IndexerSearchOutcome::Fired {
+                outcome: crate::IndexerSearchOutcome::Complete {
                     empty: self.empty_response,
                 },
             })
             .collect();
         if self.empty_response {
             return Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
                 indexer_outcomes,
                 results: Vec::new(),
                 api_current: None,
@@ -424,6 +427,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
             extra.insert("seeders".to_string(), serde_json::json!(seeders));
         }
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes,
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -510,6 +514,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         };
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -616,6 +621,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -682,6 +688,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![],
             api_current: None,
@@ -733,6 +740,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: self
                 .release_titles

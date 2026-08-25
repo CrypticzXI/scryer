@@ -93,6 +93,10 @@ pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) canonical_key: String,
     pub(crate) year: Option<i32>,
+    /// Years corroborated by season-scoped metadata. Generic aliases never
+    /// enter this set; only year-bearing aliases and the requested episode's
+    /// air year can relax the root-title year veto.
+    pub(crate) supported_release_years: HashSet<i32>,
     pub(crate) parse_context: crate::ReleaseParseContext,
     /// Library-local collision data. Defaults to "not ambiguous" so every
     /// existing construction site keeps its behavior; the resolution paths
@@ -357,6 +361,29 @@ fn canonical_title_evidence_for_episode(
 ) -> CanonicalTitleEvidence {
     let lookup_keys = canonical_title_lookup_keys(title);
     let canonical_key = crate::title_matching::canonical_lookup_key(&title.name);
+    let mut supported_release_years = HashSet::new();
+    for alias in title
+        .aliases
+        .iter()
+        .map(String::as_str)
+        .chain(title.tagged_aliases.iter().map(|alias| alias.name.as_str()))
+    {
+        for token in alias.split(|character: char| !character.is_ascii_digit()) {
+            if token.len() == 4
+                && let Ok(year) = token.parse::<i32>()
+                && (1900..=2099).contains(&year)
+            {
+                supported_release_years.insert(year);
+            }
+        }
+    }
+    if let Some(air_year) = episode
+        .and_then(|episode| episode.air_date.as_deref())
+        .and_then(|air_date| air_date.get(..4))
+        .and_then(|year| year.parse::<i32>().ok())
+    {
+        supported_release_years.insert(air_year);
+    }
     let mut parse_context =
         crate::build_release_parse_context(title, episode, None, Some(title.facet.as_str()));
     if title.year.is_some() {
@@ -381,6 +408,7 @@ fn canonical_title_evidence_for_episode(
         lookup_keys,
         canonical_key,
         year: title.year,
+        supported_release_years,
         parse_context,
         ambiguity,
     }
@@ -708,12 +736,15 @@ pub(crate) fn match_parsed_release_to_title_evidence(
 ) -> Option<TitleEvidenceMatch> {
     if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
+        && !evidence.supported_release_years.contains(&parsed_year)
     {
         return None;
     }
 
-    let year_corroborated =
-        parsed.year.is_some() && evidence.year.is_some() && parsed.year == evidence.year;
+    let year_corroborated = parsed.year.is_some_and(|parsed_year| {
+        evidence.year == Some(parsed_year)
+            || evidence.supported_release_years.contains(&parsed_year)
+    });
     contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
 }
 
@@ -857,51 +888,146 @@ pub(crate) fn candidate_presents_identity_disambiguator(
     external_id_agreement.unwrap_or(false)
 }
 
+const EXTERNAL_ID_CONFLICTS_EXTRA_KEY: &str = "scryer_external_id_conflicts";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ExternalIdComparison {
+    compared: bool,
+    matched: bool,
+    conflicts: Vec<ExternalIdConflict>,
+}
+
+impl ExternalIdComparison {
+    fn agreement(&self) -> Option<bool> {
+        if self.matched {
+            Some(true)
+        } else {
+            self.compared.then_some(false)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExternalIdConflict {
+    kind: &'static str,
+    expected: String,
+    actual: String,
+}
+
 /// Compare the indexer's response ids against ids Scryer already holds.
 ///
-/// `Some(false)` when any comparable id kind disagrees, `Some(true)` when all
-/// comparable kinds agree, and `None` when there was nothing to compare. An
-/// explicit contradiction is stronger evidence than a second id's agreement.
+/// Agreement is positive disambiguating evidence. Conflicts remain advisory:
+/// they are retained separately for diagnostics and never override an
+/// agreement from another id kind.
 pub(crate) fn external_id_agreement(
     response: &IndexerResponseAttributes,
     tvdb_id: Option<&str>,
     tmdb_id: Option<&str>,
     imdb_id: Option<&str>,
 ) -> Option<bool> {
-    let agreements = [
-        numeric_external_id_agreement(response.tvdb_id.as_deref(), tvdb_id),
-        numeric_external_id_agreement(response.tmdb_id.as_deref(), tmdb_id),
-        imdb_external_id_agreement(response.imdb_id.as_deref(), imdb_id),
-    ];
-
-    if agreements.contains(&Some(false)) {
-        return Some(false);
-    }
-    agreements.contains(&Some(true)).then_some(true)
+    external_id_comparison(response, tvdb_id, tmdb_id, imdb_id).agreement()
 }
 
-fn numeric_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+fn numeric_external_id_values(
+    response: Option<&str>,
+    subject: Option<&str>,
+) -> Option<(String, String)> {
     let response = response.map(str::trim).filter(|value| !value.is_empty())?;
     let subject = subject.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(response == subject)
+    Some((response.to_string(), subject.to_string()))
 }
 
-fn imdb_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+fn imdb_external_id_values(
+    response: Option<&str>,
+    subject: Option<&str>,
+) -> Option<(String, String)> {
     let response = crate::normalize::normalize_imdb_id(response?)?;
     let subject = crate::normalize::normalize_imdb_id(subject?)?;
-    Some(response == subject)
+    Some((response, subject))
+}
+
+fn external_id_comparison(
+    response: &IndexerResponseAttributes,
+    tvdb_id: Option<&str>,
+    tmdb_id: Option<&str>,
+    imdb_id: Option<&str>,
+) -> ExternalIdComparison {
+    let mut comparison = ExternalIdComparison::default();
+    for (kind, values) in [
+        (
+            "tvdb",
+            numeric_external_id_values(response.tvdb_id.as_deref(), tvdb_id),
+        ),
+        (
+            "tmdb",
+            numeric_external_id_values(response.tmdb_id.as_deref(), tmdb_id),
+        ),
+        (
+            "imdb",
+            imdb_external_id_values(response.imdb_id.as_deref(), imdb_id),
+        ),
+    ] {
+        let Some((actual, expected)) = values else {
+            continue;
+        };
+        comparison.compared = true;
+        if actual == expected {
+            comparison.matched = true;
+        } else {
+            comparison.conflicts.push(ExternalIdConflict {
+                kind,
+                expected,
+                actual,
+            });
+        }
+    }
+    comparison
+}
+
+fn candidate_external_id_comparison(
+    candidate: &IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) -> ExternalIdComparison {
+    external_id_comparison(
+        &candidate.response_attributes,
+        subject.tvdb_id.as_deref(),
+        subject.tmdb_id.as_deref(),
+        subject.imdb_id.as_deref(),
+    )
 }
 
 fn candidate_external_id_agreement(
     candidate: &IndexerSearchResult,
     subject: &ResolvedReleaseSearchSubject,
 ) -> Option<bool> {
-    external_id_agreement(
-        &candidate.response_attributes,
-        subject.tvdb_id.as_deref(),
-        subject.tmdb_id.as_deref(),
-        subject.imdb_id.as_deref(),
-    )
+    candidate_external_id_comparison(candidate, subject).agreement()
+}
+
+fn annotate_external_id_diagnostics(
+    candidate: &mut IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) {
+    let comparison = candidate_external_id_comparison(candidate, subject);
+    if comparison.conflicts.is_empty() {
+        candidate.extra.remove(EXTERNAL_ID_CONFLICTS_EXTRA_KEY);
+        return;
+    }
+    candidate.extra.insert(
+        EXTERNAL_ID_CONFLICTS_EXTRA_KEY.to_string(),
+        serde_json::Value::Array(
+            comparison
+                .conflicts
+                .into_iter()
+                .map(|conflict| {
+                    serde_json::json!({
+                        "kind": conflict.kind,
+                        "expected": conflict.expected,
+                        "actual": conflict.actual,
+                    })
+                })
+                .collect(),
+        ),
+    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1051,6 +1177,7 @@ pub(crate) fn serialize_decision_explanation(candidate: &IndexerSearchResult) ->
             "guid": candidate.guid.as_deref(),
             "download_url_present": candidate.download_url.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "link_present": candidate.link.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "external_id_conflicts": candidate.extra.get(EXTERNAL_ID_CONFLICTS_EXTRA_KEY),
         },
         "auto_decision": {
             "eligible": candidate.auto_eligible,
@@ -1322,9 +1449,6 @@ pub(crate) fn evaluate_auto_candidate(
     }
 
     let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
-    if external_id_agreement == Some(false) {
-        return ReleaseAutoDecisionCode::TitleMismatch;
-    }
     if title_match
         .evidence_match
         .as_ref()
@@ -1800,6 +1924,7 @@ impl AppUseCase {
                 continue;
             }
             let code = evaluate_auto_candidate(candidate, &evaluation_context);
+            annotate_external_id_diagnostics(candidate, evaluation_context.subject);
             annotate_auto_decision(candidate, code);
         }
 
@@ -3090,7 +3215,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_response_id_is_a_title_mismatch_even_when_another_id_agrees() {
+    fn conflicting_response_id_is_advisory_when_another_id_agrees() {
         let live_action = year_qualified_tide_chart();
         let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
         subject.tvdb_id = Some("392276".to_string());
@@ -3101,8 +3226,58 @@ mod tests {
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
-            ReleaseAutoDecisionCode::TitleMismatch
+            ReleaseAutoDecisionCode::QualityBlocked,
+            "stale advisory metadata must not veto an otherwise valid title match"
         );
+        assert_eq!(
+            candidate_external_id_agreement(&candidate, &subject),
+            Some(true),
+            "the agreeing TVDB id remains positive disambiguating evidence"
+        );
+
+        annotate_external_id_diagnostics(&mut candidate, &subject);
+        assert_eq!(
+            candidate.extra.get(EXTERNAL_ID_CONFLICTS_EXTRA_KEY),
+            Some(&serde_json::json!([{
+                "kind": "tmdb",
+                "expected": "111110",
+                "actual": "999999",
+            }])),
+            "the advisory conflict remains visible for diagnostics"
+        );
+
+        candidate.response_attributes.tvdb_id = Some("888888".to_string());
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity,
+            "conflicting ids do not veto the title, but also cannot clear its ambiguity gate"
+        );
+        assert_eq!(
+            candidate_external_id_agreement(&candidate, &subject),
+            Some(false),
+            "conflicts alone still do not satisfy an ambiguity gate"
+        );
+    }
+
+    #[test]
+    fn conflicting_response_id_does_not_veto_an_unambiguous_title() {
+        let mut title = make_title();
+        title.external_ids.push(ExternalId {
+            source: "tvdb".to_string(),
+            value: "425348".to_string(),
+        });
+        let mut subject = numbering_scoped_subject(&title, Some(1), Some(2));
+        subject.tvdb_id = Some("425348".to_string());
+        let mut candidate = make_candidate("Nightfall.S01E02.1080p.WEB-DL.x264-GRP", None);
+        candidate.response_attributes.tvdb_id = Some("999999".to_string());
+
+        assert_eq!(
+            decision_for(&title, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked,
+            "advisory indexer metadata must not override a valid unambiguous title match"
+        );
+        annotate_external_id_diagnostics(&mut candidate, &subject);
+        assert!(candidate.extra.contains_key(EXTERNAL_ID_CONFLICTS_EXTRA_KEY));
     }
 
     #[test]

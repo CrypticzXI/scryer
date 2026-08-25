@@ -146,7 +146,7 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
                 scope_key: scope_key.clone(),
                 indexer_id: indexer_id.clone(),
                 fingerprint: fingerprint.clone(),
-                searched_at: String::new(),
+                searched_at: chrono::Utc::now().to_rfc3339(),
             })
             .collect())
     }

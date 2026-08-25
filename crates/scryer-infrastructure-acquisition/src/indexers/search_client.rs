@@ -1,17 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
-    AppError, AppResult, EstimatedCost, ExpectedValueHint, IndexerClient, IndexerConfigRepository,
-    IndexerErrorClassification, IndexerErrorOperation, IndexerErrorRepository,
+    AppError, AppResult, DownloadSourceKind, EstimatedCost, ExpectedValueHint, IndexerClient,
+    IndexerConfigRepository, IndexerErrorClassification, IndexerErrorOperation,
+    IndexerErrorRepository,
     IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome, IndexerRoutingPlan,
-    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
-    IndexerSearchLearningRepository, IndexerSearchOutcome, IndexerSearchResponse,
-    IndexerSearchResult, IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError,
+    IndexerSearchCandidateWrite, IndexerSearchCompletion, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,
+    IndexerSearchRunWrite, IndexerStatsTracker, IndexerSystemBackoff,
+    NormalizedIndexerSearchCandidate, NewIndexerError, ReusableIndexerSearchCandidate,
     NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
     RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
@@ -25,6 +28,7 @@ use scryer_domain::{
     IndexerSearchInputCapability, NabTransportKind,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -257,6 +261,640 @@ fn sanitize_indexer_error_message(message: &str) -> String {
         sanitized.truncate(end);
     }
     sanitized
+}
+
+const SEARCH_CANDIDATE_REUSE_HOURS: i64 = 24;
+const SEARCH_CANDIDATE_RETENTION_DAYS: i64 = 7;
+const SEARCH_RUN_RETENTION_DAYS: i64 = 90;
+const SEARCH_DIAGNOSTIC_CLEANUP_LIMIT: u32 = 500;
+static LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY: AtomicI64 = AtomicI64::new(i64::MIN);
+
+#[derive(Clone)]
+struct SearchDiagnosticsContext {
+    repository: Arc<dyn IndexerSearchLearningRepository>,
+    indexer_id: String,
+    provider_type: String,
+    scope_key: String,
+    reusable_scope_key: String,
+    query_signature: String,
+    indexer_fingerprint: String,
+    credentials: HashMap<String, String>,
+}
+
+impl SearchDiagnosticsContext {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the diagnostic identity mirrors the complete indexer search envelope"
+    )]
+    fn new(
+        repository: Arc<dyn IndexerSearchLearningRepository>,
+        config: &IndexerConfig,
+        search_semantics_version: Option<u32>,
+        learning_context: Option<&IndexerSearchLearningContext>,
+        query: &str,
+        ids: &HashMap<String, String>,
+        category: Option<&str>,
+        facet: &str,
+        id_search_facet: &str,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+    ) -> Option<Self> {
+        let learning_context = learning_context?;
+        if learning_context.title_id.trim().is_empty()
+            || learning_context.subject_kind == ReleaseSearchSubjectKind::Rss
+        {
+            return None;
+        }
+
+        let scope_key = format!(
+            "{}:{}:{}:{}:{}:{}",
+            learning_context.title_id.trim(),
+            learning_context.facet.trim().to_ascii_lowercase(),
+            learning_context.subject_kind.as_str(),
+            season.map_or_else(|| "-".to_string(), |value| value.to_string()),
+            episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
+            absolute_episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
+        );
+        let reusable_scope_key = if learning_context.subject_kind == ReleaseSearchSubjectKind::Episode
+        {
+            season.map_or_else(
+                || scope_key.clone(),
+                |season| {
+                    format!(
+                        "{}:{}:{}:{}:-:-",
+                        learning_context.title_id.trim(),
+                        learning_context.facet.trim().to_ascii_lowercase(),
+                        ReleaseSearchSubjectKind::Season.as_str(),
+                        season,
+                    )
+                },
+            )
+        } else {
+            scope_key.clone()
+        };
+        let query_signature = digest_json(&serde_json::json!({
+            "query": query,
+            "ids": ids,
+            "category": category,
+            "facet": facet,
+            "id_search_facet": id_search_facet,
+            "season": season,
+            "episode": episode,
+            "absolute_episode": absolute_episode,
+        }));
+        let config_json = config
+            .config_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let managed_metadata = config
+            .managed_metadata_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let secret_fingerprint = config.api_key_encrypted.as_deref().map(|secret| {
+            let mut digest = Sha256::new();
+            digest.update(b"indexer-secret-v1:");
+            digest.update(secret.as_bytes());
+            hex_encode(&digest.finalize())
+        });
+        let indexer_fingerprint = digest_json(&serde_json::json!({
+            "version": 2,
+            "provider": config.provider_type.trim().to_ascii_lowercase(),
+            "endpoint": config.base_url.trim().trim_end_matches('/'),
+            "config": config_json,
+            "secret_fingerprint": secret_fingerprint,
+            "proxy": config.indexer_proxy_config_id,
+            "routing": managed_metadata,
+            "caps": search_relevant_caps(config.caps_snapshot_json.as_deref()),
+            "search_semantics": search_semantics_version,
+        }));
+
+        Some(Self {
+            repository,
+            indexer_id: config.id.clone(),
+            provider_type: config.provider_type.clone(),
+            scope_key,
+            reusable_scope_key,
+            query_signature,
+            indexer_fingerprint,
+            credentials: indexer_credentials(config),
+        })
+    }
+
+    async fn record_response(
+        &self,
+        branch: &str,
+        response: &IndexerSearchResponse,
+    ) {
+        let now = Utc::now();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let completion_state = match response.completion {
+            IndexerSearchCompletion::Complete => "complete",
+            IndexerSearchCompletion::Partial => "partial",
+        };
+        let candidates = response
+            .results
+            .iter()
+            .map(|candidate| IndexerSearchCandidateWrite {
+                id: uuid::Uuid::new_v4().to_string(),
+                run_id: run_id.clone(),
+                indexer_id: self.indexer_id.clone(),
+                scope_key: self.scope_key.clone(),
+                query_signature: self.query_signature.clone(),
+                normalized: normalized_candidate(candidate, &self.credentials),
+                created_at: now,
+                reusable_until: now + Duration::hours(SEARCH_CANDIDATE_REUSE_HOURS),
+                expires_at: now + Duration::days(SEARCH_CANDIDATE_RETENTION_DAYS),
+            })
+            .collect::<Vec<_>>();
+        let run = IndexerSearchRunWrite {
+            id: run_id,
+            indexer_id: self.indexer_id.clone(),
+            provider_type: self.provider_type.clone(),
+            scope_key: self.scope_key.clone(),
+            query_signature: self.query_signature.clone(),
+            branch: branch.to_string(),
+            page: None,
+            range_min_size: None,
+            range_max_size: None,
+            result_count: response.results.len().min(u32::MAX as usize) as u32,
+            completion_state: completion_state.to_string(),
+            retry_at: None,
+            error_summary: (response.completion == IndexerSearchCompletion::Partial)
+                .then(|| "incomplete indexer search response".to_string()),
+            indexer_fingerprint: self.indexer_fingerprint.clone(),
+            created_at: now,
+        };
+        self.persist(&run, &candidates).await;
+    }
+
+    async fn record_error(
+        &self,
+        branch: &str,
+        error: &AppError,
+        retry_after: Option<std::time::Duration>,
+    ) {
+        let now = Utc::now();
+        let run = IndexerSearchRunWrite {
+            id: uuid::Uuid::new_v4().to_string(),
+            indexer_id: self.indexer_id.clone(),
+            provider_type: self.provider_type.clone(),
+            scope_key: self.scope_key.clone(),
+            query_signature: self.query_signature.clone(),
+            branch: branch.to_string(),
+            page: None,
+            range_min_size: None,
+            range_max_size: None,
+            result_count: 0,
+            completion_state: if retry_after.is_some() {
+                "deferred".to_string()
+            } else {
+                "errored".to_string()
+            },
+            retry_at: retry_after
+                .and_then(|duration| Duration::from_std(duration).ok())
+                .map(|duration| now + duration),
+            error_summary: Some(sanitize_indexer_error_message(&error.to_string())),
+            indexer_fingerprint: self.indexer_fingerprint.clone(),
+            created_at: now,
+        };
+        self.persist(&run, &[]).await;
+    }
+
+    async fn reusable_candidates(&self, config: &IndexerConfig) -> Vec<IndexerSearchResult> {
+        const REUSE_LIMIT: u32 = 5_000;
+        let records = match self
+            .repository
+            .list_reusable_search_candidates(
+                &self.indexer_id,
+                &self.reusable_scope_key,
+                &self.indexer_fingerprint,
+                Utc::now(),
+                REUSE_LIMIT,
+            )
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                warn!(
+                    indexer_id = self.indexer_id.as_str(),
+                    error = %error,
+                    "failed to load reusable indexer candidates"
+                );
+                return Vec::new();
+            }
+        };
+
+        let mut seen = HashSet::new();
+        records
+            .into_iter()
+            .filter_map(|record| reusable_candidate_from_record(record, config, &self.credentials))
+            .filter(|candidate| {
+                seen.insert(format!(
+                    "{}:{}:{}",
+                    candidate.guid.as_deref().unwrap_or_default(),
+                    candidate.title.trim().to_ascii_lowercase(),
+                    candidate.size_bytes.unwrap_or_default(),
+                ))
+            })
+            .collect()
+    }
+
+    async fn persist(
+        &self,
+        run: &IndexerSearchRunWrite,
+        candidates: &[IndexerSearchCandidateWrite],
+    ) {
+        if let Err(error) = self
+            .repository
+            .record_search_diagnostics(run, candidates)
+            .await
+        {
+            warn!(
+                indexer_id = self.indexer_id.as_str(),
+                error = %error,
+                "failed to persist indexer search diagnostics"
+            );
+        }
+        maybe_cleanup_search_diagnostics(&self.repository, run.created_at).await;
+    }
+}
+
+fn digest_json(value: &serde_json::Value) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    hex_encode(&Sha256::digest(bytes))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
+}
+
+fn search_relevant_caps(raw: Option<&str>) -> serde_json::Value {
+    let Some(object) = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return serde_json::Value::Null;
+    };
+    let mut projected = serde_json::Map::new();
+    for key in ["search", "tv_search", "movie_search", "categories", "limits"] {
+        if let Some(value) = object.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(projected)
+}
+
+fn normalized_credential_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_sensitive_credential_key(key: &str) -> bool {
+    let normalized = normalized_credential_key(key);
+    normalized == "key"
+        || normalized.contains("apikey")
+        || normalized.contains("passkey")
+        || normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+}
+
+fn collect_indexer_credentials(
+    value: &serde_json::Value,
+    credentials: &mut HashMap<String, String>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    for (key, value) in object {
+        if let Some(secret) = value.as_str().filter(|secret| !secret.trim().is_empty())
+            && is_sensitive_credential_key(key)
+        {
+            credentials.insert(normalized_credential_key(key), secret.to_string());
+        }
+        if value.is_object() {
+            collect_indexer_credentials(value, credentials);
+        }
+    }
+}
+
+fn indexer_credentials(config: &IndexerConfig) -> HashMap<String, String> {
+    let mut credentials = HashMap::new();
+    if let Some(api_key) = config
+        .api_key_encrypted
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        credentials.insert("apikey".to_string(), api_key.to_string());
+    }
+    if let Some(config_json) = config
+        .config_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    {
+        collect_indexer_credentials(&config_json, &mut credentials);
+    }
+    credentials
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReusableUrlReference {
+    url: String,
+    credential_query_keys: Vec<String>,
+}
+
+fn reusable_url_reference(
+    raw: Option<&str>,
+    credentials: &HashMap<String, String>,
+) -> Option<ReusableUrlReference> {
+    let raw = raw.map(str::trim).filter(|value| !value.is_empty())?;
+    let mut url = url::Url::parse(raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https" | "magnet")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    if credentials.values().any(|secret| {
+        secret.len() >= 4
+            && (url.path().contains(secret)
+                || url.fragment().is_some_and(|fragment| fragment.contains(secret)))
+    }) {
+        return None;
+    }
+
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    let mut credential_query_keys = Vec::new();
+    {
+        let mut query = url.query_pairs_mut();
+        for (key, value) in pairs {
+            let carries_known_secret = credentials
+                .values()
+                .any(|secret| !secret.is_empty() && secret == &value);
+            if is_sensitive_credential_key(&key) || carries_known_secret {
+                if !credential_query_keys.contains(&key) {
+                    credential_query_keys.push(key);
+                }
+            } else {
+                query.append_pair(&key, &value);
+            }
+        }
+    }
+
+    Some(ReusableUrlReference {
+        url: url.into(),
+        credential_query_keys,
+    })
+}
+
+fn rehydrate_url_reference(
+    url: Option<&str>,
+    credential_query_keys: &[String],
+    credentials: &HashMap<String, String>,
+) -> Option<String> {
+    let mut url = url::Url::parse(url?).ok()?;
+    {
+        let mut query = url.query_pairs_mut();
+        for key in credential_query_keys {
+            let normalized = normalized_credential_key(key);
+            let secret = credentials
+                .get(&normalized)
+                .or_else(|| credentials.get("apikey"))?;
+            query.append_pair(key, secret);
+        }
+    }
+    Some(url.into())
+}
+
+fn candidate_extra_string(candidate: &IndexerSearchResult, key: &str) -> Option<String> {
+    candidate
+        .extra
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn candidate_extra_strings(candidate: &IndexerSearchResult, key: &str) -> Vec<String> {
+    candidate
+        .extra
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn candidate_extra_i64(candidate: &IndexerSearchResult, key: &str) -> Option<i64> {
+    candidate.extra.get(key).and_then(serde_json::Value::as_i64)
+}
+
+fn candidate_extra_f64(candidate: &IndexerSearchResult, key: &str) -> Option<f64> {
+    candidate.extra.get(key).and_then(serde_json::Value::as_f64)
+}
+
+fn candidate_extra_bool(candidate: &IndexerSearchResult, key: &str) -> Option<bool> {
+    candidate.extra.get(key).and_then(serde_json::Value::as_bool)
+}
+
+fn normalized_candidate(
+    candidate: &IndexerSearchResult,
+    credentials: &HashMap<String, String>,
+) -> NormalizedIndexerSearchCandidate {
+    let download = reusable_url_reference(candidate.download_url.as_deref(), credentials);
+    let link = reusable_url_reference(candidate.link.as_deref(), credentials);
+    NormalizedIndexerSearchCandidate {
+        provider_ref: candidate.guid.clone(),
+        source: candidate.source.clone(),
+        title: candidate.title.clone(),
+        download_url: download.as_ref().map(|reference| reference.url.clone()),
+        download_url_credential_keys: download
+            .map(|reference| reference.credential_query_keys)
+            .unwrap_or_default(),
+        link_url: link.as_ref().map(|reference| reference.url.clone()),
+        link_url_credential_keys: link
+            .map(|reference| reference.credential_query_keys)
+            .unwrap_or_default(),
+        size_bytes: candidate.size_bytes,
+        published_at: candidate.published_at.clone(),
+        source_kind: candidate
+            .source_kind
+            .map(|kind| kind.as_str().to_string()),
+        thumbs_up: candidate.thumbs_up,
+        thumbs_down: candidate.thumbs_down,
+        grabs: candidate.indexer_grabs,
+        languages: candidate.indexer_languages.clone().unwrap_or_default(),
+        subtitles: candidate.indexer_subtitles.clone().unwrap_or_default(),
+        response_tvdb_id: candidate.response_attributes.tvdb_id.clone(),
+        response_tmdb_id: candidate.response_attributes.tmdb_id.clone(),
+        response_imdb_id: candidate.response_attributes.imdb_id.clone(),
+        response_categories: candidate.response_attributes.categories.clone(),
+        extra_categories: candidate_extra_strings(candidate, "categories"),
+        season: candidate_extra_i64(candidate, "season"),
+        episode: candidate_extra_i64(candidate, "episode"),
+        absolute_episode: candidate_extra_i64(candidate, "absolute_episode"),
+        series_names: candidate_extra_strings(candidate, "series_names"),
+        release_group: candidate_extra_string(candidate, "group"),
+        provider_source: candidate_extra_string(candidate, "source"),
+        info_hash: candidate_extra_string(candidate, "info_hash"),
+        seeders: candidate_extra_i64(candidate, "seeders"),
+        peers: candidate_extra_i64(candidate, "peers"),
+        download_volume_factor: candidate_extra_f64(candidate, "download_volume_factor"),
+        upload_volume_factor: candidate_extra_f64(candidate, "upload_volume_factor"),
+        protected: candidate_extra_bool(candidate, "protected"),
+        tags: candidate_extra_strings(candidate, "tags"),
+        provider_categories: candidate_extra_strings(candidate, "provider_categories"),
+    }
+}
+
+fn reusable_candidate_from_record(
+    record: ReusableIndexerSearchCandidate,
+    config: &IndexerConfig,
+    credentials: &HashMap<String, String>,
+) -> Option<IndexerSearchResult> {
+    let normalized = record.normalized;
+    let title = normalized.title.trim().to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let download_url = rehydrate_url_reference(
+        normalized.download_url.as_deref(),
+        &normalized.download_url_credential_keys,
+        credentials,
+    );
+    let link = rehydrate_url_reference(
+        normalized.link_url.as_deref(),
+        &normalized.link_url_credential_keys,
+        credentials,
+    );
+    if download_url.is_none() && link.is_none() {
+        return None;
+    }
+    let source_kind = normalized
+        .source_kind
+        .as_deref()
+        .and_then(DownloadSourceKind::parse);
+    let mut extra = HashMap::new();
+    for (key, value) in [
+        ("season", normalized.season),
+        ("episode", normalized.episode),
+        ("absolute_episode", normalized.absolute_episode),
+        ("seeders", normalized.seeders),
+        ("peers", normalized.peers),
+    ] {
+        if let Some(value) = value {
+            extra.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    for (key, value) in [
+        ("group", normalized.release_group.as_ref()),
+        ("source", normalized.provider_source.as_ref()),
+        ("info_hash", normalized.info_hash.as_ref()),
+    ] {
+        if let Some(value) = value {
+            extra.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    for (key, values) in [
+        ("series_names", &normalized.series_names),
+        ("categories", &normalized.extra_categories),
+        ("tags", &normalized.tags),
+        ("provider_categories", &normalized.provider_categories),
+    ] {
+        if !values.is_empty() {
+            extra.insert(key.to_string(), serde_json::json!(values));
+        }
+    }
+    for (key, value) in [
+        ("download_volume_factor", normalized.download_volume_factor),
+        ("upload_volume_factor", normalized.upload_volume_factor),
+    ] {
+        if let Some(value) = value {
+            extra.insert(key.to_string(), serde_json::json!(value));
+        }
+    }
+    if let Some(value) = normalized.protected {
+        extra.insert("protected".to_string(), serde_json::json!(value));
+    }
+
+    Some(IndexerSearchResult {
+        indexer_id: Some(config.id.clone()),
+        source: if normalized.source.trim().is_empty() {
+            config.name.clone()
+        } else {
+            normalized.source
+        },
+        title,
+        link,
+        download_url,
+        source_kind,
+        size_bytes: normalized.size_bytes,
+        published_at: normalized.published_at,
+        thumbs_up: normalized.thumbs_up,
+        thumbs_down: normalized.thumbs_down,
+        indexer_languages: (!normalized.languages.is_empty()).then_some(normalized.languages),
+        indexer_subtitles: (!normalized.subtitles.is_empty()).then_some(normalized.subtitles),
+        indexer_grabs: normalized.grabs,
+        password_hint: None,
+        parsed_release_metadata: None,
+        quality_profile_decision: None,
+        extra,
+        response_attributes: IndexerResponseAttributes {
+            tvdb_id: normalized.response_tvdb_id,
+            tmdb_id: normalized.response_tmdb_id,
+            imdb_id: normalized.response_imdb_id,
+            categories: normalized.response_categories,
+        },
+        guid: normalized.provider_ref,
+        info_url: None,
+        provenance: None,
+        candidate_token: None,
+        queue_scope: None,
+        coverage_scope: None,
+        auto_eligible: None,
+        auto_decision_code: None,
+        auto_decision_summary: None,
+    })
+}
+
+async fn maybe_cleanup_search_diagnostics(
+    repository: &Arc<dyn IndexerSearchLearningRepository>,
+    now: DateTime<Utc>,
+) {
+    let day = now.timestamp().div_euclid(86_400);
+    if LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY.swap(day, Ordering::Relaxed) == day {
+        return;
+    }
+    if let Err(error) = repository
+        .cleanup_search_diagnostics(
+            now - Duration::days(SEARCH_CANDIDATE_RETENTION_DAYS),
+            now - Duration::days(SEARCH_RUN_RETENTION_DAYS),
+            SEARCH_DIAGNOSTIC_CLEANUP_LIMIT,
+        )
+        .await
+    {
+        warn!(error = %error, "failed to clean up indexer search diagnostics");
+    }
 }
 
 #[derive(Default)]
@@ -711,16 +1349,19 @@ fn is_title_query_strategy_label(label: &str) -> bool {
 
 fn learning_strategy_key(label: &str) -> Option<&'static str> {
     match label {
-        "ids_abs" => Some("ids_abs"),
-        "ids_sxex" => Some("ids_sxex"),
-        "ids" => Some("ids"),
-        "freetext" | "freetext_alias" | "fallback" => Some("freetext"),
+        "ids_abs" => Some("v2:ids_abs"),
+        "ids_sxex" => Some("v2:ids_sxex"),
+        "ids" => Some("v2:ids"),
+        "freetext" | "freetext_alias" | "fallback" => Some("v2:freetext"),
         _ => None,
     }
 }
 
 fn is_learning_id_strategy_key(strategy_key: &str) -> bool {
-    matches!(strategy_key, "ids_abs" | "ids_sxex" | "ids")
+    matches!(
+        strategy_key,
+        "v2:ids_abs" | "v2:ids_sxex" | "v2:ids"
+    )
 }
 
 fn learning_record_updated_at(record: &IndexerSearchLearningRecord) -> Option<DateTime<Utc>> {
@@ -1440,6 +2081,7 @@ impl MultiIndexerSearchClient {
     ) {
         let response = IndexerSearchResponse {
             results: vec![],
+            completion: IndexerSearchCompletion::Partial,
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -1685,6 +2327,13 @@ impl MultiIndexerSearchClient {
 
     fn auto_mode_enabled(config: &IndexerConfig, is_rss_request: bool) -> bool {
         if !config.enable_auto_search {
+            return false;
+        }
+        if config
+            .last_error_message
+            .as_deref()
+            .is_some_and(|message| message.starts_with("caps refresh failed:"))
+        {
             return false;
         }
 
@@ -2213,6 +2862,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             return Ok(IndexerSearchResponse {
                 results: vec![],
                 indexer_outcomes: Vec::new(),
+                completion: IndexerSearchCompletion::Complete,
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -2494,6 +3144,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             return Ok(IndexerSearchResponse {
                 results: vec![],
                 indexer_outcomes: Vec::new(),
+                completion: IndexerSearchCompletion::Complete,
                 api_current: None,
                 api_max: None,
                 grab_current: None,
@@ -2566,7 +3217,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Skipped { retry_after },
+                        outcome: IndexerSearchOutcome::Deferred { retry_after },
                     });
                     continue;
                 }
@@ -2982,6 +3633,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         let response = IndexerSearchResponse {
                             results,
                             indexer_outcomes: Vec::new(),
+                            completion: IndexerSearchCompletion::Complete,
                             api_current: None,
                             api_max: None,
                             grab_current: None,
@@ -3134,6 +3786,29 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                 };
 
+            let search_diagnostics = SearchDiagnosticsContext::new(
+                self.search_learning.clone(),
+                config,
+                self.plugin_provider
+                    .search_semantics_version_for_provider(&config.provider_type),
+                learning_context.as_ref(),
+                &query,
+                &available_ids,
+                category.as_deref(),
+                &facet,
+                &id_search_facet,
+                season,
+                episode,
+                absolute_episode,
+            );
+            let reusable_results = if mode == SearchMode::Auto {
+                match search_diagnostics.as_ref() {
+                    Some(diagnostics) => diagnostics.reusable_candidates(config).await,
+                    None => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
             let rss_category_request = request_categories.clone();
             let indexer_id = config.id.clone();
             let indexer_name = config.name.clone();
@@ -3166,8 +3841,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                         false,
                     );
                 }
-                let mut collected_results = Vec::new();
+                let mut collected_results = reusable_results;
                 let mut any_strategy_fired = false;
+                let mut all_strategies_complete = true;
                 let mut primary_attempted = false;
                 let mut primary_had_error = false;
                 let mut batch_had_timeout = false;
@@ -3218,6 +3894,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                     primary_attempted = true;
                     match outcome.response {
                         Ok(mut response) => {
+                            all_strategies_complete &=
+                                response.completion == IndexerSearchCompletion::Complete;
+                            if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                diagnostics
+                                    .record_response(&outcome.label, &response)
+                                    .await;
+                            }
                             batch_health.mark_success();
                             debug!(
                                 indexer = indexer_name.as_str(),
@@ -3255,16 +3938,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     is_rss_request,
                                 },
                             );
-                            record_strategy_learning_outcome(
-                                &search_learning,
-                                learning_context.as_ref(),
-                                mode,
-                                &indexer_id,
-                                &indexer_name,
-                                &outcome.label,
-                                response.results.len(),
-                            )
-                            .await;
+                            if response.completion == IndexerSearchCompletion::Complete {
+                                record_strategy_learning_outcome(
+                                    &search_learning,
+                                    learning_context.as_ref(),
+                                    mode,
+                                    &indexer_id,
+                                    &indexer_name,
+                                    &outcome.label,
+                                    response.results.len(),
+                                )
+                                .await;
+                            }
                             for result in &mut response.results {
                                 result.indexer_id = Some(indexer_id.clone());
                             }
@@ -3281,6 +3966,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 );
                             }
                             primary_had_error = true;
+                            all_strategies_complete = false;
+                            if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                diagnostics
+                                    .record_error(&outcome.label, &err, outcome.retry_after)
+                                    .await;
+                            }
                             batch_health.mark_error(
                                 &err,
                                 outcome.retry_after,
@@ -3368,6 +4059,13 @@ impl IndexerClient for MultiIndexerSearchClient {
                         any_strategy_fired = true;
                         match outcome.response {
                             Ok(mut response) => {
+                                all_strategies_complete &=
+                                    response.completion == IndexerSearchCompletion::Complete;
+                                if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                    diagnostics
+                                        .record_response(&outcome.label, &response)
+                                        .await;
+                                }
                                 batch_health.mark_success();
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -3405,16 +4103,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         is_rss_request,
                                     },
                                 );
-                                record_strategy_learning_outcome(
-                                    &search_learning,
-                                    learning_context.as_ref(),
-                                    mode,
-                                    &indexer_id,
-                                    &indexer_name,
-                                    &outcome.label,
-                                    response.results.len(),
-                                )
-                                .await;
+                                if response.completion == IndexerSearchCompletion::Complete {
+                                    record_strategy_learning_outcome(
+                                        &search_learning,
+                                        learning_context.as_ref(),
+                                        mode,
+                                        &indexer_id,
+                                        &indexer_name,
+                                        &outcome.label,
+                                        response.results.len(),
+                                    )
+                                    .await;
+                                }
                                 for result in &mut response.results {
                                     result.indexer_id = Some(indexer_id.clone());
                                 }
@@ -3429,6 +4129,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         Err(AppError::canceled("indexer search canceled")),
                                         true,
                                     );
+                                }
+                                all_strategies_complete = false;
+                                if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                    diagnostics
+                                        .record_error(&outcome.label, &err, outcome.retry_after)
+                                        .await;
                                 }
                                 batch_health.mark_error(
                                     &err,
@@ -3549,6 +4255,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                     Ok(IndexerSearchResponse {
                         results: collected_results,
                         indexer_outcomes: Vec::new(),
+                        completion: if all_strategies_complete {
+                            IndexerSearchCompletion::Complete
+                        } else {
+                            IndexerSearchCompletion::Partial
+                        },
                         api_current: quota_observation.api_current,
                         api_max: quota_observation.api_max,
                         grab_current: quota_observation.grab_current,
@@ -3631,10 +4342,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                         count = response.results.len(),
                         "indexer returned aggregated results"
                     );
+                    let outcome = match response.completion {
+                        IndexerSearchCompletion::Complete => {
+                            IndexerSearchOutcome::Complete { empty }
+                        }
+                        IndexerSearchCompletion::Partial => {
+                            IndexerSearchOutcome::Partial { empty }
+                        }
+                    };
                     all_results.append(&mut response.results);
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: id,
-                        outcome: IndexerSearchOutcome::Fired { empty },
+                        outcome,
                     });
                 }
                 Ok((id, name, scheduler_lease, Err(err), should_record_feedback)) => {
@@ -3665,10 +4384,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                         self.record_indexer_scheduler_error(scheduler_lease, &err)
                             .await;
                     }
+                    let retry_after = rate_limit_signal_from_error(&err)
+                        .and_then(|signal| signal.retry_after);
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: id,
-                        outcome: IndexerSearchOutcome::Errored,
+                        outcome: if retry_after.is_some() {
+                            IndexerSearchOutcome::Deferred { retry_after }
+                        } else {
+                            IndexerSearchOutcome::Errored
+                        },
                     });
                 }
                 Err(err) => {
@@ -3737,9 +4462,18 @@ impl IndexerClient for MultiIndexerSearchClient {
                     Some(scryer_application::parse_release_metadata(&result.title));
             }
         }
+        let completion = if indexer_outcomes
+            .iter()
+            .all(|outcome| outcome.outcome.coverage_eligible())
+        {
+            IndexerSearchCompletion::Complete
+        } else {
+            IndexerSearchCompletion::Partial
+        };
 
         Ok(IndexerSearchResponse {
             results: all_results,
+            completion,
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -4626,6 +5360,7 @@ mod tests {
         ) -> AppResult<IndexerSearchResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(IndexerSearchResponse {
+                completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
@@ -4860,6 +5595,7 @@ mod tests {
                 .expect("start order mutex")
                 .push(self.indexer_id.clone());
             Ok(IndexerSearchResponse {
+                completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
@@ -5009,6 +5745,7 @@ mod tests {
             }
             self.probe.mark_finished();
             Ok(IndexerSearchResponse {
+                completion: IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
@@ -5227,8 +5964,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reusable_candidate_urls_are_redacted_and_rehydrated_from_current_credentials() {
+        let credentials = HashMap::from([("apikey".to_string(), "old-secret".to_string())]);
+        let mut candidate = search_result("Example.S01E01.1080p");
+        candidate.guid = Some("release-1".into());
+        candidate.download_url = Some(
+            "https://api.example.test/api?t=get&id=release-1&apikey=old-secret".into(),
+        );
+
+        let normalized = normalized_candidate(&candidate, &credentials);
+        assert_eq!(
+            normalized.download_url.as_deref(),
+            Some("https://api.example.test/api?t=get&id=release-1")
+        );
+        assert_eq!(normalized.download_url_credential_keys, ["apikey"]);
+        assert!(
+            !normalized
+                .download_url
+                .as_deref()
+                .unwrap_or_default()
+                .contains("old-secret")
+        );
+
+        let current_credentials =
+            HashMap::from([("apikey".to_string(), "current-secret".to_string())]);
+        let rehydrated = rehydrate_url_reference(
+            normalized.download_url.as_deref(),
+            &normalized.download_url_credential_keys,
+            &current_credentials,
+        )
+        .expect("redacted URL should rehydrate");
+        assert!(rehydrated.contains("id=release-1"));
+        assert!(rehydrated.contains("apikey=current-secret"));
+        assert!(!rehydrated.contains("old-secret"));
+    }
+
     fn response_with_titles(titles: &[&str]) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            completion: IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: titles.iter().map(|title| search_result(title)).collect(),
             api_current: None,
@@ -5703,6 +6477,7 @@ mod tests {
             calls: StdArc::new(StdMutex::new(Vec::new())),
             responder: StdArc::new(|_| {
                 Ok(IndexerSearchResponse {
+                    completion: IndexerSearchCompletion::Complete,
                     indexer_outcomes: Vec::new(),
                     results: vec![search_result("Recovered.Show.S01E01")],
                     api_current: None,
@@ -6624,6 +7399,7 @@ mod tests {
                     response_with_titles(&["Storm.Signal.S01E02.2026"])
                 } else {
                     Ok(IndexerSearchResponse {
+                        completion: IndexerSearchCompletion::Complete,
                         indexer_outcomes: Vec::new(),
                         results: vec![],
                         api_current: None,
@@ -8037,7 +8813,7 @@ mod tests {
             strategy_with_label("freetext"),
         ];
         let records = vec![learning_record(
-            "ids_abs",
+            "v2:ids_abs",
             3,
             0,
             true,
@@ -8071,7 +8847,7 @@ mod tests {
             strategy_with_label("ids_sxex"),
         ];
         let records = vec![learning_record(
-            "ids_abs",
+            "v2:ids_abs",
             3,
             0,
             true,
@@ -8105,7 +8881,7 @@ mod tests {
             strategy_with_label("freetext"),
         ];
         let records = vec![learning_record(
-            "ids_abs",
+            "v2:ids_abs",
             3,
             0,
             true,
@@ -8165,7 +8941,7 @@ mod tests {
         for updated_at in [None, Some("not-a-timestamp".to_string())] {
             let repo_impl = StdArc::new(InMemorySearchLearningRepository::default());
             let strategies = vec![strategy_with_label("ids_abs")];
-            let records = vec![learning_record("ids_abs", 3, 0, true, updated_at)];
+            let records = vec![learning_record("v2:ids_abs", 3, 0, true, updated_at)];
             repo_impl
                 .records
                 .lock()
@@ -8333,7 +9109,7 @@ mod tests {
             .expect("learning records");
         let abs_record = records
             .iter()
-            .find(|record| record.key.strategy_key == "ids_abs")
+            .find(|record| record.key.strategy_key == "v2:ids_abs")
             .expect("ids_abs record");
 
         assert_eq!(
@@ -8374,7 +9150,7 @@ mod tests {
             .expect("learning records");
         let abs_record = records
             .iter()
-            .find(|record| record.key.strategy_key == "ids_abs")
+            .find(|record| record.key.strategy_key == "v2:ids_abs")
             .expect("ids_abs record");
 
         assert!(!abs_record.suppressed);
@@ -8387,7 +9163,7 @@ mod tests {
             indexer_id: "idx".into(),
             title_id: "title-1".into(),
             facet: "anime".into(),
-            strategy_key: "ids_abs".into(),
+            strategy_key: "v2:ids_abs".into(),
         };
         repo_impl
             .records
@@ -8396,7 +9172,7 @@ mod tests {
             .insert(
                 key,
                 learning_record(
-                    "ids_abs",
+                    "v2:ids_abs",
                     LEARNED_EMPTY_SUPPRESSION_THRESHOLD,
                     0,
                     true,
@@ -8432,7 +9208,7 @@ mod tests {
             .expect("learning records");
         let abs_record = records
             .iter()
-            .find(|record| record.key.strategy_key == "ids_abs")
+            .find(|record| record.key.strategy_key == "v2:ids_abs")
             .expect("ids_abs record");
 
         assert_eq!(abs_record.usable_successes, 1);

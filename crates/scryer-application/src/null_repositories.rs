@@ -3415,6 +3415,7 @@ pub mod test_nulls {
             _: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,

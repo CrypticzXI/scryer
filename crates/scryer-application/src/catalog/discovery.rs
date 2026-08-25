@@ -1089,7 +1089,7 @@ impl AppUseCase {
                 Ok(Ok(mut response)) => {
                     successful_searches += 1;
                     for outcome in &response.indexer_outcomes {
-                        if outcome.outcome.fired() {
+                        if outcome.outcome.coverage_eligible() {
                             fired_indexers.insert(outcome.indexer_id.clone());
                         }
                     }

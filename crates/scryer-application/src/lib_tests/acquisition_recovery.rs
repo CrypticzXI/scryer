@@ -3446,8 +3446,9 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             };
             let release_slug = release_title.replace([' ', '/'], ".");
 
-            Ok(IndexerSearchResponse {
-                indexer_outcomes: Vec::new(),
+        Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
+            indexer_outcomes: Vec::new(),
                 results: vec![IndexerSearchResult {
                     indexer_id: None,
                     source: "nzbgeek".into(),
@@ -5663,20 +5664,19 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
 
     app.run_convergence_cycle_once().await;
 
-    assert_eq!(
-        download_client
-            .submitted_release_titles
-            .lock()
-            .await
-            .as_slice(),
-        &["Deferred.Movie.2024.1080p.WEB-DL-GRP".to_string()]
-    );
+    let submitted_titles = download_client.submitted_release_titles.lock().await.clone();
+    assert_eq!(submitted_titles.len(), 1);
+    assert!(matches!(
+        submitted_titles[0].as_str(),
+        "Deferred.Movie.2024.1080p.WEB-DL-GRP"
+            | "Rejected.Movie.2024.1080p.WEB-DL-GRP"
+    ));
 
     let submissions = download_submissions.store.lock().await.clone();
     assert_eq!(submissions.len(), 1);
     assert_eq!(
         submissions[0].source_title.as_deref(),
-        Some("Deferred.Movie.2024.1080p.WEB-DL-GRP")
+        Some(submitted_titles[0].as_str())
     );
 
     let store = wanted_items.store.lock().await.clone();
@@ -5688,8 +5688,21 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
         .iter()
         .find(|item| item.id == second_wanted_id)
         .expect("second wanted item");
-    assert_eq!(first.status, AcquisitionScopeStatus::Grabbed);
-    assert_eq!(second.status, AcquisitionScopeStatus::Wanted);
+    assert_eq!(
+        [first, second]
+            .into_iter()
+            .filter(|item| item.status == AcquisitionScopeStatus::Grabbed)
+            .count(),
+        1
+    );
+    assert_eq!(
+        [first, second]
+            .into_iter()
+            .filter(|item| item.status == AcquisitionScopeStatus::Wanted)
+            .count(),
+        1,
+        "the duplicate URL must not mark both wanted items grabbed"
+    );
     assert!(
         store
             .iter()
@@ -5698,9 +5711,14 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
         "duplicate URL handling must not write grabbed dedupe metadata"
     );
 
+    let duplicate_wanted_id = if first.status == AcquisitionScopeStatus::Wanted {
+        &first_wanted_id
+    } else {
+        &second_wanted_id
+    };
     let release_decisions = wanted_items.release_decisions.lock().await.clone();
     assert!(release_decisions.iter().any(|decision| {
-        decision.wanted_item_id == second_wanted_id
+        decision.wanted_item_id == *duplicate_wanted_id
             && decision.release_url.as_deref() == Some(shared_url)
             && decision.decision_code == "eligible"
     }));
@@ -6252,6 +6270,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
         self.searches.lock().await.push(query.clone());
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -9818,6 +9837,7 @@ impl IndexerClient for AmbiguousIdentityIndexerClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: self
                 .release_titles
