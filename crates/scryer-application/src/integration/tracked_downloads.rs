@@ -1469,6 +1469,10 @@ pub enum TrackedDownloadCommand {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
     },
+    Forget {
+        id: String,
+        reply: oneshot::Sender<AppResult<()>>,
+    },
     MarkFailed {
         id: String,
         skip_reacquire: bool,
@@ -1608,6 +1612,22 @@ impl TrackedDownloadHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::Ignore {
+                id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })?
+    }
+
+    pub async fn forget(&self, id: String) -> AppResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::Forget {
                 id,
                 reply: reply_tx,
             })

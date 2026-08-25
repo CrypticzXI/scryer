@@ -102,9 +102,20 @@ impl AppUseCase {
         if let Some(item) = item
             && let Some(title_id) = item.title_id.as_deref()
         {
-            self.require_title_library_permission(actor, title_id, permission)
-                .await?;
-            return Ok(());
+            match self
+                .require_title_library_permission(actor, title_id, permission)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(AppError::NotFound(_)) => {
+                    tracing::warn!(
+                        title_id,
+                        download_client_item_id,
+                        "download queue item references a missing title; using any-library permission"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         }
         self.require_any_library_permission(actor, permission).await
     }

@@ -223,6 +223,52 @@ impl DownloadQueueSnapshotCache {
         self.schedule_commit();
     }
 
+    pub async fn stage_remove(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) {
+        let client = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| client_type.trim())
+            .to_ascii_lowercase();
+        let key = (client, download_client_item_id.to_string());
+        let mut pending = self.pending.lock().await;
+        let initialized = pending.is_none();
+        if initialized {
+            let (items, positions) =
+                index_download_queue_items(self.state.read().await.items.to_vec());
+            *pending = Some(PendingDownloadQueueSnapshot {
+                items,
+                positions,
+                updated_at: Utc::now(),
+                clear_refresh_error: false,
+            });
+        }
+        let snapshot = pending.as_mut().expect("pending snapshot initialized");
+        let previous_len = snapshot.items.len();
+        snapshot
+            .items
+            .retain(|item| download_queue_cache_identity(item) != key);
+        if snapshot.items.len() == previous_len {
+            if initialized {
+                *pending = None;
+            }
+            return;
+        }
+        snapshot.positions = snapshot
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (download_queue_cache_identity(item), index))
+            .collect();
+        snapshot.updated_at = Utc::now();
+        drop(pending);
+        self.schedule_commit();
+    }
+
     pub async fn stage_import_transfer_progress(
         &self,
         client_id: Option<&str>,

@@ -1969,7 +1969,7 @@ const en: LocaleDictionary = {
   "settings.baseUrl": "Base URL",
   "settings.externalUrl": "External URL",
   "settings.externalUrlHint": "Browser-facing URL used for Jellyfin or Emby playback links.",
-  "label.watchIn": "Watch in…",
+  "label.watchIn": "Watch in",
   "settings.pluginsInstalled": "Installed",
   "settings.pluginsAvailable": "Available",
   "settings.pluginsNoInstalled": "No plugins installed.",

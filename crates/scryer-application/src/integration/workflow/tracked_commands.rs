@@ -1661,6 +1661,12 @@ async fn handle_tracked_download_command(
             }
             let _ = reply.send(result);
         }
+        TrackedDownloadCommand::Forget { id, reply } => {
+            let id = resolve_tracked_command_id(tracker, &id);
+            tracker.stop_tracking(&id);
+            publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
+            let _ = reply.send(Ok(()));
+        }
         TrackedDownloadCommand::MarkFailed {
             id,
             skip_reacquire,

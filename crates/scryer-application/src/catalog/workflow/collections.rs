@@ -1314,10 +1314,39 @@ impl AppUseCase {
             .await?;
         Ok(episodes
             .into_iter()
-            .filter(|episode| visible_library_ids.contains(&episode.library_id))
+            .filter(|episode| {
+                visible_library_ids.contains(&episode.library_id)
+                    && calendar_episode_is_visible(
+                        episode.season_number.as_deref(),
+                        episode.monitored,
+                    )
+            })
             .collect())
     }
 }
+
+fn calendar_episode_is_visible(season_number: Option<&str>, monitored: bool) -> bool {
+    monitored || season_number.and_then(|value| value.trim().parse::<i32>().ok()) != Some(0)
+}
+
+#[cfg(test)]
+mod calendar_episode_visibility_tests {
+    use super::calendar_episode_is_visible;
+
+    #[test]
+    fn hides_unmonitored_season_zero_episodes() {
+        assert!(!calendar_episode_is_visible(Some("0"), false));
+        assert!(!calendar_episode_is_visible(Some("00"), false));
+    }
+
+    #[test]
+    fn keeps_monitored_season_zero_and_regular_episodes() {
+        assert!(calendar_episode_is_visible(Some("0"), true));
+        assert!(calendar_episode_is_visible(Some("1"), false));
+        assert!(calendar_episode_is_visible(None, false));
+    }
+}
+
 fn normalize_episode_image_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

@@ -1469,6 +1469,15 @@ function TitleContextPanel({
             backgroundUrl={backgroundUrl}
             closeLabel={t("label.clear")}
             onClose={onClearSelection}
+            headerActions={
+              (title.playbackLinks?.length ?? 0) > 0 ? (
+                <WatchInMediaServerMenu
+                  links={title.playbackLinks}
+                  showLabel
+                  className="justify-end"
+                />
+              ) : null
+            }
           >
             <TitleWorkspacePosterFrame>
               <TitlePosterSlot
@@ -1573,10 +1582,6 @@ function TitleContextPanel({
         </div>
 
         <TitleWorkspaceActionGrid>
-          <WatchInMediaServerMenu
-            links={title.playbackLinks}
-            className="h-[84px] justify-center rounded-none border-0 bg-card/85 px-3 py-3"
-          />
           <TitleWorkspaceActionButton
             id="title-overview-toggle-monitoring"
             icon={title.monitored ? EyeOff : Eye}

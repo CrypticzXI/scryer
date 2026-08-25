@@ -28,10 +28,12 @@ export function WatchInMediaServerMenu({
   links,
   className,
   compact = false,
+  showLabel = false,
 }: {
   links?: MediaServerPlaybackLink[] | null;
   className?: string;
   compact?: boolean;
+  showLabel?: boolean;
 }) {
   const t = useTranslate();
   if (!links || links.length === 0) return null;
@@ -59,7 +61,11 @@ export function WatchInMediaServerMenu({
             appearance={compact ? "ghost" : "boxed"}
             className={cn(
               "shrink-0 rounded-[9px] [&_img]:transition-transform [&:hover_img]:scale-105",
-              compact ? "h-7 w-7" : "h-9 w-9",
+              showLabel
+                ? "h-8 w-auto gap-2 px-2.5 text-[11px] font-semibold text-[#dbe4fb]"
+                : compact
+                  ? "h-7 w-7"
+                  : "h-9 w-9",
             )}
           >
             <a
@@ -78,6 +84,11 @@ export function WatchInMediaServerMenu({
                   compact ? "h-4 w-4" : "h-[19px] w-[19px]",
                 )}
               />
+              {showLabel ? (
+                <span className="max-w-[9rem] truncate">
+                  {t("label.watchIn")} {link.displayName}
+                </span>
+              ) : null}
             </a>
           </IconButton>
         );

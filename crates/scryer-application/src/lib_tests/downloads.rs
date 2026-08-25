@@ -7391,6 +7391,63 @@ async fn download_queue_subscription_sends_empty_bootstrap_snapshot() {
 }
 
 #[tokio::test]
+async fn mark_tracked_download_failed_allows_orphaned_title_reference() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+    let tracked_handle = crate::tracked_downloads::TrackedDownloadHandle::new(command_tx);
+    let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
+        download_client,
+        download_submissions,
+        pending_releases,
+        tracked_handle,
+    );
+
+    let mut item = queue_history_fixture_item(
+        "orphaned-import-pending",
+        DownloadQueueState::ImportPending,
+        1,
+    );
+    item.client_id = "client-orphaned".to_string();
+    item.title_id = Some("missing-title".to_string());
+    publish_test_download_queue_snapshot(&app, vec![item]).await;
+
+    let responder = tokio::spawn(async move {
+        match command_rx.recv().await.expect("mark-failed command") {
+            crate::tracked_downloads::TrackedDownloadCommand::MarkFailed {
+                id,
+                skip_reacquire,
+                reply,
+            } => {
+                assert_eq!(
+                    id,
+                    crate::tracked_downloads::tracked_download_id(
+                        Some("client-orphaned"),
+                        "nzbget",
+                        "orphaned-import-pending",
+                    )
+                );
+                assert!(skip_reacquire);
+                let _ = reply.send(Ok(()));
+            }
+            _ => panic!("unexpected tracked-download command"),
+        }
+    });
+
+    app.mark_tracked_download_failed(
+        &user,
+        Some("client-orphaned"),
+        "nzbget",
+        "orphaned-import-pending",
+        true,
+    )
+    .await
+    .expect("orphaned queue item should remain manageable");
+    responder.await.expect("mark-failed responder");
+}
+
+#[tokio::test]
 async fn queued_delete_poller_executes_client_delete() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
@@ -7433,8 +7490,11 @@ async fn queued_delete_poller_executes_client_delete() {
 }
 
 #[tokio::test]
-async fn queue_delete_persists_bound_download_id_and_ends_binding_after_execution() {
+async fn queue_delete_ends_bound_download_when_client_is_unavailable() {
     let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_delete_error(Some("download client unavailable"))
+        .await;
     let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
     let (base_app, user) =
         bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
@@ -7482,6 +7542,7 @@ async fn queue_delete_persists_bound_download_id_and_ends_binding_after_executio
             .expect("load binding")
             .is_some_and(|binding| binding.ended_at.is_some())
     );
+    assert!(download_client.deleted_items.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -7629,10 +7690,10 @@ async fn mark_imported_command_carries_canonical_download_id() {
 }
 
 #[tokio::test]
-async fn queued_delete_poller_marks_failure_and_persists_error() {
+async fn queued_delete_poller_completes_local_delete_when_client_is_unavailable() {
     let download_client = Arc::new(StubDownloadClient::default());
     download_client
-        .set_delete_error(Some("delete failed"))
+        .set_delete_error(Some("download client unavailable"))
         .await;
     let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
     let command_id = download_queue_commands
@@ -7650,7 +7711,7 @@ async fn queued_delete_poller_marks_failure_and_persists_error() {
     let record = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if let Some(record) = download_queue_commands.get(&command_id).await
-                && record.status == scryer_domain::DownloadQueueDeleteStatus::Failed
+                && record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
             {
                 break record;
             }
@@ -7658,18 +7719,121 @@ async fn queued_delete_poller_marks_failure_and_persists_error() {
         }
     })
     .await
-    .expect("queued delete should fail");
+    .expect("queued delete should complete locally");
 
     token.cancel();
     handle.await.expect("delete poller should stop cleanly");
 
     assert_eq!(
         record.status,
-        scryer_domain::DownloadQueueDeleteStatus::Failed
+        scryer_domain::DownloadQueueDeleteStatus::Completed
     );
+    assert_eq!(record.error_text, None);
+    assert!(download_client.deleted_items.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn queued_delete_removes_orphaned_import_blocked_item_locally() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_delete_error(Some("download client item not found"))
+        .await;
+    let download_queue_commands = Arc::new(TrackingDownloadQueueCommandRepo::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let command_id = download_queue_commands
+        .seed_pending(Some("client-blocked"), "nzbget", "blocked-job", false)
+        .await;
+    let source_identity = ClientJobLocator::new(
+        Some("client-blocked"),
+        "nzbget",
+        "blocked-job",
+    );
+    download_submissions
+        .update_tracked_state(
+            &source_identity,
+            scryer_domain::TrackedDownloadState::ImportBlocked.as_str(),
+        )
+        .await
+        .expect("seed import-blocked tracked state");
+
+    let (tracked_tx, mut tracked_rx) = tokio::sync::mpsc::channel(1);
+    let tracked_handle = crate::tracked_downloads::TrackedDownloadHandle::new(tracked_tx);
+    let (base_app, _) =
+        bootstrap_with_delete_queue(download_client.clone(), download_queue_commands.clone());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_download_submissions(download_submissions.clone())
+            .with_tracked_download_handle(tracked_handle)
+    });
+    let mut queue_item = queue_history_fixture_item(
+        "blocked-job",
+        DownloadQueueState::ImportPending,
+        1,
+    );
+    queue_item.client_id = "client-blocked".to_string();
+    queue_item.client_type = "nzbget".to_string();
+    queue_item.tracked_state = Some(scryer_domain::TrackedDownloadState::ImportBlocked);
+    publish_test_download_queue_snapshot(&app, vec![queue_item]).await;
+
+    let tracked_responder = tokio::spawn(async move {
+        match tracked_rx.recv().await.expect("forget command") {
+            crate::tracked_downloads::TrackedDownloadCommand::Forget { id, reply } => {
+                assert_eq!(
+                    id,
+                    crate::tracked_downloads::tracked_download_id(
+                        Some("client-blocked"),
+                        "nzbget",
+                        "blocked-job",
+                    )
+                );
+                let _ = reply.send(Ok(()));
+            }
+            _ => panic!("unexpected tracked-download command"),
+        }
+    });
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(start_background_download_delete_poller(
+        app.clone(),
+        token.child_token(),
+    ));
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let completed = download_queue_commands
+                .get(&command_id)
+                .await
+                .is_some_and(|record| {
+                    record.status == scryer_domain::DownloadQueueDeleteStatus::Completed
+                });
+            let removed_from_snapshot = app
+                .runtime
+                .acquisition
+                .download_queue_snapshot
+                .snapshot()
+                .await
+                .items
+                .iter()
+                .all(|item| item.download_client_item_id != "blocked-job");
+            if completed && removed_from_snapshot {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("orphaned import-blocked delete should complete locally");
+
+    token.cancel();
+    poller.await.expect("delete poller should stop cleanly");
+    tracked_responder
+        .await
+        .expect("tracked responder should stop cleanly");
     assert_eq!(
-        record.error_text.as_deref(),
-        Some("repository: delete failed")
+        download_submissions
+            .get_tracked_state(&source_identity)
+            .await
+            .expect("load tracked state"),
+        None
     );
     assert!(download_client.deleted_items.lock().await.is_empty());
 }
