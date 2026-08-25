@@ -1084,6 +1084,7 @@ fn decide_candidate(
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
             reason: SkipReason::Cancelled,
+            retry_after: None,
         };
     }
 
@@ -1094,6 +1095,7 @@ fn decide_candidate(
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
             reason: SkipReason::DeadlineExpired,
+            retry_after: None,
         };
     }
 
@@ -1105,6 +1107,7 @@ fn decide_candidate(
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
             reason: SkipReason::LearningSuppressed,
+            retry_after: None,
         };
     }
 
@@ -1123,13 +1126,13 @@ fn decide_candidate(
     // "no releases found" in the UI. If the destination is still rate limited,
     // the HTTP layer fails fast and the failure is surfaced per indexer.
     if candidate.intent != SchedulerIntent::InteractiveSearch
-        && RateLimitRegistry::new()
-            .active_destination_cooldown(&candidate.destination_key)
-            .is_some()
+        && let Some(retry_after) =
+            RateLimitRegistry::new().active_destination_cooldown(&candidate.destination_key)
     {
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
             reason: SkipReason::DestinationCooldown,
+            retry_after: Some(retry_after),
         };
     }
 
@@ -2035,6 +2038,7 @@ mod tests {
             decision.decisions.as_slice(),
             [SchedulerAdmission::Skip {
                 reason: SkipReason::DestinationCooldown,
+                retry_after: Some(_),
                 ..
             }]
         ));

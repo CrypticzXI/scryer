@@ -1886,9 +1886,11 @@ pub enum IndexerSearchOutcome {
     /// The query executed and returned a response — `empty` distinguishes a
     /// zero-result response (still coverage) from a populated one.
     Fired { empty: bool },
-    /// The scheduler declined to query this indexer this cycle (deferred/skipped:
-    /// destination cooldown, host-RPS, account quota, disabled) — not queried.
-    Skipped,
+    /// The scheduler declined to query this indexer this cycle. A cooldown
+    /// carries the remaining wait so interactive callers can explain it.
+    Skipped {
+        retry_after: Option<std::time::Duration>,
+    },
     /// The query was attempted but failed (rate-limited / transport / provider).
     Errored,
 }

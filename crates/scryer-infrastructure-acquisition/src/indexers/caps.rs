@@ -308,7 +308,7 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
         }
 
         let direct_config = DirectNabConfig::from_indexer_config(config)?;
-        let (host_key, destination_key) = scheduler_keys_for_caps(&direct_config.base_url);
+        let (host_key, destination_key) = scheduler_keys_for_caps(&direct_config.base_url, config);
         let candidate_id = SchedulerCandidateId::new();
         let scheduler_decision = self
             .upstream_scheduler
@@ -371,7 +371,8 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
                     ),
                 )
                 .with_max_retries(2)
-                .with_backoff(Duration::from_secs(1), Duration::from_secs(15)),
+                .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+                .with_destination_cooldown_key(destination_key.clone()),
                 || {
                     self.outbound_http
                         .client()
@@ -455,13 +456,10 @@ impl IndexerCapsSnapshotRefresher for DirectNabCapsSnapshotRefresher {
     }
 }
 
-fn scheduler_keys_for_caps(base_url: &str) -> (HostKey, DestinationKey) {
-    reqwest::Url::parse(base_url)
+fn scheduler_keys_for_caps(base_url: &str, config: &IndexerConfig) -> (HostKey, DestinationKey) {
+    let host_key = reqwest::Url::parse(base_url)
         .ok()
-        .and_then(|url| {
-            let host = url.host_str()?;
-            Some((HostKey::from(host), DestinationKey::from(host)))
-        })
+        .and_then(|url| url.host_str().map(HostKey::from))
         .unwrap_or_else(|| {
             let fallback = base_url.trim().trim_end_matches('/').trim().to_string();
             let fallback = if fallback.is_empty() {
@@ -469,11 +467,12 @@ fn scheduler_keys_for_caps(base_url: &str) -> (HostKey, DestinationKey) {
             } else {
                 fallback
             };
-            (
-                HostKey::from(fallback.clone()),
-                DestinationKey::from(fallback),
-            )
-        })
+            HostKey::from(fallback)
+        });
+    (
+        host_key,
+        DestinationKey::from(config.rate_limit_domain_key()),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

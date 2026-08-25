@@ -577,7 +577,7 @@ fn build_runtime_inputs(
             indexer_name: indexer_name.to_string(),
             config: proxy_config,
         }),
-        destination_cooldown_key: config.managed_destination_cooldown_key(),
+        destination_cooldown_key: Some(config.rate_limit_domain_key()),
     }
 }
 
@@ -1772,6 +1772,7 @@ mod tests {
     fn both_runtimes_receive_identical_inputs() {
         let descriptor = descriptor_with_base_url_role("newznab");
         let mut config = sample_indexer_config("newznab", Some("parent"));
+        config.managed_child_key = Some("child-42".to_string());
         config.config_json =
             Some(r#"{"base_url":"http://localhost:9696/1","api_path":"/api"}"#.to_string());
 
@@ -1783,6 +1784,10 @@ mod tests {
         assert_eq!(
             spec.destination_cooldown_key,
             inputs.destination_cooldown_key
+        );
+        assert_eq!(
+            inputs.destination_cooldown_key.as_deref(),
+            Some("parent:child-42")
         );
         assert!(
             !inputs.config_entries.is_empty(),

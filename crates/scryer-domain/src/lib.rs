@@ -1066,15 +1066,13 @@ pub fn is_nab_provider_type(provider_type: &str) -> bool {
 }
 
 impl IndexerConfig {
-    pub fn managed_destination_cooldown_key(&self) -> Option<String> {
-        let parent_id = self.managed_parent_config_id.as_deref()?.trim();
-        let child_key = self.managed_child_key.as_deref()?.trim();
-        if parent_id.is_empty() || child_key.is_empty() {
-            return None;
-        }
-        Some(managed_indexer_destination_cooldown_key(
-            parent_id, child_key,
-        ))
+    pub fn rate_limit_domain_key(&self) -> String {
+        let parent_id = self
+            .managed_parent_config_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(&self.id);
+        indexer_rate_limit_domain_key(parent_id, self.managed_child_key.as_deref())
     }
 
     pub fn nab_transport_kind(&self) -> Option<NabTransportKind> {
@@ -1098,8 +1096,12 @@ impl IndexerConfig {
     }
 }
 
-pub fn managed_indexer_destination_cooldown_key(parent_config_id: &str, child_key: &str) -> String {
-    format!("managed-indexer:{parent_config_id}:{child_key}")
+pub fn indexer_rate_limit_domain_key(config_id: &str, child_key: Option<&str>) -> String {
+    let config_id = config_id.trim();
+    match child_key.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(child_key) => format!("{config_id}:{child_key}"),
+        None => config_id.to_string(),
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

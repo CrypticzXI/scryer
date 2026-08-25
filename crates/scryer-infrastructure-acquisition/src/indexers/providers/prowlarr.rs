@@ -21,7 +21,7 @@ use scryer_application::{
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
     IndexerCapsSearchNode as DomainCapsSearchNode, IndexerCapsSnapshot as DomainCapsSnapshot,
-    IndexerConfig, TaggedAlias, managed_indexer_destination_cooldown_key,
+    IndexerConfig, TaggedAlias, indexer_rate_limit_domain_key,
 };
 use scryer_outbound_http::{
     DestinationKey, OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
@@ -884,12 +884,10 @@ impl ProwlarrManagementClient {
                     EXTERNAL_IMPORT_HOST_RPS_LANE,
                     EXTERNAL_IMPORT_HOST_RPS_PROFILE,
                 );
-        match child_key {
-            Some(child_key) => policy.with_destination_cooldown_key(DestinationKey::from(
-                managed_indexer_destination_cooldown_key(&self.parent_config_id, child_key),
-            )),
-            None => policy,
-        }
+        policy.with_destination_cooldown_key(DestinationKey::from(indexer_rate_limit_domain_key(
+            &self.parent_config_id,
+            child_key,
+        )))
     }
 }
 
@@ -1757,6 +1755,14 @@ mod tests {
             EXTERNAL_IMPORT_HOST_RPS_LANE
         );
         assert_eq!(request_override.profile, EXTERNAL_IMPORT_HOST_RPS_PROFILE);
+        assert_eq!(
+            client
+                .request_policy("/api/v1/indexer")
+                .destination_cooldown_override
+                .expect("parent requests should override destination cooldown identity")
+                .as_str(),
+            "cfg-1"
+        );
 
         let child_policy = client.child_request_policy("/42/api?t=caps", "42");
         assert!(child_policy.scope.to_string().ends_with(":child:42"));
@@ -1765,7 +1771,7 @@ mod tests {
                 .destination_cooldown_override
                 .expect("child requests should override destination cooldown identity")
                 .as_str(),
-            "managed-indexer:cfg-1:42"
+            "cfg-1:42"
         );
         assert!(child_policy.host_rps_override.is_some());
     }

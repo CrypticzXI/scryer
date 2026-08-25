@@ -63,7 +63,6 @@ struct SchedulerEligibleIndexer<'a> {
     config: &'a IndexerConfig,
     had_persisted_system_backoff: bool,
     candidate_id: SchedulerCandidateId,
-    candidate_timeout: Option<std::time::Duration>,
     category_request: Option<Vec<String>>,
     rss_request_key: Option<String>,
 }
@@ -375,9 +374,7 @@ impl StrategyBatchHealth {
     }
 }
 
-const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 60;
-// Queue admission, the primary tier, and the fallback tier share one deadline.
-const INTERACTIVE_CANDIDATE_TIMEOUT_WINDOWS: u32 = 3;
+const INDEXER_SEARCH_TIMEOUT_SECS: u64 = 120;
 /// Minimum background request budget for small installations.
 const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
 /// Each target worker can query every configured indexer without waiting on an
@@ -1171,8 +1168,6 @@ pub struct MultiIndexerSearchClient {
     background_search_limit: Arc<Semaphore>,
     background_search_capacity: Arc<AtomicUsize>,
     interactive_search_limit: Arc<Semaphore>,
-    #[cfg(test)]
-    candidate_timeout_override: Option<std::time::Duration>,
 }
 
 impl MultiIndexerSearchClient {
@@ -1183,23 +1178,6 @@ impl MultiIndexerSearchClient {
             .map(|config| u64::from(config.request_timeout_seconds).saturating_add(5))
             .unwrap_or(0);
         std::time::Duration::from_secs(INDEXER_SEARCH_TIMEOUT_SECS.saturating_add(extra_seconds))
-    }
-
-    fn candidate_timeout(
-        &self,
-        search_timeout: std::time::Duration,
-        is_rss_request: bool,
-    ) -> std::time::Duration {
-        #[cfg(test)]
-        if let Some(timeout) = self.candidate_timeout_override {
-            return timeout;
-        }
-
-        if is_rss_request {
-            search_timeout
-        } else {
-            search_timeout.saturating_mul(INTERACTIVE_CANDIDATE_TIMEOUT_WINDOWS)
-        }
     }
 
     pub fn new(
@@ -1227,8 +1205,6 @@ impl MultiIndexerSearchClient {
             interactive_search_limit: Arc::new(Semaphore::new(
                 INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
-            #[cfg(test)]
-            candidate_timeout_override: None,
         }
     }
 
@@ -1276,12 +1252,9 @@ impl MultiIndexerSearchClient {
     }
 
     fn scheduler_keys_for_indexer(config: &IndexerConfig) -> (HostKey, DestinationKey) {
-        reqwest::Url::parse(config.base_url.as_str())
+        let host_key = reqwest::Url::parse(config.base_url.as_str())
             .ok()
-            .and_then(|url| {
-                let host = url.host_str()?;
-                Some((HostKey::from(host), DestinationKey::from(host)))
-            })
+            .and_then(|url| url.host_str().map(HostKey::from))
             .unwrap_or_else(|| {
                 let fallback = config
                     .base_url
@@ -1294,11 +1267,12 @@ impl MultiIndexerSearchClient {
                 } else {
                     fallback
                 };
-                (
-                    HostKey::from(fallback.clone()),
-                    DestinationKey::from(fallback),
-                )
-            })
+                HostKey::from(fallback)
+            });
+        (
+            host_key,
+            DestinationKey::from(config.rate_limit_domain_key()),
+        )
     }
 
     fn register_managed_proxy_host_profile(config: &IndexerConfig, host_key: &HostKey) {
@@ -2473,23 +2447,8 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 vec![per_indexer_categories]
             };
-            let scheduler_search_timeout = Self::effective_indexer_search_timeout(
-                config
-                    .indexer_proxy_config_id
-                    .as_deref()
-                    .and_then(|proxy_config_id| proxy_configs_by_id.get(proxy_config_id))
-                    .and_then(|proxy_config| proxy_config.as_ref())
-                    .filter(|proxy_config| proxy_config.is_enabled),
-            );
-            // A candidate may queue behind other work, then execute one primary tier
-            // and one fallback tier. Keep one absolute deadline across all three
-            // windows instead of granting a fresh timeout at each stage.
-            let scheduler_candidate_timeout =
-                self.candidate_timeout(scheduler_search_timeout, is_rss_request);
             for category_request in category_requests {
                 let scheduler_candidate_id = SchedulerCandidateId::new();
-                let candidate_timeout =
-                    matches!(mode, SearchMode::Interactive).then_some(scheduler_candidate_timeout);
                 let rss_request_key =
                     is_rss_request.then(|| Self::rss_request_key(category_request.as_deref()));
                 let rss_activity = if is_rss_request {
@@ -2520,16 +2479,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     estimated_cost: EstimatedCost::ONE_API_CALL,
                     expected_value,
                     learning_context: scheduler_learning_context.clone(),
-                    deadline_at: if matches!(mode, SearchMode::Interactive) {
-                        Some(
-                            scheduler_now
-                                + chrono::Duration::seconds(
-                                    scheduler_candidate_timeout.as_secs() as i64
-                                ),
-                        )
-                    } else {
-                        None
-                    },
+                    deadline_at: None,
                     freshness: is_rss_request.then(|| {
                         Self::rss_freshness_context(config, scheduler_now, rss_activity.clone())
                     }),
@@ -2539,7 +2489,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                     config,
                     had_persisted_system_backoff: *had_persisted_system_backoff,
                     candidate_id: scheduler_candidate_id,
-                    candidate_timeout,
                     category_request,
                     rss_request_key,
                 });
@@ -2623,19 +2572,24 @@ impl IndexerClient for MultiIndexerSearchClient {
                     );
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Skipped,
+                        outcome: IndexerSearchOutcome::Skipped { retry_after },
                     });
                     continue;
                 }
-                SchedulerAdmission::Skip { reason, .. } => {
+                SchedulerAdmission::Skip {
+                    reason,
+                    retry_after,
+                    ..
+                } => {
                     info!(
                         indexer = config.name.as_str(),
                         scheduler_reason = ?reason,
+                        retry_after_secs = retry_after.map(|delay| delay.as_secs()),
                         "scheduler skipped indexer search candidate"
                     );
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Skipped,
+                        outcome: IndexerSearchOutcome::Skipped { retry_after },
                     });
                     continue;
                 }
@@ -2725,12 +2679,9 @@ impl IndexerClient for MultiIndexerSearchClient {
                         continue;
                     }
                 };
-            // Client construction can synchronously compile a cold WASM plugin.
-            // Start the dispatch window afterward so it covers only permit waits,
-            // rate limiting, and network execution.
-            let deadline_at = dispatch
-                .candidate_timeout
-                .map(|timeout| tokio::time::Instant::now() + timeout);
+            // Queue admission is cancellation-bound. Each dispatched plugin call
+            // receives its own per-indexer timeout below.
+            let deadline_at = None;
 
             // RSS-only indexers: fetch the feed once, cache it, return cached
             // results for all concurrent callers. The feed content is the same
@@ -2784,7 +2735,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                             );
                             indexer_outcomes.push(IndexerQueryOutcome {
                                 indexer_id: config.id.clone(),
-                                outcome: IndexerSearchOutcome::Skipped,
+                                outcome: IndexerSearchOutcome::Skipped { retry_after: None },
                             });
                             continue;
                         }
@@ -3175,7 +3126,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         );
                         indexer_outcomes.push(IndexerQueryOutcome {
                             indexer_id: config.id.clone(),
-                            outcome: IndexerSearchOutcome::Skipped,
+                            outcome: IndexerSearchOutcome::Skipped { retry_after: None },
                         });
                         continue;
                     }
@@ -3622,7 +3573,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             );
             indexer_outcomes.push(IndexerQueryOutcome {
                 indexer_id: dispatch.config.id.clone(),
-                outcome: IndexerSearchOutcome::Skipped,
+                outcome: IndexerSearchOutcome::Skipped { retry_after: None },
             });
         }
 
@@ -3656,7 +3607,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     if !was_fired {
                         indexer_outcomes.push(IndexerQueryOutcome {
                             indexer_id: id,
-                            outcome: IndexerSearchOutcome::Skipped,
+                            outcome: IndexerSearchOutcome::Skipped { retry_after: None },
                         });
                         continue;
                     }
@@ -3706,7 +3657,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     if !was_fired {
                         indexer_outcomes.push(IndexerQueryOutcome {
                             indexer_id: id,
-                            outcome: IndexerSearchOutcome::Skipped,
+                            outcome: IndexerSearchOutcome::Skipped { retry_after: None },
                         });
                         continue;
                     }
@@ -4344,10 +4295,10 @@ mod tests {
     }
 
     #[test]
-    fn direct_indexer_search_deadline_is_sixty_seconds() {
+    fn direct_indexer_search_deadline_is_two_minutes() {
         assert_eq!(
             MultiIndexerSearchClient::effective_indexer_search_timeout(None),
-            std::time::Duration::from_secs(60)
+            std::time::Duration::from_secs(120)
         );
     }
 
@@ -4567,8 +4518,10 @@ mod tests {
     #[derive(Default)]
     struct RecordingScheduler {
         candidate_ids: StdArc<StdMutex<Vec<Vec<String>>>>,
+        candidate_deadlines: StdArc<StdMutex<Vec<Vec<Option<chrono::DateTime<Utc>>>>>>,
         feedback_candidate_ids: StdArc<StdMutex<Vec<String>>>,
         reverse_decisions: bool,
+        skip_retry_after: Option<std::time::Duration>,
     }
 
     #[async_trait]
@@ -4587,23 +4540,43 @@ mod tests {
                         .filter_map(|candidate| candidate.plugin_config_id.clone())
                         .collect(),
                 );
+            self.candidate_deadlines
+                .lock()
+                .expect("scheduler candidate deadlines")
+                .push(
+                    request
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.deadline_at.clone())
+                        .collect(),
+                );
             let mut decisions = request
                 .candidates
                 .into_iter()
-                .map(|candidate| SchedulerAdmission::Admit {
-                    candidate_id: candidate.candidate_id.clone(),
-                    lease: SchedulerLease {
-                        lease_id: format!("lease-{}", candidate.candidate_id),
-                        candidate_id: candidate.candidate_id,
-                        host_key: candidate.host_key,
-                        destination_key: candidate.destination_key,
-                        account_quota_key: candidate.account_quota_key,
-                        rss_request_key: candidate.rss_request_key,
-                        operation: candidate.operation,
-                        intent: candidate.intent,
-                        issued_at: request.now,
-                    },
-                    reason: scryer_application::AdmissionReason::BackgroundValue,
+                .map(|candidate| {
+                    if let Some(retry_after) = self.skip_retry_after {
+                        SchedulerAdmission::Skip {
+                            candidate_id: candidate.candidate_id,
+                            reason: scryer_application::SkipReason::DestinationCooldown,
+                            retry_after: Some(retry_after),
+                        }
+                    } else {
+                        SchedulerAdmission::Admit {
+                            candidate_id: candidate.candidate_id.clone(),
+                            lease: SchedulerLease {
+                                lease_id: format!("lease-{}", candidate.candidate_id),
+                                candidate_id: candidate.candidate_id,
+                                host_key: candidate.host_key,
+                                destination_key: candidate.destination_key,
+                                account_quota_key: candidate.account_quota_key,
+                                rss_request_key: candidate.rss_request_key,
+                                operation: candidate.operation,
+                                intent: candidate.intent,
+                                issued_at: request.now,
+                            },
+                            reason: scryer_application::AdmissionReason::BackgroundValue,
+                        }
+                    }
                 })
                 .collect::<Vec<_>>();
             if self.reverse_decisions {
@@ -4860,32 +4833,6 @@ mod tests {
 
         fn capabilities_for_provider(&self, _provider_type: &str) -> IndexerProviderCapabilities {
             self.caps.clone()
-        }
-    }
-
-    struct DelayedSetupIndexerPluginProvider {
-        setup_delay: std::time::Duration,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl IndexerPluginProvider for DelayedSetupIndexerPluginProvider {
-        fn client_for_provider(&self, _config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
-            std::thread::sleep(self.setup_delay);
-            Some(Arc::new(MockIndexerClient {
-                calls: self.calls.clone(),
-            }))
-        }
-
-        fn available_provider_types(&self) -> Vec<String> {
-            vec!["mock".into()]
-        }
-
-        fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
-            vec![]
-        }
-
-        fn capabilities_for_provider(&self, _provider_type: &str) -> IndexerProviderCapabilities {
-            movie_caps()
         }
     }
 
@@ -5483,46 +5430,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_setup_time_does_not_consume_dispatch_deadline() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let mut multi = MultiIndexerSearchClient::new(
-            Arc::new(MockIndexerConfigRepository {
-                configs: vec![mock_indexer_config()],
-            }),
-            Arc::new(MockIndexerStatsTracker),
-            Arc::new(DelayedSetupIndexerPluginProvider {
-                setup_delay: std::time::Duration::from_millis(30),
-                calls: calls.clone(),
-            }),
-        );
-        multi.candidate_timeout_override = Some(std::time::Duration::from_millis(10));
-
-        multi
-            .search(
-                "Cold Plugin Search".to_string(),
-                HashMap::new(),
-                None,
-                Some("movie".to_string()),
-                None,
-                None,
-                None,
-                SearchMode::Interactive,
-                None,
-                None,
-                None,
-                vec![],
-            )
-            .await
-            .expect("slow client setup must not expire the dispatch window");
-
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn queued_candidate_deadline_skips_without_feedback_or_backoff() {
+    async fn interactive_candidates_wait_for_admission_without_a_deadline() {
         let calls = Arc::new(AtomicUsize::new(0));
         let scheduler = Arc::new(RecordingScheduler::default());
-        let mut multi = MultiIndexerSearchClient::new(
+        let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
             }),
@@ -5533,12 +5444,10 @@ mod tests {
             }),
         )
         .with_upstream_scheduler(scheduler.clone());
-        multi.interactive_search_limit = Arc::new(Semaphore::new(0));
-        multi.candidate_timeout_override = Some(std::time::Duration::from_millis(10));
 
-        let response = multi
+        multi
             .search(
-                "Queued Search".to_string(),
+                "Interactive Search".to_string(),
                 HashMap::new(),
                 None,
                 Some("movie".to_string()),
@@ -5552,87 +5461,67 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("expired queued candidate should be skipped");
+            .expect("interactive search should complete");
 
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(matches!(
-            response.indexer_outcomes.as_slice(),
-            [IndexerQueryOutcome {
-                outcome: IndexerSearchOutcome::Skipped,
-                ..
-            }]
-        ));
-        assert!(
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
             scheduler
-                .feedback_candidate_ids
+                .candidate_deadlines
                 .lock()
-                .expect("scheduler feedback")
-                .is_empty()
+                .expect("scheduler candidate deadlines")
+                .as_slice(),
+            [vec![None]]
         );
-        assert!(backoff_state(&multi, "idx-1").await.is_none());
     }
 
     #[tokio::test]
-    async fn expired_fallback_is_not_recorded_as_a_provider_failure() {
-        let probe = Arc::new(SearchConcurrencyProbe::default());
-        let stats = Arc::new(RecordingIndexerStatsTracker::default());
-        let scheduler = Arc::new(RecordingScheduler::default());
-        let mut multi = MultiIndexerSearchClient::new(
+    async fn destination_cooldown_skip_reports_remaining_delay_per_indexer() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retry_after = std::time::Duration::from_secs(60);
+        let scheduler = Arc::new(RecordingScheduler {
+            skip_retry_after: Some(retry_after),
+            ..Default::default()
+        });
+        let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
             }),
-            stats.clone(),
-            Arc::new(ScriptedIndexerPluginProvider {
-                client: Arc::new(BlockingIndexerClient {
-                    probe: probe.clone(),
-                }),
-                caps: movie_caps(),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: false,
+                calls: calls.clone(),
             }),
         )
-        .with_upstream_scheduler(scheduler.clone());
-        multi.interactive_search_limit = Arc::new(Semaphore::new(1));
-        multi.candidate_timeout_override = Some(std::time::Duration::from_millis(20));
+        .with_upstream_scheduler(scheduler);
 
-        let error = multi
+        let response = multi
             .search(
-                "Deadline Search".to_string(),
-                HashMap::from([("imdb_id".to_string(), "tt1234567".to_string())]),
+                "Cooldown Search".to_string(),
+                HashMap::new(),
                 None,
                 Some("movie".to_string()),
-                Some("movie".to_string()),
                 None,
                 None,
-                SearchMode::Interactive,
+                None,
+                SearchMode::Auto,
                 None,
                 None,
                 None,
                 vec![],
             )
             .await
-            .expect_err("the fired primary strategy should time out");
+            .expect("destination cooldown should surface as a skipped outcome");
 
-        assert!(
-            error
-                .to_string()
-                .contains("all attempted indexer strategies failed")
-        );
-        assert_eq!(probe.started.load(Ordering::SeqCst), 1);
-        assert_eq!(*stats.queries.lock().expect("stats log mutex"), vec![false]);
-        assert_eq!(
-            scheduler
-                .feedback_candidate_ids
-                .lock()
-                .expect("scheduler feedback")
-                .len(),
-            1
-        );
-        assert_eq!(
-            backoff_state(&multi, "idx-1")
-                .await
-                .expect("fired timeout should back off once")
-                .escalation_level,
-            1
-        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            response.indexer_outcomes.as_slice(),
+            [IndexerQueryOutcome {
+                outcome: IndexerSearchOutcome::Skipped {
+                    retry_after: Some(delay)
+                },
+                ..
+            }] if *delay == retry_after
+        ));
     }
 
     #[tokio::test]
@@ -5644,6 +5533,29 @@ mod tests {
         let result = acquire_search_permit(search_limit, &cancel_token, None).await;
 
         assert_eq!(result.unwrap_err(), SearchPermitError::Cancelled);
+    }
+
+    #[test]
+    fn indexer_rate_limit_domains_are_config_scoped() {
+        let mut first = mock_indexer_config();
+        first.id = "config-a".to_string();
+        let mut second = first.clone();
+        second.id = "config-b".to_string();
+        let mut managed_child = first.clone();
+        managed_child.managed_parent_config_id = Some("parent-config".to_string());
+        managed_child.managed_child_key = Some("child-42".to_string());
+
+        let (first_host, first_domain) =
+            MultiIndexerSearchClient::scheduler_keys_for_indexer(&first);
+        let (second_host, second_domain) =
+            MultiIndexerSearchClient::scheduler_keys_for_indexer(&second);
+        let (_, child_domain) =
+            MultiIndexerSearchClient::scheduler_keys_for_indexer(&managed_child);
+
+        assert_eq!(first_host, second_host);
+        assert_eq!(first_domain.as_str(), "config-a");
+        assert_eq!(second_domain.as_str(), "config-b");
+        assert_eq!(child_domain.as_str(), "parent-config:child-42");
     }
 
     #[test]

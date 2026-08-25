@@ -402,7 +402,6 @@ impl HostRateLimiterEntry {
 
 #[derive(Default)]
 struct RateLimitRegistryState {
-    deadlines: Mutex<HashMap<RateLimitScopeKey, Instant>>,
     host_rps: Mutex<HostRateLimitState>,
     destination_deadlines: Mutex<HashMap<DestinationKey, Instant>>,
     destination_cooldowns: Mutex<HashMap<DestinationKey, PersistedDestinationCooldown>>,
@@ -482,36 +481,6 @@ impl RateLimitRegistry {
             host_rps,
             destination_cooldowns,
         }
-    }
-
-    pub async fn wait_if_needed(&self, scope: &RateLimitScopeKey) -> Option<Duration> {
-        let mut total_wait = Duration::ZERO;
-
-        loop {
-            let wait_duration = {
-                let mut deadlines = self
-                    .state
-                    .deadlines
-                    .lock()
-                    .expect("rate limit deadline lock poisoned");
-                let Some(deadline) = deadlines.get(scope).copied() else {
-                    break;
-                };
-                let now = Instant::now();
-                let remaining = deadline.saturating_duration_since(now);
-                if remaining.is_zero() {
-                    deadlines.remove(scope);
-                    break;
-                } else {
-                    remaining
-                }
-            };
-
-            total_wait += wait_duration;
-            sleep(wait_duration).await;
-        }
-
-        (!total_wait.is_zero()).then_some(total_wait)
     }
 
     pub async fn wait_for_destination_if_needed(
@@ -781,45 +750,6 @@ impl RateLimitRegistry {
             .get(host)
             .copied()
             .unwrap_or_else(|| classify_host_rps_profile(host.as_str()))
-    }
-
-    pub async fn record_cooldown(
-        &self,
-        scope: &RateLimitScopeKey,
-        delay: Duration,
-        source: RetryAfterSource,
-    ) -> (Duration, RetryAfterSource) {
-        if delay.is_zero() {
-            return (Duration::ZERO, source);
-        }
-
-        let now = Instant::now();
-        let new_deadline = now + delay;
-        let mut deadlines = self
-            .state
-            .deadlines
-            .lock()
-            .expect("rate limit deadline lock poisoned");
-
-        let existing_deadline = deadlines
-            .get(scope)
-            .copied()
-            .filter(|deadline| *deadline > now);
-
-        let effective_deadline = match existing_deadline {
-            Some(existing) if existing > new_deadline => existing,
-            _ => new_deadline,
-        };
-
-        deadlines.insert(scope.clone(), effective_deadline);
-
-        let effective_delay = effective_deadline.saturating_duration_since(now);
-        let effective_source = match existing_deadline {
-            Some(existing) if existing > new_deadline => RetryAfterSource::ExistingCooldown,
-            _ => source,
-        };
-
-        (effective_delay, effective_source)
     }
 
     pub async fn record_destination_cooldown(
@@ -1973,27 +1903,6 @@ impl OutboundHttpClient {
         let mut attempt = 0u32;
 
         loop {
-            if let Some(wait_duration) = self.registry.wait_if_needed(&policy.scope).await {
-                counter!(
-                    "scryer_outbound_http_cooldown_wait_total",
-                    "scope" => policy.scope.to_string(),
-                    "request_label" => policy.request_label.to_string()
-                )
-                .increment(1);
-                histogram!(
-                    "scryer_outbound_http_cooldown_wait_seconds",
-                    "scope" => policy.scope.to_string(),
-                    "request_label" => policy.request_label.to_string()
-                )
-                .record(wait_duration.as_secs_f64());
-                debug!(
-                    scope = %policy.scope,
-                    request_label = policy.request_label.as_ref(),
-                    wait_ms = wait_duration.as_millis(),
-                    "outbound HTTP cooldown wait"
-                );
-            }
-
             attempt += 1;
             let builder = build_request().await.map_err(OutboundRequestError::Build)?;
             let request_destination = policy.destination_cooldown_override.clone().or_else(|| {
@@ -2086,20 +1995,18 @@ impl OutboundHttpClient {
                             destination_key_from_url(response.url()).or(request_destination)
                         });
                     observe_rate_limited_response(response).await;
-                    let (effective_delay, effective_source) = self
-                        .registry
-                        .record_cooldown(&policy.scope, candidate_delay, candidate_source)
-                        .await;
-                    if let Some(destination) = response_destination.as_ref() {
-                        let _ = self
-                            .registry
-                            .record_destination_cooldown(
-                                destination,
-                                candidate_delay,
-                                candidate_source,
-                            )
-                            .await;
-                    }
+                    let (effective_delay, effective_source) =
+                        if let Some(destination) = response_destination.as_ref() {
+                            self.registry
+                                .record_destination_cooldown(
+                                    destination,
+                                    candidate_delay,
+                                    candidate_source,
+                                )
+                                .await
+                        } else {
+                            (candidate_delay, candidate_source)
+                        };
 
                     counter!(
                         "scryer_outbound_http_429_total",
@@ -2640,27 +2547,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cooldowns_are_isolated_per_scope() {
-        let registry = RateLimitRegistry::isolated();
-        let alpha: RateLimitScopeKey = "alpha".into();
-        let beta: RateLimitScopeKey = "beta".into();
-
-        let _ = registry
-            .record_cooldown(
-                &alpha,
-                COOLDOWN_ISOLATION_TEST_WINDOW,
-                RetryAfterSource::FallbackBackoff,
-            )
-            .await;
-
-        let alpha_wait = registry.wait_if_needed(&alpha).await;
-        let beta_wait = registry.wait_if_needed(&beta).await;
-
-        assert!(alpha_wait.is_some());
-        assert_eq!(beta_wait, None);
-    }
-
-    #[tokio::test]
     async fn destination_override_isolates_children_while_sharing_the_host_limiter() {
         let (url, hits) = spawn_http_server(vec![
             http_response(429, &[("Retry-After", "60")], "rate limited"),
@@ -2669,8 +2555,8 @@ mod tests {
         .await;
         let registry = RateLimitRegistry::isolated();
         let client = OutboundHttpClient::new(generic_reqwest_client(), registry.clone());
-        let child_a: DestinationKey = "managed-indexer:parent:1".into();
-        let child_b: DestinationKey = "managed-indexer:parent:2".into();
+        let child_a: DestinationKey = "parent:1".into();
+        let child_b: DestinationKey = "parent:2".into();
 
         let first = client
             .send(
@@ -2958,14 +2844,18 @@ mod tests {
     #[tokio::test]
     async fn existing_cooldown_source_wins_when_longer() {
         let registry = RateLimitRegistry::isolated();
-        let scope: RateLimitScopeKey = "scope".into();
+        let destination: DestinationKey = "indexer-1".into();
 
         let _ = registry
-            .record_cooldown(&scope, Duration::from_millis(50), RetryAfterSource::Seconds)
+            .record_destination_cooldown(
+                &destination,
+                Duration::from_millis(50),
+                RetryAfterSource::Seconds,
+            )
             .await;
         let (_, source) = registry
-            .record_cooldown(
-                &scope,
+            .record_destination_cooldown(
+                &destination,
                 Duration::from_millis(5),
                 RetryAfterSource::FallbackBackoff,
             )
@@ -3380,29 +3270,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(origin_hits.load(Ordering::SeqCst), 1);
         assert_eq!(target_hits.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn destination_cooldowns_are_isolated_from_legacy_scopes() {
-        let registry = RateLimitRegistry::isolated();
-        let scope: RateLimitScopeKey = "legacy-scope".into();
-        let destination: DestinationKey = "cooldown.example.test".into();
-
-        let _ = registry
-            .record_destination_cooldown(
-                &destination,
-                COOLDOWN_ISOLATION_TEST_WINDOW,
-                RetryAfterSource::Seconds,
-            )
-            .await;
-
-        assert!(
-            registry
-                .wait_for_destination_if_needed(&destination)
-                .await
-                .is_some()
-        );
-        assert_eq!(registry.wait_if_needed(&scope).await, None);
     }
 
     fn http_response(status: u16, headers: &[(&str, &str)], body: &str) -> String {
