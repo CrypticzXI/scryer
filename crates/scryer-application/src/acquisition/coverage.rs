@@ -313,8 +313,7 @@ pub(crate) fn in_flight_series_pack_episode_ids(
                 series_movie_link_id: None,
             };
             submissions.iter().any(|submission| {
-                let identity =
-                    crate::contracts::ClientJobLocator::from_submission(submission);
+                let identity = crate::contracts::ClientJobLocator::from_submission(submission);
                 crate::acquisition_workflow::submission_is_queued(
                     tracked_states.get(&identity).copied(),
                     crate::acquisition_workflow::submission_is_active(submission, dl_snapshot),

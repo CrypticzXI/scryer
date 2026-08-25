@@ -2670,7 +2670,10 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             Json(ErrorResponse::new(message)),
         )
             .into_response(),
-        AppError::Repository(message) => {
+        AppError::ManualReconciliationRequired(message) => {
+            (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::ImportEvidenceUnavailable(message) | AppError::Repository(message) => {
             let error_id = Id::new().0;
             tracing::error!(
                 error_id = %error_id,

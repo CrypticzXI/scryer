@@ -767,6 +767,34 @@ impl ImportArtifactRepository for TestImportArtifactRepo {
     }
 }
 
+struct UnavailableImportArtifactRepo;
+
+#[async_trait]
+impl ImportArtifactRepository for UnavailableImportArtifactRepo {
+    async fn insert_artifact(&self, _artifact: ImportArtifact) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_by_source_identity(
+        &self,
+        _identity: &ClientJobLocator,
+    ) -> AppResult<Vec<ImportArtifact>> {
+        Err(AppError::Repository(
+            "import artifact evidence unavailable".to_string(),
+        ))
+    }
+
+    async fn count_by_result_for_source_identity(
+        &self,
+        _identity: &ClientJobLocator,
+        _result: &str,
+    ) -> AppResult<u64> {
+        Err(AppError::Repository(
+            "import artifact evidence unavailable".to_string(),
+        ))
+    }
+}
+
 #[derive(Default)]
 struct TestDownloadSubmissionRepo {
     rows: Arc<Mutex<Vec<(DownloadSubmission, DownloadSubmissionIdentity)>>>,
@@ -1442,6 +1470,46 @@ fn build_app_with_download_client_configs_submissions_and_settings(
     artifacts: Vec<ImportArtifact>,
     repositories: TestAppRepositories,
 ) -> AppUseCase {
+    build_app_with_import_artifact_repository_and_repositories(
+        titles,
+        collections,
+        episodes,
+        Arc::new(TestImportArtifactRepo {
+            artifacts: Arc::new(Mutex::new(artifacts)),
+        }),
+        repositories,
+    )
+}
+
+fn build_app_with_import_artifact_repository(
+    titles: Vec<Title>,
+    collections: Vec<Collection>,
+    episodes: Vec<Episode>,
+    import_artifacts: Arc<dyn ImportArtifactRepository>,
+) -> AppUseCase {
+    build_app_with_import_artifact_repository_and_repositories(
+        titles,
+        collections,
+        episodes,
+        import_artifacts,
+        TestAppRepositories {
+            download_client: Arc::new(NullDownloadClient),
+            download_client_configs: Arc::new(NullDownloadClientConfigRepository),
+            download_submissions: Arc::new(
+                crate::null_repositories::NullDownloadSubmissionRepository,
+            ),
+            settings: Arc::new(crate::null_repositories::NullSettingsRepository),
+        },
+    )
+}
+
+fn build_app_with_import_artifact_repository_and_repositories(
+    titles: Vec<Title>,
+    collections: Vec<Collection>,
+    episodes: Vec<Episode>,
+    import_artifacts: Arc<dyn ImportArtifactRepository>,
+    repositories: TestAppRepositories,
+) -> AppUseCase {
     let services = AppServices::builder(
         Arc::new(TestTitleRepo {
             titles: Arc::new(Mutex::new(titles)),
@@ -1462,9 +1530,7 @@ fn build_app_with_download_client_configs_submissions_and_settings(
         String::new(),
     )
     .with_domain_events(Arc::new(TestDomainEventRepo::default()))
-    .with_import_artifacts(Arc::new(TestImportArtifactRepo {
-        artifacts: Arc::new(Mutex::new(artifacts)),
-    }))
+    .with_import_artifacts(import_artifacts)
     .with_download_submissions(repositories.download_submissions)
     .build_partial_for_tests();
 

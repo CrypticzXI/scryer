@@ -2586,6 +2586,9 @@ fn completed_manual_import_record_for(
         status: scryer_domain::ImportStatus::Completed,
         error_code: None,
         error_message: None,
+        requires_reconciliation: false,
+        retry_attempts: 0,
+        next_retry_at: None,
         file_results: vec![ManualImportFileResult {
             file_path: format!("/downloads/{item_id}/movie.mkv"),
             episode_id: None,

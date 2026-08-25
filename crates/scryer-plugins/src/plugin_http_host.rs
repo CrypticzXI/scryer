@@ -1249,19 +1249,20 @@ mod tests {
         .expect("accepted HTTP failure response");
         host.finish_indexer_error_capture(true);
 
-        let errors = recorder.errors.lock().expect("recorded errors");
-        assert_eq!(
-            errors.len(),
-            1,
-            "terminal completion must not duplicate 401"
-        );
-        assert_eq!(errors[0].response.status, 401);
-        assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
-        assert_eq!(
-            errors[0].classification,
-            scryer_application::IndexerErrorClassification::HttpUnauthorized
-        );
-        drop(errors);
+        {
+            let errors = recorder.errors.lock().expect("recorded errors");
+            assert_eq!(
+                errors.len(),
+                1,
+                "terminal completion must not duplicate 401"
+            );
+            assert_eq!(errors[0].response.status, 401);
+            assert_eq!(errors[0].response.body, vec![0, 255, 1, 254]);
+            assert_eq!(
+                errors[0].classification,
+                scryer_application::IndexerErrorClassification::HttpUnauthorized
+            );
+        }
 
         Mock::given(method("GET"))
             .and(path("/malformed"))

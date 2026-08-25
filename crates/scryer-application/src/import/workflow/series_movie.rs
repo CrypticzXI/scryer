@@ -11,7 +11,18 @@ async fn run_import(
     manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<ImportResult> {
+    let mut preparation_permit = Some(match preparation_permit {
+        Some(permit) => permit,
+        None => {
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await
+        }
+    });
     let target = match Box::pin(resolve_completed_import_target(
         app,
         import_id,
@@ -20,6 +31,7 @@ async fn run_import(
         manual_title_id,
         started_at,
         archive_password,
+        &mut preparation_permit,
     ))
     .await?
     {
@@ -27,19 +39,23 @@ async fn run_import(
         CompletedImportTargetResolution::Finished(result) => return Ok(*result),
     };
 
-    let result = {
-        let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-        dispatch_completed_import_target(
-            app,
-            actor,
-            import_id,
-            completed,
-            release_evidence,
-            started_at,
-            &target,
-        )
-        .await
-    };
+    drop(preparation_permit.take());
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(&target.title.id)
+        .await;
+    let result = dispatch_completed_import_target(
+        app,
+        actor,
+        import_id,
+        completed,
+        release_evidence,
+        started_at,
+        &target,
+    )
+    .await;
 
     // Clean up extracted archive directory if we created one
     if let Some(ref dir) = target.extracted_dir {
@@ -136,7 +152,7 @@ async fn carry_out_import_rejection(
         None,
         episode_artifacts,
     )
-    .await;
+    .await?;
     let release_burned = decision == ImportDecision::Rejected;
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -467,6 +483,10 @@ async fn try_match_titleless_archive_from_inner_video(
     Ok(None)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "completed import target resolution carries explicit durable evidence and preparation ownership"
+)]
 async fn resolve_completed_import_target(
     app: &AppUseCase,
     import_id: &str,
@@ -475,6 +495,7 @@ async fn resolve_completed_import_target(
     manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
+    preparation_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<CompletedImportTargetResolution> {
     // 2. TITLE MATCHING
     let mut title = None;
@@ -526,18 +547,27 @@ async fn resolve_completed_import_target(
         }
     }
 
-    if title.is_none()
-        && let Some(archive_match) = try_match_titleless_archive_from_inner_video(
+    if title.is_none() {
+        drop(preparation_permit.take());
+        let archive_match = try_match_titleless_archive_from_inner_video(
             app,
             import_id,
             completed,
             dest_dir,
             archive_password,
         )
-        .await?
-    {
-        title = Some(archive_match.title);
-        extracted_dir = Some(archive_match.extracted_dir);
+        .await;
+        *preparation_permit = Some(
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await,
+        );
+        if let Some(archive_match) = archive_match? {
+            title = Some(archive_match.title);
+            extracted_dir = Some(archive_match.extracted_dir);
+        }
     }
 
     let title = match title {
@@ -602,7 +632,8 @@ async fn resolve_completed_import_target(
         if extraction_destination.is_some() {
             mark_import_extracting(app, import_id).await?;
         }
-        extracted_dir = {
+        drop(preparation_permit.take());
+        let extraction = {
             let _archive_extraction_permit = app
                 .runtime
                 .imports
@@ -619,8 +650,16 @@ async fn resolve_completed_import_target(
                     .available()
                     .cloned(),
             )
-            .await?
+            .await
         };
+        *preparation_permit = Some(
+            app.runtime
+                .imports
+                .execution_coordinator
+                .acquire_preparation()
+                .await,
+        );
+        extracted_dir = extraction?;
     }
     let effective_dir = extracted_dir.as_deref().unwrap_or(dest_dir);
     let video_files = match if is_series {
@@ -851,7 +890,7 @@ async fn hold_replacement_for_manual_resolution(
         None,
         &[],
     )
-    .await;
+    .await?;
     let result = ImportResult {
         import_id: import_id.to_string(),
         decision: ImportDecision::Skipped,
@@ -955,7 +994,7 @@ async fn import_additional_movie_download(
             None,
             linked_episode_artifacts,
         )
-        .await;
+        .await?;
         let skip_reason =
             Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
@@ -1001,6 +1040,7 @@ async fn import_additional_movie_download(
         &dest_path,
         import_mode,
         None,
+        Some(completed),
     )
     .await?;
 
@@ -1085,9 +1125,6 @@ async fn import_additional_movie_download(
         );
     }
     maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -1100,7 +1137,17 @@ async fn import_additional_movie_download(
         Some(imported_media_file_id.as_str()),
         linked_episode_artifacts,
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -1309,7 +1356,7 @@ async fn import_movie_download(
                 None,
                 &[],
             )
-            .await;
+            .await?;
             let result = ImportResult {
                 import_id: import_id.to_string(),
                 decision: ImportDecision::Rejected,
@@ -1379,7 +1426,7 @@ async fn import_movie_download(
             None,
             &[],
         )
-        .await;
+        .await?;
         let skip_reason =
             Some(skip_reason_for_import_check_rejection(app, code, &dest_path).await?);
         let result = ImportResult {
@@ -1545,6 +1592,7 @@ async fn import_movie_download(
             &old_file_recycle_context.recycle_config,
             import_mode,
             release_evidence.announced_size_bytes(),
+            Some(completed),
         )
         .await
         {
@@ -1561,7 +1609,9 @@ async fn import_movie_download(
                     None,
                     &[],
                 )
-                .await;
+                .await?;
+                crate::upgrade::finalize_upgrade_source_cleanup(app, &outcome, Some(completed))
+                    .await?;
                 let result = ImportResult {
                     import_id: import_id.to_string(),
                     decision: ImportDecision::Imported,
@@ -1647,6 +1697,7 @@ async fn import_movie_download(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        Some(completed),
     )
     .await?;
 
@@ -1745,9 +1796,6 @@ async fn import_movie_download(
         }
     };
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -1760,7 +1808,17 @@ async fn import_movie_download(
         imported_media_file_id.as_deref(),
         &[],
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     let collection = Collection {
         id: Id::new().0,
@@ -2151,9 +2209,9 @@ async fn import_series_movie_download(
                 "rejected",
                 rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
                 None,
-                &[],
-            )
-            .await;
+            &[],
+        )
+        .await?;
             let result = ImportResult {
                 import_id: import_id.to_string(),
                 decision: ImportDecision::Rejected,
@@ -2323,6 +2381,7 @@ async fn import_series_movie_download(
                 &old_file_recycle_context.recycle_config,
                 import_mode,
                 release_evidence.announced_size_bytes(),
+                Some(completed),
             )
             .await
             {
@@ -2339,7 +2398,13 @@ async fn import_series_movie_download(
                         None,
                         &[],
                     )
-                    .await;
+                    .await?;
+                    crate::upgrade::finalize_upgrade_source_cleanup(
+                        app,
+                        &outcome,
+                        Some(completed),
+                    )
+                    .await?;
                     tracing::info!(
                         title = %title.name,
                         movie = %movie.title,
@@ -2446,7 +2511,7 @@ async fn import_series_movie_download(
                         None,
                         &[],
                     )
-                    .await;
+                    .await?;
                     let result = ImportResult {
                         import_id: import_id.to_string(),
                         decision: ImportDecision::Rejected,
@@ -2507,6 +2572,7 @@ async fn import_series_movie_download(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        Some(completed),
     )
     .await?;
 
@@ -2591,9 +2657,6 @@ async fn import_series_movie_download(
         }
     };
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
-
     persist_file_import_artifact(
         app,
         import_id,
@@ -2606,7 +2669,17 @@ async fn import_series_movie_download(
         imported_media_file_id.as_deref(),
         &linked_episode_artifacts,
     )
-    .await;
+    .await?;
+
+    let link_type =
+        finalize_import_source_cleanup(
+            app,
+            import_mode,
+            &file_result,
+            &dest_path,
+            Some(completed),
+        )
+        .await?;
 
     if let Some(file_id) = imported_media_file_id.as_deref()
         && let Err(err) = app

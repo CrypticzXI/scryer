@@ -820,17 +820,31 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
 }
 
 const MAX_CONCURRENT_ARCHIVE_EXTRACTIONS: usize = 1;
+const MAX_CONCURRENT_IMPORT_PREPARATIONS: usize = 8;
+const MAX_CONCURRENT_IMPORT_FINALIZATIONS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct ImportExecutionCoordinator {
-    permit: Arc<tokio::sync::Mutex<()>>,
+    title_permits: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+        >,
+    >,
+    preparation_permit: Arc<tokio::sync::Semaphore>,
+    finalization_permit: Arc<tokio::sync::Semaphore>,
     archive_extraction_permit: Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for ImportExecutionCoordinator {
     fn default() -> Self {
         Self {
-            permit: Arc::new(tokio::sync::Mutex::new(())),
+            title_permits: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            preparation_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_IMPORT_PREPARATIONS,
+            )),
+            finalization_permit: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_IMPORT_FINALIZATIONS,
+            )),
             archive_extraction_permit: Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_ARCHIVE_EXTRACTIONS,
             )),
@@ -839,8 +853,39 @@ impl Default for ImportExecutionCoordinator {
 }
 
 impl ImportExecutionCoordinator {
-    pub(crate) async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.permit.clone().lock_owned().await
+    pub(crate) async fn acquire_title(&self, title_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let permit = {
+            let mut permits = self.title_permits.lock().await;
+            permits.retain(|_, permit| permit.strong_count() > 0);
+            if let Some(permit) = permits.get(title_id).and_then(std::sync::Weak::upgrade) {
+                permit
+            } else {
+                let permit = Arc::new(tokio::sync::Mutex::new(()));
+                permits.insert(title_id.to_string(), Arc::downgrade(&permit));
+                permit
+            }
+        };
+        permit.lock_owned().await
+    }
+
+    pub(crate) async fn acquire_preparation(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.preparation_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("import preparation semaphore is never closed")
+    }
+
+    pub(crate) fn try_acquire_preparation(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.preparation_permit.clone().try_acquire_owned().ok()
+    }
+
+    pub(crate) async fn acquire_finalization(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.finalization_permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("import finalization semaphore is never closed")
     }
 
     pub(crate) async fn acquire_archive_extraction(&self) -> tokio::sync::OwnedSemaphorePermit {
@@ -854,28 +899,75 @@ impl ImportExecutionCoordinator {
 
 #[cfg(test)]
 mod import_execution_coordinator_tests {
-    use super::ImportExecutionCoordinator;
+    use super::{
+        ImportExecutionCoordinator, MAX_CONCURRENT_IMPORT_FINALIZATIONS,
+        MAX_CONCURRENT_IMPORT_PREPARATIONS,
+    };
     use std::time::Duration;
 
     #[tokio::test]
-    async fn permits_only_one_import_execution_at_a_time() {
+    async fn serializes_only_matching_titles() {
         let coordinator = ImportExecutionCoordinator::default();
-        let first = coordinator.acquire().await;
+        let first = coordinator.acquire_title("title-1").await;
         let waiting = tokio::spawn({
             let coordinator = coordinator.clone();
             async move {
-                let _second = coordinator.acquire().await;
+                let _second = coordinator.acquire_title("title-1").await;
             }
         });
 
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
 
+        let other =
+            tokio::time::timeout(Duration::from_secs(1), coordinator.acquire_title("title-2"))
+                .await
+                .expect("different title should not wait");
+        drop(other);
+
         drop(first);
         tokio::time::timeout(Duration::from_secs(1), waiting)
             .await
             .expect("second import should acquire after the first completes")
             .expect("waiting import task should complete");
+    }
+
+    #[tokio::test]
+    async fn preparation_and_finalization_have_independent_eight_task_limits() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let mut preparations = Vec::new();
+        let mut finalizations = Vec::new();
+        for _ in 0..MAX_CONCURRENT_IMPORT_PREPARATIONS {
+            preparations.push(coordinator.acquire_preparation().await);
+        }
+        for _ in 0..MAX_CONCURRENT_IMPORT_FINALIZATIONS {
+            finalizations.push(coordinator.acquire_finalization().await);
+        }
+
+        let waiting_preparation = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire_preparation().await }
+        });
+        let waiting_finalization = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire_finalization().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting_preparation.is_finished());
+        assert!(!waiting_finalization.is_finished());
+
+        drop(preparations.pop());
+        drop(finalizations.pop());
+        let preparation = tokio::time::timeout(Duration::from_secs(1), waiting_preparation)
+            .await
+            .expect("preparation waiter should start after one preparation finishes")
+            .expect("preparation waiter should not panic");
+        let finalization = tokio::time::timeout(Duration::from_secs(1), waiting_finalization)
+            .await
+            .expect("finalization waiter should start after one finalization finishes")
+            .expect("finalization waiter should not panic");
+        drop(preparation);
+        drop(finalization);
     }
 
     #[tokio::test]

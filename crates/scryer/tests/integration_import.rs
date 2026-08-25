@@ -87,7 +87,7 @@ async fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseC
     ctx.app.with_test_overrides(|builder| {
         builder
             .with_imports(workflow_store)
-            .with_file_importer(Arc::new(FsFileImporter))
+            .with_file_importer(Arc::new(FsFileImporter::new()))
             .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_acquisition_scope_states(Arc::new(ctx.library_state.clone()))
     })
@@ -118,6 +118,21 @@ fn scryer_completed(
     }
 }
 
+async fn queue_import_record(ctx: &TestContext, completed: &CompletedDownload) -> String {
+    ImportStore::new(ctx.db.datastore())
+        .queue_import_request(
+            ClientJobLocator::for_import_artifact(
+                Some(&completed.client_id),
+                &completed.client_type,
+                &completed.download_client_item_id,
+            ),
+            "manual_import".to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue import record")
+}
+
 /// Record the durable grab-time submission a Scryer download carries in
 /// production: the identity of `completed` bound to `title` with the indexer
 /// release title. This is the release evidence import parses, scores, and —
@@ -129,10 +144,11 @@ async fn record_movie_grab_submission(
     completed: &CompletedDownload,
     title: &Title,
     source_title: &str,
-) {
+) -> scryer_domain::download_identity::DownloadId {
+    let download_id = scryer_domain::download_identity::DownloadId::new();
     DownloadSubmissionStore::new(ctx.db.datastore())
         .record_submission(DownloadSubmission {
-            download_id: scryer_domain::download_identity::DownloadId::new(),
+            download_id,
             title_id: title.id.clone(),
             facet: "movie".to_string(),
             download_client_id: Some(completed.client_id.clone()),
@@ -150,6 +166,7 @@ async fn record_movie_grab_submission(
         })
         .await
         .expect("record grab submission");
+    download_id
 }
 
 async fn configure_default_library_root(
@@ -1583,11 +1600,12 @@ async fn manual_import_series_pack_maps_each_file_within_the_bound_title() {
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-pack-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![
@@ -1661,11 +1679,12 @@ async fn manual_import_multi_episode_filename_keeps_the_explicit_single_episode_
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-single-target-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1833,11 +1852,12 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-success-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1905,11 +1925,12 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-existing-folder-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -2224,6 +2245,220 @@ fn movie_manual_mapping(path: &Path) -> scryer_application::ManualImportFileMapp
     }
 }
 
+/// The tracked download the manual-import poller reconciles after a manual
+/// import: same client identity as the completed download, movie facet.
+fn tracked_movie_download(
+    completed: &CompletedDownload,
+    title_id: &str,
+    download_id: scryer_domain::download_identity::DownloadId,
+) -> scryer_application::tracked_downloads::TrackedDownload {
+    scryer_application::tracked_downloads::TrackedDownload {
+        download_id,
+        id: format!(
+            "{}:{}",
+            completed.client_id, completed.download_client_item_id
+        ),
+        client_id: completed.client_id.clone(),
+        client_type: completed.client_type.clone(),
+        client_item: scryer_domain::DownloadQueueItem {
+            id: Id::new().0,
+            title_id: Some(title_id.to_string()),
+            episode_id: None,
+            title_name: completed.name.clone(),
+            facet: Some("movie".to_string()),
+            category: None,
+            client_id: completed.client_id.clone(),
+            client_name: completed.client_type.clone(),
+            client_type: completed.client_type.clone(),
+            state: scryer_domain::DownloadQueueState::Completed,
+            progress_percent: 100,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            size_bytes: None,
+            remaining_seconds: None,
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: completed.download_client_item_id.clone(),
+            download_id: None,
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            source_provider: None,
+            is_scryer_origin: true,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: vec![],
+            tracked_match_type: None,
+            seeding: None,
+        },
+        completed_source: Some(completed.clone()),
+        state: scryer_domain::TrackedDownloadState::ImportBlocked,
+        status: scryer_domain::TrackedDownloadStatus::Ok,
+        status_messages: vec![],
+        title_id: Some(title_id.to_string()),
+        facet: Some("movie".to_string()),
+        source_title: None,
+        indexer: None,
+        added_at: None,
+        notified_manual_interaction: false,
+        match_type: scryer_domain::TitleMatchType::Submission,
+        is_trackable: true,
+        import_attempted: false,
+        waiting_for_completed_history: false,
+        path_missing_since: None,
+        no_video_import_retry: None,
+        import_execution_retry: None,
+        import_hold: None,
+        skip_reacquire_on_failure: false,
+        burned_by_import_gate: false,
+        snapshot_missing_since: None,
+    }
+}
+
+#[tokio::test]
+async fn manual_import_movie_imports_only_the_primary_and_skips_samples_and_extras() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx).await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    // Mapped in the order the web client would send them (directory walk):
+    // the sample first, so the primary is not simply "the first mapping".
+    let sample = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Movie.2024.1080p.WEB-DL.H264-sample.mkv",
+    );
+    let movie = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Movie.2024.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&movie);
+    let featurette = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Movie.2024.Making.Of.featurette.mkv",
+    );
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_movie_title(
+        &ctx,
+        "title-manual-movie-primary",
+        "Manual Movie",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let completed = scryer_completed(
+        "dl-manual-movie-primary",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "movie",
+    );
+    // Import artifacts reference the import record; queue one as the manual
+    // import poller would before executing.
+    let download_id = record_movie_grab_submission(&ctx, &completed, &title, &completed.name).await;
+    let import_id = ImportStore::new(ctx.db.datastore())
+        .queue_import_request_with_identity_for_download(
+            ClientJobLocator::for_import_artifact(
+                Some(&completed.client_id),
+                &completed.client_type,
+                &completed.download_client_item_id,
+            ),
+            "manual_import".to_string(),
+            "{}".to_string(),
+            None,
+            Some(&download_id),
+        )
+        .await
+        .expect("queue manual import record");
+
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        &import_id,
+        &title.id,
+        Some(&completed),
+        vec![
+            movie_manual_mapping(&sample),
+            movie_manual_mapping(&movie),
+            movie_manual_mapping(&featurette),
+        ],
+        Some(source_dir.path().to_path_buf()),
+    )
+    .await
+    .expect("execute manual movie import");
+
+    assert_eq!(results.len(), 3, "{results:#?}");
+    let by_path = |path: &Path| {
+        results
+            .iter()
+            .find(|result| result.file_path == path.to_string_lossy())
+            .unwrap_or_else(|| panic!("result for {}: {results:#?}", path.display()))
+    };
+    let primary = by_path(&movie);
+    assert!(primary.success, "primary should import: {primary:#?}");
+    assert!(!primary.skipped);
+    let dest_path = primary.dest_path.as_deref().expect("primary dest path");
+    assert!(
+        Path::new(dest_path).exists(),
+        "primary should land at {dest_path}"
+    );
+    for extra in [by_path(&sample), by_path(&featurette)] {
+        assert!(extra.skipped, "extra should be skipped: {extra:#?}");
+        assert!(!extra.success);
+        assert_eq!(extra.error_code, None);
+        assert_eq!(
+            extra.error_message.as_deref(),
+            Some("skipped: not the primary movie file")
+        );
+        assert_eq!(extra.dest_path, None);
+    }
+    assert!(
+        sample.exists(),
+        "skipped sample must not be moved or deleted"
+    );
+    assert!(
+        featurette.exists(),
+        "skipped extra must not be moved or deleted"
+    );
+
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_files.len(),
+        1,
+        "only the primary is imported: {media_files:#?}"
+    );
+    assert_eq!(media_files[0].file_path, dest_path);
+
+    // What the manual-import poller reconciles: one attempted mapping (the
+    // skipped extras are excluded from the expected count), one imported.
+    let expected_mapping_count = Some(results.iter().filter(|result| !result.skipped).count());
+    assert_eq!(expected_mapping_count, Some(1));
+    let tracked = tracked_movie_download(&completed, &title.id, download_id);
+    assert!(
+        scryer_application::completed_download_handler::verify_manual_import(
+            &app,
+            &tracked,
+            1,
+            expected_mapping_count,
+        )
+        .await
+        .expect("manual import verification should be available"),
+        "the tracked download must verify as imported with the extras skipped"
+    );
+}
+
 #[tokio::test]
 async fn manual_import_movie_with_only_samples_fails_with_a_clear_message() {
     let ctx = TestContext::new().await;
@@ -2341,11 +2576,12 @@ async fn manual_import_small_normally_named_movie_imports_as_the_primary() {
         &title.id,
         "movie",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-small-movie-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![

@@ -214,6 +214,10 @@ async fn import_store_test_harness(max_connections: u32) -> (sqlx::SqlitePool, I
     (pool, workflow)
 }
 
+#[expect(
+    dead_code,
+    reason = "retained cross-datastore canonical identity fixture"
+)]
 fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmission {
     DownloadSubmission {
         download_id: scryer_domain::download_identity::DownloadId::new(),
@@ -234,6 +238,10 @@ fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmissi
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retained cross-datastore canonical identity fixture"
+)]
 fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
     DownloadSubmission {
         download_id: scryer_domain::download_identity::DownloadId::new(),
@@ -256,6 +264,10 @@ fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retained cross-datastore canonical identity fixture"
+)]
 async fn assert_download_submission_orphan_precedence(
     workflow: &DownloadSubmissionStore,
 ) -> AppResult<()> {

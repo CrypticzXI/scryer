@@ -306,6 +306,7 @@ enum EpisodeImportOutcome {
         imported_media_file_id: Option<String>,
         reason_code: Option<String>,
         link_type: Option<scryer_domain::ImportStrategy>,
+        source_cleanup: Option<Box<scryer_domain::ImportSourceCleanupGuard>>,
         /// Bytes written for this file, so multi-file imports can report a
         /// total without re-stating the destination paths.
         size_bytes: Option<i64>,
@@ -878,7 +879,7 @@ async fn import_single_episode_file(
             None,
             &target_episodes,
         )
-        .await;
+        .await?;
         return Ok(EpisodeImportOutcome::Rejected {
             rejection: crate::post_download_gate::ImportedFileRejection {
                 message: "file resolves to no episode of this title".to_string(),
@@ -975,6 +976,7 @@ async fn import_single_episode_file(
             imported_media_file_id,
             reason_code,
             blocklist_after_import,
+            source_cleanup,
             ..
         } => {
             // Imported, but the release lied about its quality: burn it so the
@@ -1008,7 +1010,15 @@ async fn import_single_episode_file(
                 imported_media_file_id.as_deref(),
                 &target_episodes,
             )
-            .await;
+            .await?;
+
+            finalize_deferred_import_source_cleanup(
+                app,
+                source_cleanup.as_deref().cloned(),
+                &crate::stored_paths::stored_path_to_path_buf(dest_path),
+                Some(completed),
+            )
+            .await?;
 
             if imported_media_file_id.is_some() && reason_code.as_deref() != Some("additional_file")
             {
@@ -1074,7 +1084,7 @@ async fn import_single_episode_file(
                 None,
                 &target_episodes,
             )
-            .await;
+            .await?;
         }
         EpisodeImportOutcome::Rejected {
             rejection,
@@ -1115,7 +1125,7 @@ async fn import_single_episode_file(
                 None,
                 &target_episodes,
             )
-            .await;
+            .await?;
         }
     }
 
@@ -1695,7 +1705,7 @@ async fn persist_file_import_artifact(
     reason_code: Option<&str>,
     imported_media_file_id: Option<&str>,
     episodes: &[scryer_domain::Episode],
-) {
+) -> AppResult<()> {
     let relative_path = source_path
         .strip_prefix(&completed.dest_dir)
         .ok()
@@ -1746,12 +1756,18 @@ async fn persist_file_import_artifact(
             .collect()
     };
 
-    for (episode_id, season_number, episode_number) in episode_rows {
-        let artifact = ImportArtifact {
+    let source_identity = ClientJobLocator::for_import_artifact(
+        Some(completed.client_id.as_str()),
+        &completed.client_type,
+        &completed.download_client_item_id,
+    );
+    let artifacts = episode_rows
+        .into_iter()
+        .map(|(episode_id, season_number, episode_number)| ImportArtifact {
             id: Id::new().0,
-            source_client_id: Some(completed.client_id.clone()),
-            source_system: completed.client_type.clone(),
-            source_ref: completed.download_client_item_id.clone(),
+            source_client_id: source_identity.client_id.clone(),
+            source_system: source_identity.client_type.clone(),
+            source_ref: source_identity.item_id.clone(),
             import_id: Some(import_id.to_string()),
             relative_path: relative_path.clone(),
             normalized_file_name: normalized_file_name.clone(),
@@ -1764,23 +1780,25 @@ async fn persist_file_import_artifact(
             reason_code: reason_code.map(str::to_string),
             imported_media_file_id: imported_media_file_id.map(str::to_string),
             created_at: Utc::now(),
-        };
-        if let Err(error) = app
-            .services
-            .workflow
-            .import_artifacts
-            .insert_artifact_for_download(artifact, canonical_download_id.as_ref())
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                import_id,
-                source_ref = %completed.download_client_item_id,
-                file = %source_path.display(),
-                "failed to persist import artifact"
-            );
-        }
+        })
+        .collect();
+    if let Err(error) = app
+        .services
+        .workflow
+        .import_artifacts
+        .insert_artifacts_for_download(artifacts, canonical_download_id.as_ref())
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            import_id,
+            source_ref = %completed.download_client_item_id,
+            file = %source_path.display(),
+            "failed to persist import artifacts"
+        );
+        return Err(AppError::ImportEvidenceUnavailable(error.to_string()));
     }
+    Ok(())
 }
 // 50 MB
 

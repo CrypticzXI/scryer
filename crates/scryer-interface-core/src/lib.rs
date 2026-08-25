@@ -391,6 +391,10 @@ pub fn to_gql_error(err: AppError) -> Error {
             coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
         }
         AppError::Canceled(message) => coded_gql_error(message, "CANCELED"),
+        AppError::ManualReconciliationRequired(message) => {
+            coded_gql_error(message, "MANUAL_RECONCILIATION_REQUIRED")
+        }
+        AppError::ImportEvidenceUnavailable(message) => repository_gql_error(message),
         AppError::Repository(message) => repository_gql_error(message),
     }
 }
@@ -451,6 +455,8 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
         AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
         AppError::Canceled(_) => "Canceled",
+        AppError::ManualReconciliationRequired(_) => "ManualReconciliationRequired",
+        AppError::ImportEvidenceUnavailable(_) => "ImportEvidenceUnavailable",
         AppError::Repository(_) => "Repository",
     }
 }

@@ -2478,6 +2478,7 @@ async fn episode_set_pack_failure_reopens_only_its_covered_wanted_items() {
 
     download_submissions
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title.id.clone(),
             purpose: crate::DownloadSubmissionPurpose::Standard,
             facet: "anime".to_string(),
@@ -4005,6 +4006,7 @@ async fn in_flight_series_episodes_count_as_owned_for_the_pack_ratio_gate() {
             .expect("link owned episode file");
     }
     let active_submission = DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title.id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),

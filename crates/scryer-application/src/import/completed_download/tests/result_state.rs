@@ -120,6 +120,41 @@ async fn apply_result_marks_verified_already_present_skip_imported() {
     assert!(td.status_messages.is_empty());
 }
 
+#[tokio::test]
+async fn unavailable_artifact_evidence_keeps_already_present_import_retryable() {
+    let app = build_app_with_import_artifact_repository(
+        vec![build_title("title-1", "Show", MediaFacet::Series)],
+        vec![build_collection("season-1", "title-1", "1")],
+        vec![build_episode("ep-1", "title-1", "season-1", "1", "1", None)],
+        Arc::new(UnavailableImportArtifactRepo),
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let result = ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: Some(ImportSkipReason::AlreadyImported),
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: None,
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some("episode already imported".to_string()),
+        release_burned: false,
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert!(td.import_execution_retry.is_some());
+}
+
 #[tokio::test(start_paused = true)]
 async fn verified_import_mark_retries_without_rolling_back_import() {
     let marker = Arc::new(MarkingDownloadClient::new(3));

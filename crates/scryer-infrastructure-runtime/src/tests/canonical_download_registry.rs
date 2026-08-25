@@ -6,6 +6,7 @@ use scryer_application::{
 };
 
 #[derive(Debug, PartialEq, Eq)]
+#[expect(dead_code, reason = "retained canonical registry snapshot fixture")]
 struct CanonicalSnapshot {
     download_id: String,
     origin: String,

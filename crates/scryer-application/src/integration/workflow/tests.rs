@@ -144,7 +144,7 @@ mod tests {
         assert!(dispatched.is_some());
         assert_eq!(
             tracker.find(id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -178,7 +178,7 @@ mod tests {
         assert!(dispatched.is_some());
         assert_eq!(
             tracker.find(id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -213,7 +213,7 @@ mod tests {
         );
         assert_eq!(
             tracker.find(ready_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
@@ -253,12 +253,12 @@ mod tests {
         assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
         assert_eq!(
             tracker.find(second_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
+            Some(TrackedDownloadState::ImportPending)
         );
     }
 
     #[test]
-    fn tracked_download_poller_drain_dispatches_next_after_worker_result_without_interval_tick() {
+    fn tracked_download_drain_dispatches_multiple_imports_without_waiting_for_worker_result() {
         let first_id = "nzbget:first";
         let second_id = "nzbget:second";
         let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
@@ -279,25 +279,50 @@ mod tests {
         assert_eq!(id, first_id);
         in_flight.insert(id);
 
-        assert!(in_flight.remove(first_id));
-        tracker
-            .find_mut(first_id)
-            .expect("first tracked download")
-            .state = TrackedDownloadState::ImportPending;
+        let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
+            &mut tracker,
+            &in_flight,
+            &mut drain,
+        )
+        .expect("second import should dispatch while the first remains in flight");
+
+        assert_eq!(id, second_id);
+        assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
+        assert_eq!(
+            tracker.find(second_id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportPending)
+        );
+    }
+
+    #[test]
+    fn failed_work_is_capped_at_four_without_blocking_import_dispatch() {
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let failed_ids = (0..5)
+            .map(|index| format!("nzbget:failed-{index}"))
+            .collect::<Vec<_>>();
+        for id in &failed_ids {
+            let mut tracked = tracked_for_dispatch(id);
+            tracked.state = TrackedDownloadState::FailedPending;
+            tracker.insert_for_tests(tracked);
+        }
+        let import_id = "nzbget:import";
+        tracker.insert_for_tests(tracked_for_dispatch(import_id));
+        let in_flight = failed_ids[..4].iter().cloned().collect();
+        let mut drain = TrackedDownloadWorkDrain::new(
+            vec![failed_ids[4].clone(), import_id.to_string()],
+            crate::completed_download_handler::CompletedDownloadLookup::default(),
+        );
 
         let (id, kind, _) = prepare_next_tracked_download_background_work_dispatch(
             &mut tracker,
             &in_flight,
             &mut drain,
         )
-        .expect("second item should dispatch after the worker result");
+        .expect("import should pass the saturated failed-work lane");
 
-        assert_eq!(id, second_id);
+        assert_eq!(id, import_id);
         assert_eq!(kind, TrackedDownloadBackgroundWorkKind::Import);
-        assert_eq!(
-            tracker.find(second_id).map(|tracked| tracked.state),
-            Some(TrackedDownloadState::Importing)
-        );
+        assert!(drain.has_pending(), "fifth failed item should remain queued");
     }
 
     #[test]

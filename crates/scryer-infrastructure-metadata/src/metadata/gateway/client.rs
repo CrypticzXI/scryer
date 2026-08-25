@@ -3936,7 +3936,7 @@ mod tests {
         // The gateway rejects `titles(ids:)` above fifty ids per request, so a
         // caller that hands us a larger page (the title image cache walks a
         // hundred titles at a time) must still be split into accepted chunks.
-        assert!(super::METADATA_GATEWAY_MAX_TITLE_BULK_BATCH <= 50);
+        const { assert!(super::METADATA_GATEWAY_MAX_TITLE_BULK_BATCH <= 50) };
 
         let _guard = title_id_capability_test_lock().lock().await;
         let server = MockServer::start().await;

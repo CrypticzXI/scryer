@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn SQLite_store_persists_pages_expires_and_cascades_indexer_errors() {
+    async fn sqlite_store_persists_pages_expires_and_cascades_indexer_errors() {
         let (store, pool) = test_store().await;
         for id in ["indexer-a", "indexer-b"] {
             sqlx::query("INSERT INTO indexers (id) VALUES (?)")

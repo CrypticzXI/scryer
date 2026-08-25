@@ -510,8 +510,12 @@ fn install_panic_logging_hook() {
     }));
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    if std::env::args().nth(1).as_deref() == Some("__import-file-worker") {
+        std::process::exit(
+            scryer_infrastructure_workflow::workflow::file_importer::run_import_file_worker(),
+        );
+    }
     match application_upgrade_helper::maybe_run_upgrade_helper() {
         Ok(true) => return,
         Ok(false) => {}
@@ -520,7 +524,11 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    run_application();
+}
 
+#[tokio::main]
+async fn run_application() {
     // Phase 1: Extract startup path flags before subcommand dispatch.
     let mut args: Vec<String> = std::env::args().collect();
     let data_dir_override = match extract_data_dir(&mut args) {
@@ -1323,7 +1331,9 @@ async fn bootstrap_application(
         .with_image_proxy_cache_control(image_proxy_runtime.clone())
         .with_library_scanner(library_scanner)
         .with_library_renamer(library_renamer)
-        .with_file_importer(Arc::new(FsFileImporter::new()))
+        .with_file_importer(Arc::new(FsFileImporter::with_worker_executable(
+            std::env::current_exe().expect("current Scryer executable must be available"),
+        )))
         .with_staged_nzb_store(staged_nzb_store)
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
         .with_indexer_stats(indexer_stats)

@@ -1,5 +1,5 @@
 const TRACKED_DOWNLOAD_SNAPSHOT_READ_BUDGET: Duration = Duration::from_millis(25);
-const TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT: usize = 1;
+const TRACKED_DOWNLOAD_FAILED_WORKER_LIMIT: usize = 4;
 const DOWNLOAD_QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Poll cadence for download-queue snapshots.
@@ -131,6 +131,10 @@ struct TrackedDownloadRuntimeState {
         HashMap<DownloadQueueProjectionSource, HashMap<String, DownloadQueueItem>>,
     tracked_work_in_flight: HashSet<String>,
     tracked_work_drain: TrackedDownloadWorkDrain,
+}
+
+enum TrackedDownloadBackgroundWorkEvent {
+    Finished(TrackedDownloadBackgroundWorkResult),
 }
 
 impl TrackedDownloadRuntimeState {
@@ -788,7 +792,7 @@ async fn process_tracked_download_snapshot(
     app: &AppUseCase,
     actor: &User,
     runtime: &mut TrackedDownloadRuntimeState,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     mut items: Vec<DownloadQueueItem>,
     completed_download_lookup: Option<crate::completed_download_handler::CompletedDownloadLookup>,
     prune: TrackedDownloadSnapshotPrune,
@@ -931,9 +935,8 @@ async fn process_tracked_download_snapshot(
 
     // Phase 2: Dispatch — import pending and failed items.
     let mut published_after_dispatch = false;
-    if runtime.tracked_work_in_flight.is_empty() {
-        if !runtime.tracked_work_drain.has_pending() {
-            match dispatch {
+    {
+        match dispatch {
                 TrackedDownloadSnapshotDispatch::AllTrackable => {
                     let trackable_ids = trackable_ids_excluding_client_types(
                         &runtime.tracker,
@@ -970,10 +973,9 @@ async fn process_tracked_download_snapshot(
                     runtime.tracked_work_drain =
                         TrackedDownloadWorkDrain::new(trackable_ids, completed_lookup);
                 }
-            }
         }
 
-        if runtime.tracked_work_drain.has_pending()
+        while runtime.tracked_work_drain.has_pending()
             && try_dispatch_next_tracked_download_background_work(
                 app,
                 actor,
@@ -1072,7 +1074,7 @@ async fn process_external_tracked_download_snapshot_update(
     app: &AppUseCase,
     actor: &User,
     runtime: &mut TrackedDownloadRuntimeState,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     update: crate::tracked_downloads::TrackedDownloadSnapshotUpdate,
     excluded_client_type_refs: &[&str],
 ) {
@@ -1156,7 +1158,7 @@ pub async fn start_download_queue_poller_with_options(
 
     let mut runtime = TrackedDownloadRuntimeState::new();
     let (tracked_work_result_tx, mut tracked_work_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<TrackedDownloadBackgroundWorkResult>();
+        tokio::sync::mpsc::unbounded_channel::<TrackedDownloadBackgroundWorkEvent>();
 
     // Exclusions are re-derived at every use instead of once at startup: the
     // bridged set changes at runtime as the bridge supervisor starts and stops
@@ -1223,23 +1225,31 @@ pub async fn start_download_queue_poller_with_options(
                 }
             }
             maybe_result = tracked_work_result_rx.recv(), if !runtime.tracked_work_in_flight.is_empty() => {
-                if let Some(result) = maybe_result {
-                    handle_tracked_download_background_work_result(
-                        &app,
-                        &mut runtime.tracker,
-                        &mut runtime.tracked_work_in_flight,
-                        result,
-                    )
-                    .await;
-                    if try_dispatch_next_tracked_download_background_work(
-                        &app,
-                        &actor,
-                        &mut runtime.tracker,
-                        &mut runtime.tracked_work_in_flight,
-                        &tracked_work_result_tx,
-                        &mut runtime.tracked_work_drain,
-                    ) {
-                        publish_runtime_tracked_download_snapshot_cache(&app, &runtime.tracker).await;
+                if let Some(event) = maybe_result {
+                    match event {
+                        TrackedDownloadBackgroundWorkEvent::Finished(result) => {
+                            handle_tracked_download_background_work_result(
+                                &app,
+                                &mut runtime.tracker,
+                                &mut runtime.tracked_work_in_flight,
+                                result,
+                            )
+                            .await;
+                            let mut dispatched = false;
+                            while try_dispatch_next_tracked_download_background_work(
+                                &app,
+                                &actor,
+                                &mut runtime.tracker,
+                                &mut runtime.tracked_work_in_flight,
+                                &tracked_work_result_tx,
+                                &mut runtime.tracked_work_drain,
+                            ) {
+                                dispatched = true;
+                            }
+                            if dispatched {
+                                publish_runtime_tracked_download_snapshot_cache(&app, &runtime.tracker).await;
+                            }
+                        }
                     }
                 }
             }
@@ -1445,7 +1455,7 @@ async fn handle_tracked_download_command(
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     tracked_work_in_flight: &mut HashSet<String>,
     tracked_work_result_tx: &tokio::sync::mpsc::UnboundedSender<
-        TrackedDownloadBackgroundWorkResult,
+        TrackedDownloadBackgroundWorkEvent,
     >,
     command: crate::tracked_downloads::TrackedDownloadCommand,
 ) {
@@ -1483,7 +1493,7 @@ async fn handle_tracked_download_command(
                     files_imported_this_pass,
                     expected_mapping_count,
                 )
-                .await
+                .await?
                 {
                     return Ok(false);
                 }
@@ -1782,7 +1792,6 @@ fn prepare_tracked_download_background_work_dispatch(
             if td.import_retry_deferred(chrono::Utc::now()) {
                 return None;
             }
-            crate::completed_download_handler::mark_importing(td);
             Some((TrackedDownloadBackgroundWorkKind::Import, td.clone()))
         }
         TrackedDownloadState::FailedPending => {
@@ -1993,7 +2002,7 @@ async fn reconcile_excluded_client_recent_history(
     app: &AppUseCase,
     actor: &User,
     runtime: &mut TrackedDownloadRuntimeState,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     excluded_client_type_refs: &[&str],
 ) {
     if excluded_client_type_refs.is_empty() {
@@ -2116,13 +2125,10 @@ async fn try_dispatch_excluded_completed_history_retry(
     app: &AppUseCase,
     actor: &User,
     runtime: &mut TrackedDownloadRuntimeState,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     excluded_client_types: &[&str],
 ) {
-    if excluded_client_types.is_empty()
-        || !runtime.tracked_work_in_flight.is_empty()
-        || runtime.tracked_work_drain.has_pending()
-    {
+    if excluded_client_types.is_empty() || runtime.tracked_work_drain.has_pending() {
         return;
     }
 
@@ -2136,15 +2142,18 @@ async fn try_dispatch_excluded_completed_history_retry(
     let revalidated = retry_drain.revalidated;
     runtime.tracked_work_drain = retry_drain.drain;
 
-    if try_dispatch_next_tracked_download_background_work(
+    let mut dispatched = false;
+    while try_dispatch_next_tracked_download_background_work(
         app,
         actor,
         &mut runtime.tracker,
         &mut runtime.tracked_work_in_flight,
         result_tx,
         &mut runtime.tracked_work_drain,
-    ) || revalidated
-    {
+    ) {
+        dispatched = true;
+    }
+    if dispatched || revalidated {
         publish_runtime_tracked_download_snapshot_cache(app, &runtime.tracker).await;
     }
 }
@@ -2182,12 +2191,11 @@ fn prepare_next_tracked_download_background_work_dispatch(
     tracked_work_in_flight: &HashSet<String>,
     drain: &mut TrackedDownloadWorkDrain,
 ) -> Option<(String, TrackedDownloadBackgroundWorkKind, TrackedDownload)> {
-    if tracked_work_in_flight.len() >= TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT {
-        return None;
-    }
-
-    while let Some(id) = drain.pending_ids.pop_front() {
-        if !drain.attempted_ids.insert(id.clone()) {
+    let mut remaining = drain.pending_ids.len();
+    while remaining > 0 {
+        remaining -= 1;
+        let id = drain.pending_ids.pop_front()?;
+        if drain.attempted_ids.contains(&id) {
             continue;
         }
         if tracked_work_in_flight.contains(&id) {
@@ -2196,11 +2204,34 @@ fn prepare_next_tracked_download_background_work_dispatch(
         if let Some((kind, tracked)) =
             prepare_tracked_download_background_work_dispatch(tracker, &id)
         {
+            if kind == TrackedDownloadBackgroundWorkKind::Failed
+                && failed_tracked_download_work_count(tracker, tracked_work_in_flight)
+                    >= TRACKED_DOWNLOAD_FAILED_WORKER_LIMIT
+            {
+                drain.pending_ids.push_back(id);
+                continue;
+            }
+            drain.attempted_ids.insert(id.clone());
             return Some((id, kind, tracked));
         }
+        drain.attempted_ids.insert(id);
     }
 
     None
+}
+
+fn failed_tracked_download_work_count(
+    tracker: &crate::tracked_downloads::TrackedDownloadService,
+    tracked_work_in_flight: &HashSet<String>,
+) -> usize {
+    tracked_work_in_flight
+        .iter()
+        .filter(|id| {
+            tracker
+                .find(id)
+                .is_some_and(|tracked| tracked.state == TrackedDownloadState::FailedPending)
+        })
+        .count()
 }
 
 fn try_dispatch_next_tracked_download_background_work(
@@ -2208,15 +2239,35 @@ fn try_dispatch_next_tracked_download_background_work(
     actor: &User,
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     tracked_work_in_flight: &mut HashSet<String>,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     drain: &mut TrackedDownloadWorkDrain,
 ) -> bool {
-    let Some((id, kind, tracked)) = prepare_next_tracked_download_background_work_dispatch(
+    let Some((id, kind, mut tracked)) = prepare_next_tracked_download_background_work_dispatch(
         tracker,
         tracked_work_in_flight,
         drain,
     ) else {
         return false;
+    };
+
+    let preparation_permit = if kind == TrackedDownloadBackgroundWorkKind::Import {
+        let Some(permit) = app
+            .runtime
+            .imports
+            .execution_coordinator
+            .try_acquire_preparation()
+        else {
+            drain.attempted_ids.remove(&id);
+            drain.pending_ids.push_front(id);
+            return false;
+        };
+        if let Some(live) = tracker.find_mut(&id) {
+            crate::completed_download_handler::mark_importing(live);
+            tracked = live.clone();
+        }
+        Some(permit)
+    } else {
+        None
     };
 
     dispatch_prepared_tracked_download_background_work(
@@ -2228,6 +2279,7 @@ fn try_dispatch_next_tracked_download_background_work(
         kind,
         tracked,
         drain.completed_lookup.clone(),
+        preparation_permit,
     );
     true
 }
@@ -2237,19 +2289,41 @@ fn try_dispatch_tracked_download_background_work(
     actor: &User,
     tracker: &mut crate::tracked_downloads::TrackedDownloadService,
     tracked_work_in_flight: &mut HashSet<String>,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     id: &str,
     completed_lookup: &crate::completed_download_handler::CompletedDownloadLookup,
 ) -> bool {
-    if tracked_work_in_flight.len() >= TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT
-        || tracked_work_in_flight.contains(id)
+    if tracked_work_in_flight.contains(id) {
+        return false;
+    }
+
+    let Some((kind, mut tracked)) = prepare_tracked_download_background_work_dispatch(tracker, id)
+    else {
+        return false;
+    };
+    if kind == TrackedDownloadBackgroundWorkKind::Failed
+        && failed_tracked_download_work_count(tracker, tracked_work_in_flight)
+            >= TRACKED_DOWNLOAD_FAILED_WORKER_LIMIT
     {
         return false;
     }
 
-    let Some((kind, tracked)) = prepare_tracked_download_background_work_dispatch(tracker, id)
-    else {
-        return false;
+    let preparation_permit = if kind == TrackedDownloadBackgroundWorkKind::Import {
+        let Some(permit) = app
+            .runtime
+            .imports
+            .execution_coordinator
+            .try_acquire_preparation()
+        else {
+            return false;
+        };
+        if let Some(live) = tracker.find_mut(id) {
+            crate::completed_download_handler::mark_importing(live);
+            tracked = live.clone();
+        }
+        Some(permit)
+    } else {
+        None
     };
 
     dispatch_prepared_tracked_download_background_work(
@@ -2261,6 +2335,7 @@ fn try_dispatch_tracked_download_background_work(
         kind,
         tracked,
         completed_lookup.clone(),
+        preparation_permit,
     );
     true
 }
@@ -2273,17 +2348,18 @@ fn dispatch_prepared_tracked_download_background_work(
     app: &AppUseCase,
     actor: &User,
     tracked_work_in_flight: &mut HashSet<String>,
-    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     id: &str,
     kind: TrackedDownloadBackgroundWorkKind,
     tracked: TrackedDownload,
     completed_lookup: crate::completed_download_handler::CompletedDownloadLookup,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
     tracing::info!(
         id = %id,
         work = kind.as_str(),
         active_workers = tracked_work_in_flight.len() + 1,
-        worker_limit = TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT,
+        failed_worker_limit = TRACKED_DOWNLOAD_FAILED_WORKER_LIMIT,
         "tracked: dispatched background work"
     );
     tracked_work_in_flight.insert(id.to_string());
@@ -2294,6 +2370,7 @@ fn dispatch_prepared_tracked_download_background_work(
         kind,
         result_tx.clone(),
         completed_lookup,
+        preparation_permit,
     );
 }
 fn dispatch_tracked_download_background_work(
@@ -2301,22 +2378,26 @@ fn dispatch_tracked_download_background_work(
     actor: User,
     tracked: crate::tracked_downloads::TrackedDownload,
     kind: TrackedDownloadBackgroundWorkKind,
-    result_tx: tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    result_tx: tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkEvent>,
     completed_lookup: crate::completed_download_handler::CompletedDownloadLookup,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) {
     tokio::spawn(async move {
         let started_at = Instant::now();
         let tracked_id = tracked.id.clone();
-        let worker = tokio::spawn(async move {
+        let worker = std::panic::AssertUnwindSafe(async move {
             let mut tracked = tracked;
 
             match kind {
                 TrackedDownloadBackgroundWorkKind::Import => {
-                    let _ = crate::completed_download_handler::import_with_lookup(
+                    let preparation_permit = preparation_permit
+                        .expect("import dispatch requires a preparation permit");
+                    let _ = crate::completed_download_handler::import_with_lookup_and_preparation_permit(
                         &app,
                         &actor,
                         &mut tracked,
                         &completed_lookup,
+                        preparation_permit,
                     )
                     .await;
                 }
@@ -2326,9 +2407,11 @@ fn dispatch_tracked_download_background_work(
             }
 
             tracked
-        });
+        })
+        .catch_unwind()
+        .await;
 
-        let outcome = match worker.await {
+        let outcome = match worker {
             Ok(tracked) => {
                 tracing::info!(
                     id = %tracked.id,
@@ -2339,17 +2422,15 @@ fn dispatch_tracked_download_background_work(
                 );
                 Ok(tracked)
             }
-            Err(error) => {
+            Err(_) => {
                 let message = format!(
-                    "tracked {} worker exited before completion: {}",
-                    kind.as_str(),
-                    error
+                    "tracked {} worker panicked before completion",
+                    kind.as_str()
                 );
                 tracing::error!(
                     id = %tracked_id,
                     work = kind.as_str(),
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    error = %error,
                     "tracked: background work crashed"
                 );
                 Err(message)
@@ -2357,12 +2438,14 @@ fn dispatch_tracked_download_background_work(
         };
         let elapsed = started_at.elapsed();
         if result_tx
-            .send(TrackedDownloadBackgroundWorkResult {
+            .send(TrackedDownloadBackgroundWorkEvent::Finished(
+                TrackedDownloadBackgroundWorkResult {
                 id: tracked_id,
                 kind,
                 outcome,
                 elapsed,
-            })
+                },
+            ))
             .is_err()
         {
             tracing::debug!(

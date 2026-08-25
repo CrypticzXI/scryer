@@ -1577,7 +1577,10 @@ impl DownloadClient for StubDownloadClient {
             format!(
                 "job-for-{}-{}",
                 request.title.id,
-                request.download_id.as_deref().unwrap_or("unidentified")
+                request
+                    .download_id
+                    .as_ref()
+                    .map_or_else(|| "unidentified".to_string(), ToString::to_string,)
             )
         } else {
             format!("job-for-{}", request.title.id)

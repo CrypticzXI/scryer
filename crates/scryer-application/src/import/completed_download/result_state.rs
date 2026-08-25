@@ -183,6 +183,15 @@ fn update_no_video_signature_mtime(
     }
 }
 
+fn schedule_import_verification_retry(td: &mut TrackedDownload) {
+    td.schedule_import_execution_retry(Utc::now(), |_, next_retry_at| {
+        format!(
+            "Import verification is temporarily unavailable. Retrying at {}.",
+            next_retry_at.to_rfc3339()
+        )
+    });
+}
+
 #[cfg(test)]
 pub(super) async fn apply_import_result(
     app: &AppUseCase,
@@ -206,7 +215,7 @@ pub(super) async fn apply_import_result_with_completed(
     if result.decision == ImportDecision::Imported || already_imported {
         td.clear_no_video_import_retry();
         td.clear_import_execution_retry();
-        if verify_import_inner_with_release_evidence(
+        let verified = match verify_import_inner_with_release_evidence(
             app,
             td,
             files_imported_this_pass,
@@ -215,6 +224,14 @@ pub(super) async fn apply_import_result_with_completed(
         )
         .await
         {
+            Ok(verified) => verified,
+            Err(error) => {
+                tracing::warn!(tracked_id = %td.id, error = %error, "import verification evidence is unavailable");
+                schedule_import_verification_retry(td);
+                return false;
+            }
+        };
+        if verified {
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();
@@ -325,8 +342,64 @@ pub(super) async fn apply_import_result_with_completed(
         return false;
     }
 
-    if apply_no_video_import_backoff(app, td, &result).await {
-        return false;
+    if result.skip_reason == Some(ImportSkipReason::NoVideoFiles) {
+        match import_artifacts_for_completed_download(app, td, completed).await {
+            Err(error) => {
+                tracing::warn!(
+                    tracked_id = %td.id,
+                    error = %error,
+                    "no-video retry cannot read artifact evidence; preserving retryable state"
+                );
+                schedule_import_verification_retry(td);
+                return false;
+            }
+            Ok(artifacts) => {
+                let successful_artifacts = artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        matches!(artifact.result.as_str(), "imported" | "already_present")
+                    })
+                    .count();
+                if successful_artifacts > 0 {
+                    let verified = match verify_import_inner_with_release_evidence(
+                        app,
+                        td,
+                        files_imported_this_pass,
+                        completed,
+                        release_evidence,
+                    )
+                    .await
+                    {
+                        Ok(verified) => verified,
+                        Err(error) => {
+                            tracing::warn!(tracked_id = %td.id, error = %error, "import verification evidence is unavailable");
+                            schedule_import_verification_retry(td);
+                            return false;
+                        }
+                    };
+                    if verified {
+                        td.clear_no_video_import_retry();
+                        td.clear_import_execution_retry();
+                        td.state = TrackedDownloadState::Imported;
+                        td.status = TrackedDownloadStatus::Ok;
+                        td.status_messages.clear();
+                        schedule_non_destructive_import_mark(app, td, &result, completed);
+                        return true;
+                    }
+                    td.state = TrackedDownloadState::ImportPending;
+                    td.status = TrackedDownloadStatus::Warning;
+                    td.status_messages = vec![
+                        "Import partially completed; waiting for remaining files or verification."
+                            .to_string(),
+                    ];
+                    return false;
+                }
+            }
+        }
+
+        if apply_no_video_import_backoff(app, td, &result).await {
+            return false;
+        }
     }
 
     td.clear_no_video_import_retry();

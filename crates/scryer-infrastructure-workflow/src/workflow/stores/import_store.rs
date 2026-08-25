@@ -886,29 +886,100 @@ impl ImportArtifactRepository for ImportStore {
         .await
     }
 
+    async fn insert_artifacts(&self, artifacts: Vec<ImportArtifact>) -> AppResult<()> {
+        self.insert_artifacts_for_download(artifacts, None).await
+    }
+
+    async fn insert_artifacts_for_download(
+        &self,
+        artifacts: Vec<ImportArtifact>,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    ) -> AppResult<()> {
+        let canonical_download_id = canonical_download_id.map(ToString::to_string);
+        SqlRuntime::run_in_transaction(&self.datastore, "insert_import_artifacts", move |tx| {
+            let artifacts = artifacts.clone();
+            let canonical_download_id = canonical_download_id.clone();
+            Box::pin(async move {
+                for artifact in artifacts {
+                    SqlRuntime::execute(
+                        SqlExec::Tx(&mut *tx),
+                        "INSERT INTO download_import_artifacts
+                         (id, source_client_id, source_system, source_ref, canonical_download_id, import_id, relative_path, normalized_file_name,
+                          media_kind, title_id, episode_id, season_number, episode_number,
+                          result, reason_code, imported_media_file_id, created_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                        &[
+                            SqlArg::Text(artifact.id),
+                            SqlArg::OptText(artifact.source_client_id),
+                            SqlArg::Text(artifact.source_system),
+                            SqlArg::Text(artifact.source_ref),
+                            SqlArg::OptText(canonical_download_id.clone()),
+                            SqlArg::OptText(artifact.import_id),
+                            SqlArg::OptText(artifact.relative_path),
+                            SqlArg::Text(artifact.normalized_file_name),
+                            SqlArg::Text(artifact.media_kind),
+                            SqlArg::OptText(artifact.title_id),
+                            SqlArg::OptText(artifact.episode_id),
+                            SqlArg::OptI32(artifact.season_number),
+                            SqlArg::OptI32(artifact.episode_number),
+                            SqlArg::Text(artifact.result),
+                            SqlArg::OptText(artifact.reason_code),
+                            SqlArg::OptText(artifact.imported_media_file_id),
+                            SqlArg::Timestamp(artifact.created_at),
+                        ],
+                    )
+                    .await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn list_by_source_identity(
         &self,
         identity: &ClientJobLocator,
     ) -> AppResult<Vec<ImportArtifact>> {
-        SqlRuntime::fetch_all(
+        let args = [
+            SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+            SqlArg::Text(identity.client_type.clone()),
+            SqlArg::Text(identity.item_id.clone()),
+        ];
+        let exact = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
             "SELECT id, source_client_id, source_system, source_ref, import_id, relative_path,
                     normalized_file_name, media_kind, title_id, episode_id,
                     season_number, episode_number, result, reason_code,
                     imported_media_file_id, created_at
              FROM download_import_artifacts
-             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {}
+             WHERE COALESCE(source_client_id, '') = {}
+               AND source_system = {}
+               AND source_ref = {}
              ORDER BY created_at",
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-            ],
+            &args,
         )
-        .await?
-        .into_iter()
-        .map(|row| import_artifact_from_row(&row))
-        .collect()
+        .await?;
+        let rows = if exact.is_empty() {
+            SqlRuntime::fetch_all(
+                self.datastore.read_exec(),
+                "SELECT id, source_client_id, source_system, source_ref, import_id, relative_path,
+                        normalized_file_name, media_kind, title_id, episode_id,
+                        season_number, episode_number, result, reason_code,
+                        imported_media_file_id, created_at
+                 FROM download_import_artifacts
+                 WHERE LOWER(TRIM(COALESCE(source_client_id, ''))) = {}
+                   AND LOWER(TRIM(source_system)) = {}
+                   AND TRIM(source_ref) = {}
+                 ORDER BY created_at",
+                &args,
+            )
+            .await?
+        } else {
+            exact
+        };
+        rows.into_iter()
+            .map(|row| import_artifact_from_row(&row))
+            .collect()
     }
 
     async fn list_by_source_identity_for_download(
@@ -948,20 +1019,40 @@ impl ImportArtifactRepository for ImportStore {
         identity: &ClientJobLocator,
         result: &str,
     ) -> AppResult<u64> {
-        let row = SqlRuntime::fetch_optional(
+        let args = [
+            SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
+            SqlArg::Text(identity.client_type.clone()),
+            SqlArg::Text(identity.item_id.clone()),
+            SqlArg::Text(result.to_string()),
+        ];
+        let exact = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
             "SELECT COUNT(*) AS count FROM download_import_artifacts
-             WHERE COALESCE(source_client_id, '') = {} AND source_system = {} AND source_ref = {} AND result = {}",
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-                SqlArg::Text(result.to_string()),
-            ],
+             WHERE COALESCE(source_client_id, '') = {}
+               AND source_system = {}
+               AND source_ref = {}
+               AND result = {}",
+            &args,
         )
         .await?
         .ok_or_else(|| AppError::Repository("missing import artifact count".into()))?;
-        Ok(row.i64("count")? as u64)
+        let exact_count = exact.i64("count")? as u64;
+        if exact_count > 0 {
+            return Ok(exact_count);
+        }
+
+        let legacy = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS count FROM download_import_artifacts
+             WHERE LOWER(TRIM(COALESCE(source_client_id, ''))) = {}
+               AND LOWER(TRIM(source_system)) = {}
+               AND TRIM(source_ref) = {}
+               AND result = {}",
+            &args,
+        )
+        .await?
+        .ok_or_else(|| AppError::Repository("missing import artifact count".into()))?;
+        Ok(legacy.i64("count")? as u64)
     }
 
     async fn count_by_result_for_source_identity_for_download(
