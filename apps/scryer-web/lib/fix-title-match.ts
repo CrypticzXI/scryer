@@ -1,5 +1,4 @@
 import type { Translate } from "@/components/root/types";
-
 type FixMatchCompletionArgs = {
   warnings: string[];
   refreshTitleDetail: () => Promise<void>;

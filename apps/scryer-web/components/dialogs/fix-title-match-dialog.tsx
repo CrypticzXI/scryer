@@ -17,6 +17,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { fixTitleMatchMutation } from "@/lib/graphql/mutations";
 import { searchMetadataQuery } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
+import { metadataFacetGraphqlValue } from "@/lib/facets/registry";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -33,19 +34,6 @@ type Props = {
   title: FixableTitle | null;
   onFixed?: (warnings: string[]) => Promise<void> | void;
 };
-
-function metadataTypeForFacet(
-  facet: string | null | undefined,
-): "movie" | "series" | "anime" {
-  switch ((facet ?? "").toLowerCase()) {
-    case "movie":
-      return "movie";
-    case "anime":
-      return "anime";
-    default:
-      return "series";
-  }
-}
 
 function currentTvdbId(title: FixableTitle | null): string | null {
   return (
@@ -115,7 +103,7 @@ export function FixTitleMatchDialog({
       client
         .query(searchMetadataQuery, {
           query: trimmed,
-          type: metadataTypeForFacet(title.facet),
+          type: metadataFacetGraphqlValue(title.facet),
           limit: 8,
         }, { fetch: abortableFetch })
         .toPromise()
