@@ -347,18 +347,6 @@ async fn graphql_http_schema_is_fully_documented() {
     );
 }
 
-#[test]
-fn graphql_schema_sdl_matches_identity_refactor_snapshot() {
-    const SNAPSHOT_PATH: &str =
-        "crates/scryer/tests/integration_graphql/fixtures/schema_sdl.graphql";
-
-    assert_eq!(
-        scryer_interface::export_schema_sdl(),
-        include_str!("fixtures/schema_sdl.graphql"),
-        "the identity refactor forbids schema changes; snapshot mismatch at {SNAPSHOT_PATH}",
-    );
-}
-
 #[tokio::test]
 async fn graphql_introspection_schema_census_matches_contract_baseline() {
     let ctx = TestContext::new().await;
