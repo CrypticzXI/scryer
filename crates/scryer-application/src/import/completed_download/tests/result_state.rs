@@ -176,6 +176,51 @@ async fn verified_import_mark_retries_without_rolling_back_import() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn verified_import_mark_stops_after_bounded_permanent_failures() {
+    let marker = Arc::new(MarkingDownloadClient::new(usize::MAX));
+    let app = build_app_with_download_client(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        marker.clone(),
+    );
+    let td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let result = ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Imported,
+        skip_reason: None,
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: Some("/library/Show/Season 01/Show.S01E01.mkv".to_string()),
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: None,
+        release_burned: false,
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    schedule_non_destructive_import_mark(&app, &td, &result, None);
+    tokio::task::yield_now().await;
+    assert_eq!(marker.call_count(), 1);
+
+    for (delay, expected_calls) in [(15, 2), (30, 3), (60, 4), (120, 5)] {
+        tokio::time::advance(std::time::Duration::from_secs(delay)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(marker.call_count(), expected_calls);
+    }
+    tokio::time::advance(std::time::Duration::from_secs(600)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(marker.call_count(), 5);
+}
+
 #[tokio::test]
 async fn verified_import_mark_uses_completed_client_identity() {
     let title = build_title("title-1", "Show", MediaFacet::Series);

@@ -3,8 +3,9 @@ use super::*;
 
 const IMPORT_MARK_RETRY_INITIAL_SECONDS: u64 = 15;
 const IMPORT_MARK_RETRY_MAX_SECONDS: u64 = 300;
+const IMPORT_MARK_RETRY_MAX_ATTEMPTS: usize = 5;
 
-fn schedule_non_destructive_import_mark(
+pub(crate) fn schedule_non_destructive_import_mark(
     app: &AppUseCase,
     td: &TrackedDownload,
     result: &ImportResult,
@@ -42,16 +43,27 @@ fn schedule_non_destructive_import_mark(
 
     tokio::spawn(async move {
         let mut retry_seconds = IMPORT_MARK_RETRY_INITIAL_SECONDS;
-        loop {
+        for attempt in 1..=IMPORT_MARK_RETRY_MAX_ATTEMPTS {
             match download_client
                 .mark_imported_non_destructive_for_client_id(&client_id, &request)
                 .await
             {
                 Ok(()) => break,
                 Err(error) => {
-                    tracing::warn!(
+                    if attempt == IMPORT_MARK_RETRY_MAX_ATTEMPTS {
+                        tracing::warn!(
+                            client_id,
+                            client_item_id = %request.client_item_id,
+                            attempts = attempt,
+                            error = %error,
+                            "giving up marking imported download in client after bounded retries"
+                        );
+                        break;
+                    }
+                    tracing::debug!(
                         client_id,
                         client_item_id = %request.client_item_id,
+                        attempt,
                         retry_seconds,
                         error = %error,
                         "failed to mark imported download in client; retrying"

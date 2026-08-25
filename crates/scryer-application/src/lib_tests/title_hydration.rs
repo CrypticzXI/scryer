@@ -113,6 +113,7 @@ async fn consume_title_hydration_wake(app: &AppUseCase) {
 #[derive(Default)]
 struct MovieTitleResolutionGateway {
     unsupported: bool,
+    unresolved: bool,
     /// Answer as an SMG that predates the title-id surface does: with the raw
     /// GraphQL validation error, before the client maps it to a capability error.
     raw_unknown_field_error: bool,
@@ -265,6 +266,23 @@ impl MetadataGateway for MovieTitleResolutionGateway {
                 "metadata gateway does not support title-id queries".into(),
             ));
         }
+        if self.unresolved {
+            return Ok(refs
+                .iter()
+                .enumerate()
+                .map(|(ref_index, _)| TitleResolution {
+                    ref_index,
+                    resolved: false,
+                    smg_id: None,
+                    kind: "movie".to_string(),
+                    primary_source: String::new(),
+                    redirected_from: None,
+                    created: false,
+                    external_ids: vec![],
+                    reason: "not found".to_string(),
+                })
+                .collect());
+        }
 
         Ok(refs
             .iter()
@@ -341,6 +359,91 @@ async fn movie_smg_identity_backfill_links_ids_and_resumes_from_its_cursor() {
     assert_eq!(calls.len(), 2);
     assert!(calls.iter().all(|(_, create_missing)| !create_missing));
     assert!(calls.iter().all(|(refs, _)| refs.len() == 1));
+}
+
+#[tokio::test]
+async fn movie_smg_identity_backfill_keeps_its_cursor_after_an_unresolved_pass() {
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        unresolved: true,
+        ..Default::default()
+    });
+    let (app, user, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let added = app
+        .add_title_with_outcome(&user, hydration_test_title("Unresolved", 951_005))
+        .await
+        .expect("title should be created");
+    let token = tokio_util::sync::CancellationToken::new();
+
+    let first =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(matches!(
+        first,
+        crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(ref summary)
+            if summary.unresolved == 1
+    ));
+    let second =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(matches!(
+        second,
+        crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(ref summary)
+            if summary == &Default::default()
+    ));
+    assert_eq!(gateway.calls.lock().await.len(), 1);
+    assert_eq!(
+        titles
+            .smg_identity_backfill_attempts
+            .lock()
+            .await
+            .get(&added.title.id),
+        Some(&1)
+    );
+}
+
+#[tokio::test]
+async fn movie_smg_identity_backfill_excludes_a_title_after_the_attempt_cap() {
+    let gateway = Arc::new(MovieTitleResolutionGateway {
+        unresolved: true,
+        ..Default::default()
+    });
+    let (app, user, titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
+    let added = app
+        .add_title_with_outcome(&user, hydration_test_title("Terminal", 951_006))
+        .await
+        .expect("title should be created");
+    titles
+        .smg_identity_backfill_attempts
+        .lock()
+        .await
+        .insert(added.title.id.clone(), 4);
+    let token = tokio_util::sync::CancellationToken::new();
+
+    let first =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(matches!(
+        first,
+        crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(ref summary)
+            if summary.unresolved == 1
+    ));
+    let second =
+        crate::catalog::title_hydration::run_movie_smg_identity_backfill_tick(&app, &token, 1)
+            .await;
+    assert!(matches!(
+        second,
+        crate::catalog::title_hydration::MovieSmgIdentityBackfillTick::Completed(ref summary)
+            if summary == &Default::default()
+    ));
+    assert_eq!(gateway.calls.lock().await.len(), 1);
+    assert_eq!(
+        titles
+            .smg_identity_backfill_attempts
+            .lock()
+            .await
+            .get(&added.title.id),
+        Some(&5)
+    );
 }
 
 #[tokio::test]

@@ -172,6 +172,8 @@ Download clients (NZBGet, SABnzbd) and indexers are configured in **Settings** t
 | `SCRYER_ENCRYPTION_KEY` | No | Auto-managed | Override encryption key (see below) |
 | `SCRYER_BIND` | No | `0.0.0.0:8080` | Listen address and port |
 | `SCRYER_BASE_PATH` | No | `/` | Optional reverse-proxy path prefix, for example `/scryer` |
+| `SCRYER_LOG_FORMAT` | No | `json` | Console, file, and in-app log format: `json` or `text`. Unrecognized values warn and use `json`. |
+| `SCRYER_LOG_FILE` | No | Unset (Windows uses the application log path) | Optional log-file path. Relative paths are resolved from the data directory. |
 | `SCRYER_TLS_CERT` | No | — | Path to TLS certificate (PEM) |
 | `SCRYER_TLS_KEY` | No | — | Path to TLS private key (PEM) |
 
