@@ -1706,6 +1706,24 @@ async fn persist_file_import_artifact(
         .and_then(|name| name.to_str())
         .map(|name| name.to_ascii_lowercase())
         .unwrap_or_else(|| source_path.to_string_lossy().to_ascii_lowercase());
+    let canonical_download_id = match app
+        .services
+        .workflow
+        .imports
+        .canonical_download_id_for_import(import_id)
+        .await
+    {
+        Ok(canonical_download_id) => canonical_download_id,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                import_id,
+                source_ref = %completed.download_client_item_id,
+                "failed to resolve canonical identity for import artifact; retaining legacy artifact write"
+            );
+            None
+        }
+    };
 
     let episode_rows: Vec<(Option<String>, Option<i32>, Option<i32>)> = if episodes.is_empty() {
         vec![(None, None, None)]
@@ -1751,7 +1769,7 @@ async fn persist_file_import_artifact(
             .services
             .workflow
             .import_artifacts
-            .insert_artifact(artifact)
+            .insert_artifact_for_download(artifact, canonical_download_id.as_ref())
             .await
         {
             tracing::warn!(

@@ -6,10 +6,10 @@ use chrono::{Duration, Utc};
 use common::TestContext;
 use scryer_application::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStateRepository, AcquisitionScopeStatus,
-    AcquisitionStateRepository, AppError, DownloadSourceIdentity, DownloadSourceKind,
-    DownloadSubmission, DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository,
-    LibraryRootDraft, PendingReleaseRepository, PendingReleaseStatus, SubmissionScope,
-    SuccessfulGrabCommit, TitleRepository, UserRepository,
+    AcquisitionStateRepository, AppError, ClientJobLocator, DownloadSourceKind, DownloadSubmission,
+    DownloadSubmissionPurpose, DownloadSubmissionRepository, LibraryRepository, LibraryRootDraft,
+    PendingReleaseRepository, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
+    TitleRepository, UserRepository,
 };
 use scryer_domain::{
     Id, Library, LibraryGrant, LibraryPermission, LibraryPermissionMask, MediaFacet, Title, User,
@@ -617,6 +617,7 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
             grabbed_release: grabbed_release.clone(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -656,7 +657,7 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
     );
 
     let submission = download_submission_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(None, "nzbget", "job-1"))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-1"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -733,6 +734,7 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
             .to_string(),
             last_search_at: Some(grabbed_at.clone()),
             download_submission: DownloadSubmission {
+                download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: wi.title_id.clone(),
                 facet: "movie".to_string(),
                 download_client_id: None,
@@ -784,6 +786,7 @@ async fn download_submission_roundtrips_episode_scope() {
 
     workflow_store
         .record_submission(DownloadSubmission {
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-episode-scope".to_string(),
             facet: "series".to_string(),
             download_client_id: None,
@@ -813,11 +816,7 @@ async fn download_submission_roundtrips_episode_scope() {
     .expect("load raw submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            None,
-            "nzbget",
-            "job-episode-scope",
-        ))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-episode-scope"))
         .await
         .expect("find submission")
         .expect("submission exists");
@@ -852,6 +851,15 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     let ctx = TestContext::new().await;
     seed_title(&ctx, "title-legacy-scope").await;
     let workflow_store = DownloadSubmissionStore::new(ctx.db.datastore());
+    query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES (?, 'scryer_submission', ?)",
+    )
+    .bind("00000000-0000-4000-8000-000000000031")
+    .bind(chrono::Utc::now())
+    .execute(ctx.db.pool())
+    .await
+    .expect("insert canonical parent for legacy submission row");
 
     query(
         "INSERT INTO download_submissions
@@ -859,7 +867,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
           source_hint, source_kind, request_signature, collection_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind("submission-legacy")
+    .bind("00000000-0000-4000-8000-000000000031")
     .bind("title-legacy-scope")
     .bind("series")
     .bind("nzbget")
@@ -874,11 +882,7 @@ async fn download_submission_legacy_rows_without_episode_id_still_load() {
     .expect("insert legacy submission row");
 
     let submission = workflow_store
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            None,
-            "nzbget",
-            "job-legacy-scope",
-        ))
+        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-legacy-scope"))
         .await
         .expect("find legacy submission")
         .expect("legacy submission exists");

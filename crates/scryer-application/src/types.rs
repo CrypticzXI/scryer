@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title};
+use scryer_domain::{
+    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -556,6 +558,7 @@ fn normalize_numeric_external_id(raw: &str) -> Option<String> {
 pub struct DownloadQueueCommandRecord {
     pub id: String,
     pub action: DownloadQueueCommandAction,
+    pub canonical_download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub client_id: Option<String>,
     pub client_type: String,
     pub download_client_item_id: String,
@@ -1378,6 +1381,8 @@ pub struct DownloadGrabResult {
     pub client_id: Option<String>,
     pub client_type: String,
     pub info_hash: Option<String>,
+    /// The pre-allocated identity used for the successful client mutation.
+    pub download_id: Option<DownloadId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3283,7 +3288,8 @@ pub struct ManualImportSelection {
     pub id: String,
     pub actor_user_id: String,
     pub title_id: String,
-    pub source_identity: crate::DownloadSourceIdentity,
+    pub source_identity: crate::ClientJobLocator,
+    pub canonical_download_id: Option<scryer_domain::download_identity::DownloadId>,
     pub release_evidence_json: Option<String>,
     /// Server-selected root that every candidate must remain beneath.
     pub trusted_source_root: String,

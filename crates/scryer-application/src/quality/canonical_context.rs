@@ -656,7 +656,7 @@ impl AppUseCase {
         context: &ResolvedScoringContext,
         submissions: &[crate::DownloadSubmission],
         tracked_states: &std::collections::HashMap<
-            crate::contracts::DownloadSourceIdentity,
+            crate::contracts::ClientJobLocator,
             scryer_domain::TrackedDownloadState,
         >,
         dl_snapshot: &crate::acquisition_workflow::DownloadClientSnapshot,
@@ -672,8 +672,7 @@ impl AppUseCase {
                 )
             })
             .filter(|submission| {
-                let identity =
-                    crate::contracts::DownloadSourceIdentity::from_submission(submission);
+                let identity = crate::contracts::ClientJobLocator::from_submission(submission);
                 crate::acquisition_workflow::submission_is_queued(
                     tracked_states.get(&identity).copied(),
                     crate::acquisition_workflow::submission_is_active(submission, dl_snapshot),

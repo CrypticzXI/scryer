@@ -295,7 +295,7 @@ pub(crate) fn in_flight_series_pack_episode_ids(
     episodes: &[Episode],
     submissions: &[crate::DownloadSubmission],
     tracked_states: &std::collections::HashMap<
-        crate::contracts::DownloadSourceIdentity,
+        crate::contracts::ClientJobLocator,
         scryer_domain::TrackedDownloadState,
     >,
     dl_snapshot: &crate::acquisition_workflow::DownloadClientSnapshot,
@@ -314,7 +314,7 @@ pub(crate) fn in_flight_series_pack_episode_ids(
             };
             submissions.iter().any(|submission| {
                 let identity =
-                    crate::contracts::DownloadSourceIdentity::from_submission(submission);
+                    crate::contracts::ClientJobLocator::from_submission(submission);
                 crate::acquisition_workflow::submission_is_queued(
                     tracked_states.get(&identity).copied(),
                     crate::acquisition_workflow::submission_is_active(submission, dl_snapshot),

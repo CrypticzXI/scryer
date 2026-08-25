@@ -673,18 +673,22 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         }
     }
 }
-async fn find_failed_submission(
+async fn find_failed_submission_for_download(
     app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
     context: &DownloadFailureContext,
 ) -> Option<DownloadSubmission> {
     app.services
         .workflow
         .download_submissions
-        .find_by_client_item_id(&DownloadSourceIdentity::new(
-            Some(context.client_id.as_str()),
-            &context.client_type,
-            &context.client_item_id,
-        ))
+        .find_by_client_item_id_for_download(
+            canonical_download_id,
+            &ClientJobLocator::new(
+                Some(context.client_id.as_str()),
+                &context.client_type,
+                &context.client_item_id,
+            ),
+        )
         .await
         .ok()
         .flatten()
@@ -749,7 +753,16 @@ pub(crate) async fn process_download_failure(
     app: &AppUseCase,
     context: DownloadFailureContext,
 ) -> FailureHandlingOutcome {
-    let failed_submission = find_failed_submission(app, &context).await;
+    process_download_failure_for_download(app, None, context).await
+}
+
+pub(crate) async fn process_download_failure_for_download(
+    app: &AppUseCase,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    context: DownloadFailureContext,
+) -> FailureHandlingOutcome {
+    let failed_submission =
+        find_failed_submission_for_download(app, canonical_download_id, &context).await;
     if context.wanted_item.is_none() && failed_submission.is_none() {
         info!(
             client_id = context.client_id.as_str(),
@@ -1077,7 +1090,7 @@ pub(crate) async fn process_download_failure(
         .workflow
         .download_submissions
         .update_tracked_state(
-            &DownloadSourceIdentity::new(
+            &ClientJobLocator::new(
                 Some(context.client_id.as_str()),
                 &context.client_type,
                 &context.client_item_id,

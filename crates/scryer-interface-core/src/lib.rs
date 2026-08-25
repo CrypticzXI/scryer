@@ -370,6 +370,9 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadSubmitAmbiguous(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
         }
+        AppError::DownloadSubmitAmbiguousWithClient { message, .. } => {
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
+        }
         AppError::DownloadSubmitRejected(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_REJECTED")
         }
@@ -433,6 +436,7 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitAmbiguousWithClient { .. } => "DownloadSubmitAmbiguous",
         AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
         AppError::DownloadSourceGone(_) => "DownloadSourceGone",

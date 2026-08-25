@@ -54,6 +54,29 @@ pub(crate) async fn import_completed_download_with_target_title(
     .await
 }
 
+/// Import a completed download owned by a tracked download. The tracked
+/// download has already resolved its canonical id, so preserve it for import
+/// ownership checks and the durable import row.
+pub(crate) async fn import_tracked_completed_download(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+    target_title_id: Option<&str>,
+    release_evidence: Option<&ReleaseEvidence>,
+) -> AppResult<ImportResult> {
+    import_completed_download_with_identity_policy_for_download(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::RequireSubmission,
+        target_title_id,
+        release_evidence,
+        canonical_download_id,
+    )
+    .await
+}
+
 pub async fn import_completed_download_for_manual_review(
     app: &AppUseCase,
     actor: &User,
@@ -110,12 +133,34 @@ async fn import_completed_download_with_identity_policy(
     target_title_id: Option<&str>,
     release_evidence: Option<&ReleaseEvidence>,
 ) -> AppResult<ImportResult> {
+    import_completed_download_with_identity_policy_for_download(
+        app,
+        actor,
+        completed,
+        identity_policy,
+        target_title_id,
+        release_evidence,
+        None,
+    )
+    .await
+}
+
+async fn import_completed_download_with_identity_policy_for_download(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    identity_policy: CompletedImportIdentityPolicy,
+    target_title_id: Option<&str>,
+    release_evidence: Option<&ReleaseEvidence>,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+) -> AppResult<ImportResult> {
     let request = match prepare_completed_import_request(
         app,
         completed,
         identity_policy,
         target_title_id,
         release_evidence,
+        canonical_download_id,
     )
     .await?
     {
@@ -422,6 +467,7 @@ async fn prepare_completed_import_request(
     identity_policy: CompletedImportIdentityPolicy,
     target_title_id: Option<&str>,
     release_evidence_override: Option<&ReleaseEvidence>,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
 ) -> AppResult<CompletedImportProgress> {
     let mut completed = completed.clone();
     remap_completed_download_for_client(app, &mut completed).await;
@@ -464,8 +510,13 @@ async fn prepare_completed_import_request(
     let submission_resolution = submission_resolution
         .unwrap_or(CompletedDownloadSubmissionResolution::DownloaderObservation);
     // 1. DEDUP CHECK
-    if completed_download_already_imported_for_current_attempt(app, &completed, &submission_resolution)
-        .await?
+    if completed_download_already_imported_for_current_attempt(
+        app,
+        &completed,
+        &submission_resolution,
+        canonical_download_id,
+    )
+    .await?
     {
         let result = ImportResult {
             decision: ImportDecision::Skipped,
@@ -493,7 +544,7 @@ async fn prepare_completed_import_request(
         .services
         .workflow
         .imports
-        .queue_import_request_with_identity(
+        .queue_import_request_with_identity_for_download(
             source_identity,
             import_type.as_str().to_string(),
             serde_json::to_string(&CompletedImportRequestPayload {
@@ -503,6 +554,7 @@ async fn prepare_completed_import_request(
             })
             .unwrap_or_default(),
             completed_download_import_identity_for_resolution(&completed, &submission_resolution),
+            canonical_download_id,
         )
         .await?;
 

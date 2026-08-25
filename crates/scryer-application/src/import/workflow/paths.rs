@@ -288,8 +288,8 @@ fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) 
         .is_none_or(str::is_empty)
 }
 
-fn submission_source_identity(submission: &DownloadSubmission) -> DownloadSourceIdentity {
-    DownloadSourceIdentity::from_submission(submission)
+fn submission_source_identity(submission: &DownloadSubmission) -> ClientJobLocator {
+    ClientJobLocator::from_submission(submission)
 }
 
 async fn resolve_completed_download_submission(
@@ -350,7 +350,7 @@ async fn resolve_completed_download_submission(
 
     let mut source_identities = vec![completed_download_identity(completed)];
     if let Some(item) = item {
-        source_identities.push(DownloadSourceIdentity::new(
+        source_identities.push(ClientJobLocator::new(
             Some(item.client_id.as_str()),
             &item.client_type,
             &item.download_client_item_id,
@@ -463,6 +463,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app: &AppUseCase,
     completed: &CompletedDownload,
     resolution: &CompletedDownloadSubmissionResolution,
+    canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
 ) -> AppResult<bool> {
     if matches!(
         resolution,
@@ -491,7 +492,11 @@ async fn completed_download_already_imported_for_current_attempt(
                     .services
                     .workflow
                     .imports
-                    .is_already_imported_by_download_id(&source_identity, identity)
+                    .is_already_imported_by_download_id_for_download(
+                        canonical_download_id,
+                        &source_identity,
+                        identity,
+                    )
                     .await;
             }
             source_identity
@@ -506,7 +511,7 @@ async fn completed_download_already_imported_for_current_attempt(
     app.services
         .workflow
         .imports
-        .is_already_imported(&source_identity)
+        .is_already_imported_for_download(canonical_download_id, &source_identity)
         .await
 }
 

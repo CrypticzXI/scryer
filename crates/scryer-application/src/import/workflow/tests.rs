@@ -269,6 +269,7 @@ mod tests {
     ) -> CompletedDownloadSubmissionResolution {
         CompletedDownloadSubmissionResolution::Matched(Box::new(CompletedDownloadSubmissionMatch {
             submission: DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
                 title_id: title_id.to_string(),
                 facet: facet.to_string(),
                 download_client_id: Some("client-1".to_string()),

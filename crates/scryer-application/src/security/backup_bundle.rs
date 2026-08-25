@@ -623,6 +623,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "download_client_bindings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "downloads",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "download_import_artifacts",
         classification: BackupTableClassification::Export,
     },

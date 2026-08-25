@@ -368,6 +368,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     let wanted = base_series_movie_wanted_item();
 
     let title_submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: wanted.title_id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),
@@ -390,6 +391,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     ));
 
     let matching_series_movie_submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         scope: SubmissionScope::SeriesMovie {
             series_movie_link_id: wanted
                 .series_movie_link_id
@@ -405,6 +407,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     ));
 
     let different_series_movie_submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         scope: SubmissionScope::SeriesMovie {
             series_movie_link_id: "series-movie-link-2".to_string(),
         },
@@ -422,6 +425,7 @@ fn episode_set_submission_blocks_each_covered_episode() {
     let mut wanted = base_episode_wanted_item();
     wanted.episode_id = Some("episode-2".to_string());
     let submission = DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: wanted.title_id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),

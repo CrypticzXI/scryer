@@ -266,21 +266,22 @@ pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
 pub use contracts::{
-    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, CollectionUpdate,
-    DashboardActivityStats, DeleteExecutionConfirmation, DownloadClientAddRequest,
-    DownloadClientConfigUpdate, DownloadClientMarkImportedRequest, DownloadClientStatus,
-    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact,
-    IndexerConfigSyncResult, IndexerConfigUpdate, IndexerDownloadClientMappingCatalog,
-    IndexerDownloadClientMappingClient, IndexerDownloadClientMappingIndexer,
-    IndexerDownloadClientProviderCompatibility, IndexerProxyConfigUpdate, IndexerProxyTestResult,
-    IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult,
-    InsertMediaFileInput, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
-    MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole, NewBlocklistEntry,
-    NewIndexerProxyConfig, NewSeedingProfile, NotificationScopeIdUpdate, PendingReleasePageSort,
-    PendingReleasesPageQuery, PendingStagedNzb, PersistedSeedGoals, QueueDownloadOutcome,
-    QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact,
-    SearchMode, SeedGoalGrabRecord, SeedingProfileUpdate, StagedNzbRef, StorageRootUsage,
+    AcquisitionScopeStatesQuery, ActivityWindowCounts, AudioStreamDetail, ClientJobLocator,
+    CollectionUpdate, DashboardActivityStats, DeleteExecutionConfirmation,
+    DownloadClientAddRequest, DownloadClientBindingRecord, DownloadClientConfigUpdate,
+    DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadOrigin, DownloadRecord,
+    DownloadSubmission, DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity,
+    DownloadSubmissionPurpose, EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult,
+    IndexerConfigUpdate, IndexerDownloadClientMappingCatalog, IndexerDownloadClientMappingClient,
+    IndexerDownloadClientMappingIndexer, IndexerDownloadClientProviderCompatibility,
+    IndexerProxyConfigUpdate, IndexerProxyTestResult, IndexerRoutingEntry, IndexerRoutingPlan,
+    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
+    NewBlocklistEntry, NewIndexerProxyConfig, NewSeedingProfile, NotificationScopeIdUpdate,
+    ObservationResolution, ObservedClientJob, PendingReleasePageSort, PendingReleasesPageQuery,
+    PendingStagedNzb, PersistedSeedGoals, QueueDownloadOutcome, QueuedDownloadResult,
+    QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
+    SeedGoalGrabRecord, SeedingProfileUpdate, StagedNzbRef, StorageRootUsage,
     SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
     SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
     SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
@@ -422,7 +423,7 @@ pub use notifications::dispatcher::start_notification_dispatcher;
 pub use null_repositories::NullIndexerErrorRepository;
 pub use null_repositories::{
     NullAcquisitionScopeStateRepository, NullAcquisitionStateRepository, NullBlocklistRepository,
-    NullDomainEventRepository, NullDownloadQueueCommandRepository,
+    NullDomainEventRepository, NullDownloadQueueCommandRepository, NullDownloadRegistryRepository,
     NullDownloadSubmissionRepository, NullExternalImportMonitorSnapshotRepository,
     NullExternalImportSetupSecretDraftRepository, NullFileImporter, NullHousekeepingRepository,
     NullImportArtifactRepository, NullImportRepository, NullIndexerProxyConfigRepository,
@@ -442,43 +443,43 @@ pub use ports::{
     ArchiveExtractorPluginProvider, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadQueueCommandRepository,
-    DownloadSubmissionRepository, EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar,
-    EmbyConnectAddressStatus, EmbyConnectIdentityVerification, EmbyConnectServer,
-    EmbyConnectUserType, EmbyServerIdentity, EmbyServerUser, ExternalIdentityVerifier,
-    ExternalImportMonitorSnapshotRepository, ExternalImportSetupInstanceApiKeyDraft,
-    ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
-    ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
-    ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
-    ExternalImportSetupSecretOverrideDraft, ExternalPluginWasm, FileImporter,
-    HousekeepingMediaFileRootRow, HousekeepingRepository, ImageProxyCacheControl,
-    ImageProxyCacheEntryRecord, ImageProxyKind, ImageProxyRegistration, ImageProxyRepository,
-    ImageProxySourceRecord, ImportArtifactRepository, ImportFilePermissions,
-    ImportFileTransferProgress, ImportFileTransferProgressSender, ImportRepository,
-    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
-    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerSearchLearningContext,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerStatsTracker, IndexerSystemBackoff, JellyfinServerUser, JobRunRepository,
-    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
-    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
-    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
-    MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
-    NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
-    NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
-    NotificationEpisodePayload, NotificationExternalIdsPayload, NotificationFilePayload,
-    NotificationHealthPayload, NotificationImportPayload, NotificationManualInteractionPayload,
-    NotificationMediaFilePayload, NotificationMediaUpdatePayload,
-    NotificationMediaUpdateTypePayload, NotificationPayload, NotificationPluginProvider,
-    NotificationReleasePayload, NotificationSeverityPayload, NotificationSubscriptionRepository,
-    NotificationTitlePayload, OAuthRepository, PendingReleaseRepository, PlexServerDiscovery,
-    PlexServerUser, PluginDescriptorLoader, PluginHttpTrustConfigRuntime,
-    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad, ScopeCoverageRow,
-    ScopeIndexerCoverageRepository, SeedingProfileRepository, SettingsRepository, ShowRepository,
-    StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, VerifiedExternalIdentity, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    DownloadRegistryRepository, DownloadSubmissionRepository, EmbyApiKeyExchange,
+    EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
+    EmbyConnectIdentityVerification, EmbyConnectServer, EmbyConnectUserType, EmbyServerIdentity,
+    EmbyServerUser, ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
+    ExternalImportSetupInstanceApiKeyDraft, ExternalImportSetupSecretDraft,
+    ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
+    ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus,
+    ExternalImportSetupSecretInstanceKind, ExternalImportSetupSecretOverrideDraft,
+    ExternalPluginWasm, FileImporter, HousekeepingMediaFileRootRow, HousekeepingRepository,
+    IdentityTrackedStateTarget, ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyKind,
+    ImageProxyRegistration, ImageProxyRepository, ImageProxySourceRecord, ImportArtifactRepository,
+    ImportFilePermissions, ImportFileTransferProgress, ImportFileTransferProgressSender,
+    ImportRepository, IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository,
+    IndexerManagementClient, IndexerPluginProvider, IndexerProxyConfigRepository,
+    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
+    IndexerSearchLearningRepository, IndexerStatsTracker, IndexerSystemBackoff, JellyfinServerUser,
+    JobRunRepository, LibraryProbeRepository, LibraryRepository,
+    LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer, MediaFileRepository,
+    MediaRequestQuery, MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser,
+    MediaServerUserGroup, MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION,
+    NewMediaRequest, NotificationActorPayload, NotificationAppPayload,
+    NotificationApplicationUpdatePayload, NotificationChannelRepository, NotificationClient,
+    NotificationDownloadPayload, NotificationEpisodePayload, NotificationExternalIdsPayload,
+    NotificationFilePayload, NotificationHealthPayload, NotificationImportPayload,
+    NotificationManualInteractionPayload, NotificationMediaFilePayload,
+    NotificationMediaUpdatePayload, NotificationMediaUpdateTypePayload, NotificationPayload,
+    NotificationPluginProvider, NotificationReleasePayload, NotificationSeverityPayload,
+    NotificationSubscriptionRepository, NotificationTitlePayload, OAuthRepository,
+    PendingReleaseRepository, PlexServerDiscovery, PlexServerUser, PluginDescriptorLoader,
+    PluginHttpTrustConfigRuntime, PluginInstallationRepository, PostProcessingScriptRepository,
+    QualityProfileRepository, ReleaseAttemptRepository, RuleSetRepository, RuntimePluginLoad,
+    ScopeCoverageRow, ScopeIndexerCoverageRepository, SeedingProfileRepository, SettingsRepository,
+    ShowRepository, StagedNzbStore, SubtitleDownloadRepository, SubtitlePluginProvider,
+    SubtitleProviderClient, SubtitleProviderConfigRepository, SystemInfoProvider,
+    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository,
+    UserExternalAccountRepository, UserRepository, VerifiedExternalIdentity, WebauthnRepository,
+    WorkflowOperationInfo, WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -654,6 +655,16 @@ pub enum AppError {
     #[error("{0}")]
     DownloadSubmitAmbiguous(String),
 
+    /// An ambiguous client mutation annotated by the router with the selected
+    /// configured client. The display text intentionally remains identical to
+    /// the underlying client error.
+    #[error("{message}")]
+    DownloadSubmitAmbiguousWithClient {
+        message: String,
+        client_id: Option<String>,
+        client_type: String,
+    },
+
     #[error("{0}")]
     DownloadSubmitRejected(String),
 
@@ -728,6 +739,32 @@ impl AppError {
         Self::DownloadSubmitFailoverExhausted(message.into())
     }
 
+    pub fn with_ambiguous_download_submission_client(
+        self,
+        client_id: Option<String>,
+        client_type: String,
+    ) -> Self {
+        match self {
+            Self::DownloadSubmitAmbiguous(message) => Self::DownloadSubmitAmbiguousWithClient {
+                message,
+                client_id,
+                client_type,
+            },
+            other => other,
+        }
+    }
+
+    pub fn ambiguous_download_submission_client(&self) -> Option<(Option<&str>, &str)> {
+        match self {
+            Self::DownloadSubmitAmbiguousWithClient {
+                client_id,
+                client_type,
+                ..
+            } => Some((client_id.as_deref(), client_type.as_str())),
+            _ => None,
+        }
+    }
+
     pub fn archive_extraction_plugin_required(source_path: Option<String>) -> Self {
         Self::ArchiveExtractionPluginRequired {
             message: "This import is blocked because the download contains archive files. Install, update, or enable the Archive Extraction plugin, then re-import.".to_string(),
@@ -769,6 +806,7 @@ impl AppError {
             Self::DownloadSubmitUnavailable(_)
             | Self::DownloadSubmitFailoverExhausted(_)
             | Self::DownloadSubmitAmbiguous(_)
+            | Self::DownloadSubmitAmbiguousWithClient { .. }
             | Self::DownloadSubmitRejected(_)
             | Self::DownloadSourceGone(_) => self,
             _ => Self::DownloadSubmitUnavailable(self.to_string()),
@@ -795,7 +833,10 @@ impl AppError {
     }
 
     pub fn is_download_submit_ambiguous(&self) -> bool {
-        matches!(self, Self::DownloadSubmitAmbiguous(_))
+        matches!(
+            self,
+            Self::DownloadSubmitAmbiguous(_) | Self::DownloadSubmitAmbiguousWithClient { .. }
+        )
     }
 
     pub fn is_canceled(&self) -> bool {

@@ -2621,6 +2621,9 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitAmbiguous(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::DownloadSubmitAmbiguousWithClient { message, .. } => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
+        }
         AppError::DownloadSubmitRejected(message) => {
             (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
         }

@@ -1654,7 +1654,6 @@ async fn bootstrap_application(
     validate_authless_runtime_config(
         !cfg!(debug_assertions),
         development_mode,
-        auth_runtime.snapshot().effective_form_login_enabled,
         &auth_mode,
         authless_access_allowlist_env_configured,
     )
@@ -2512,7 +2511,6 @@ fn resolve_development_mode(raw: Option<&str>, release_build: bool) -> Result<bo
 fn validate_authless_runtime_config(
     release_build: bool,
     development_mode: bool,
-    effective_form_login_enabled: bool,
     auth_mode: &AuthModeConfig,
     allowlist_env_configured: bool,
 ) -> Result<(), String> {
@@ -4105,7 +4103,7 @@ mod tests {
     fn release_authless_access_preserves_existing_public_bind_with_deprecation_warning() {
         let auth_mode = resolve_auth_mode(Some("false"), None, None, None).expect("auth mode");
 
-        validate_authless_runtime_config(true, false, false, &auth_mode, false)
+        validate_authless_runtime_config(true, false, &auth_mode, false)
             .expect("release authless configuration");
 
         assert!(should_warn_about_public_authless_release_bind(
@@ -4124,11 +4122,11 @@ mod tests {
     fn public_authless_overrides_require_explicit_development_mode() {
         let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
 
-        let error = validate_authless_runtime_config(false, false, false, &auth_mode, false)
+        let error = validate_authless_runtime_config(false, false, &auth_mode, false)
             .expect_err("public override without development mode");
         assert!(error.contains("SCRYER_DEVELOPMENT_MODE=true"));
 
-        validate_authless_runtime_config(false, true, false, &auth_mode, false)
+        validate_authless_runtime_config(false, true, &auth_mode, false)
             .expect("explicit development mode allows the override");
     }
 

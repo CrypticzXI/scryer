@@ -59,6 +59,7 @@ fn submission_row(
     source_title: Option<&str>,
 ) -> DownloadSubmission {
     DownloadSubmission {
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title_id.to_string(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "movie".to_string(),
@@ -101,8 +102,8 @@ fn import_pending_observation(title_id: &str, match_type: TitleMatchType) -> Tra
     td
 }
 
-fn source_identity() -> DownloadSourceIdentity {
-    DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1")
+fn source_identity() -> ClientJobLocator {
+    ClientJobLocator::new(Some("client-1"), "nzbget", "dl-1")
 }
 
 fn completed_request_payload(

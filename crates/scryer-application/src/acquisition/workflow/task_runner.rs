@@ -366,7 +366,7 @@ async fn try_series_pack_for_title(
     failed_routes: &[DownloadRouteKey],
     submissions: &[DownloadSubmission],
     tracked_states: &HashMap<
-        crate::contracts::DownloadSourceIdentity,
+        crate::contracts::ClientJobLocator,
         scryer_domain::TrackedDownloadState,
     >,
     claimed_episode_ids: &HashSet<String>,
@@ -988,7 +988,7 @@ async fn process_single_target(
     };
     let submission_identities = submissions
         .iter()
-        .map(crate::contracts::DownloadSourceIdentity::from_submission)
+        .map(crate::contracts::ClientJobLocator::from_submission)
         .collect::<Vec<_>>();
     let tracked_states = match app
         .services
@@ -1016,7 +1016,7 @@ async fn process_single_target(
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
     let has_blocking_download_submission = submissions.iter().any(|submission| {
-        let identity = crate::contracts::DownloadSourceIdentity::from_submission(submission);
+        let identity = crate::contracts::ClientJobLocator::from_submission(submission);
         submission_blocks_search_for_wanted_item(
             submission,
             item,
@@ -1456,10 +1456,7 @@ async fn process_single_target(
                             .map(str::to_string);
                         let seed_minimums =
                             crate::ReleaseSeedMinimums::from_release_extra(&best_pack.extra);
-                        let download_id = crate::download_identity::new_download_id();
-                        let submission_identity = DownloadSubmissionIdentity {
-                            download_id: Some(download_id.clone()),
-                        };
+                        let download_id = scryer_domain::download_identity::DownloadId::new();
 
                         let grab_result = app
                             .services
@@ -1499,6 +1496,11 @@ async fn process_single_target(
                         match grab_result {
                             Ok(grab) => {
                                 let download_job_id = grab.job_id.clone();
+                                let submission_download_id =
+                                    grab.download_id.unwrap_or(download_id);
+                                let submission_identity = DownloadSubmissionIdentity {
+                                    download_id: Some(submission_download_id.to_wire()),
+                                };
                                 let facet_label = serde_json::to_string(&title.facet)
                                     .unwrap_or_else(|_| "\"other\"".to_string())
                                     .trim_matches('"')
@@ -1599,6 +1601,7 @@ async fn process_single_target(
                                         grabbed_release: grabbed_json,
                                         last_search_at: Some(now.to_rfc3339()),
                                         download_submission: DownloadSubmission {
+                                            download_id: submission_download_id,
                                             title_id: title.id.clone(),
                                             purpose: crate::DownloadSubmissionPurpose::Standard,
                                             facet: facet_str.trim_matches('"').to_string(),
@@ -1726,6 +1729,41 @@ async fn process_single_target(
                                         pack_password,
                                     )
                                     .await;
+                                if ambiguous
+                                    && let Some((client_id, client_type)) =
+                                        err.ambiguous_download_submission_client()
+                                {
+                                    let pack_scope =
+                                        collection_download_submission_scope_for_wanted_item(
+                                            item,
+                                            episode.as_ref(),
+                                        );
+                                    if let Err(error) = app
+                                        .services
+                                        .workflow
+                                        .download_submissions
+                                        .record_ambiguous_submission(DownloadSubmission {
+                                            download_id,
+                                            title_id: title.id.clone(),
+                                            facet: title.facet.as_str().to_string(),
+                                            download_client_id: client_id.map(str::to_string),
+                                            download_client_type: client_type.to_string(),
+                                            download_client_item_id: String::new(),
+                                            source_hint: None,
+                                            source_provider_id: best_pack.indexer_id.clone(),
+                                            source_provider_name: Some(best_pack.source.clone()),
+                                            source_kind: None,
+                                            source_title: Some(best_pack.title.clone()),
+                                            release_size_bytes: best_pack.size_bytes,
+                                            request_signature: request_signature.clone(),
+                                            purpose: crate::DownloadSubmissionPurpose::Standard,
+                                            scope: pack_scope,
+                                        })
+                                        .await
+                                    {
+                                        warn!(error = %error, "ambiguous download submission persistence failed");
+                                    }
+                                }
                                 if !defer {
                                     let pack_scope =
                                         collection_download_submission_scope_for_wanted_item(
@@ -2256,10 +2294,7 @@ async fn process_single_target(
             .as_ref()
             .and_then(|parsed| parsed.episode.as_ref())
             .is_some_and(|episode| episode.full_season);
-        let download_id = crate::download_identity::new_download_id();
-        let submission_identity = DownloadSubmissionIdentity {
-            download_id: Some(download_id.clone()),
-        };
+        let download_id = scryer_domain::download_identity::DownloadId::new();
 
         let grab_result = app
             .services
@@ -2311,6 +2346,10 @@ async fn process_single_target(
                     candidate.indexer_id.as_deref(),
                     Some(candidate.source.as_str()),
                 );
+                let submission_download_id = grab.download_id.unwrap_or(download_id);
+                let submission_identity = DownloadSubmissionIdentity {
+                    download_id: Some(submission_download_id.to_wire()),
+                };
                 let accepted_identity =
                     crate::download_identity::accepted_download_submission_identity(
                         crate::download_identity::AcceptedDownloadIdentityInput {
@@ -2396,6 +2435,7 @@ async fn process_single_target(
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
                         download_submission: DownloadSubmission {
+                            download_id: submission_download_id,
                             title_id: title.id.clone(),
                             purpose: crate::DownloadSubmissionPurpose::Standard,
                             facet: facet_str.trim_matches('"').to_string(),
@@ -2448,7 +2488,7 @@ async fn process_single_target(
                 return Ok(());
             }
             Err(err) => {
-                if matches!(err, AppError::DownloadSubmitAmbiguous(_)) {
+                if err.is_download_submit_ambiguous() {
                     if let Some(url) = source_hint.as_deref() {
                         grabbed_urls.insert(url.to_string());
                     }
@@ -2465,6 +2505,38 @@ async fn process_single_target(
                         candidate.indexer_id.as_deref(),
                     )
                     .await;
+
+                    if let Some((client_id, client_type)) =
+                        err.ambiguous_download_submission_client()
+                    {
+                        let submission_scope =
+                            direct_download_submission_scope_for_wanted_item(item, episode.as_ref());
+                        if let Err(error) = app
+                            .services
+                            .workflow
+                            .download_submissions
+                            .record_ambiguous_submission(DownloadSubmission {
+                                download_id,
+                                title_id: title.id.clone(),
+                                facet: title.facet.as_str().to_string(),
+                                download_client_id: client_id.map(str::to_string),
+                                download_client_type: client_type.to_string(),
+                                download_client_item_id: String::new(),
+                                source_hint: None,
+                                source_provider_id: candidate.indexer_id.clone(),
+                                source_provider_name: Some(candidate.source.clone()),
+                                source_kind: None,
+                                source_title: source_title.clone(),
+                                release_size_bytes: candidate.size_bytes,
+                                request_signature: request_signature.clone(),
+                                purpose: crate::DownloadSubmissionPurpose::Standard,
+                                scope: submission_scope,
+                            })
+                            .await
+                        {
+                            warn!(error = %error, "ambiguous download submission persistence failed");
+                        }
+                    }
 
                     return Ok(());
                 }
@@ -3034,6 +3106,7 @@ mod task_runner_tests {
 
     fn episode_submission(title_id: &str, episode_id: &str, job_id: &str) -> DownloadSubmission {
         DownloadSubmission {
+    download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             purpose: DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
