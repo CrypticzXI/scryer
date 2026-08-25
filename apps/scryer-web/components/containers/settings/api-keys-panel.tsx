@@ -43,6 +43,13 @@ export function ApiKeysPanel() {
       .query<MyApiKeysQueryResult>(myApiKeysQuery, {}, { requestPolicy: "network-only" })
       .toPromise();
     if (result.error || !result.data) {
+      if (errorMessage(result.error, "").includes("interactive session is required")) {
+        setKeys([]);
+        setCanCreate(false);
+        setLoaded(true);
+        setStatus("Sign in to manage API keys.");
+        return;
+      }
       setStatus(errorMessage(result.error, "Unable to load API keys."));
       return;
     }

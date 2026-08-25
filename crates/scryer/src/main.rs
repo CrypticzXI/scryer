@@ -128,6 +128,7 @@ include!(concat!(env!("OUT_DIR"), "/smg_build_assets.rs"));
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LEGACY_NZBGEEK_PLUGIN_ID: &str = "nzbgeek";
 const RECOVERY_ADMIN_PASSWORD_ENV: &str = "SCRYER_RECOVERY_ADMIN_PASSWORD";
+const DEVELOPMENT_MODE_ENV: &str = "SCRYER_DEVELOPMENT_MODE";
 const ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV: &str = "SCRYER_ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS";
 const LOG_FILE_ENV: &str = "SCRYER_LOG_FILE";
 const LOG_FORMAT_ENV: &str = "SCRYER_LOG_FORMAT";
@@ -717,6 +718,10 @@ async fn main() {
     let jwt_issuer = std::env::var("SCRYER_JWT_ISSUER").unwrap_or_else(|_| "scryer".to_string());
     let jwt_access_ttl_seconds = parse_env_u64("SCRYER_JWT_ACCESS_TTL_SECONDS", 86_400);
     let bind = std::env::var("SCRYER_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let development_mode = resolve_development_mode_from_env().unwrap_or_else(|error| {
+        eprintln!("invalid {DEVELOPMENT_MODE_ENV}: {error}");
+        std::process::exit(1);
+    });
     let base_path = BasePath::from_env();
 
     // Install Prometheus metrics recorder when enabled.
@@ -777,6 +782,7 @@ async fn main() {
     // Spawn the full application bootstrap in the background.
     let bootstrap_shutdown = shutdown_token.clone();
     let bootstrap_bind = bind.clone();
+    let bootstrap_development_mode = development_mode;
     let runtime_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("scryer-bootstrap".to_string())
@@ -789,6 +795,7 @@ async fn main() {
                     jwt_issuer,
                     jwt_access_ttl_seconds,
                     bootstrap_bind,
+                    bootstrap_development_mode,
                     cors,
                     bootstrap_shutdown,
                     log_ring_buffer,
@@ -880,7 +887,8 @@ async fn bootstrap_application(
     finalized_pending_restore: bool,
     jwt_issuer: String,
     jwt_access_ttl_seconds: u64,
-    _bind: String,
+    bind: String,
+    development_mode: bool,
     cors: CorsConfig,
     shutdown_token: CancellationToken,
     log_ring_buffer: log_buffer::LogRingBuffer,
@@ -1639,6 +1647,15 @@ async fn bootstrap_application(
     validate_unauthenticated_public_access_allowlist_config(
         authless_access_allowlist_env_configured,
         authless_access_allowlist.is_configured(),
+    )
+    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+    validate_authless_runtime_config(
+        !cfg!(debug_assertions),
+        development_mode,
+        &bind,
+        auth_runtime.snapshot().effective_form_login_enabled,
+        &auth_mode,
+        authless_access_allowlist_env_configured,
     )
     .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
     if auth_mode.used_legacy_dev_auto_login {
@@ -2467,6 +2484,79 @@ fn validate_unauthenticated_public_access_allowlist_config(
     Ok(())
 }
 
+fn resolve_development_mode_from_env() -> Result<bool, String> {
+    resolve_development_mode(
+        normalize_env_option(DEVELOPMENT_MODE_ENV).as_deref(),
+        !cfg!(debug_assertions),
+    )
+}
+
+fn resolve_development_mode(raw: Option<&str>, release_build: bool) -> Result<bool, String> {
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let enabled = parse_env_bool_value(raw)
+        .ok_or_else(|| format!("expected a boolean value, received {:?}", raw.trim()))?;
+    if enabled && release_build {
+        return Err("development mode is unavailable in release builds".to_string());
+    }
+    Ok(enabled)
+}
+
+fn validate_authless_runtime_config(
+    release_build: bool,
+    development_mode: bool,
+    bind: &str,
+    effective_form_login_enabled: bool,
+    auth_mode: &AuthModeConfig,
+    allowlist_env_configured: bool,
+) -> Result<(), String> {
+    if release_build {
+        if auth_mode.used_legacy_dev_auto_login {
+            return Err(
+                "SCRYER_DEV_AUTO_LOGIN is unavailable in release builds; use authenticated sessions"
+                    .to_string(),
+            );
+        }
+        if auth_mode.allow_unauthenticated_public_access {
+            return Err(format!(
+                "{ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV}=true is unavailable in release builds"
+            ));
+        }
+        if allowlist_env_configured {
+            return Err(format!(
+                "{UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV} is unavailable in release builds"
+            ));
+        }
+        if development_mode {
+            return Err("development mode is unavailable in release builds".to_string());
+        }
+        if !effective_form_login_enabled {
+            let addr = bind
+                .parse::<SocketAddr>()
+                .map_err(|_| format!("invalid {bind:?} bind address"))?;
+            if !addr.ip().is_loopback() {
+                return Err(
+                    "release authless access requires SCRYER_BIND to use a loopback address"
+                        .to_string(),
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    if !development_mode
+        && (auth_mode.used_legacy_dev_auto_login
+            || auth_mode.allow_unauthenticated_public_access
+            || allowlist_env_configured)
+    {
+        return Err(format!(
+            "{DEVELOPMENT_MODE_ENV}=true is required for development authless access overrides"
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_auth_mode(
     auth_enabled_raw: Option<&str>,
     legacy_dev_auto_login_raw: Option<&str>,
@@ -3144,8 +3234,9 @@ mod tests {
         UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, bootstrap_plugin_installations,
         collect_runtime_plugin_load_candidates, comma_separated_env_has_entries, extract_data_dir,
         extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
-        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config, resolve_log_format,
-        resolve_wasmtime_cache_dir, restart_spec_from_parts, title_image_handler,
+        load_runtime_plugin_state, resolve_auth_mode, resolve_development_mode,
+        resolve_log_file_config, resolve_log_format, resolve_wasmtime_cache_dir,
+        restart_spec_from_parts, title_image_handler, validate_authless_runtime_config,
         validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
@@ -3976,6 +4067,46 @@ mod tests {
     fn unauthenticated_public_access_allowlist_accepts_unset_allowlist() {
         validate_unauthenticated_public_access_allowlist_config(false, false)
             .expect("unset allowlist keeps broad public access override");
+    }
+
+    #[test]
+    fn development_mode_is_rejected_in_release_builds() {
+        assert!(resolve_development_mode(Some("true"), false).expect("debug mode"));
+        let error = resolve_development_mode(Some("true"), true)
+            .expect_err("release builds must reject development mode");
+        assert!(error.contains("unavailable in release builds"));
+    }
+
+    #[test]
+    fn release_authless_access_requires_loopback_bind() {
+        let auth_mode = resolve_auth_mode(Some("false"), None, None, None).expect("auth mode");
+
+        validate_authless_runtime_config(true, false, "127.0.0.1:8080", false, &auth_mode, false)
+            .expect("loopback authless release configuration");
+
+        let error =
+            validate_authless_runtime_config(true, false, "0.0.0.0:8080", false, &auth_mode, false)
+                .expect_err("public bind must be rejected for release authless access");
+        assert!(error.contains("loopback"));
+    }
+
+    #[test]
+    fn public_authless_overrides_require_explicit_development_mode() {
+        let auth_mode = resolve_auth_mode(None, None, None, Some("true")).expect("auth mode");
+
+        let error = validate_authless_runtime_config(
+            false,
+            false,
+            "0.0.0.0:8080",
+            false,
+            &auth_mode,
+            false,
+        )
+        .expect_err("public override without development mode");
+        assert!(error.contains("SCRYER_DEVELOPMENT_MODE=true"));
+
+        validate_authless_runtime_config(false, true, "0.0.0.0:8080", false, &auth_mode, false)
+            .expect("explicit development mode allows the override");
     }
 
     #[test]
