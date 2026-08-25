@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub const APPLICATION_UPGRADE_HELPER_PLAN_SCHEMA: &str = "scryer.upgrade.helper-plan.v1";
+
+/// Total budget the helper may spend waiting for the previous process tree to
+/// exit and for the installed executables to be released.
+pub const APPLICATION_UPGRADE_HELPER_WAIT_BUDGET: Duration = Duration::from_secs(60);
 
 /// Durable instructions consumed by the temporary Windows upgrade helper.
 ///
@@ -21,6 +26,11 @@ pub struct ApplicationUpgradeHelperPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msi_path: Option<PathBuf>,
     pub install_dir: PathBuf,
+    /// Process ids the helper must observe exiting before it touches the
+    /// installation. An empty list is legal: older plans predate this field and
+    /// fall back to the file-release probe alone.
+    #[serde(default)]
+    pub wait_process_ids: Vec<u32>,
     #[serde(default)]
     pub replace: Vec<ApplicationUpgradeHelperReplacement>,
     pub backup_suffix: String,
@@ -217,6 +227,78 @@ pub fn msi_exit_code_transition(code: u32) -> MsiHelperJournalTransition {
     }
 }
 
+/// Whether an installer exit code represents a successful installation.
+pub fn msi_install_succeeded(code: u32) -> bool {
+    matches!(code, 0 | 3010)
+}
+
+/// Whether the helper must re-register the per-user tray Run value.
+///
+/// Shipped MSIs still carry an unconditional unregister custom action, so a
+/// major upgrade performed by them silently drops a user's "start at login"
+/// preference. The helper restores it only when it was set before the install,
+/// the install succeeded, and the value is gone afterwards.
+pub fn should_restore_tray_startup(
+    was_registered: bool,
+    still_registered: bool,
+    install_succeeded: bool,
+) -> bool {
+    was_registered && !still_registered && install_succeeded
+}
+
+/// Whether the helper must probe installed executables for write access.
+///
+/// `msiexec` owns in-use file semantics for MSI installs, so probing there only
+/// produces false negatives; the process wait is the gate instead.
+pub fn helper_write_probe_required(mode: ApplicationUpgradeHelperMode) -> bool {
+    match mode {
+        ApplicationUpgradeHelperMode::PortableZip => true,
+        ApplicationUpgradeHelperMode::Msi => false,
+    }
+}
+
+/// Verdict for a single failed write probe against an installed executable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteProbeOutcome {
+    /// The file is being shared by a process that is still exiting; retry.
+    Retry,
+    /// The helper will never be allowed to write this file; fail immediately.
+    Fatal(&'static str),
+}
+
+/// Message reported when the helper lacks write permission on the installation.
+pub const WRITE_PROBE_PERMISSION_DENIED: &str = "no write permission for installed executables";
+
+/// Classify a failed write probe so a permanent denial is not retried for a minute.
+///
+/// Windows surfaces a sharing violation (os error 32) as an error kind that is
+/// not `PermissionDenied`, while `ERROR_ACCESS_DENIED` (os error 5) maps to
+/// `PermissionDenied`. Only the former is worth retrying.
+pub fn classify_write_probe_error(
+    kind: std::io::ErrorKind,
+    raw_os_error: Option<i32>,
+) -> WriteProbeOutcome {
+    if kind == std::io::ErrorKind::PermissionDenied || raw_os_error == Some(5) {
+        return WriteProbeOutcome::Fatal(WRITE_PROBE_PERMISSION_DENIED);
+    }
+    WriteProbeOutcome::Retry
+}
+
+/// Whether a failure to open a process handle means that process already exited.
+///
+/// `ERROR_INVALID_PARAMETER` is returned for a process id that no longer exists;
+/// `ERROR_ACCESS_DENIED` is returned when the id has been recycled into a
+/// process this helper may not touch. Neither can be waited on, and in both
+/// cases the process the plan named is gone.
+pub fn open_process_failure_means_exited(win32_error: u32) -> bool {
+    matches!(win32_error, 5 | 87)
+}
+
+/// Remaining slice of the helper wait budget, or `None` once it is exhausted.
+pub fn helper_wait_remaining(elapsed: Duration, budget: Duration) -> Option<Duration> {
+    budget.checked_sub(elapsed).filter(|left| !left.is_zero())
+}
+
 /// Whether a reboot-required journal can be completed on this boot.
 pub fn reboot_required_completion_allowed(
     written_at: Option<DateTime<Utc>>,
@@ -251,6 +333,7 @@ mod tests {
             )),
             msi_path: None,
             install_dir: PathBuf::from("C:/Program Files/Scryer"),
+            wait_process_ids: vec![4242],
             replace: vec![
                 ApplicationUpgradeHelperReplacement {
                     from_staged: PathBuf::from(
@@ -318,6 +401,97 @@ mod tests {
         let value = serde_json::to_value(plan).expect("encode MSI plan");
         assert!(value.get("staged_dir").is_none());
         assert!(value.get("msi_path").is_some());
+    }
+
+    #[test]
+    fn helper_plan_without_wait_process_ids_still_parses_and_validates() {
+        let plan = portable_plan();
+        let mut value = serde_json::to_value(&plan).expect("encode plan");
+        value
+            .as_object_mut()
+            .expect("plan object")
+            .remove("wait_process_ids");
+        let decoded: ApplicationUpgradeHelperPlan =
+            serde_json::from_value(value).expect("decode legacy plan");
+        assert!(decoded.wait_process_ids.is_empty());
+        decoded.validate().expect("legacy plan stays valid");
+    }
+
+    #[test]
+    fn write_probe_is_required_only_for_portable_replacements() {
+        assert!(helper_write_probe_required(
+            ApplicationUpgradeHelperMode::PortableZip
+        ));
+        assert!(!helper_write_probe_required(
+            ApplicationUpgradeHelperMode::Msi
+        ));
+    }
+
+    #[test]
+    fn access_denied_write_probes_are_fatal_while_sharing_violations_retry() {
+        assert_eq!(
+            classify_write_probe_error(std::io::ErrorKind::PermissionDenied, Some(5)),
+            WriteProbeOutcome::Fatal(WRITE_PROBE_PERMISSION_DENIED)
+        );
+        // Windows reports a sharing violation (os error 32) through a kind that
+        // is not PermissionDenied; that is the only case worth retrying.
+        assert_eq!(
+            classify_write_probe_error(std::io::ErrorKind::Other, Some(32)),
+            WriteProbeOutcome::Retry
+        );
+        assert_eq!(
+            classify_write_probe_error(std::io::ErrorKind::NotFound, Some(2)),
+            WriteProbeOutcome::Retry
+        );
+        // A permission denial without a raw os error is still fatal.
+        assert_eq!(
+            classify_write_probe_error(std::io::ErrorKind::PermissionDenied, None),
+            WriteProbeOutcome::Fatal(WRITE_PROBE_PERMISSION_DENIED)
+        );
+    }
+
+    #[test]
+    fn unopenable_process_ids_count_as_exited_only_for_gone_processes() {
+        assert!(open_process_failure_means_exited(87));
+        assert!(open_process_failure_means_exited(5));
+        assert!(!open_process_failure_means_exited(8));
+    }
+
+    #[test]
+    fn helper_wait_budget_runs_out_exactly_once() {
+        assert_eq!(
+            helper_wait_remaining(
+                Duration::from_secs(10),
+                APPLICATION_UPGRADE_HELPER_WAIT_BUDGET
+            ),
+            Some(Duration::from_secs(50))
+        );
+        assert_eq!(
+            helper_wait_remaining(
+                APPLICATION_UPGRADE_HELPER_WAIT_BUDGET,
+                APPLICATION_UPGRADE_HELPER_WAIT_BUDGET
+            ),
+            None
+        );
+        assert_eq!(
+            helper_wait_remaining(
+                Duration::from_secs(61),
+                APPLICATION_UPGRADE_HELPER_WAIT_BUDGET
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tray_startup_is_restored_only_after_a_successful_install_erased_it() {
+        assert!(msi_install_succeeded(0));
+        assert!(msi_install_succeeded(3010));
+        assert!(!msi_install_succeeded(1603));
+
+        assert!(should_restore_tray_startup(true, false, true));
+        assert!(!should_restore_tray_startup(false, false, true));
+        assert!(!should_restore_tray_startup(true, true, true));
+        assert!(!should_restore_tray_startup(true, false, false));
     }
 
     #[test]

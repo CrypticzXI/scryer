@@ -198,9 +198,14 @@ fn is_homebrew_layout(evidence: &InstallationEvidence) -> bool {
 
     evidence.executable_path.as_ref().is_some_and(|path| {
         let path = path.to_string_lossy();
+        // `/usr/local/opt` is the Intel-macOS keg link root and
+        // `/home/linuxbrew/.linuxbrew` is the Linuxbrew prefix; both reach the
+        // Cellar through symlinks that a canonicalized path may not show.
         path.contains("/Cellar/")
             || path.starts_with("/opt/homebrew/")
             || path.starts_with("/usr/local/Cellar/")
+            || path.starts_with("/usr/local/opt/")
+            || path.starts_with("/home/linuxbrew/.linuxbrew/")
     })
 }
 
@@ -408,6 +413,45 @@ mod tests {
         assert_eq!(
             classify_installation(&homebrew_before_session_zero).kind,
             InstallationKind::Homebrew
+        );
+    }
+
+    #[test]
+    fn detects_every_homebrew_prefix_layout() {
+        for path in [
+            "/opt/homebrew/Cellar/scryer/0.18.22/bin/scryer",
+            "/opt/homebrew/bin/scryer",
+            "/usr/local/Cellar/scryer/0.18.22/bin/scryer",
+            "/usr/local/opt/scryer/bin/scryer",
+            "/home/linuxbrew/.linuxbrew/bin/scryer",
+            "/home/linuxbrew/.linuxbrew/Cellar/scryer/0.18.22/bin/scryer",
+        ] {
+            let mut evidence = evidence();
+            evidence.executable_path = Some(PathBuf::from(path));
+            assert_eq!(
+                classify_installation(&evidence).kind,
+                InstallationKind::Homebrew,
+                "{path} must classify as Homebrew"
+            );
+        }
+
+        for path in ["/opt/scryer/scryer", "/usr/local/bin/scryer"] {
+            let mut evidence = evidence();
+            evidence.executable_path = Some(PathBuf::from(path));
+            assert_eq!(
+                classify_installation(&evidence).kind,
+                InstallationKind::Portable,
+                "{path} must not classify as Homebrew"
+            );
+        }
+
+        // Windows paths never take the Homebrew branch.
+        let mut windows = evidence();
+        windows.os = InstallationOs::Windows;
+        windows.executable_path = Some(PathBuf::from("C:/usr/local/opt/scryer/scryer.exe"));
+        assert_eq!(
+            classify_installation(&windows).kind,
+            InstallationKind::Portable
         );
     }
 

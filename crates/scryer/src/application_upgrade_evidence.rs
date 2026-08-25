@@ -1,11 +1,8 @@
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(windows)]
-use std::path::PathBuf;
 
 use scryer_application::application_upgrade::{
     InstallationAssessment, InstallationEvidence, InstallationOs, classify_installation,
@@ -16,7 +13,7 @@ const SCRYER_REGISTRY_KEY: &str = "Software\\Scryer Media\\Scryer";
 static WRITABILITY_PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn collect_installation_assessment() -> InstallationAssessment {
-    let executable_path = env::current_exe().ok();
+    let executable_path = env::current_exe().ok().map(canonical_executable_path);
     let (windows_distribution_owner, windows_legacy_msi_registry_key_exists) =
         windows_registry_evidence();
 
@@ -38,6 +35,17 @@ pub fn collect_installation_assessment() -> InstallationAssessment {
     };
 
     classify_installation(&evidence)
+}
+
+/// Resolve the executable through symlinks, keeping the raw path if it cannot.
+///
+/// Package managers install behind symlink farms: Homebrew links
+/// `/usr/local/opt/scryer/bin/scryer` and `/home/linuxbrew/.linuxbrew/bin/scryer`
+/// into a Cellar, and only the resolved path shows the layout. Both the
+/// classifier and the recorded evidence use the same resolved path so later
+/// comparisons against the running executable cannot disagree.
+fn canonical_executable_path(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn current_os() -> InstallationOs {
@@ -201,4 +209,34 @@ fn executable_under_program_files(executable_path: Option<&Path>) -> bool {
 #[cfg(not(windows))]
 fn executable_under_program_files(_executable_path: Option<&Path>) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalization_falls_back_to_the_raw_path() {
+        let missing = PathBuf::from("/this/path/does/not/exist/scryer");
+        assert_eq!(canonical_executable_path(missing.clone()), missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalization_resolves_a_symlinked_executable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real_dir = temp.path().join("Cellar/scryer/0.18.22/bin");
+        fs::create_dir_all(&real_dir).expect("create cellar directory");
+        let real_path = real_dir.join("scryer");
+        fs::write(&real_path, b"binary").expect("write executable");
+        let link_dir = temp.path().join("opt/scryer/bin");
+        fs::create_dir_all(&link_dir).expect("create link directory");
+        let link_path = link_dir.join("scryer");
+        std::os::unix::fs::symlink(&real_path, &link_path).expect("link executable");
+
+        assert_eq!(
+            canonical_executable_path(link_path),
+            fs::canonicalize(&real_path).expect("canonical real path")
+        );
+    }
 }

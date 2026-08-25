@@ -2,7 +2,10 @@ use std::path::Path;
 
 #[cfg(windows)]
 use scryer_application::application_upgrade::{
-    ApplicationUpgradeHelperMode, ApplicationUpgradeHelperOwner,
+    APPLICATION_UPGRADE_HELPER_WAIT_BUDGET, ApplicationUpgradeHelperMode,
+    ApplicationUpgradeHelperOwner, WriteProbeOutcome, classify_write_probe_error,
+    helper_wait_remaining, helper_write_probe_required, msi_install_succeeded,
+    open_process_failure_means_exited, should_restore_tray_startup,
 };
 use scryer_application::application_upgrade::{
     ApplicationUpgradeHelperPlan, MsiHelperJournalTransition, msi_exit_code_transition,
@@ -57,7 +60,14 @@ fn msi_launch_error_transition(win32_error: u32) -> MsiHelperJournalTransition {
 fn run_windows_helper(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> {
     let outcome = (|| {
         stop_owner(plan)?;
-        wait_for_file_release(&installed_executables(plan))?;
+        let started = std::time::Instant::now();
+        wait_for_process_exit(&plan.wait_process_ids, started)?;
+        // msiexec owns in-use file semantics for MSI installs; probing there in
+        // an unelevated helper only ever reports ERROR_ACCESS_DENIED against
+        // Program Files and would burn the whole budget before the UAC prompt.
+        if helper_write_probe_required(plan.mode) {
+            wait_for_file_release(&installed_executables(plan), started)?;
+        }
         match plan.mode {
             ApplicationUpgradeHelperMode::PortableZip => apply_portable_replacements(plan),
             ApplicationUpgradeHelperMode::Msi => run_msi_installer(plan),
@@ -101,37 +111,105 @@ fn stop_owner(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> {
 
 #[cfg(windows)]
 fn installed_executables(plan: &ApplicationUpgradeHelperPlan) -> Vec<std::path::PathBuf> {
-    match plan.mode {
-        ApplicationUpgradeHelperMode::PortableZip => plan
-            .replace
-            .iter()
-            .map(|replacement| replacement.to_install.clone())
-            .collect(),
-        ApplicationUpgradeHelperMode::Msi => vec![
-            plan.install_dir.join("scryer.exe"),
-            plan.install_dir.join("scryer-tray.exe"),
-        ],
-    }
+    plan.replace
+        .iter()
+        .map(|replacement| replacement.to_install.clone())
+        .collect()
 }
 
+/// Wait for every process the plan named to exit, within the shared budget.
+///
+/// This is the real gate: once the backend (and, for tray-owned plans, the tray
+/// it supervises) is gone, the installation is free for either msiexec or the
+/// portable replacement to touch.
 #[cfg(windows)]
-fn wait_for_file_release(paths: &[std::path::PathBuf]) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let handles = paths
-            .iter()
-            .map(|path| {
-                std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(path)
-            })
-            .collect::<Result<Vec<_>, _>>();
-        if handles.is_ok() {
-            return Ok(());
+fn wait_for_process_exit(process_ids: &[u32], started: std::time::Instant) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    for process_id in process_ids {
+        let Some(remaining) =
+            helper_wait_remaining(started.elapsed(), APPLICATION_UPGRADE_HELPER_WAIT_BUDGET)
+        else {
+            return Err(format!(
+                "timed out waiting for process {process_id} to exit before upgrading"
+            ));
+        };
+        // SAFETY: OpenProcess takes plain integers and returns either a handle
+        // this function owns or null.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, *process_id) };
+        if handle.is_null() {
+            // SAFETY: GetLastError reads the thread-local error set by OpenProcess.
+            let error = unsafe { GetLastError() };
+            if open_process_failure_means_exited(error) {
+                continue;
+            }
+            return Err(format!(
+                "failed to wait for process {process_id} (win32 error {error})"
+            ));
         }
-        if std::time::Instant::now() >= deadline {
-            return Err("timed out waiting for installed executables to be released".to_string());
+        let milliseconds = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: The handle was returned by OpenProcess and is closed below.
+        let status = unsafe { WaitForSingleObject(handle, milliseconds) };
+        // SAFETY: This function owns the handle returned by OpenProcess.
+        unsafe { CloseHandle(handle) };
+        if status == WAIT_TIMEOUT {
+            return Err(format!(
+                "timed out waiting for process {process_id} to exit before upgrading"
+            ));
+        }
+        if status != WAIT_OBJECT_0 {
+            // SAFETY: GetLastError reads the thread-local error set by the wait.
+            let error = unsafe { GetLastError() };
+            return Err(format!(
+                "failed to wait for process {process_id} (wait status {status}, win32 error {error})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Confirm the installed executables can be written before replacing them.
+///
+/// A sharing violation means a process is still letting go and is worth
+/// retrying; a permission denial never resolves on its own, so it fails fast
+/// with a message an operator can act on.
+#[cfg(windows)]
+fn wait_for_file_release(
+    paths: &[std::path::PathBuf],
+    started: std::time::Instant,
+) -> Result<(), String> {
+    loop {
+        let mut blocked = None;
+        for path in paths {
+            if let Err(error) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+            {
+                match classify_write_probe_error(error.kind(), error.raw_os_error()) {
+                    WriteProbeOutcome::Fatal(message) => {
+                        return Err(format!("{message}: {}", path.display()));
+                    }
+                    WriteProbeOutcome::Retry => {
+                        blocked = Some(path.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        let Some(blocked) = blocked else {
+            return Ok(());
+        };
+        if helper_wait_remaining(started.elapsed(), APPLICATION_UPGRADE_HELPER_WAIT_BUDGET)
+            .is_none()
+        {
+            return Err(format!(
+                "timed out waiting for installed executables to be released: {}",
+                blocked.display()
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
@@ -200,6 +278,10 @@ fn run_msi_installer(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> 
         .msi_path
         .as_ref()
         .ok_or_else(|| "MSI helper plan has no installer path".to_string())?;
+    // Shipped MSIs unregister the per-user tray Run value on every removal,
+    // including the removal half of a major upgrade, so the preference has to be
+    // observed before the installer runs and restored after it.
+    let startup_was_registered = crate::windows_startup::startup_enabled().unwrap_or(false);
     let verb = wide("runas");
     let program = wide("msiexec.exe");
     let parameters = wide(&format!(
@@ -234,7 +316,33 @@ fn run_msi_installer(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String> 
     if exit_status == 0 {
         return Err("failed to read MSI installer exit code".to_string());
     }
+    restore_tray_startup_after_install(plan, startup_was_registered, exit_code);
     write_msi_transition(plan, msi_exit_code_transition(exit_code))
+}
+
+/// Re-register the per-user tray Run value when the installer dropped it.
+///
+/// Failures here are reported but never fail the upgrade: the application is
+/// installed and running, only the "start at login" preference is at stake.
+#[cfg(windows)]
+fn restore_tray_startup_after_install(
+    plan: &ApplicationUpgradeHelperPlan,
+    startup_was_registered: bool,
+    exit_code: u32,
+) {
+    let install_succeeded = msi_install_succeeded(exit_code);
+    let still_registered = if install_succeeded && startup_was_registered {
+        crate::windows_startup::startup_enabled().unwrap_or(true)
+    } else {
+        true
+    };
+    if !should_restore_tray_startup(startup_was_registered, still_registered, install_succeeded) {
+        return;
+    }
+    let tray_path = plan.install_dir.join("scryer-tray.exe");
+    if let Err(error) = crate::windows_startup::register_startup(&tray_path) {
+        eprintln!("failed to restore the Scryer tray startup entry after upgrading: {error}");
+    }
 }
 
 #[cfg(windows)]

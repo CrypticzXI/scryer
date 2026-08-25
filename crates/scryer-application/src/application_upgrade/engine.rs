@@ -100,8 +100,12 @@ pub struct ApplicationUpgradeJournal {
     pub written_at: Option<DateTime<Utc>>,
 }
 
+/// Executable and backup locations for a portable promotion.
+///
+/// These are resolved before anything is moved so the durable journal can be
+/// written ahead of the promotion it describes.
 #[derive(Clone, Debug)]
-struct AppliedPortableUpgrade {
+struct PortableUpgradePaths {
     executable_path: PathBuf,
     backup_path: PathBuf,
 }
@@ -115,6 +119,8 @@ struct WindowsUpgradeHandoffInput<'a> {
     tray_supervised: bool,
     executable_path: &'a Path,
     install_dir: &'a Path,
+    /// Process id of the backend the helper must outlive before it replaces files.
+    backend_process_id: u32,
     artifact: Option<&'a UpgradeArtifact>,
     extracted_dir: Option<&'a Path>,
     msi_path: Option<&'a Path>,
@@ -413,10 +419,7 @@ impl AppUseCase {
         .await?;
         let staging_dir = self.application_upgrade_staging_dir();
         recreate_staging_dir(&staging_dir)?;
-        (dependencies.ensure_available_space)(
-            &staging_dir,
-            artifact.size.saturating_add(UPGRADE_STAGING_RESERVE_BYTES),
-        )?;
+        (dependencies.ensure_available_space)(&staging_dir, staging_space_requirement(&artifact))?;
         let download_path = staging_dir.join("artifact");
         download_artifact(
             self,
@@ -474,39 +477,71 @@ impl AppUseCase {
 
         #[cfg(not(windows))]
         {
-            let applied = apply_portable_upgrade(
-                &extracted_dir,
-                &artifact,
-                request,
-                SCRYER_VERSION,
-                dependencies.ensure_available_space,
-                dependencies.rename,
-            )?;
-
+            let paths = portable_upgrade_paths(request, SCRYER_VERSION)?;
+            let journal_path = self.application_upgrade_journal_path();
             let journal = ApplicationUpgradeJournal {
                 schema: JOURNAL_SCHEMA.to_string(),
                 run_id: run.id.clone(),
                 expected_version: request.expected_version.clone(),
                 expected_tag: request.expected_tag.clone(),
-                executable_path: applied.executable_path,
-                backup_path: applied.backup_path.clone(),
-                backup_paths: vec![applied.backup_path],
+                executable_path: paths.executable_path.clone(),
+                backup_path: paths.backup_path.clone(),
+                backup_paths: vec![paths.backup_path.clone()],
                 phase: phases::RESTARTING.to_string(),
                 helper_error: None,
                 written_at: Some(Utc::now()),
             };
-            write_journal(&self.application_upgrade_journal_path(), &journal)?;
-            self.update_application_upgrade_progress(
-                run,
-                ApplicationUpgradeProgress {
-                    phase: phases::RESTARTING.to_string(),
-                    downloaded_bytes: artifact.size,
-                    total_bytes: artifact.size,
-                    ..ApplicationUpgradeProgress::checking(request)
-                },
-            )
-            .await?;
-            let restart = self.application_upgrade_restart_handle()?;
+            // The journal has to be durable before the binary moves: a crash in
+            // between must never leave a promoted executable that the next boot
+            // has no record of.
+            write_journal(&journal_path, &journal)?;
+            if let Err(error) = apply_portable_upgrade(
+                &extracted_dir,
+                &artifact,
+                &paths,
+                &request.expected_version,
+                dependencies.ensure_available_space,
+                dependencies.rename,
+            ) {
+                if let Err(cleanup_error) = remove_file_if_exists(&journal_path) {
+                    tracing::warn!(
+                        error = %cleanup_error,
+                        "failed to remove the application upgrade journal after a failed promotion"
+                    );
+                }
+                return Err(error);
+            }
+
+            if let Err(error) = self
+                .update_application_upgrade_progress(
+                    run,
+                    ApplicationUpgradeProgress {
+                        phase: phases::RESTARTING.to_string(),
+                        downloaded_bytes: artifact.size,
+                        total_bytes: artifact.size,
+                        ..ApplicationUpgradeProgress::checking(request)
+                    },
+                )
+                .await
+            {
+                return Err(roll_back_portable_promotion(
+                    &paths,
+                    &journal_path,
+                    dependencies.rename,
+                    error,
+                ));
+            }
+            let restart = match self.application_upgrade_restart_handle() {
+                Ok(restart) => restart,
+                Err(error) => {
+                    return Err(roll_back_portable_promotion(
+                        &paths,
+                        &journal_path,
+                        dependencies.rename,
+                        error,
+                    ));
+                }
+            };
             restart.schedule_restart();
             Ok(())
         }
@@ -560,6 +595,7 @@ impl AppUseCase {
             tray_supervised: request.tray_supervised,
             executable_path: &executable_path,
             install_dir: &install_dir,
+            backend_process_id: std::process::id(),
             artifact: Some(artifact),
             extracted_dir: Some(extracted_dir),
             msi_path: Some(msi_path),
@@ -693,7 +729,11 @@ impl AppUseCase {
             AppError::Repository(format!("failed to resolve running executable: {error}"))
         })?;
         let expected_version_booted = SCRYER_VERSION == journal.expected_version;
-        let expected_executable_booted = current_executable == journal.executable_path;
+        // Startup evidence records the canonical executable path, so the journal
+        // comparison has to canonicalize too; otherwise a Homebrew or symlinked
+        // layout looks like a boot of the wrong binary.
+        let expected_executable_booted =
+            canonical_path(&current_executable) == canonical_path(&journal.executable_path);
         if journal.phase == phases::REBOOT_REQUIRED {
             if reboot_required_completion_allowed(
                 journal.written_at,
@@ -704,6 +744,21 @@ impl AppUseCase {
                 self.complete_journal_application_upgrade(&journal, &journal_path)
                     .await?;
                 return Ok(Vec::new());
+            }
+            // The run stays Running until the operator reboots. Rehydrate the
+            // in-memory tracker so single-flight admission still sees it and a
+            // second upgrade cannot start behind the pending one. A tracker
+            // failure must not swallow the exclusion, or startup reconciliation
+            // would fail the very run it is meant to preserve.
+            if let Err(error) = self
+                .rehydrate_application_upgrade_active_run(&journal.run_id)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    run_id = %journal.run_id,
+                    "failed to re-register the application upgrade run awaiting a reboot"
+                );
             }
             return Ok(vec![journal.run_id]);
         }
@@ -741,6 +796,26 @@ impl AppUseCase {
         )
         .await?;
         Ok(Vec::new())
+    }
+
+    /// Put a still-running upgrade run back into the in-memory job tracker.
+    ///
+    /// The tracker is rebuilt from scratch on every start, so a run that
+    /// survives a restart (an upgrade waiting for an operating-system reboot)
+    /// is invisible to `has_active_job` until it is re-registered here.
+    async fn rehydrate_application_upgrade_active_run(&self, run_id: &str) -> AppResult<()> {
+        let Some(record) = self.services.events.job_runs.get_job_run(run_id).await? else {
+            return Ok(());
+        };
+        if record.status.is_terminal() {
+            return Ok(());
+        }
+        self.runtime
+            .jobs
+            .job_run_tracker
+            .upsert_active_run(JobRun::from_record(&record, None))
+            .await;
+        Ok(())
     }
 
     async fn complete_journal_application_upgrade(
@@ -797,6 +872,17 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::NotFound(format!("application upgrade run {}", journal.run_id))
             })?;
+        // A run that already reached a terminal status was finalized by the
+        // pipeline itself; re-finalizing would rewrite its outcome. Recovery
+        // files are still cleaned up by the caller.
+        if run.status.is_terminal() {
+            tracing::info!(
+                run_id = %run.id,
+                status = %run.status.as_str(),
+                "skipping application upgrade journal finalization for an already finished run"
+            );
+            return Ok(());
+        }
         let mut progress = run
             .progress_json
             .as_deref()
@@ -1337,14 +1423,15 @@ fn set_extracted_permissions(_path: &Path, _mode: u32, _executable: bool) -> App
     Ok(())
 }
 
-fn apply_portable_upgrade(
-    extracted_dir: &Path,
-    artifact: &UpgradeArtifact,
+/// Resolve the executable and backup locations a portable promotion will use.
+///
+/// This performs every check that must precede the durable journal: the
+/// installation must be portable, the executable must be resolvable and live in
+/// a directory, and no earlier backup may be overwritten.
+fn portable_upgrade_paths(
     request: &ApplicationUpgradeJobRequest,
     current_version: &str,
-    ensure_available_space: UpgradeSpaceCheck,
-    rename: UpgradeRename,
-) -> AppResult<AppliedPortableUpgrade> {
+) -> AppResult<PortableUpgradePaths> {
     #[cfg(unix)]
     {
         if request.installation_kind != InstallationKind::Portable {
@@ -1359,21 +1446,11 @@ fn apply_portable_upgrade(
             .ok_or_else(|| {
                 AppError::Repository("failed to resolve the running executable path".to_string())
             })?;
-        let executable_dir = executable_path.parent().ok_or_else(|| {
-            AppError::Validation("running executable has no parent directory".to_string())
-        })?;
-        let new_binary = find_upgraded_executable(extracted_dir, artifact, &executable_path)?;
-        let new_binary_size = fs::metadata(&new_binary)
-            .map_err(|error| {
-                AppError::Repository(format!("failed to stat upgraded executable: {error}"))
-            })?
-            .len();
-        ensure_available_space(
-            executable_dir,
-            new_binary_size.saturating_add(UPGRADE_STAGING_RESERVE_BYTES),
-        )?;
-        let new_path =
-            executable_dir.join(format!(".scryer-upgrade-new-{}", request.expected_version));
+        if executable_path.parent().is_none() {
+            return Err(AppError::Validation(
+                "running executable has no parent directory".to_string(),
+            ));
+        }
         let backup_path = PathBuf::from(format!(
             "{}.pre-upgrade-{current_version}",
             executable_path.display()
@@ -1384,36 +1461,72 @@ fn apply_portable_upgrade(
                 backup_path.display()
             )));
         }
-        fs::copy(&new_binary, &new_path).map_err(|error| {
-            AppError::Repository(format!("failed to stage replacement executable: {error}"))
-        })?;
-        if let Err(error) = rename(&executable_path, &backup_path) {
-            let _ = fs::remove_file(&new_path);
-            return Err(AppError::Repository(format!(
-                "failed to retain current executable backup: {error}"
-            )));
-        }
-        if let Err(error) = rename(&new_path, &executable_path) {
-            let rollback_error = rename(&backup_path, &executable_path).err();
-            let detail = rollback_error.map_or_else(String::new, |rollback| {
-                format!("; rollback failed: {rollback}")
-            });
-            return Err(AppError::Repository(format!(
-                "failed to replace application executable: {error}{detail}"
-            )));
-        }
-        Ok(AppliedPortableUpgrade {
+        Ok(PortableUpgradePaths {
             executable_path,
             backup_path,
         })
     }
     #[cfg(not(unix))]
     {
+        let _ = (request, current_version);
+        Err(AppError::Validation(
+            "portable replacement is not available on this platform".to_string(),
+        ))
+    }
+}
+
+fn apply_portable_upgrade(
+    extracted_dir: &Path,
+    artifact: &UpgradeArtifact,
+    paths: &PortableUpgradePaths,
+    expected_version: &str,
+    ensure_available_space: UpgradeSpaceCheck,
+    rename: UpgradeRename,
+) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        let executable_dir = paths.executable_path.parent().ok_or_else(|| {
+            AppError::Validation("running executable has no parent directory".to_string())
+        })?;
+        let new_binary = find_upgraded_executable(extracted_dir, artifact, &paths.executable_path)?;
+        let new_binary_size = fs::metadata(&new_binary)
+            .map_err(|error| {
+                AppError::Repository(format!("failed to stat upgraded executable: {error}"))
+            })?
+            .len();
+        ensure_available_space(
+            executable_dir,
+            new_binary_size.saturating_add(UPGRADE_STAGING_RESERVE_BYTES),
+        )?;
+        let new_path = executable_dir.join(format!(".scryer-upgrade-new-{expected_version}"));
+        fs::copy(&new_binary, &new_path).map_err(|error| {
+            AppError::Repository(format!("failed to stage replacement executable: {error}"))
+        })?;
+        if let Err(error) = rename(&paths.executable_path, &paths.backup_path) {
+            let _ = fs::remove_file(&new_path);
+            return Err(AppError::Repository(format!(
+                "failed to retain current executable backup: {error}"
+            )));
+        }
+        if let Err(error) = rename(&new_path, &paths.executable_path) {
+            let rollback_error = rename(&paths.backup_path, &paths.executable_path).err();
+            let detail = rollback_error.map_or_else(String::new, |rollback| {
+                format!("; rollback failed: {rollback}")
+            });
+            let _ = fs::remove_file(&new_path);
+            return Err(AppError::Repository(format!(
+                "failed to replace application executable: {error}{detail}"
+            )));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
         let _ = (
             extracted_dir,
             artifact,
-            request,
-            current_version,
+            paths,
+            expected_version,
             ensure_available_space,
             rename,
         );
@@ -1421,6 +1534,34 @@ fn apply_portable_upgrade(
             "portable replacement is not available on this platform".to_string(),
         ))
     }
+}
+
+/// Undo a completed promotion after a later step failed.
+///
+/// The backup is moved back over the newly installed executable and the journal
+/// is removed, so the failed run leaves the installation exactly as it started.
+#[cfg(not(windows))]
+fn roll_back_portable_promotion(
+    paths: &PortableUpgradePaths,
+    journal_path: &Path,
+    rename: UpgradeRename,
+    error: AppError,
+) -> AppError {
+    let mut outcome = match rename(&paths.backup_path, &paths.executable_path) {
+        Ok(()) => "the previous executable was restored".to_string(),
+        Err(rollback_error) => format!(
+            "the previous executable could not be restored from '{}': {rollback_error}",
+            paths.backup_path.display()
+        ),
+    };
+    if let Err(cleanup_error) = remove_file_if_exists(journal_path) {
+        outcome.push_str(&format!(
+            "; the application upgrade journal could not be removed: {cleanup_error}"
+        ));
+    }
+    AppError::Repository(format!(
+        "application upgrade failed after the executable was replaced: {error}; {outcome}"
+    ))
 }
 
 #[cfg(unix)]
@@ -1553,6 +1694,7 @@ fn build_windows_upgrade_handoff(
         staged_dir,
         msi_path,
         install_dir: input.install_dir.to_path_buf(),
+        wait_process_ids: vec![input.backend_process_id],
         replace,
         backup_suffix,
         relaunch,
@@ -1674,6 +1816,21 @@ fn recreate_staging_dir(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Bytes the staging filesystem must hold: the downloaded artifact, everything
+/// it decompresses into, and the fixed working reserve.
+///
+/// MSI artifacts declare no members, so their admission is the artifact plus the
+/// reserve exactly as before.
+fn staging_space_requirement(artifact: &UpgradeArtifact) -> u64 {
+    artifact
+        .members
+        .iter()
+        .fold(artifact.size, |total, member| {
+            total.saturating_add(member.size)
+        })
+        .saturating_add(UPGRADE_STAGING_RESERVE_BYTES)
+}
+
 fn ensure_available_space(path: &Path, required_bytes: u64) -> AppResult<()> {
     let space = filesystem_space_raw(path).map_err(|error| {
         AppError::Repository(format!(
@@ -1740,6 +1897,15 @@ fn write_journal(path: &Path, journal: &ApplicationUpgradeJournal) -> AppResult<
             "failed to activate application upgrade journal: {error}"
         ))
     })
+}
+
+/// Resolve a path through symlinks, falling back to the path as given.
+///
+/// Startup evidence canonicalizes the running executable, so every comparison
+/// against it must resolve the same way or a symlinked install (Homebrew's
+/// `/usr/local/opt`, `/home/linuxbrew`) never matches itself.
+fn canonical_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn load_journal(path: &Path) -> AppResult<Option<ApplicationUpgradeJournal>> {
@@ -1948,6 +2114,7 @@ mod tests {
                 tray_supervised,
                 executable_path: &executable_path,
                 install_dir: &install_dir,
+                backend_process_id: 4242,
                 artifact: Some(&artifact),
                 extracted_dir: Some(&extracted_dir),
                 msi_path: Some(&msi_path),
@@ -1963,6 +2130,7 @@ mod tests {
             assert_eq!(handoff.journal.phase, phases::RESTARTING);
             assert_eq!(handoff.journal.written_at, Some(written_at));
             assert_eq!(handoff.plan.backup_suffix, ".pre-upgrade-98.0.0");
+            assert_eq!(handoff.plan.wait_process_ids, vec![4242]);
             assert_eq!(
                 handoff.journal.backup_path,
                 PathBuf::from("C:/Scryer/scryer.exe.pre-upgrade-98.0.0")
@@ -2199,7 +2367,12 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn injected_insufficient_space(_path: &Path, _required_bytes: u64) -> AppResult<()> {
+    static REQUESTED_STAGING_BYTES: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(unix)]
+    fn injected_insufficient_space(_path: &Path, required_bytes: u64) -> AppResult<()> {
+        REQUESTED_STAGING_BYTES.store(required_bytes, Ordering::SeqCst);
         Err(AppError::Validation(
             "insufficient free space for application upgrade: injected test limit".to_string(),
         ))
@@ -2451,6 +2624,44 @@ mod tests {
         );
         assert_eq!(run.status, JobRunStatus::Failed);
         assert!(!app.application_upgrade_staging_dir().exists());
+        // Staging admission must budget for the decompressed members as well as
+        // the compressed artifact.
+        let artifact = &manifest.artifacts[0];
+        assert_eq!(
+            REQUESTED_STAGING_BYTES.load(Ordering::SeqCst),
+            artifact.size + new_binary.len() as u64 + UPGRADE_STAGING_RESERVE_BYTES
+        );
+    }
+
+    #[test]
+    fn staging_admission_includes_every_decompressed_member() {
+        let mut artifact = portable_tar_artifact(10);
+        artifact.size = 7;
+        assert_eq!(
+            staging_space_requirement(&artifact),
+            7 + 10 + UPGRADE_STAGING_RESERVE_BYTES
+        );
+
+        artifact.members.push(UpgradeArtifactMember {
+            path: "scryer-tray".to_string(),
+            size: 5,
+            executable: true,
+        });
+        assert_eq!(
+            staging_space_requirement(&artifact),
+            7 + 10 + 5 + UPGRADE_STAGING_RESERVE_BYTES
+        );
+
+        // MSI artifacts declare no members, so their admission is unchanged.
+        artifact.members.clear();
+        assert_eq!(
+            staging_space_requirement(&artifact),
+            7 + UPGRADE_STAGING_RESERVE_BYTES
+        );
+
+        let mut saturating = portable_tar_artifact(u64::MAX);
+        saturating.size = u64::MAX;
+        assert_eq!(staging_space_requirement(&saturating), u64::MAX);
     }
 
     #[cfg(unix)]
@@ -2501,6 +2712,106 @@ mod tests {
             b"old executable"
         );
         assert!(!backup_path.exists(), "backup should have been rolled back");
+        assert!(
+            !app.application_upgrade_journal_path().exists(),
+            "a failed promotion must not leave its journal behind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipeline_rolls_the_promotion_back_when_a_post_promotion_step_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable_path = temp.path().join("bin/scryer");
+        fs::create_dir_all(executable_path.parent().expect("executable parent"))
+            .expect("create executable directory");
+        fs::write(&executable_path, b"old executable").expect("write old executable");
+        let new_binary = b"new executable";
+        let archive = tar_gz(&[("scryer", new_binary, 0o755)]);
+        let manifest = portable_manifest(&archive, vec![executable_member(new_binary)]);
+        let (_server, artifact_url) = artifact_server(archive).await;
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        // No restart handle is configured, so the step after promotion fails.
+        let request = test_request(executable_path.clone());
+        let mut run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let client = test_http_client();
+
+        let error = run_pipeline_and_finish_failure(
+            &app,
+            &mut run,
+            &request,
+            &manifest,
+            UpgradePipelineDependencies {
+                client: &client,
+                artifact_url_override: Some(&artifact_url),
+                ensure_available_space,
+                rename: rename_path,
+            },
+        )
+        .await;
+
+        let message = error.to_string();
+        assert!(
+            message.contains("restart controller is not configured"),
+            "error should name the original failure: {message}"
+        );
+        assert!(
+            message.contains("the previous executable was restored"),
+            "error should name the rollback outcome: {message}"
+        );
+        assert_eq!(run.status, JobRunStatus::Failed);
+        assert_eq!(
+            fs::read(&executable_path).expect("rolled-back executable"),
+            b"old executable"
+        );
+        let backup_path = PathBuf::from(format!(
+            "{}.pre-upgrade-{SCRYER_VERSION}",
+            executable_path.display()
+        ));
+        assert!(!backup_path.exists(), "backup should have been rolled back");
+        assert!(
+            !app.application_upgrade_journal_path().exists(),
+            "a rolled-back promotion must leave no journal"
+        );
+    }
+
+    #[test]
+    fn helper_journal_updates_replace_an_existing_journal_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("application-upgrade/journal.json");
+        let journal = ApplicationUpgradeJournal {
+            schema: JOURNAL_SCHEMA.to_string(),
+            run_id: "run-1".to_string(),
+            expected_version: "0.18.22".to_string(),
+            expected_tag: "v0.18.22".to_string(),
+            executable_path: PathBuf::from("C:/Scryer/scryer.exe"),
+            backup_path: PathBuf::from("C:/Scryer/scryer.exe.pre-upgrade-0.18.21"),
+            backup_paths: vec![PathBuf::from("C:/Scryer/scryer.exe.pre-upgrade-0.18.21")],
+            phase: phases::RESTARTING.to_string(),
+            helper_error: None,
+            written_at: Some(Utc::now()),
+        };
+        write_journal(&path, &journal).expect("write journal");
+
+        application_upgrade_helper_update_journal(
+            &path,
+            phases::REBOOT_REQUIRED,
+            Some("elevation was declined".to_string()),
+        )
+        .expect("update an existing journal in place");
+
+        let updated = load_journal(&path)
+            .expect("load updated journal")
+            .expect("journal exists");
+        assert_eq!(updated.phase, phases::REBOOT_REQUIRED);
+        assert_eq!(
+            updated.helper_error.as_deref(),
+            Some("elevation was declined")
+        );
+        assert_eq!(updated.run_id, journal.run_id);
+        assert_eq!(updated.written_at, journal.written_at);
     }
 
     #[tokio::test]
@@ -2814,5 +3125,142 @@ mod tests {
         );
         assert!(backup_path.exists());
         assert!(app.application_upgrade_journal_path().exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reboot_required_run_stays_single_flight_after_a_restart() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (app, actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let executable_path = std::env::current_exe().expect("current executable");
+        let request = test_request(executable_path.clone());
+        let run = test_run(&request);
+        job_runs.seed(run.clone()).await;
+        let backup_path = temp.path().join("scryer.pre-upgrade");
+        fs::write(&backup_path, b"backup").expect("write backup");
+        write_journal(
+            &app.application_upgrade_journal_path(),
+            &ApplicationUpgradeJournal {
+                schema: JOURNAL_SCHEMA.to_string(),
+                run_id: run.id.clone(),
+                expected_version: request.expected_version.clone(),
+                expected_tag: request.expected_tag.clone(),
+                executable_path,
+                backup_path: backup_path.clone(),
+                backup_paths: vec![backup_path],
+                phase: phases::REBOOT_REQUIRED.to_string(),
+                helper_error: None,
+                written_at: Some(Utc::now()),
+            },
+        )
+        .expect("write journal");
+
+        assert!(
+            !app.runtime
+                .jobs
+                .job_run_tracker
+                .has_active_job(JobKey::ApplicationUpgrade)
+                .await,
+            "a fresh process starts with an empty job tracker"
+        );
+        assert_eq!(
+            app.finalize_application_upgrade_journal()
+                .await
+                .expect("finalize reboot journal"),
+            vec![run.id.clone()]
+        );
+        assert!(
+            app.runtime
+                .jobs
+                .job_run_tracker
+                .has_active_job(JobKey::ApplicationUpgrade)
+                .await,
+            "the pending reboot run must be tracked as active again"
+        );
+        assert_eq!(
+            app.runtime
+                .jobs
+                .job_run_tracker
+                .active_run_for_job(JobKey::ApplicationUpgrade)
+                .await
+                .map(|tracked| tracked.id),
+            Some(run.id.clone())
+        );
+
+        app.upsert_system_setting_json(
+            "smg.scryer_update_notice",
+            &crate::SmgScryerUpdateNotice {
+                available: true,
+                current_version: SCRYER_VERSION.to_string(),
+                latest_version: request.expected_version.clone(),
+                latest_tag: request.expected_tag.clone(),
+                release_url: None,
+                published_at: None,
+                checked_at: Utc::now().to_rfc3339(),
+            },
+            None,
+        )
+        .await
+        .expect("seed update notice");
+
+        let error = app
+            .start_application_upgrade_job(&actor, test_request(temp.path().join("bin/scryer")))
+            .await
+            .expect_err("a second upgrade must be refused while one awaits reboot");
+        assert!(
+            error.to_string().contains("already running"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn journal_finalization_does_not_rewrite_an_already_finished_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (app, _actor, job_runs) =
+            crate::lib_tests::bootstrap_application_upgrade(temp.path().join("data"));
+        let request = test_request(temp.path().join("bin/scryer"));
+        let mut run = test_run(&request);
+        run.status = JobRunStatus::Completed;
+        run.summary_text = Some("Application upgrade completed".to_string());
+        run.completed_at = Some(Utc::now());
+        job_runs.seed(run.clone()).await;
+        write_journal(
+            &app.application_upgrade_journal_path(),
+            &ApplicationUpgradeJournal {
+                schema: JOURNAL_SCHEMA.to_string(),
+                run_id: run.id.clone(),
+                expected_version: request.expected_version.clone(),
+                expected_tag: request.expected_tag.clone(),
+                executable_path: request.executable_path.clone().expect("executable path"),
+                backup_path: temp.path().join("scryer.pre-upgrade"),
+                backup_paths: Vec::new(),
+                phase: phases::RESTARTING.to_string(),
+                helper_error: Some("elevation helper failed".to_string()),
+                written_at: Some(Utc::now()),
+            },
+        )
+        .expect("write journal");
+
+        app.finalize_application_upgrade_journal()
+            .await
+            .expect("finalize journal for a finished run");
+
+        let unchanged = job_runs
+            .get_job_run(&run.id)
+            .await
+            .expect("load run")
+            .expect("run exists");
+        assert_eq!(unchanged.status, JobRunStatus::Completed);
+        assert_eq!(unchanged.error_text, None);
+        assert_eq!(
+            unchanged.summary_text.as_deref(),
+            Some("Application upgrade completed")
+        );
+        assert!(
+            !app.application_upgrade_journal_path().exists(),
+            "recovery files are still cleaned up"
+        );
     }
 }
