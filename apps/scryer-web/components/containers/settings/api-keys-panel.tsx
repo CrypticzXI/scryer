@@ -47,7 +47,7 @@ export function ApiKeysPanel() {
         setKeys([]);
         setCanCreate(false);
         setLoaded(true);
-        setStatus("Sign in to manage API keys.");
+        setStatus(null);
         return;
       }
       setStatus(errorMessage(result.error, "Unable to load API keys."));
@@ -126,12 +126,7 @@ export function ApiKeysPanel() {
 
   return (
     <section className="mt-6 space-y-3 rounded border border-[var(--scry-border)] p-4">
-      <div>
-        <h2 className="text-lg font-semibold">API keys</h2>
-        <p className="text-sm text-[var(--scry-muted3)]">
-          Keys act as <code>api (&lt;name&gt;) obo &lt;you&gt;</code>, are HTTP-only, and cannot complete MFA step-up.
-        </p>
-      </div>
+      <h2 className="text-lg font-semibold">API keys</h2>
 
       {status ? <p role="alert" className="text-sm text-[var(--scry-muted2)]">{status}</p> : null}
 

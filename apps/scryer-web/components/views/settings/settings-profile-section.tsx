@@ -470,43 +470,38 @@ export function SettingsProfileSection({
         {showPasskeys ? (
           <div className={PROFILE_CARD_CLASS}>
           <div className="space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-1.5">
-                <h3 className={PROFILE_CARD_TITLE_CLASS}>
-                  {t("profile.passkeys")}
-                </h3>
-                <InfoHelp
-                  ariaLabel={t("profile.passkeys")}
-                  text={t("profile.passkeysDescription")}
-                />
-              </div>
-              {canAddPasskey ? (
-                <Button
-                  id={selectorId("settings-profile-add-passkey")}
-                  onClick={onAddPasskey}
-                  disabled={addingPasskey}
-                  className="w-fit"
-                >
-                  {addingPasskey ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  {addingPasskey
-                    ? t("profile.passkeyAdding")
-                    : t("profile.passkeyAdd")}
-                </Button>
-              ) : null}
+            <div className="flex items-center gap-1.5">
+              <h3 className={PROFILE_CARD_TITLE_CLASS}>
+                {t("profile.passkeys")}
+              </h3>
+              <InfoHelp
+                ariaLabel={t("profile.passkeys")}
+                text={t("profile.passkeysDescription")}
+              />
             </div>
+
+            {canAddPasskey ? (
+              <Button
+                id={selectorId("settings-profile-add-passkey")}
+                onClick={onAddPasskey}
+                disabled={addingPasskey}
+                className="w-fit"
+              >
+                {addingPasskey ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                {addingPasskey
+                  ? t("profile.passkeyAdding")
+                  : t("profile.passkeyAdd")}
+              </Button>
+            ) : null}
 
             {loadingPasskeys ? (
               <div className="flex items-center gap-2 text-sm text-[var(--scry-muted3)]">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>{t("label.loading")}</span>
               </div>
-            ) : passkeys.length === 0 ? (
-              <p className={PROFILE_MUTED_TEXT_CLASS}>
-                {t("profile.passkeysEmpty")}
-              </p>
-            ) : (
+            ) : passkeys.length > 0 ? (
               <div className="space-y-3">
                 {passkeys.map((passkey) => (
                   <div key={passkey.id} className={PROFILE_ROW_CARD_CLASS}>
@@ -542,7 +537,7 @@ export function SettingsProfileSection({
                   </div>
                 ))}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
         ) : null}
@@ -839,9 +834,6 @@ export function SettingsProfileSection({
             <h3 className={PROFILE_CARD_TITLE_CLASS}>
               {t("profile.linkedAccounts")}
             </h3>
-            <p className={PROFILE_MUTED_TEXT_CLASS}>
-              {t("profile.linkedAccountsDescription")}
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {loadingLinkOptions ? (
