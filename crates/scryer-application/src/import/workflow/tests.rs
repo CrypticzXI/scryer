@@ -1469,9 +1469,7 @@ mod tests {
 
     #[cfg(feature = "runtime-media-analysis")]
     #[tokio::test]
-    #[cfg(feature = "runtime-media-analysis")]
-    #[tokio::test]
-    async fn manual_import_content_probe_keeps_unsupported_extensions_and_rejects_malformed() {
+    async fn manual_import_content_probe_keeps_known_extension_parse_failures() {
         let source = tempfile::tempdir().expect("source tempdir");
         let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
         let stream_pointer = source.path().join("movie.strm");
@@ -1485,10 +1483,34 @@ mod tests {
 
         let malformed = source.path().join("broken.mkv");
         std::fs::write(&malformed, b"not a Matroska file").expect("write malformed fixture");
+        let candidate = qualify_manual_import_video_candidate(&malformed, &trusted_root)
+            .await
+            .expect("qualify malformed known-extension file")
+            .expect("manual fallback for a known extension");
+        assert!(candidate.video_facts.is_none());
+
+        let empty = source.path().join("empty.mkv");
+        std::fs::write(&empty, b"").expect("write empty fixture");
         assert!(
-            qualify_manual_import_video_candidate(&malformed, &trusted_root)
+            qualify_manual_import_video_candidate(&empty, &trusted_root)
                 .await
-                .expect("qualify malformed file")
+                .expect("qualify empty file")
+                .is_none()
+        );
+
+        let opaque_malformed = source.path().join("opaque");
+        std::fs::write(&opaque_malformed, [0x1A, 0x45, 0xDF, 0xA3])
+            .expect("write malformed opaque fixture");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&opaque_malformed)
+            .expect("open malformed opaque fixture")
+            .set_len(16 * 1024 * 1024)
+            .expect("pad malformed opaque fixture");
+        assert!(
+            qualify_manual_import_video_candidate(&opaque_malformed, &trusted_root)
+                .await
+                .expect("qualify malformed opaque file")
                 .is_none()
         );
     }

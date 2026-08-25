@@ -896,6 +896,15 @@ pub(crate) async fn qualify_manual_import_video_candidate(
                     duration_seconds: analysis.duration_seconds,
                 })
             }
+            // A manual import is the operator's recovery path. Native parsing
+            // is deliberately strict for opaque files, but an established video
+            // extension keeps a non-empty file selectable when the parser cannot
+            // handle an unusual yet legitimate mux.
+            Err(scryer_mediainfo::MediaInfoError::Parse(_))
+                if has_known_video_extension && metadata.len() > 0 =>
+            {
+                None
+            }
             Ok(_) | Err(scryer_mediainfo::MediaInfoError::Parse(_)) => return Ok(None),
             Err(scryer_mediainfo::MediaInfoError::UnsupportedFormat(_))
                 if has_known_video_extension =>
