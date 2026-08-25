@@ -20,7 +20,6 @@ use xtask_support::{TaskContext, ok, run_status, step, warn};
 mod media_fixtures;
 mod oauth_dev_flow;
 mod profile;
-mod seed;
 
 const BACKEND_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DEFAULT_SERVE_BIND: &str = "127.0.0.1:18080";
@@ -93,7 +92,6 @@ enum Commands {
     Sdk(SdkArgs),
     Ci(CiArgs),
     Serve(ServeArgs),
-    Seed(SeedArgs),
     Profile(ProfileArgs),
 }
 
@@ -240,23 +238,6 @@ struct ServeArgs {
 }
 
 #[derive(Args)]
-struct SeedArgs {
-    #[command(subcommand)]
-    command: SeedCommand,
-}
-
-#[derive(Subcommand)]
-enum SeedCommand {
-    Dev(SeedDevArgs),
-}
-
-#[derive(Args)]
-struct SeedDevArgs {
-    #[arg(long)]
-    file: Option<PathBuf>,
-}
-
-#[derive(Args)]
 struct ProfileArgs {
     #[command(subcommand)]
     command: ProfileCommand,
@@ -329,9 +310,6 @@ fn main() -> Result<()> {
             };
             serve_local_scryer(&ctx, args, mode)
         }
-        Commands::Seed(args) => match args.command {
-            SeedCommand::Dev(args) => seed_dev(&ctx, args),
-        },
         Commands::Profile(args) => match args.command {
             ProfileCommand::Hotpaths(args) => profile_hotpaths(&ctx, args),
         },
@@ -517,10 +495,6 @@ fn delegate_to_package(ctx: &TaskContext, package: &str, forwarded: &[String]) -
         .arg("--")
         .args(forwarded);
     run_checked(&mut command)
-}
-
-fn seed_dev(ctx: &TaskContext, args: SeedDevArgs) -> Result<()> {
-    seed::run(ctx, args)
 }
 
 fn profile_hotpaths(ctx: &TaskContext, args: ProfileHotpathsArgs) -> Result<()> {
