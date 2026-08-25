@@ -10,45 +10,6 @@ pub async fn import_completed_download(
         CompletedImportIdentityPolicy::RequireSubmission,
         None,
         None,
-    )
-    .await
-}
-
-pub(crate) async fn import_completed_download_with_release_evidence(
-    app: &AppUseCase,
-    actor: &User,
-    completed: &CompletedDownload,
-    release_evidence: &ReleaseEvidence,
-) -> AppResult<ImportResult> {
-    import_completed_download_with_identity_policy(
-        app,
-        actor,
-        completed,
-        CompletedImportIdentityPolicy::RequireSubmission,
-        None,
-        Some(release_evidence),
-    )
-    .await
-}
-
-/// Import a downloader observation into the title the tracked download already
-/// validated for it (a parse match the completed-check proved, or an operator
-/// assignment). Without this the import would re-derive the title from a
-/// context-free parse of the release name and could land elsewhere or fail to
-/// match at all. The target is persisted with the request so retries honor it;
-/// a durable Scryer submission found for the download still wins over it.
-pub(crate) async fn import_completed_download_with_target_title(
-    app: &AppUseCase,
-    actor: &User,
-    completed: &CompletedDownload,
-    target_title_id: &str,
-) -> AppResult<ImportResult> {
-    import_completed_download_with_identity_policy(
-        app,
-        actor,
-        completed,
-        CompletedImportIdentityPolicy::RequireSubmission,
-        Some(target_title_id),
         None,
     )
     .await
@@ -64,6 +25,7 @@ pub async fn import_completed_download_for_manual_review(
         actor,
         completed,
         CompletedImportIdentityPolicy::AllowUnresolved,
+        None,
         None,
         None,
     )
@@ -84,6 +46,27 @@ pub(crate) async fn import_completed_download_for_manual_review_with_title_overr
         CompletedImportIdentityPolicy::AllowUnresolved,
         Some(title_id),
         release_evidence,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn import_completed_download_for_tracked(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    target_title_id: Option<&str>,
+    release_evidence: Option<&ReleaseEvidence>,
+    preparation_permit: tokio::sync::OwnedSemaphorePermit,
+) -> AppResult<ImportResult> {
+    import_completed_download_with_identity_policy(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::RequireSubmission,
+        target_title_id,
+        release_evidence,
+        Some(preparation_permit),
     )
     .await
 }
@@ -109,6 +92,7 @@ async fn import_completed_download_with_identity_policy(
     identity_policy: CompletedImportIdentityPolicy,
     target_title_id: Option<&str>,
     release_evidence: Option<&ReleaseEvidence>,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<ImportResult> {
     let request = match prepare_completed_import_request(
         app,
@@ -127,7 +111,7 @@ async fn import_completed_download_with_identity_policy(
         CompletedImportProgress::Finished(result) => return Ok(result),
     };
 
-    execute_completed_import(app, actor, request).await
+    execute_completed_import(app, actor, request, preparation_permit).await
 }
 
 struct CompletedImportRequest {
@@ -559,6 +543,7 @@ async fn execute_completed_import(
     app: &AppUseCase,
     actor: &User,
     request: CompletedImportRequest,
+    preparation_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> AppResult<ImportResult> {
     // From here on, any error must update the import record to "failed" rather than
     // propagating via `?`. Otherwise the record stays "processing" indefinitely.
@@ -571,6 +556,7 @@ async fn execute_completed_import(
         request.target_title_id.as_deref(),
         request.started_at,
         None,
+        preparation_permit,
     ))
     .await
     {
@@ -584,6 +570,7 @@ async fn finalize_completed_import_error(
     request: &CompletedImportRequest,
     error: AppError,
 ) -> AppResult<ImportResult> {
+    let requires_reconciliation = matches!(&error, AppError::ManualReconciliationRequired(_));
     let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
         Some(ImportSkipReason::PasswordRequired)
     } else if crate::archive_extractor::is_timeout_error(&error) {
@@ -611,5 +598,8 @@ async fn finalize_completed_import_error(
     let _ = app
         .update_import_status_and_notify(&request.import_id, status, result_json)
         .await;
+    if requires_reconciliation {
+        return Err(error);
+    }
     Ok(result)
 }

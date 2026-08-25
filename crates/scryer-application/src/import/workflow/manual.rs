@@ -24,28 +24,56 @@ pub async fn start_background_manual_import_poller(
     // tracked download in this process; each record is decided once.
     let mut manual_import_recovery_memo: HashMap<String, ManualImportRecoveryMemo> =
         HashMap::new();
+    let mut in_flight: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+
+    match app
+        .services
+        .workflow
+        .imports
+        .recover_stale_processing_imports_for_type(
+            ImportType::ManualImport,
+            IMPORT_STALE_RECOVERY_SECONDS,
+        )
+        .await
+    {
+        Ok(recovered) if recovered > 0 => {
+            worker.warn_recovered("recover_stale_manual_imports", recovered);
+        }
+        Err(error) => worker.warn_error("recover_stale_manual_imports", &error),
+        _ => {}
+    }
+
     loop {
         if !worker.wait_for_tick(&mut interval).await {
+            for (id, task) in in_flight.drain() {
+                task.abort();
+                let _ = task.await;
+                mark_manual_import_reconciliation(
+                    &app,
+                    &id,
+                    "manual import was interrupted during shutdown; inspect source and destination",
+                )
+                .await;
+            }
             return;
         }
 
-        match app
-            .services
-            .workflow
-            .imports
-            .recover_stale_processing_imports_for_type(
-                ImportType::ManualImport,
-                IMPORT_STALE_RECOVERY_SECONDS,
-            )
-            .await
-        {
-            Ok(recovered) if recovered > 0 => {
-                worker.warn_recovered("recover_stale_manual_imports", recovered);
+        let finished = in_flight
+            .iter()
+            .filter_map(|(id, task)| task.is_finished().then_some(id.clone()))
+            .collect::<Vec<_>>();
+        for id in finished {
+            if let Some(task) = in_flight.remove(&id)
+                && let Err(error) = task.await
+            {
+                tracing::warn!(import_id = %id, error = %error, "manual import task failed");
+                mark_manual_import_reconciliation(
+                    &app,
+                    &id,
+                    "manual import worker ended unexpectedly; inspect source and destination",
+                )
+                .await;
             }
-            Err(error) => {
-                worker.warn_error("recover_stale_manual_imports", &error);
-            }
-            _ => {}
         }
 
         recover_completed_manual_imports(&app, &worker, &mut manual_import_recovery_memo).await;
@@ -65,136 +93,257 @@ pub async fn start_background_manual_import_poller(
         };
 
         for record in pending {
-            let payload =
-                match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        let result_json = manual_import_result_json(
-                            &record.id,
-                            &ManualImportRequestPayload {
-                                requested_by_user_id: None,
-                                title_id: None,
-                                download_client_item_id: record.source_ref.clone(),
-                                client_id: None,
-                                client_type: record.source_system.clone(),
-                                files: Vec::new(),
-                                selection_id: None,
-                                release_evidence: None,
-                                trusted_source_root: None,
-                                archive_workspace_root: None,
-                                requested_at: record.created_at.clone(),
-                            },
-                            ImportStatus::Failed,
-                            Some(ImportErrorCode::Unknown),
-                            Some(format!("invalid manual import payload: {error}")),
-                            Vec::new(),
-                        );
-                        let _ = app
-                            .update_import_status_and_notify(
-                                &record.id,
-                                ImportStatus::Failed,
-                                result_json,
-                            )
-                            .await;
-                        continue;
-                    }
-                };
-
-            let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
-            let outcome =
-                match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
-                    Ok(result) => result,
-                    Err(error) => QueuedManualImportOutcome {
-                        status: ImportStatus::Failed,
-                        result_json: manual_import_result_json(
-                            &record.id,
-                            &payload,
-                            ImportStatus::Failed,
-                            Some(classify_manual_import_error_message(&error.to_string())),
-                            Some(error.to_string()),
-                            Vec::new(),
-                        ),
-                        files_imported_this_pass: 0,
-                        completed: None,
-                        title_id: payload.title_id.clone(),
-                        expected_mapping_count: None,
-                        prior_import_proven: false,
-                    },
-                };
-
-            if let Err(error) = app
-                .update_import_status_and_notify(
-                    &record.id,
-                    outcome.status,
-                    outcome.result_json.clone(),
-                )
-                .await
-            {
-                worker.warn_error("finalize_manual_import_request", &error);
+            if in_flight.contains_key(&record.id) {
                 continue;
             }
-
-            let has_successful_import = outcome.files_imported_this_pass > 0
-                || outcome.status == ImportStatus::Completed
-                || outcome.prior_import_proven;
-            let terminalized = if has_successful_import {
-                if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
-                    let tracked_id = crate::tracked_downloads::tracked_download_id(
-                        payload.client_id.as_deref(),
-                        &payload.client_type,
-                        &payload.download_client_item_id,
-                    );
-                    let reconciliation = if outcome.prior_import_proven {
-                        handle.mark_imported(tracked_id).await.map(|()| true)
-                    } else {
-                        handle
-                            .reconcile_manual_import(
-                                tracked_id,
-                                outcome.files_imported_this_pass,
-                                outcome.expected_mapping_count,
-                            )
-                            .await
-                    };
-                    match reconciliation {
-                        Ok(terminalized) => terminalized,
-                        Err(error) => {
-                            worker.warn_error("reconcile_manual_import", &error);
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if terminalized {
-                let source_identity = DownloadSourceIdentity::new(
-                    payload.client_id.as_deref(),
-                    &payload.client_type,
-                    &payload.download_client_item_id,
-                );
-                if let Err(error) = app
-                    .services
-                    .workflow
-                    .imports
-                    .delete_manual_import_selections_for_source(&source_identity)
-                    .await
-                {
-                    worker.warn_error("cleanup_terminal_manual_import_selections", &error);
-                }
+            if manual_import_record_requires_reconciliation(&record) {
+                continue;
             }
-
-            maybe_remove_completed_manual_import_download(
-                &app,
-                outcome.completed.as_ref(),
-                outcome.title_id.as_deref(),
-                terminalized,
-            )
-            .await;
+            if !manual_import_retry_is_due(&record, Utc::now()) {
+                continue;
+            }
+            let id = record.id.clone();
+            let task_app = app.clone();
+            let task = tokio::spawn(async move {
+                process_pending_manual_import(task_app, record).await;
+            });
+            in_flight.insert(id, task);
         }
     }
+}
+
+async fn mark_manual_import_reconciliation(app: &AppUseCase, import_id: &str, message: &str) {
+    let record = match app.services.workflow.imports.get_import_by_id(import_id).await {
+        Ok(Some(record)) if record.status == ImportStatus::Processing => record,
+        Ok(_) => return,
+        Err(error) => {
+            tracing::error!(import_id, error = %error, "failed to load interrupted manual import");
+            return;
+        }
+    };
+    let Ok(payload) = serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json)
+    else {
+        tracing::error!(import_id, "interrupted manual import payload is invalid");
+        return;
+    };
+    let file_results = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+        .map(|result| result.file_results)
+        .unwrap_or_default();
+    let result_json = manual_import_pending_result_json(
+        import_id,
+        &payload,
+        format!("Manual reconciliation required: {message}"),
+        true,
+        0,
+        None,
+        file_results,
+    );
+    if let Err(error) = app
+        .update_import_status_and_notify(import_id, ImportStatus::Pending, result_json)
+        .await
+    {
+        tracing::error!(import_id, error = %error, "failed to preserve interrupted manual import");
+    }
+}
+
+pub(crate) fn manual_import_record_requires_reconciliation(
+    record: &scryer_domain::ImportRecord,
+) -> bool {
+    let Some(result) = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+    else {
+        return false;
+    };
+    result.requires_reconciliation
+        || result.error_message.is_some_and(|message| {
+            message
+                .to_ascii_lowercase()
+                .starts_with("manual reconciliation required:")
+        })
+}
+
+fn manual_import_retry_is_due(record: &scryer_domain::ImportRecord, now: DateTime<Utc>) -> bool {
+    record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok())
+        .and_then(|result| result.next_retry_at)
+        .is_none_or(|next_retry_at| next_retry_at <= now)
+}
+
+async fn process_pending_manual_import(app: AppUseCase, record: scryer_domain::ImportRecord) {
+    let payload = match serde_json::from_str::<ManualImportRequestPayload>(&record.payload_json) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let result_json = manual_import_result_json(
+                &record.id,
+                &ManualImportRequestPayload {
+                    requested_by_user_id: None,
+                    title_id: None,
+                    download_client_item_id: record.source_ref.clone(),
+                    client_id: None,
+                    client_type: record.source_system.clone(),
+                    files: Vec::new(),
+                    selection_id: None,
+                    release_evidence: None,
+                    trusted_source_root: None,
+                    archive_workspace_root: None,
+                    requested_at: record.created_at.clone(),
+                },
+                ImportStatus::Failed,
+                Some(ImportErrorCode::Unknown),
+                Some(format!("invalid manual import payload: {error}")),
+                Vec::new(),
+            );
+            let _ = app
+                .update_import_status_and_notify(&record.id, ImportStatus::Failed, result_json)
+                .await;
+            return;
+        }
+    };
+
+    let previous_result = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ManualImportExecutionResult>(json).ok());
+    let previous_file_results = previous_result
+        .as_ref()
+        .map(|result| result.file_results.clone())
+        .unwrap_or_default();
+
+    let outcome = match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
+        Ok(result) => result,
+        Err(AppError::ManualReconciliationRequired(message)) => QueuedManualImportOutcome {
+            status: ImportStatus::Pending,
+            result_json: manual_import_pending_result_json(
+                &record.id,
+                &payload,
+                format!("Manual reconciliation required: {message}"),
+                true,
+                0,
+                None,
+                previous_file_results.clone(),
+            ),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_mapping_count: Some(payload.files.len()),
+            prior_import_proven: false,
+        },
+        Err(AppError::ImportEvidenceUnavailable(message)) => {
+            let retry_attempts = previous_result
+                .as_ref()
+                .map_or(1, |result| result.retry_attempts.saturating_add(1));
+            let next_retry_at =
+                Utc::now() + manual_import_recovery_retry_delay(retry_attempts);
+            QueuedManualImportOutcome {
+                status: ImportStatus::Pending,
+                result_json: manual_import_pending_result_json(
+                    &record.id,
+                    &payload,
+                    format!("Import evidence is temporarily unavailable: {message}"),
+                    false,
+                    retry_attempts,
+                    Some(next_retry_at),
+                    previous_file_results,
+                ),
+                files_imported_this_pass: 0,
+                completed: None,
+                title_id: payload.title_id.clone(),
+                expected_mapping_count: Some(payload.files.len()),
+                prior_import_proven: false,
+            }
+        }
+        Err(error) => QueuedManualImportOutcome {
+            status: ImportStatus::Failed,
+            result_json: manual_import_result_json(
+                &record.id,
+                &payload,
+                ImportStatus::Failed,
+                Some(classify_manual_import_error_message(&error.to_string())),
+                Some(error.to_string()),
+                Vec::new(),
+            ),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_mapping_count: None,
+            prior_import_proven: false,
+        },
+    };
+
+    if let Err(error) = app
+        .update_import_status_and_notify(&record.id, outcome.status, outcome.result_json.clone())
+        .await
+    {
+        tracing::warn!(import_id = %record.id, error = %error, "failed to finalize manual import request");
+        return;
+    }
+
+    let has_successful_import = outcome.files_imported_this_pass > 0
+        || outcome.status == ImportStatus::Completed
+        || outcome.prior_import_proven;
+    let terminalized = if has_successful_import {
+        if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
+            let tracked_id = crate::tracked_downloads::tracked_download_id(
+                payload.client_id.as_deref(),
+                &payload.client_type,
+                &payload.download_client_item_id,
+            );
+            let reconciliation = if outcome.prior_import_proven {
+                handle.mark_imported(tracked_id).await.map(|()| true)
+            } else {
+                handle
+                    .reconcile_manual_import(
+                        tracked_id,
+                        outcome.files_imported_this_pass,
+                        outcome.expected_mapping_count,
+                    )
+                    .await
+            };
+            match reconciliation {
+                Ok(terminalized) => terminalized,
+                Err(error) => {
+                    tracing::warn!(import_id = %record.id, error = %error, "failed to reconcile manual import");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if terminalized {
+        let source_identity = DownloadSourceIdentity::new(
+            payload.client_id.as_deref(),
+            &payload.client_type,
+            &payload.download_client_item_id,
+        );
+        if let Err(error) = app
+            .services
+            .workflow
+            .imports
+            .delete_manual_import_selections_for_source(&source_identity)
+            .await
+        {
+            tracing::warn!(import_id = %record.id, error = %error, "failed to clean up terminal manual import selections");
+        }
+    }
+
+    maybe_remove_completed_manual_import_download(
+        &app,
+        outcome.completed.as_ref(),
+        outcome.title_id.as_deref(),
+        terminalized,
+    )
+    .await;
 }
 async fn maybe_remove_completed_manual_import_download(
     app: &AppUseCase,
@@ -495,7 +644,9 @@ fn completed_download_matches_source(
     completed: &CompletedDownload,
     identity: &DownloadSourceIdentity,
 ) -> bool {
-    completed.client_id == identity.client_id.as_deref().unwrap_or_default()
+    completed
+        .client_id
+        .eq_ignore_ascii_case(identity.client_id.as_deref().unwrap_or_default())
         && completed
             .client_type
             .eq_ignore_ascii_case(identity.client_type.as_str())
@@ -1364,6 +1515,12 @@ pub struct ManualImportExecutionResult {
     pub error_code: Option<ImportErrorCode>,
     pub error_message: Option<String>,
     #[serde(default)]
+    pub requires_reconciliation: bool,
+    #[serde(default)]
+    pub retry_attempts: u32,
+    #[serde(default)]
+    pub next_retry_at: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub file_results: Vec<ManualImportFileResult>,
     pub completed_at: DateTime<Utc>,
 }
@@ -1422,11 +1579,41 @@ pub(crate) fn manual_import_result_json(
         status,
         error_code,
         error_message,
+        requires_reconciliation: false,
+        retry_attempts: 0,
+        next_retry_at: None,
         file_results,
         completed_at: Utc::now(),
     })
     .ok()
 }
+
+fn manual_import_pending_result_json(
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+    message: String,
+    requires_reconciliation: bool,
+    retry_attempts: u32,
+    next_retry_at: Option<DateTime<Utc>>,
+    file_results: Vec<ManualImportFileResult>,
+) -> Option<String> {
+    serde_json::to_string(&ManualImportExecutionResult {
+        import_id: import_id.to_string(),
+        client_type: payload.client_type.clone(),
+        download_client_item_id: payload.download_client_item_id.clone(),
+        title_id: payload.title_id.clone(),
+        status: ImportStatus::Pending,
+        error_code: Some(classify_manual_import_error_message(&message)),
+        error_message: Some(message),
+        requires_reconciliation,
+        retry_attempts,
+        next_retry_at,
+        file_results,
+        completed_at: Utc::now(),
+    })
+    .ok()
+}
+
 pub(crate) fn manual_import_source_failed_result_json(
     import_id: &str,
     payload: &ManualImportRequestPayload,
@@ -1457,7 +1644,12 @@ pub(crate) fn manual_import_request_matches_source(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if requested_client_id != payload_client_id {
+    let client_id_matches = match (requested_client_id, payload_client_id) {
+        (None, None) => true,
+        (Some(requested), Some(payload)) => requested.eq_ignore_ascii_case(payload),
+        _ => false,
+    };
+    if !client_id_matches {
         return false;
     }
 
@@ -1717,10 +1909,12 @@ async fn execute_manual_series_movie_import(
         &dest_path,
         import_mode,
         None,
+        completed,
     )
     .await
     {
         Ok(file_result) => file_result,
+        Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
         Err(error) => {
             let message = error.to_string();
             return Ok(manual_import_file_result(
@@ -1819,19 +2013,6 @@ async fn execute_manual_series_movie_import(
         );
     }
     maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
-    if let Err(error) =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await
-    {
-        let message = error.to_string();
-        return Ok(manual_import_file_result(
-            mapping,
-            false,
-            Some(path_to_stored_string(&dest_path)),
-            Some(classify_manual_import_error_message(&message)),
-            Some(message),
-        ));
-    }
-
     if let Some(completed) = completed {
         let linked_episode_artifacts = linked_episode.iter().cloned().collect::<Vec<_>>();
         persist_file_import_artifact(
@@ -1846,7 +2027,23 @@ async fn execute_manual_series_movie_import(
             Some(imported_media_file_id.as_str()),
             &linked_episode_artifacts,
         )
-        .await;
+        .await?;
+    }
+
+    if let Err(error) =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path, completed).await
+    {
+        if matches!(&error, AppError::ManualReconciliationRequired(_)) {
+            return Err(error);
+        }
+        let message = error.to_string();
+        return Ok(manual_import_file_result(
+            mapping,
+            false,
+            Some(path_to_stored_string(&dest_path)),
+            Some(classify_manual_import_error_message(&message)),
+            Some(message),
+        ));
     }
 
     let nfo_enabled = app
@@ -1935,6 +2132,39 @@ pub async fn execute_manual_import(
     reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
 )]
 pub(crate) async fn execute_manual_import_with_release_evidence(
+    app: &AppUseCase,
+    actor: &User,
+    import_id: &str,
+    title_id: &str,
+    completed: Option<&CompletedDownload>,
+    release_evidence: &ReleaseEvidence,
+    files: Vec<ManualImportFileMapping>,
+    trusted_source_root: Option<PathBuf>,
+) -> AppResult<Vec<ManualImportFileResult>> {
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(title_id)
+        .await;
+    execute_manual_import_with_release_evidence_locked(
+        app,
+        actor,
+        import_id,
+        title_id,
+        completed,
+        release_evidence,
+        files,
+        trusted_source_root,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
+)]
+async fn execute_manual_import_with_release_evidence_locked(
     app: &AppUseCase,
     actor: &User,
     import_id: &str,
@@ -2033,6 +2263,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
 
         let target = match manual_import_mapping_target(mapping, &title.facet) {
             Ok(target) => target,
+            Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
             Err(err) => {
                 results.push(manual_import_file_result(
                     mapping,
@@ -2121,6 +2352,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                             import_result.error_message,
                         )
                     }
+                    Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
                     Err(error) => {
                         let message = error.to_string();
                         manual_import_file_result(
@@ -2250,6 +2482,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                 imported_media_file_id,
                 reason_code,
                 size_bytes,
+                source_cleanup,
                 ..
             }) => {
                 if let Some(completed) = completed {
@@ -2265,8 +2498,15 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                         imported_media_file_id.as_deref(),
                         std::slice::from_ref(&episode),
                     )
-                    .await;
+                    .await?;
                 }
+                finalize_deferred_import_source_cleanup(
+                    app,
+                    source_cleanup.map(|guard| *guard),
+                    &crate::stored_paths::stored_path_to_path_buf(&dest_path),
+                    completed,
+                )
+                .await?;
                 if let Some(size_bytes) = size_bytes {
                     imported_size_bytes =
                         Some(imported_size_bytes.unwrap_or(0).saturating_add(size_bytes));
@@ -2306,7 +2546,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                             None,
                             std::slice::from_ref(&episode),
                         )
-                        .await;
+                        .await?;
                     }
                     results.push(manual_import_file_result(mapping, true, None, None, None));
                     continue;
@@ -2330,6 +2570,7 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
                     Some(rejection.message),
                 ));
             }
+            Err(error @ AppError::ManualReconciliationRequired(_)) => return Err(error),
             Err(err) => {
                 let error_message = err.to_string();
                 results.push(manual_import_file_result(
@@ -2661,6 +2902,12 @@ async fn execute_queued_manual_import_with_outcome_inner(
     import_id: &str,
     payload: &ManualImportRequestPayload,
 ) -> AppResult<QueuedManualImportOutcome> {
+    let preparation_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_preparation()
+        .await;
     let user_id = payload
         .requested_by_user_id
         .as_deref()
@@ -2674,9 +2921,6 @@ async fn execute_queued_manual_import_with_outcome_inner(
         .ok_or_else(|| {
             AppError::Validation("manual import request actor no longer exists".into())
         })?;
-
-    app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
-        .await?;
 
     let Some(title_id) = payload
         .title_id
@@ -2774,7 +3018,17 @@ async fn execute_queued_manual_import_with_outcome_inner(
         });
     }
 
-    let results = execute_manual_import_with_release_evidence(
+    drop(preparation_permit);
+    let _title_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_title(title_id)
+        .await;
+    app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
+        .await?;
+
+    let results = execute_manual_import_with_release_evidence_locked(
         app,
         &actor,
         import_id,
@@ -2831,7 +3085,6 @@ pub async fn execute_queued_manual_import(
     import_id: &str,
     payload: &ManualImportRequestPayload,
 ) -> AppResult<(ImportStatus, Option<String>)> {
-    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
     let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await;
     let outcome = outcome?;
     Ok((outcome.status, outcome.result_json))
@@ -2972,6 +3225,9 @@ mod manual_import_recovery_tests {
             status: ImportStatus::Completed,
             error_code: None,
             error_message: None,
+            requires_reconciliation: false,
+            retry_attempts: 0,
+            next_retry_at: None,
             file_results: vec![ManualImportFileResult {
                 file_path: "/downloads/episode.mkv".to_string(),
                 episode_id: Some("episode-1".to_string()),
@@ -3019,6 +3275,23 @@ mod manual_import_recovery_tests {
             assert_eq!(identity.client_type, client_type);
             assert_eq!(identity.item_id, "download-1");
         }
+    }
+
+    #[test]
+    fn reconciliation_pending_manual_import_is_not_automatically_requeued() {
+        let mut record = completed_manual_import_record("weaver", true);
+        record.status = ImportStatus::Pending;
+        let mut result = serde_json::from_str::<ManualImportExecutionResult>(
+            record.result_json.as_deref().expect("result JSON"),
+        )
+        .expect("parse result JSON");
+        result.status = ImportStatus::Pending;
+        result.error_message = Some(
+            "Manual reconciliation required: filesystem worker was terminated".to_string(),
+        );
+        record.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
+
+        assert!(manual_import_record_requires_reconciliation(&record));
     }
 
     #[test]

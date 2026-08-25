@@ -1,5 +1,37 @@
 use super::*;
 
+async fn verify_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+) -> bool {
+    super::verify_import(app, td, files_imported_this_pass)
+        .await
+        .expect("verification")
+}
+
+async fn verify_manual_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    expected_mapping_count: Option<usize>,
+) -> bool {
+    super::verify_manual_import(app, td, files_imported_this_pass, expected_mapping_count)
+        .await
+        .expect("verification")
+}
+
+async fn verify_import_inner(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+) -> bool {
+    super::verify_import_inner(app, td, files_imported_this_pass, completed)
+        .await
+        .expect("verification")
+}
+
 #[tokio::test]
 async fn visible_file_count_reuses_resolved_completed_download() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -47,6 +79,33 @@ async fn verify_import_terminalizes_movie_after_one_successful_file() {
     let td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
 
     assert!(verify_import(&app, &td, 1).await);
+}
+
+#[tokio::test]
+async fn verify_import_uses_completed_identity_alias_with_normalized_client_fields() {
+    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let mut artifact = build_artifact(
+        " history-item ",
+        "movie-file",
+        "Paper.Lantern.2012.1080p.mkv",
+    );
+    artifact.source_client_id = Some(" Client-A ".to_string());
+    artifact.source_system = " NZBGET ".to_string();
+    let app = build_app(vec![title], vec![], vec![], vec![artifact]);
+
+    let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    td.client_id = "client-a".to_string();
+    td.client_type = "nzbget".to_string();
+    td.client_item.download_client_item_id = "queue-item".to_string();
+    let mut completed = build_completed_download(
+        "Paper.Lantern.2012.1080p",
+        "/downloads/Paper.Lantern.2012.1080p",
+        Some("movie"),
+    );
+    completed.client_id = "CLIENT-A".to_string();
+    completed.download_client_item_id = "history-item".to_string();
+
+    assert!(verify_import_inner(&app, &td, 1, Some(&completed)).await);
 }
 
 #[tokio::test]

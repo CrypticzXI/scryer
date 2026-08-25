@@ -244,6 +244,7 @@ impl AppUseCase {
             &source_identity.item_id,
         )
         .await?
+        && !crate::import_workflow::manual_import_record_requires_reconciliation(&existing)
         {
             return Ok(existing.id);
         }

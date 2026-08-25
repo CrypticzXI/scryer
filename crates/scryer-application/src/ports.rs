@@ -3488,6 +3488,13 @@ pub trait DownloadSubmissionRepository: Send + Sync {
 pub trait ImportArtifactRepository: Send + Sync {
     async fn insert_artifact(&self, artifact: ImportArtifact) -> AppResult<()>;
 
+    async fn insert_artifacts(&self, artifacts: Vec<ImportArtifact>) -> AppResult<()> {
+        for artifact in artifacts {
+            self.insert_artifact(artifact).await?;
+        }
+        Ok(())
+    }
+
     async fn list_by_source_identity(
         &self,
         identity: &DownloadSourceIdentity,
@@ -3926,12 +3933,54 @@ pub struct ImportFileTransferProgress {
 pub type ImportFileTransferProgressSender =
     tokio::sync::mpsc::UnboundedSender<ImportFileTransferProgress>;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ImportFilePermissions {
     pub set_permissions_linux: bool,
     pub file_chmod: Option<String>,
     pub folder_chmod: Option<String>,
     pub chown_group: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportFileExecutionContext {
+    client_lane_key: String,
+}
+
+impl ImportFileExecutionContext {
+    pub fn new(client_id: &str, client_type: &str) -> Self {
+        let client_lane_key = [client_id, client_type]
+            .into_iter()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or("unknown-client")
+            .to_ascii_lowercase();
+        Self { client_lane_key }
+    }
+
+    pub fn client_lane_key(&self) -> &str {
+        &self.client_lane_key
+    }
+}
+
+#[cfg(test)]
+mod import_file_execution_context_tests {
+    use super::ImportFileExecutionContext;
+
+    #[test]
+    fn normalizes_client_id_before_falling_back_to_type() {
+        assert_eq!(
+            ImportFileExecutionContext::new(" Client-A ", "SABnzbd").client_lane_key(),
+            "client-a"
+        );
+        assert_eq!(
+            ImportFileExecutionContext::new("", " qBittorrent ").client_lane_key(),
+            "qbittorrent"
+        );
+        assert_eq!(
+            ImportFileExecutionContext::new(" ", " ").client_lane_key(),
+            "unknown-client"
+        );
+    }
 }
 
 #[async_trait]
@@ -3975,11 +4024,48 @@ pub trait FileImporter: Send + Sync {
             .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "file placement keeps transfer, permission, source-snapshot, and lane context explicit"
+    )]
+    async fn import_file_with_execution_context(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: scryer_domain::ImportMode,
+        expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
+        permissions: &ImportFilePermissions,
+        context: &ImportFileExecutionContext,
+    ) -> AppResult<ImportFileResult> {
+        let _ = context;
+        self.import_file_with_progress_and_permissions(
+            source,
+            dest,
+            mode,
+            expected_source,
+            progress,
+            permissions,
+        )
+        .await
+    }
+
     async fn remove_import_source_after_verified_import(
         &self,
         guard: scryer_domain::ImportSourceCleanupGuard,
         final_dest_path: &Path,
     ) -> AppResult<()>;
+
+    async fn remove_import_source_after_verified_import_with_context(
+        &self,
+        guard: scryer_domain::ImportSourceCleanupGuard,
+        final_dest_path: &Path,
+        context: &ImportFileExecutionContext,
+    ) -> AppResult<()> {
+        let _ = context;
+        self.remove_import_source_after_verified_import(guard, final_dest_path)
+            .await
+    }
 }
 
 #[async_trait]

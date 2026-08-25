@@ -87,7 +87,7 @@ async fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseC
     ctx.app.with_test_overrides(|builder| {
         builder
             .with_imports(workflow_store)
-            .with_file_importer(Arc::new(FsFileImporter))
+            .with_file_importer(Arc::new(FsFileImporter::new()))
             .with_media_files(Arc::new(ctx.media_files.clone()))
             .with_acquisition_scope_states(Arc::new(ctx.library_state.clone()))
     })
@@ -116,6 +116,21 @@ fn scryer_completed(
             ("*scryer_facet".to_string(), facet_id.to_string()),
         ],
     }
+}
+
+async fn queue_import_record(ctx: &TestContext, completed: &CompletedDownload) -> String {
+    ImportStore::new(ctx.db.datastore())
+        .queue_import_request(
+            DownloadSourceIdentity::new(
+                Some(&completed.client_id),
+                &completed.client_type,
+                &completed.download_client_item_id,
+            ),
+            "manual_import".to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue import record")
 }
 
 /// Record the durable grab-time submission a Scryer download carries in
@@ -1630,11 +1645,12 @@ async fn manual_import_series_pack_maps_each_file_within_the_bound_title() {
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-pack-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![
@@ -1708,11 +1724,12 @@ async fn manual_import_multi_episode_filename_keeps_the_explicit_single_episode_
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-single-target-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1880,11 +1897,12 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-success-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -1952,11 +1970,12 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
         &title.id,
         "series",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-series-existing-folder-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![scryer_application::ManualImportFileMapping {
@@ -2474,7 +2493,8 @@ async fn manual_import_movie_imports_only_the_primary_and_skips_samples_and_extr
             1,
             expected_mapping_count,
         )
-        .await,
+        .await
+        .expect("manual import verification should be available"),
         "the tracked download must verify as imported with the extras skipped"
     );
 }
@@ -2596,11 +2616,12 @@ async fn manual_import_small_normally_named_movie_imports_as_the_primary() {
         &title.id,
         "movie",
     );
+    let import_id = queue_import_record(&ctx, &completed).await;
 
     let results = scryer_application::execute_manual_import(
         &app,
         &user,
-        "manual-small-movie-import",
+        &import_id,
         &title.id,
         Some(&completed),
         vec![

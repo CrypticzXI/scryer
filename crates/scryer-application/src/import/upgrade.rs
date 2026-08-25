@@ -31,6 +31,8 @@ pub struct UpgradeOutcome {
     /// without re-reading the media file row.
     pub new_size_bytes: i64,
     pub recycle_entry_committed: bool,
+    pub source_cleanup: Option<Box<ImportSourceCleanupGuard>>,
+    pub final_path_string: String,
 }
 
 pub enum UpgradeResult {
@@ -141,6 +143,7 @@ pub(crate) async fn execute_upgrade(
     recycle_config: &RecycleBinConfig,
     import_mode: ImportMode,
     announced_size_bytes: Option<i64>,
+    completed: Option<&scryer_domain::CompletedDownload>,
 ) -> AppResult<UpgradeResult> {
     let audit_actor = DomainEventActor::from(actor);
 
@@ -181,6 +184,7 @@ pub(crate) async fn execute_upgrade(
         &source_path_string,
         import_mode,
         announced_size_bytes,
+        completed,
     )
     .await?;
 
@@ -223,17 +227,38 @@ pub(crate) async fn execute_upgrade(
         .await;
     }
 
-    if import_mode == ImportMode::Move {
-        remove_upgrade_import_source_after_verified_commit(app, &replacement).await?;
-    }
-
     Ok(UpgradeResult::Upgraded(UpgradeOutcome {
         old_score,
         new_score: final_score,
         new_file_id: replacement.new_file_id,
         new_size_bytes: replacement.new_size_bytes,
         recycle_entry_committed,
+        source_cleanup: replacement.source_cleanup.map(Box::new),
+        final_path_string: replacement.final_path_string,
     }))
+}
+
+pub async fn finalize_upgrade_source_cleanup(
+    app: &AppUseCase,
+    outcome: &UpgradeOutcome,
+    completed: Option<&scryer_domain::CompletedDownload>,
+) -> AppResult<()> {
+    let Some(guard) = outcome.source_cleanup.as_deref().cloned() else {
+        return Ok(());
+    };
+    let execution_context = crate::ImportFileExecutionContext::new(
+        completed.map_or("", |item| item.client_id.as_str()),
+        completed.map_or("", |item| item.client_type.as_str()),
+    );
+    app.services
+        .workflow
+        .file_importer
+        .remove_import_source_after_verified_import_with_context(
+            guard,
+            &stored_path_to_path_buf(&outcome.final_path_string),
+            &execution_context,
+        )
+        .await
 }
 
 struct PreparedUpgradeReplacement {
@@ -982,6 +1007,7 @@ async fn prepare_replacement_before_old_removal(
     source_path_string: &str,
     import_mode: ImportMode,
     announced_size_bytes: Option<i64>,
+    completed: Option<&scryer_domain::CompletedDownload>,
 ) -> AppResult<PreparedUpgradeReplacement> {
     let import_path_string = path_to_stored_string(import_path);
     // The replacement is transferred exactly like a first import: through the
@@ -999,6 +1025,7 @@ async fn prepare_replacement_before_old_removal(
         import_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        completed,
     )
     .await
     .map_err(|err| {
@@ -1083,7 +1110,7 @@ async fn prepare_replacement_before_old_removal(
         import_path: import_path.to_path_buf(),
         final_path_string,
         same_final_path,
-        source_cleanup: file_result.source_cleanup,
+        source_cleanup: file_result.source_cleanup.clone(),
     })
 }
 
@@ -1840,24 +1867,6 @@ async fn remove_old_file_after_verified_upgrade(path: &Path) -> AppResult<()> {
         )));
     }
     Ok(())
-}
-
-async fn remove_upgrade_import_source_after_verified_commit(
-    app: &AppUseCase,
-    replacement: &PreparedUpgradeReplacement,
-) -> AppResult<()> {
-    let guard = replacement.source_cleanup.clone().ok_or_else(|| {
-        AppError::Repository(format!(
-            "move upgrade did not return a source cleanup guard for {}",
-            replacement.import_path.display()
-        ))
-    })?;
-    let final_path = stored_path_to_path_buf(&replacement.final_path_string);
-    app.services
-        .workflow
-        .file_importer
-        .remove_import_source_after_verified_import(guard, &final_path)
-        .await
 }
 
 struct UpgradeEventDetails<'a> {

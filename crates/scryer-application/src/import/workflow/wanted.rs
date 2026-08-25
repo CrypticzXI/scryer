@@ -174,6 +174,7 @@ async fn execute_resolved_episode_import(
             &dest_path,
             import_mode,
             None,
+            completed,
         )
         .await?;
         let media_file_input = crate::InsertMediaFileInput {
@@ -242,8 +243,11 @@ async fn execute_resolved_episode_import(
             }
         }
 
-        let link_type =
-            finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+        let link_type = if import_mode == scryer_domain::ImportMode::Move {
+            scryer_domain::ImportStrategy::Move
+        } else {
+            file_result.strategy
+        };
 
         return Ok(EpisodeImportOutcome::Imported {
             dest_path: path_to_stored_string(&dest_path),
@@ -251,6 +255,7 @@ async fn execute_resolved_episode_import(
             imported_media_file_id: Some(media_file_id),
             reason_code: Some("additional_file".to_string()),
             link_type: Some(link_type),
+            source_cleanup: file_result.source_cleanup.clone().map(Box::new),
             size_bytes: Some(file_result.size_bytes as i64),
             // An additional file never reaches the gate, so it never earns one.
             blocklist_after_import: None,
@@ -589,6 +594,7 @@ async fn execute_resolved_episode_import(
             &old_file_recycle_context.recycle_config,
             import_mode,
             announced_size_bytes,
+            completed,
         )
         .await
         {
@@ -627,6 +633,7 @@ async fn execute_resolved_episode_import(
                     reason_code: Some("upgrade".to_string()),
                     link_type: (import_mode == scryer_domain::ImportMode::Move)
                         .then_some(scryer_domain::ImportStrategy::Move),
+                    source_cleanup: outcome.source_cleanup.clone(),
                     size_bytes: Some(outcome.new_size_bytes),
                     blocklist_after_import,
                 });
@@ -658,6 +665,7 @@ async fn execute_resolved_episode_import(
         &dest_path,
         import_mode,
         Some(&prepared.source_snapshot),
+        completed,
     )
     .await?;
 
@@ -764,8 +772,11 @@ async fn execute_resolved_episode_import(
         )));
     }
 
-    let link_type =
-        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await?;
+    let link_type = if import_mode == scryer_domain::ImportMode::Move {
+        scryer_domain::ImportStrategy::Move
+    } else {
+        file_result.strategy
+    };
 
     for episode in target_episodes {
         mark_wanted_completed(app, &title.id, Some(&episode.id), true).await;
@@ -777,6 +788,7 @@ async fn execute_resolved_episode_import(
         imported_media_file_id: Some(media_file_id),
         reason_code: None,
         link_type: Some(link_type),
+        source_cleanup: file_result.source_cleanup.clone().map(Box::new),
         size_bytes: Some(file_result.size_bytes as i64),
         blocklist_after_import,
     })

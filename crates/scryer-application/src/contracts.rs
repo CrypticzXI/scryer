@@ -277,6 +277,16 @@ impl DownloadSourceIdentity {
         }
     }
 
+    pub fn for_import_artifact(
+        client_id: Option<&str>,
+        client_type: impl AsRef<str>,
+        item_id: impl AsRef<str>,
+    ) -> Self {
+        let mut identity = Self::new(client_id, client_type, item_id);
+        identity.client_id = identity.client_id.map(|value| value.to_ascii_lowercase());
+        identity
+    }
+
     pub fn from_submission(submission: &DownloadSubmission) -> Self {
         Self::new(
             submission.download_client_id.as_deref(),
@@ -329,7 +339,7 @@ pub struct ImportArtifact {
 
 impl ImportArtifact {
     pub fn source_identity(&self) -> DownloadSourceIdentity {
-        DownloadSourceIdentity::new(
+        DownloadSourceIdentity::for_import_artifact(
             self.source_client_id.as_deref(),
             &self.source_system,
             &self.source_ref,

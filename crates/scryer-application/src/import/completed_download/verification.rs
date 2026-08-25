@@ -38,7 +38,7 @@ pub async fn verify_import(
     app: &AppUseCase,
     td: &TrackedDownload,
     files_imported_this_pass: usize,
-) -> bool {
+) -> AppResult<bool> {
     verify_import_inner(app, td, files_imported_this_pass, None).await
 }
 
@@ -47,7 +47,7 @@ pub async fn verify_manual_import(
     td: &TrackedDownload,
     files_imported_this_pass: usize,
     expected_mapping_count: Option<usize>,
-) -> bool {
+) -> AppResult<bool> {
     verify_import_with_mode(
         app,
         td,
@@ -66,7 +66,7 @@ pub(super) async fn verify_import_inner(
     td: &TrackedDownload,
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
-) -> bool {
+) -> AppResult<bool> {
     verify_import_inner_with_release_evidence(app, td, files_imported_this_pass, completed, None)
         .await
 }
@@ -77,7 +77,7 @@ pub(super) async fn verify_import_inner_with_release_evidence(
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
     release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
-) -> bool {
+) -> AppResult<bool> {
     verify_import_with_mode(
         app,
         td,
@@ -96,26 +96,11 @@ async fn verify_import_with_mode(
     completed: Option<&CompletedDownload>,
     release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
     mode: ImportVerificationMode,
-) -> bool {
-    let source_identity = DownloadSourceIdentity::new(
-        Some(td.client_id.as_str()),
-        &td.client_type,
-        &td.client_item.download_client_item_id,
-    );
-
-    let artifacts = match app
-        .services
-        .workflow
-        .import_artifacts
-        .list_by_source_identity(&source_identity)
-        .await
-    {
-        Ok(artifacts) => artifacts,
-        Err(_) => return false,
-    };
+) -> AppResult<bool> {
+    let artifacts = import_artifacts_for_completed_download(app, td, completed).await?;
 
     if artifacts.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let current_visible_files = match mode {
@@ -149,11 +134,11 @@ async fn verify_import_with_mode(
     }
 
     if successful_units.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     if td.facet.as_deref() == Some("movie") {
-        return !successful_units.is_empty();
+        return Ok(!successful_units.is_empty());
     }
 
     let manual_source_coverage = match mode {
@@ -164,39 +149,39 @@ async fn verify_import_with_mode(
             .map(|expected| expected > 0 && successful_source_files.len() >= expected),
     };
     if manual_source_coverage == Some(false) {
-        return false;
+        return Ok(false);
     }
 
     match expected_episode_units_with_release_evidence(app, td, release_evidence).await {
         ExpectedEpisodeResolution::Resolved(expected_episode_units) => {
             if expected_episode_units.is_empty() {
-                return false;
+                return Ok(false);
             }
 
             if let Some(source_units_complete) =
                 source_video_units_are_complete(&source_video_units, &successful_units)
             {
-                return source_units_complete;
+                return Ok(source_units_complete);
             }
 
-            return expected_episode_units
+            return Ok(expected_episode_units
                 .iter()
-                .all(|unit| successful_units.contains(unit));
+                .all(|unit| successful_units.contains(unit)));
         }
         ExpectedEpisodeResolution::AtLeastOne(expected_episode_units) => {
             if expected_episode_units.is_empty() {
-                return false;
+                return Ok(false);
             }
 
             if let Some(source_units_complete) =
                 source_video_units_are_complete(&source_video_units, &successful_units)
             {
-                return source_units_complete;
+                return Ok(source_units_complete);
             }
 
-            return expected_episode_units
+            return Ok(expected_episode_units
                 .iter()
-                .any(|unit| successful_units.contains(unit));
+                .any(|unit| successful_units.contains(unit)));
         }
         ExpectedEpisodeResolution::Unresolved => {
             if matches!(mode, ImportVerificationMode::Automatic)
@@ -205,28 +190,28 @@ async fn verify_import_with_mode(
                     current_visible_files,
                 )
             {
-                return true;
+                return Ok(true);
             }
 
-            return match mode {
+            return Ok(match mode {
                 ImportVerificationMode::Automatic => {
                     files_imported_this_pass > 0 && rejected_units.is_empty()
                 }
                 ImportVerificationMode::Manual { .. } => manual_source_coverage.unwrap_or(false),
-            };
+            });
         }
         ExpectedEpisodeResolution::NotApplicable => {}
     }
 
-    match mode {
+    Ok(match mode {
         ImportVerificationMode::Automatic => {
             if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
-                return true;
+                return Ok(true);
             }
             !successful_units.is_empty()
         }
         ImportVerificationMode::Manual { .. } => manual_source_coverage.unwrap_or(false),
-    }
+    })
 }
 
 fn source_video_units_are_complete(

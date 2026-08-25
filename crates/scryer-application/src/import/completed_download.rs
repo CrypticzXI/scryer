@@ -17,12 +17,14 @@ use crate::domain_events::{
 };
 use crate::import_workflow::{
     ResolvedCompletedDownloadOriginForImport, completed_import_result_is_retryable,
-    import_completed_download, import_completed_download_with_release_evidence,
     resolve_completed_download_origin_for_import,
 };
 use crate::stored_paths::path_to_stored_string;
 use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};
-use crate::{AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, User};
+use crate::{
+    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmissionActorSnapshot, ImportArtifact,
+    User,
+};
 use crate::{
     apply_remote_path_mappings_to_completed_download, parse_download_client_remote_path_mappings,
 };
@@ -37,7 +39,9 @@ mod verification;
 pub use check::check;
 pub(crate) use check::check_with_lookup;
 pub use execute::import;
-pub(crate) use execute::{import_with_lookup, mark_importing};
+#[cfg(test)]
+pub(crate) use execute::import_with_lookup;
+pub(crate) use execute::{import_with_lookup_and_preparation_permit, mark_importing};
 #[cfg(test)]
 pub(crate) use lookup::load_completed_download_lookup_for_items;
 pub(crate) use lookup::{
@@ -60,6 +64,58 @@ const NO_VIDEO_SECOND_RETRY_DELAY_SECS: i64 = 120;
 const NO_VIDEO_BLOCK_AFTER_UNCHANGED_ATTEMPTS: u8 = 3;
 const IMPORT_RUNNING_MESSAGE: &str = "Moving files to library.";
 const COMPLETED_PATH_GRACE_PERIOD_MINUTES: i64 = 10;
+
+fn import_artifact_source_identities(
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> Vec<DownloadSourceIdentity> {
+    let mut identities = Vec::with_capacity(2);
+    if let Some(completed) = completed {
+        identities.push(DownloadSourceIdentity::for_import_artifact(
+            Some(completed.client_id.as_str()),
+            &completed.client_type,
+            &completed.download_client_item_id,
+        ));
+    }
+    identities.push(DownloadSourceIdentity::for_import_artifact(
+        Some(td.client_id.as_str()),
+        &td.client_type,
+        &td.client_item.download_client_item_id,
+    ));
+    identities.dedup();
+    identities
+}
+
+async fn import_artifacts_for_completed_download(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> AppResult<Vec<ImportArtifact>> {
+    let identities = import_artifact_source_identities(td, completed);
+    if identities.len() > 1 {
+        tracing::debug!(
+            tracked_id = %td.id,
+            identity_aliases = identities.len(),
+            "reading import artifacts through completed identity and tracked compatibility alias"
+        );
+    }
+    let mut artifacts = Vec::new();
+    let mut seen = HashSet::new();
+    for identity in identities {
+        for artifact in app
+            .services
+            .workflow
+            .import_artifacts
+            .list_by_source_identity(&identity)
+            .await?
+        {
+            if seen.insert(artifact.id.clone()) {
+                artifacts.push(artifact);
+            }
+        }
+    }
+    Ok(artifacts)
+}
 
 pub(crate) async fn load_completed_download_lookup(
     app: &AppUseCase,
