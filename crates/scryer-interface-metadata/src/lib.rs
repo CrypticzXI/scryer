@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_application::{AppError, AppUseCase, ImageProxyKind, MovieTitleRef};
+use scryer_domain::MediaServerPlaybackEntityKind;
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 use scryer_interface_media::mappers::{from_calendar_episode, parse_iso_date};
 use scryer_interface_media::types::*;
@@ -343,12 +344,53 @@ impl MetadataQueries {
             .map(|availability| (availability.episode_id.clone(), availability))
             .collect::<HashMap<_, _>>();
 
-        Ok(episodes
-            .into_iter()
+        let playback_entities = episodes
+            .iter()
             .map(|episode| {
-                let availability = availability_by_episode.remove(&episode.id);
-                from_calendar_episode(&app, episode, availability)
+                if episode.title_facet == "movie" {
+                    (
+                        MediaServerPlaybackEntityKind::Title,
+                        episode.title_id.clone(),
+                    )
+                } else {
+                    (MediaServerPlaybackEntityKind::Episode, episode.id.clone())
+                }
             })
-            .collect())
+            .collect::<Vec<_>>();
+        let mut playback_links_by_entity = app
+            .media_server_playback_links_for_authorized_entities(&actor, &playback_entities)
+            .await
+            .map_err(to_gql_error)?;
+
+        let mut payloads = Vec::with_capacity(episodes.len());
+        for episode in episodes {
+            let availability = availability_by_episode.remove(&episode.id);
+            let entity_key = if episode.title_facet == "movie" {
+                (
+                    MediaServerPlaybackEntityKind::Title,
+                    episode.title_id.clone(),
+                )
+            } else {
+                (MediaServerPlaybackEntityKind::Episode, episode.id.clone())
+            };
+            let playback_links = playback_links_by_entity
+                .remove(&entity_key)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|link| MediaServerPlaybackLinkPayload {
+                    connection_id: link.connection_id.into(),
+                    display_name: link.display_name,
+                    provider: MediaServerProviderValue::from_domain(link.provider),
+                    href: link.href,
+                })
+                .collect();
+            payloads.push(from_calendar_episode(
+                &app,
+                episode,
+                availability,
+                playback_links,
+            ));
+        }
+        Ok(payloads)
     }
 }

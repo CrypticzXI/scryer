@@ -163,6 +163,7 @@ export type TitleRecord = {
   libraryName?: string | null;
   librarySlug?: string | null;
   monitored: boolean;
+  playbackLinks?: import("@/components/common/watch-in-media-server-menu").MediaServerPlaybackLink[];
   tags: string[];
   createdAt?: string | null;
   year?: number | null;

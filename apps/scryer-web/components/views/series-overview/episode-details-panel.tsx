@@ -7,6 +7,7 @@ import type {
   EpisodeMediaFile,
 } from "@/components/containers/series-overview-container";
 import { MediaFilesOnDiskPanel } from "@/components/common/media-files-on-disk-panel";
+import { WatchInMediaServerMenu } from "@/components/common/watch-in-media-server-menu";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { selectMediaImageVariantUrl } from "@/lib/utils/poster-images";
@@ -70,6 +71,7 @@ export function EpisodeDetailsPanel({
             </div>
           ) : null}
         </div>
+      <WatchInMediaServerMenu links={episode.playbackLinks} />
       <MediaFilesOnDiskPanel<EpisodeMediaFile>
         emptyMessage={t("title.noFilesTracked")}
         emptyHint={t("title.noFilesTrackedHint")}

@@ -2295,6 +2295,42 @@ pub trait MediaServerConnectionRepository: Send + Sync {
         &self,
         connection: scryer_domain::MediaServerConnection,
     ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn list_playback_items_for_entity(
+        &self,
+        entity_kind: scryer_domain::MediaServerPlaybackEntityKind,
+        entity_id: &str,
+    ) -> AppResult<Vec<scryer_domain::MediaServerPlaybackItem>>;
+    async fn list_playback_items_for_entities(
+        &self,
+        entities: &[(scryer_domain::MediaServerPlaybackEntityKind, String)],
+    ) -> AppResult<Vec<scryer_domain::MediaServerPlaybackItem>> {
+        let mut items = Vec::new();
+        for (entity_kind, entity_id) in entities {
+            items.extend(
+                self.list_playback_items_for_entity(*entity_kind, entity_id)
+                    .await?,
+            );
+        }
+        Ok(items)
+    }
+    async fn upsert_playback_items_for_connection(
+        &self,
+        _connection_id: &str,
+        _items: Vec<scryer_domain::MediaServerPlaybackItem>,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "incremental media server playback mapping updates are not configured".into(),
+        ))
+    }
+    /// Atomically replace every discovered playback mapping for one connection.
+    ///
+    /// Callers use this after a successful full catalog scan so stale provider
+    /// item IDs are removed without exposing a partially scanned catalog.
+    async fn replace_playback_items_for_connection(
+        &self,
+        connection_id: &str,
+        items: Vec<scryer_domain::MediaServerPlaybackItem>,
+    ) -> AppResult<()>;
     async fn compare_and_set_emby_base_url(
         &self,
         _connection_id: &str,
@@ -2517,8 +2553,44 @@ pub struct MediaServerUserGroup {
     pub users: Vec<MediaServerUser>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaServerCatalogItemKind {
+    Movie,
+    Series,
+    Episode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaServerCatalogItem {
+    pub kind: MediaServerCatalogItemKind,
+    pub provider_item_id: String,
+    pub external_ids: Vec<scryer_domain::ExternalId>,
+    pub series_provider_item_id: Option<String>,
+    pub season_number: Option<i32>,
+    pub episode_number: Option<i32>,
+    pub episode_number_end: Option<i32>,
+}
+
 #[async_trait]
 pub trait ExternalIdentityVerifier: Send + Sync {
+    /// List visible provider items for exact playback-link matching.
+    async fn scan_media_server_catalog(
+        &self,
+        _connection: &scryer_domain::MediaServerConnection,
+    ) -> AppResult<Vec<MediaServerCatalogItem>> {
+        Err(AppError::Repository(
+            "media server catalog scanning is not configured".into(),
+        ))
+    }
+
+    /// List recently added or changed provider items without clearing stale mappings.
+    async fn scan_media_server_catalog_incremental(
+        &self,
+        connection: &scryer_domain::MediaServerConnection,
+    ) -> AppResult<Vec<MediaServerCatalogItem>> {
+        self.scan_media_server_catalog(connection).await
+    }
+
     async fn verify_plex(
         &self,
         connection_id: &str,

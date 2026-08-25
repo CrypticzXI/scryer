@@ -1850,7 +1850,7 @@ h6 {
   color: var(--popover-foreground);
   max-height: calc(100vh - 1.5rem);
   overflow: hidden;
-  pointer-events: none;
+  pointer-events: auto;
   position: fixed;
   z-index: 80;
 }

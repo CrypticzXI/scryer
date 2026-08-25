@@ -103,6 +103,7 @@ async fn insert_jellyfin_media_server_connection_with_api_key(
         provider: MediaServerProvider::Jellyfin,
         display_name: "Jellyfin".to_string(),
         base_url: base_url.trim_end_matches('/').to_string(),
+        external_url: None,
         enabled: true,
         login_enabled: false,
         linking_enabled: false,

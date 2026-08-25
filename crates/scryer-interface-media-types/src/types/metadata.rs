@@ -1,4 +1,4 @@
-use super::{Date, ExternalIdPayload};
+use super::{Date, ExternalIdPayload, MediaServerPlaybackLinkPayload};
 use async_graphql::{Enum, ID, InputObject, SimpleObject};
 
 // ── Metadata Gateway (proxied from SMG) ────────────────────────────────────
@@ -244,4 +244,6 @@ pub struct CalendarEpisodePayload {
     pub monitored: bool,
     /// Compact availability derived from the episode's primary media file.
     pub media_availability: EpisodeMediaAvailabilityPayload,
+    /// Provider-native playback links available to the current user.
+    pub playback_links: Vec<MediaServerPlaybackLinkPayload>,
 }

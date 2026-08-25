@@ -122,6 +122,7 @@ export type MediaServerConnection = {
   provider: MediaServerProvider;
   displayName: string;
   baseUrl: string;
+  externalUrl: string | null;
   enabled: boolean;
   loginEnabled: boolean;
   linkingEnabled: boolean;
@@ -185,6 +186,7 @@ export type MediaServerConnectionDraft = {
   provider: MediaServerProvider;
   displayName: string;
   baseUrl: string;
+  externalUrl: string;
   enabled: boolean;
   loginEnabled: boolean;
   linkingEnabled: boolean;

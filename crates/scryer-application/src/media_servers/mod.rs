@@ -22,6 +22,7 @@ pub struct MediaServerConnectionDraft {
     pub provider: MediaServerProvider,
     pub display_name: String,
     pub base_url: String,
+    pub external_url: Option<String>,
     pub enabled: bool,
     pub login_enabled: bool,
     pub linking_enabled: bool,
@@ -49,6 +50,7 @@ pub struct MediaServerConnectionPatch {
     pub provider: Option<MediaServerProvider>,
     pub display_name: Option<String>,
     pub base_url: Option<String>,
+    pub external_url: Option<String>,
     pub enabled: Option<bool>,
     pub login_enabled: Option<bool>,
     pub linking_enabled: Option<bool>,
@@ -88,9 +90,14 @@ struct ResolvedEmbyCredentials {
 mod connections;
 mod emby;
 mod jellyfin;
+mod playback;
 mod plex;
 mod policy;
+mod scanner;
 mod users;
+
+pub use playback::MediaServerPlaybackLink;
+pub use scanner::start_background_media_server_playback_reconciliation_loop;
 
 use policy::*;
 

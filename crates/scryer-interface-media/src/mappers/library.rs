@@ -759,6 +759,7 @@ pub fn from_calendar_episode(
     app: &AppUseCase,
     ep: CalendarEpisode,
     availability: Option<EpisodeMediaAvailability>,
+    playback_links: Vec<MediaServerPlaybackLinkPayload>,
 ) -> CalendarEpisodePayload {
     let media_availability = availability
         .map(from_episode_media_availability)
@@ -792,6 +793,7 @@ pub fn from_calendar_episode(
         air_date: parse_date(ep.air_date),
         monitored: ep.monitored,
         media_availability,
+        playback_links,
     }
 }
 

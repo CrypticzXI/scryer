@@ -244,6 +244,7 @@ export type CollectionEpisode = {
   absoluteNumber: string | null;
   imageUrl?: string | null;
   monitored: boolean;
+  playbackLinks?: import("@/components/common/watch-in-media-server-menu").MediaServerPlaybackLink[];
   mediaAvailability: {
     state: "AVAILABLE" | "PENDING_SCAN" | "SCAN_FAILED" | "MISSING" | "UNMONITORED";
     primaryQualityLabel: string | null;
@@ -822,6 +823,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
                       ...episode,
                       overview: episodeDetail?.overview ?? episode.overview ?? null,
                       imageUrl: episodeDetail?.imageUrl ?? episode.imageUrl ?? null,
+                      playbackLinks:
+                        episodeDetail?.playbackLinks ?? episode.playbackLinks ?? [],
                     }
                   : episode,
               ),
