@@ -1,6 +1,13 @@
 import type { SyntheticEvent } from "react";
 
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +48,54 @@ export function WatchInMediaServerMenu({
   const stopParentNavigation = (event: SyntheticEvent) => {
     event.stopPropagation();
   };
+  const openPlaybackLink = (connectionId: string) => {
+    const link = links.find((candidate) => candidate.connectionId === connectionId);
+    if (!link) return;
+    window.open(link.href, "_blank", "noopener,noreferrer");
+  };
+
+  if (links.length > 1) {
+    return (
+      <div
+        role="group"
+        aria-label={t("label.watchIn")}
+        className={cn("flex items-center", className)}
+      >
+        <Select value="" onValueChange={openPlaybackLink}>
+          <SelectTrigger
+            size="sm"
+            chrome="toolbar"
+            aria-label={t("label.watchIn")}
+            className="h-8 shrink-0 gap-1.5 border-[var(--scry-border2)] bg-[var(--scry-inset)] px-2.5 text-[11px] font-semibold text-[#dbe4fb]"
+            onClick={stopParentNavigation}
+            onPointerDown={stopParentNavigation}
+          >
+            <SelectValue placeholder={`${t("label.watchIn")}…`} />
+          </SelectTrigger>
+          <SelectContent position="popper" align="end" className="min-w-[12rem]">
+            {links.map((link) => {
+              const provider = providerLabel[link.provider];
+              return (
+                <SelectItem key={link.connectionId} value={link.connectionId}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <img
+                      src={providerIconSrc[link.provider]}
+                      alt=""
+                      aria-hidden="true"
+                      className="h-4 w-4 shrink-0 object-contain"
+                    />
+                    <span className="truncate">
+                      {provider} — {link.displayName}
+                    </span>
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  }
 
   return (
     <div
