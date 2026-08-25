@@ -6,6 +6,9 @@ param(
   [string]$ZipPath,
 
   [Parameter(Mandatory = $true)]
+  [string]$TarballPath,
+
+  [Parameter(Mandatory = $true)]
   [string]$MsiPath,
 
   [Parameter(Mandatory = $true)]
@@ -498,6 +501,33 @@ if ($builtTrayHash -ne $packagedTrayHash) {
   throw "Packaged scryer-tray.exe hash differs from built executable."
 }
 
+# The tarball is the artifact the in-app upgrade engine downloads and extracts,
+# so its member names must be exactly the flat names the signed manifest records
+# and the helper swap resolves against the staged directory.
+$tarballCopy = Join-Path $validationRoot (Split-Path $TarballPath -Leaf)
+$tarballExtractRoot = Join-Path $validationRoot "extracted-tarball"
+Copy-Item $TarballPath $tarballCopy -Force
+New-Item -ItemType Directory -Force -Path $tarballExtractRoot | Out-Null
+tar --extract --gzip --file $tarballCopy --directory $tarballExtractRoot
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to extract the portable upgrade tarball."
+}
+$tarballMembers = Get-ChildItem -Recurse -File $tarballExtractRoot |
+  ForEach-Object { $_.FullName.Substring($tarballExtractRoot.Length + 1).Replace('\', '/') } |
+  Sort-Object
+$expectedMembers = @("LICENSE", "README.txt", "scryer-tray.exe", "scryer.exe")
+if (Compare-Object $tarballMembers $expectedMembers) {
+  throw "Portable tarball members were '$($tarballMembers -join ", ")', expected '$($expectedMembers -join ", ")'."
+}
+$tarballExe = Join-Path $tarballExtractRoot "scryer.exe"
+$tarballTray = Join-Path $tarballExtractRoot "scryer-tray.exe"
+if ($builtHash -ne (Get-FileHash $tarballExe -Algorithm SHA256).Hash) {
+  throw "Tarballed scryer.exe hash differs from built executable."
+}
+if ($builtTrayHash -ne (Get-FileHash $tarballTray -Algorithm SHA256).Hash) {
+  throw "Tarballed scryer-tray.exe hash differs from built executable."
+}
+
 $msiMetadata = Get-Content $MsiMetadataPath -Raw | ConvertFrom-Json
 $wingetMsiMetadata = Get-Content $WingetMsiMetadataPath -Raw | ConvertFrom-Json
 foreach ($metadata in @($msiMetadata, $wingetMsiMetadata)) {
@@ -530,6 +560,7 @@ Assert-MsiDistributionOwner -MsiPath $MsiPath -ExpectedOwner "msi"
 Assert-MsiDistributionOwner -MsiPath $WingetMsiPath -ExpectedOwner "winget"
 
 Invoke-DefenderScan -Path $zipCopy
+Invoke-DefenderScan -Path $tarballCopy
 Invoke-DefenderScan -Path $packagedExe
 Invoke-DefenderScan -Path $packagedTray
 Invoke-DefenderScan -Path $msiCopy

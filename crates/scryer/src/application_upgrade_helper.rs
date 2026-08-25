@@ -69,7 +69,7 @@ fn run_windows_helper(plan: &ApplicationUpgradeHelperPlan) -> Result<(), String>
             wait_for_file_release(&installed_executables(plan), started)?;
         }
         match plan.mode {
-            ApplicationUpgradeHelperMode::PortableZip => apply_portable_replacements(plan),
+            ApplicationUpgradeHelperMode::Portable => apply_portable_replacements(plan),
             ApplicationUpgradeHelperMode::Msi => run_msi_installer(plan),
         }
     })();

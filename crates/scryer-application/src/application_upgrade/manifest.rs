@@ -117,14 +117,16 @@ impl UpgradeChannel {
 }
 
 /// The container formats supported by an upgrade artifact.
+///
+/// Every portable artifact — Windows included — is a gzip-compressed tar
+/// archive. ZIP is deliberately not a supported upgrade container: the
+/// human-facing Windows `.zip` download is not part of the upgrade channel and
+/// is never named by a signed manifest.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UpgradeArchive {
     /// A gzip-compressed tar archive.
     #[serde(rename = "tar.gz")]
     TarGz,
-    /// A ZIP archive.
-    #[serde(rename = "zip")]
-    Zip,
     /// A Windows Installer package.
     #[serde(rename = "msi")]
     Msi,
@@ -274,7 +276,7 @@ fn validate_artifact(artifact: &UpgradeArtifact, index: usize, tag: &str) -> App
                 "upgrade manifest artifact {index} channel and archive must both be MSI or both be non-MSI"
             )));
         }
-        (UpgradeChannel::Portable, UpgradeArchive::TarGz | UpgradeArchive::Zip) => {
+        (UpgradeChannel::Portable, UpgradeArchive::TarGz) => {
             if artifact.members.is_empty() {
                 return Err(AppError::Validation(format!(
                     "upgrade manifest portable artifact {index} must have at least one member"
@@ -504,7 +506,7 @@ mod tests {
         assert_rejected(manifest, "channel and archive");
 
         let mut manifest = valid_manifest();
-        manifest.artifacts[2].archive = UpgradeArchive::Zip;
+        manifest.artifacts[2].archive = UpgradeArchive::TarGz;
         assert_rejected(manifest, "channel and archive");
 
         let mut manifest = valid_manifest();
@@ -552,6 +554,18 @@ mod tests {
             },
         );
         assert_rejected(manifest, "members must be sorted");
+    }
+
+    #[test]
+    fn rejects_zip_as_an_upgrade_container() {
+        let mut value = serde_json::to_value(valid_manifest()).expect("serialize manifest");
+        value["artifacts"][3]["archive"] = serde_json::Value::String("zip".to_string());
+        let raw = serde_json::to_vec(&value).expect("serialize JSON");
+        let error = parse_and_validate_upgrade_manifest(&raw).expect_err("zip is not a container");
+        assert!(
+            error.to_string().contains("invalid upgrade manifest JSON"),
+            "expected a JSON decode failure, got '{error}'"
+        );
     }
 
     #[test]

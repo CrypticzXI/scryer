@@ -177,6 +177,7 @@ struct UpgradePipelineDependencies<'a> {
     client: &'a reqwest::Client,
     artifact_url_override: Option<&'a str>,
     ensure_available_space: UpgradeSpaceCheck,
+    #[cfg_attr(windows, allow(dead_code))]
     rename: UpgradeRename,
 }
 
@@ -1242,7 +1243,6 @@ fn verify_artifact_hash(path: &Path, artifact: &UpgradeArtifact) -> AppResult<()
 fn validate_archive_members(path: &Path, artifact: &UpgradeArtifact) -> AppResult<()> {
     match artifact.archive {
         UpgradeArchive::TarGz => validate_tar_members(path, artifact),
-        UpgradeArchive::Zip => validate_zip_members(path, artifact),
         UpgradeArchive::Msi => Ok(()),
     }
 }
@@ -1263,32 +1263,6 @@ fn validate_tar_members(path: &Path, artifact: &UpgradeArtifact) -> AppResult<()
         }
         let size = entry.size();
         if actual.insert(member_path.clone(), size).is_some() {
-            return Err(AppError::Validation(format!(
-                "upgrade archive has duplicate member '{member_path}'"
-            )));
-        }
-    }
-    ensure_member_set_matches(&actual, artifact)
-}
-
-fn validate_zip_members(path: &Path, artifact: &UpgradeArtifact) -> AppResult<()> {
-    let file = fs::File::open(path).map_err(|error| {
-        AppError::Repository(format!("failed to open upgrade archive: {error}"))
-    })?;
-    let mut archive = zip::ZipArchive::new(file).map_err(archive_error)?;
-    let mut actual = BTreeMap::new();
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index).map_err(archive_error)?;
-        let member_path = archive_member_path(Path::new(entry.name()))?;
-        let mode_is_link = entry
-            .unix_mode()
-            .is_some_and(|mode| (mode & 0o170000) == 0o120000);
-        if entry.is_dir() || mode_is_link {
-            return Err(AppError::Validation(format!(
-                "upgrade archive member '{member_path}' is not a regular file"
-            )));
-        }
-        if actual.insert(member_path.clone(), entry.size()).is_some() {
             return Err(AppError::Validation(format!(
                 "upgrade archive has duplicate member '{member_path}'"
             )));
@@ -1322,7 +1296,6 @@ fn extract_archive(path: &Path, artifact: &UpgradeArtifact, destination: &Path) 
     })?;
     match artifact.archive {
         UpgradeArchive::TarGz => extract_tar(path, artifact, destination),
-        UpgradeArchive::Zip => extract_zip(path, artifact, destination),
         UpgradeArchive::Msi => Ok(()),
     }
 }
@@ -1353,41 +1326,6 @@ fn extract_tar(path: &Path, artifact: &UpgradeArtifact, destination: &Path) -> A
         set_extracted_permissions(
             &output,
             entry.header().mode().unwrap_or(0o644),
-            member.executable,
-        )?;
-    }
-    Ok(())
-}
-
-fn extract_zip(path: &Path, artifact: &UpgradeArtifact, destination: &Path) -> AppResult<()> {
-    let file = fs::File::open(path).map_err(|error| {
-        AppError::Repository(format!("failed to open upgrade archive: {error}"))
-    })?;
-    let mut archive = zip::ZipArchive::new(file).map_err(archive_error)?;
-    let expected = artifact_member_paths(artifact);
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(archive_error)?;
-        let member_path = archive_member_path(Path::new(entry.name()))?;
-        let member = expected.get(&member_path).ok_or_else(|| {
-            AppError::Validation(format!("unexpected upgrade archive member '{member_path}'"))
-        })?;
-        let mode_is_link = entry
-            .unix_mode()
-            .is_some_and(|mode| (mode & 0o170000) == 0o120000);
-        if entry.is_dir() || mode_is_link || entry.size() != member.size {
-            return Err(AppError::Validation(format!(
-                "invalid upgrade archive member '{member_path}'"
-            )));
-        }
-        let output = destination.join(&member_path);
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(archive_error)?;
-        }
-        let mut output_file = fs::File::create(&output).map_err(archive_error)?;
-        std::io::copy(&mut entry, &mut output_file).map_err(archive_error)?;
-        set_extracted_permissions(
-            &output,
-            entry.unix_mode().unwrap_or(0o644),
             member.executable,
         )?;
     }
@@ -1465,6 +1403,7 @@ fn set_extracted_permissions(_path: &Path, _mode: u32, _executable: bool) -> App
 /// This performs every check that must precede the durable journal: the
 /// installation must be portable, the executable must be resolvable and live in
 /// a directory, and no earlier backup may be overwritten.
+#[cfg_attr(windows, allow(dead_code))]
 fn portable_upgrade_paths(
     request: &ApplicationUpgradeJobRequest,
     current_version: &str,
@@ -1512,6 +1451,7 @@ fn portable_upgrade_paths(
     }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn apply_portable_upgrade(
     extracted_dir: &Path,
     artifact: &UpgradeArtifact,
@@ -1691,7 +1631,7 @@ fn build_windows_upgrade_handoff(
                 })
                 .collect();
             (
-                ApplicationUpgradeHelperMode::PortableZip,
+                ApplicationUpgradeHelperMode::Portable,
                 replacements,
                 backup_paths,
                 Some(extracted_dir.to_path_buf()),
@@ -2164,28 +2104,25 @@ mod tests {
         }
     }
 
-    fn windows_portable_zip_artifact() -> UpgradeArtifact {
+    fn windows_portable_artifact(members: Vec<UpgradeArtifactMember>) -> UpgradeArtifact {
         UpgradeArtifact {
             platform: UpgradePlatform::Windows,
             arch: UpgradeArchitecture::X86_64,
             channel: UpgradeChannel::Portable,
-            asset_name: "scryer.zip".to_string(),
-            url: "https://example.invalid/scryer.zip".to_string(),
+            asset_name: "scryer-windows-x86_64-portable.tar.gz".to_string(),
+            url: "https://example.invalid/scryer-windows-x86_64-portable.tar.gz".to_string(),
             size: 0,
             blake3: "0".repeat(64),
-            archive: UpgradeArchive::Zip,
-            members: vec![
-                UpgradeArtifactMember {
-                    path: "bin/scryer.exe".to_string(),
-                    size: 1,
-                    executable: true,
-                },
-                UpgradeArtifactMember {
-                    path: "bin/scryer-tray.exe".to_string(),
-                    size: 1,
-                    executable: true,
-                },
-            ],
+            archive: UpgradeArchive::TarGz,
+            members,
+        }
+    }
+
+    fn windows_member(path: &str, size: u64) -> UpgradeArtifactMember {
+        UpgradeArtifactMember {
+            path: path.to_string(),
+            size,
+            executable: true,
         }
     }
 
@@ -2198,7 +2135,10 @@ mod tests {
         let journal_path = PathBuf::from("C:/data/application-upgrade/journal.json");
         let direct_args = vec!["--data-dir".to_string(), "C:/data".to_string()];
         let direct_cwd = PathBuf::from("C:/working");
-        let artifact = windows_portable_zip_artifact();
+        let artifact = windows_portable_artifact(vec![
+            windows_member("bin/scryer.exe", 1),
+            windows_member("bin/scryer-tray.exe", 1),
+        ]);
         let written_at = Utc::now();
 
         for (installation_kind, tray_supervised) in [
@@ -2260,7 +2200,7 @@ mod tests {
 
             match installation_kind {
                 InstallationKind::Portable => {
-                    assert_eq!(handoff.plan.mode, ApplicationUpgradeHelperMode::PortableZip);
+                    assert_eq!(handoff.plan.mode, ApplicationUpgradeHelperMode::Portable);
                     assert_eq!(handoff.progress_phase, phases::RESTARTING);
                     assert_eq!(handoff.plan.staged_dir, Some(extracted_dir.clone()));
                     assert_eq!(handoff.plan.msi_path, None);
@@ -2324,6 +2264,222 @@ mod tests {
         assert!(error.to_string().contains("do not exactly match"));
     }
 
+    /// The Windows portable artifact travels the same `.tar.gz` container as
+    /// every other platform, so it gets the same member validation.
+    const WINDOWS_ARCHIVE_MEMBERS: [(&str, &[u8], u32); 4] = [
+        ("scryer.exe", b"windows backend".as_slice(), 0o755),
+        ("scryer-tray.exe", b"windows tray".as_slice(), 0o755),
+        ("LICENSE", b"license text".as_slice(), 0o644),
+        ("README.txt", b"readme text".as_slice(), 0o644),
+    ];
+
+    fn write_windows_archive(directory: &Path, members: &[(&str, &[u8], u32)]) -> PathBuf {
+        fs::create_dir_all(directory).expect("create archive directory");
+        let archive_path = directory.join("scryer-windows-x86_64-portable.tar.gz");
+        fs::write(&archive_path, tar_gz(members)).expect("write windows upgrade archive");
+        archive_path
+    }
+
+    fn windows_manifest_members(members: &[(&str, &[u8], u32)]) -> Vec<UpgradeArtifactMember> {
+        let mut members = members
+            .iter()
+            .map(|(path, bytes, mode)| UpgradeArtifactMember {
+                path: (*path).to_string(),
+                size: bytes.len() as u64,
+                executable: mode & 0o111 != 0,
+            })
+            .collect::<Vec<_>>();
+        members.sort_by(|left, right| left.path.cmp(&right.path));
+        members
+    }
+
+    #[test]
+    fn windows_tar_archive_members_must_match_the_signed_manifest_exactly() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = write_windows_archive(temp.path(), &WINDOWS_ARCHIVE_MEMBERS);
+        let artifact =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+        validate_archive_members(&archive_path, &artifact).expect("archive matches the manifest");
+
+        // A member the manifest never signed.
+        let mut missing = artifact.clone();
+        missing.members.retain(|member| member.path != "LICENSE");
+        assert!(
+            validate_archive_members(&archive_path, &missing)
+                .expect_err("unsigned member is rejected")
+                .to_string()
+                .contains("do not exactly match")
+        );
+
+        // A signed member the archive does not carry.
+        let mut extra = artifact.clone();
+        extra.members.push(windows_member("scryer-extra.exe", 1));
+        extra
+            .members
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        assert!(
+            validate_archive_members(&archive_path, &extra)
+                .expect_err("absent member is rejected")
+                .to_string()
+                .contains("do not exactly match")
+        );
+
+        // A member whose length differs from the signed length.
+        let mut resized = artifact.clone();
+        resized
+            .members
+            .iter_mut()
+            .find(|member| member.path == "scryer.exe")
+            .expect("backend member")
+            .size += 1;
+        assert!(
+            validate_archive_members(&archive_path, &resized)
+                .expect_err("resized member is rejected")
+                .to_string()
+                .contains("do not exactly match")
+        );
+    }
+
+    #[test]
+    fn windows_tar_archive_rejects_duplicate_and_non_regular_members() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+
+        let mut duplicated = WINDOWS_ARCHIVE_MEMBERS.to_vec();
+        duplicated.push(("scryer.exe", b"windows backend".as_slice(), 0o755));
+        let duplicate_path = write_windows_archive(&temp.path().join("duplicate"), &duplicated);
+        assert!(
+            validate_archive_members(&duplicate_path, &artifact)
+                .expect_err("duplicate member is rejected")
+                .to_string()
+                .contains("duplicate member")
+        );
+
+        let directory_path = temp.path().join("directory");
+        fs::create_dir_all(&directory_path).expect("create archive directory");
+        let archive_path = directory_path.join("scryer-windows-x86_64-portable.tar.gz");
+        let encoder = flate2::write::GzEncoder::new(
+            fs::File::create(&archive_path).expect("create archive"),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_path("bin").expect("set directory path");
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, &[][..]).expect("append directory");
+        builder
+            .into_inner()
+            .expect("finish tar")
+            .finish()
+            .expect("finish gzip");
+        assert!(
+            validate_archive_members(&archive_path, &artifact)
+                .expect_err("directory entry is rejected")
+                .to_string()
+                .contains("is not a regular file")
+        );
+    }
+
+    #[test]
+    fn windows_tar_artifact_hash_must_match_the_signed_manifest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = write_windows_archive(temp.path(), &WINDOWS_ARCHIVE_MEMBERS);
+        let bytes = fs::read(&archive_path).expect("read archive");
+
+        let mut artifact =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+        artifact.size = bytes.len() as u64;
+        artifact.blake3 = blake3::hash(&bytes).to_hex().to_string();
+        verify_artifact_hash(&archive_path, &artifact).expect("hash matches the manifest");
+
+        artifact.blake3 = blake3::hash(b"other bytes").to_hex().to_string();
+        assert!(
+            verify_artifact_hash(&archive_path, &artifact)
+                .expect_err("hash mismatch is rejected")
+                .to_string()
+                .contains("BLAKE3 hash does not match")
+        );
+    }
+
+    #[test]
+    fn windows_tar_extraction_produces_the_layout_the_helper_swap_expects() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = write_windows_archive(temp.path(), &WINDOWS_ARCHIVE_MEMBERS);
+        let artifact =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+        let extracted_dir = temp.path().join("extracted");
+        extract_archive(&archive_path, &artifact, &extracted_dir).expect("extract archive");
+
+        for (path, bytes, _) in WINDOWS_ARCHIVE_MEMBERS {
+            let output = extracted_dir.join(path);
+            assert!(
+                output.is_file(),
+                "{path} is a regular file after extraction"
+            );
+            assert_eq!(fs::read(&output).expect("read extracted member"), bytes);
+        }
+
+        // The helper swaps the two executables by their manifest member paths,
+        // so extraction must place them exactly where the plan will look.
+        let install_dir = Path::new("C:/Program Files/Scryer");
+        let replacements = windows_portable_replacements(&extracted_dir, &artifact, install_dir)
+            .expect("build helper replacements");
+        assert_eq!(
+            replacements,
+            vec![
+                ApplicationUpgradeHelperReplacement {
+                    from_staged: extracted_dir.join("scryer.exe"),
+                    to_install: install_dir.join("scryer.exe"),
+                },
+                ApplicationUpgradeHelperReplacement {
+                    from_staged: extracted_dir.join("scryer-tray.exe"),
+                    to_install: install_dir.join("scryer-tray.exe"),
+                },
+            ]
+        );
+        for replacement in &replacements {
+            assert!(
+                replacement.from_staged.is_file(),
+                "staged {} exists",
+                replacement.from_staged.display()
+            );
+        }
+    }
+
+    #[test]
+    fn windows_tar_extraction_rejects_members_the_manifest_never_signed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let archive_path = write_windows_archive(temp.path(), &WINDOWS_ARCHIVE_MEMBERS);
+        let mut artifact =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+        artifact
+            .members
+            .retain(|member| member.path != "README.txt");
+        let error = extract_archive(&archive_path, &artifact, &temp.path().join("extracted"))
+            .expect_err("unsigned member is rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected upgrade archive member")
+        );
+
+        let mut resized =
+            windows_portable_artifact(windows_manifest_members(&WINDOWS_ARCHIVE_MEMBERS));
+        resized
+            .members
+            .iter_mut()
+            .find(|member| member.path == "scryer-tray.exe")
+            .expect("tray member")
+            .size += 1;
+        let error = extract_archive(&archive_path, &resized, &temp.path().join("resized"))
+            .expect_err("resized member is rejected");
+        assert!(error.to_string().contains("invalid upgrade archive member"));
+    }
+
     #[cfg(unix)]
     fn test_request(executable_path: PathBuf) -> ApplicationUpgradeJobRequest {
         ApplicationUpgradeJobRequest {
@@ -2378,7 +2534,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn tar_gz(members: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);

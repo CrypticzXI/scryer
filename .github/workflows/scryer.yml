@@ -1381,7 +1381,26 @@ jobs:
             "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer-tray.exe", `
             LICENSE, README.txt `
             -Destination $stage -Force
+          # The human-facing download. Built with the runner's own zip tooling so
+          # no Rust ZIP crate is needed anywhere in the workspace.
           Compress-Archive -Path "$stage\*" -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      # The upgrade channel consumes tar.gz on every platform, Windows included,
+      # so the in-app upgrade engine only ever walks one container format. Member
+      # names are passed explicitly: bsdtar would otherwise prefix them with "./",
+      # which the signed manifest's member paths do not use.
+      - name: Package portable tarball
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "${{ matrix.artifact_name }}-stage"
+          tar --create --gzip `
+            --file "${{ matrix.artifact_name }}-portable.tar.gz" `
+            --directory $stage `
+            scryer.exe scryer-tray.exe LICENSE README.txt
+          if ($LASTEXITCODE -ne 0) {
+            throw "tar failed to package the portable upgrade artifact"
+          }
 
       - name: Install WiX v4
         shell: pwsh
@@ -1417,6 +1436,7 @@ jobs:
           .\.github\scripts\validate-windows-package.ps1 `
             -Architecture ${{ matrix.arch }} `
             -ZipPath "${{ matrix.artifact_name }}.zip" `
+            -TarballPath "${{ matrix.artifact_name }}-portable.tar.gz" `
             -MsiPath "${{ matrix.artifact_name }}.msi" `
             -MsiMetadataPath "${{ matrix.artifact_name }}.msi.json" `
             -WingetMsiPath "${{ matrix.artifact_name }}-winget.msi" `
@@ -1442,6 +1462,7 @@ jobs:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
             ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}-portable.tar.gz
             ${{ matrix.artifact_name }}.msi
             ${{ matrix.artifact_name }}.msi.json
             ${{ matrix.artifact_name }}-winget.msi
@@ -1944,6 +1965,8 @@ jobs:
             scryer-darwin-x86_64-portable.tar.gz \
             scryer-linux-arm64-portable.tar.gz \
             scryer-linux-x86_64-portable.tar.gz \
+            scryer-windows-arm64-portable.tar.gz \
+            scryer-windows-x86_64-portable.tar.gz \
             scryer-windows-arm64.zip \
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
@@ -1962,6 +1985,8 @@ jobs:
             scryer-darwin-x86_64-portable.tar.gz \
             scryer-linux-arm64-portable.tar.gz \
             scryer-linux-x86_64-portable.tar.gz \
+            scryer-windows-arm64-portable.tar.gz \
+            scryer-windows-x86_64-portable.tar.gz \
             scryer-windows-arm64.zip \
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \
@@ -2283,6 +2308,8 @@ jobs:
             scryer-darwin-x86_64-portable.tar.gz \
             scryer-linux-arm64-portable.tar.gz \
             scryer-linux-x86_64-portable.tar.gz \
+            scryer-windows-arm64-portable.tar.gz \
+            scryer-windows-x86_64-portable.tar.gz \
             scryer-windows-arm64.zip \
             scryer-windows-x86_64.zip \
             scryer-windows-arm64.msi \

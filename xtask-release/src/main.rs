@@ -47,7 +47,6 @@ use xtask_support::{
     BOLD, GREEN, RESET, TaskContext, YELLOW, command_available, ok, prefixed_ok, prefixed_step,
     require_command, run_capture, run_checked, run_streaming, step, warn,
 };
-use zip::ZipArchive;
 
 const PLUGIN_SDK_PACKAGE: &str = "scryer-plugin-sdk";
 const PLUGIN_SDK_TAG_PREFIX: &str = "plugin-sdk-v";
@@ -1255,19 +1254,22 @@ const UPGRADE_MANIFEST_ASSETS: [UpgradeManifestAssetSpec; 8] = [
         archive: UpgradeArchive::TarGz,
         asset_name: "scryer-darwin-arm64-portable.tar.gz",
     },
+    // The human-facing `scryer-windows-<arch>.zip` download is deliberately not
+    // listed here: the upgrade channel ships the same `.tar.gz` container on
+    // every platform so the engine needs exactly one archive reader.
     UpgradeManifestAssetSpec {
         platform: UpgradePlatform::Windows,
         arch: UpgradeArchitecture::X86_64,
         channel: UpgradeChannel::Portable,
-        archive: UpgradeArchive::Zip,
-        asset_name: "scryer-windows-x86_64.zip",
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-windows-x86_64-portable.tar.gz",
     },
     UpgradeManifestAssetSpec {
         platform: UpgradePlatform::Windows,
         arch: UpgradeArchitecture::Arm64,
         channel: UpgradeChannel::Portable,
-        archive: UpgradeArchive::Zip,
-        asset_name: "scryer-windows-arm64.zip",
+        archive: UpgradeArchive::TarGz,
+        asset_name: "scryer-windows-arm64-portable.tar.gz",
     },
     UpgradeManifestAssetSpec {
         platform: UpgradePlatform::Windows,
@@ -1366,7 +1368,6 @@ fn collect_upgrade_manifest_artifact(
     })?;
     let members = match spec.archive {
         UpgradeArchive::TarGz => collect_tar_gz_members(&path, spec.asset_name)?,
-        UpgradeArchive::Zip => collect_zip_members(&path, spec.asset_name)?,
         UpgradeArchive::Msi => Vec::new(),
     };
 
@@ -1421,36 +1422,6 @@ fn collect_tar_gz_members(path: &Path, asset_name: &str) -> Result<Vec<UpgradeAr
                 .with_context(|| format!("failed to read tar member mode in {asset_name}"))?
                 & 0o111
                 != 0,
-        });
-    }
-    sort_and_validate_archive_members(&mut members, asset_name)?;
-    Ok(members)
-}
-
-fn collect_zip_members(path: &Path, asset_name: &str) -> Result<Vec<UpgradeArtifactMember>> {
-    let file =
-        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("failed to read ZIP archive {}", path.display()))?;
-    let mut members = Vec::new();
-    for index in 0..archive.len() {
-        let entry = archive
-            .by_index(index)
-            .with_context(|| format!("failed to read ZIP entry {index} in {}", path.display()))?;
-        if entry.is_dir() {
-            continue;
-        }
-        let unix_mode = entry.unix_mode();
-        if unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000) {
-            bail!("upgrade archive {asset_name} contains a link entry");
-        }
-        let member_path = archive_member_path(Path::new(entry.name()), asset_name)?;
-        // ZIP producers do not always set Unix external attributes. In that case,
-        // use a safe non-executable fallback rather than inferring permissions.
-        members.push(UpgradeArtifactMember {
-            path: member_path,
-            size: entry.size(),
-            executable: unix_mode.is_some_and(|mode| mode & 0o111 != 0),
         });
     }
     sort_and_validate_archive_members(&mut members, asset_name)?;
@@ -4151,8 +4122,9 @@ mod tests {
         for spec in UPGRADE_MANIFEST_ASSETS {
             let path = artifacts_dir.join(spec.asset_name);
             match spec.archive {
-                UpgradeArchive::TarGz => write_fixture_tar_gz(&path, spec.asset_name),
-                UpgradeArchive::Zip => write_fixture_zip(&path, spec.asset_name),
+                UpgradeArchive::TarGz => {
+                    write_fixture_tar_gz(&path, spec.asset_name, fixture_members(spec.platform))
+                }
                 UpgradeArchive::Msi => {
                     fs::write(&path, format!("fixture MSI {}\n", spec.asset_name))
                         .expect("write fixture MSI");
@@ -4161,39 +4133,38 @@ mod tests {
         }
     }
 
-    fn write_fixture_tar_gz(path: &Path, asset_name: &str) {
+    /// The member layout each platform's portable tarball actually ships.
+    fn fixture_members(platform: UpgradePlatform) -> &'static [(&'static str, u32)] {
+        match platform {
+            UpgradePlatform::Windows => &[
+                ("scryer.exe", 0o755),
+                ("scryer-tray.exe", 0o755),
+                ("LICENSE", 0o644),
+                ("README.txt", 0o644),
+            ],
+            UpgradePlatform::Darwin | UpgradePlatform::Linux => &[("bin/scryer", 0o755)],
+        }
+    }
+
+    fn write_fixture_tar_gz(path: &Path, asset_name: &str, members: &[(&str, u32)]) {
         let file = fs::File::create(path).expect("create fixture tarball");
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
-        let content = format!("fixture tar member for {asset_name}\n");
-        let mut header = tar::Header::new_gnu();
-        header.set_size(content.len() as u64);
-        header.set_mode(0o755);
-        header.set_mtime(0);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_cksum();
-        builder
-            .append_data(&mut header, "bin/scryer", content.as_bytes())
-            .expect("append fixture tar member");
+        for (member, mode) in members {
+            let content = format!("fixture tar member {member} for {asset_name}\n");
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(*mode);
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, member, content.as_bytes())
+                .expect("append fixture tar member");
+        }
         let encoder = builder.into_inner().expect("finish fixture tar archive");
         encoder.finish().expect("finish fixture gzip stream");
-    }
-
-    fn write_fixture_zip(path: &Path, asset_name: &str) {
-        let file = fs::File::create(path).expect("create fixture ZIP");
-        let mut writer = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .last_modified_time(zip::DateTime::default())
-            .unix_permissions(0o755);
-        writer
-            .start_file("scryer.exe", options)
-            .expect("start fixture ZIP member");
-        writer
-            .write_all(format!("fixture ZIP member for {asset_name}\n").as_bytes())
-            .expect("write fixture ZIP member");
-        writer.finish().expect("finish fixture ZIP");
     }
 
     #[test]

@@ -44,7 +44,8 @@ pub struct ApplicationUpgradeHelperPlan {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationUpgradeHelperMode {
-    PortableZip,
+    /// Swap the executables staged from a portable `.tar.gz` upgrade artifact.
+    Portable,
     Msi,
 }
 
@@ -104,7 +105,7 @@ impl ApplicationUpgradeHelperPlan {
         }
 
         match self.mode {
-            ApplicationUpgradeHelperMode::PortableZip => {
+            ApplicationUpgradeHelperMode::Portable => {
                 let staged_dir = self.staged_dir.as_deref().ok_or_else(|| {
                     "portable upgrade helper plan requires staged_dir".to_string()
                 })?;
@@ -252,7 +253,7 @@ pub fn should_restore_tray_startup(
 /// produces false negatives; the process wait is the gate instead.
 pub fn helper_write_probe_required(mode: ApplicationUpgradeHelperMode) -> bool {
     match mode {
-        ApplicationUpgradeHelperMode::PortableZip => true,
+        ApplicationUpgradeHelperMode::Portable => true,
         ApplicationUpgradeHelperMode::Msi => false,
     }
 }
@@ -325,7 +326,7 @@ mod tests {
     fn portable_plan() -> ApplicationUpgradeHelperPlan {
         ApplicationUpgradeHelperPlan {
             schema: APPLICATION_UPGRADE_HELPER_PLAN_SCHEMA.to_string(),
-            mode: ApplicationUpgradeHelperMode::PortableZip,
+            mode: ApplicationUpgradeHelperMode::Portable,
             owner: ApplicationUpgradeHelperOwner::Tray,
             journal_path: PathBuf::from("C:/data/application-upgrade/journal.json"),
             staged_dir: Some(PathBuf::from(
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn write_probe_is_required_only_for_portable_replacements() {
         assert!(helper_write_probe_required(
-            ApplicationUpgradeHelperMode::PortableZip
+            ApplicationUpgradeHelperMode::Portable
         ));
         assert!(!helper_write_probe_required(
             ApplicationUpgradeHelperMode::Msi
