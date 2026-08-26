@@ -1623,3 +1623,13 @@ pub enum PendingReleaseStatusValue {
     /// Candidate needs manual review.
     NeedsReview,
 }
+
+/// Arbitration role of an active pending release candidate.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum PendingReleaseRoleValue {
+    /// The highest-ranked active candidate for its overlap group.
+    Primary,
+    /// A lower-ranked active candidate retained as a fallback.
+    Fallback,
+}

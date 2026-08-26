@@ -279,7 +279,7 @@ impl JobKey {
                 "Create a daily backup snapshot and keep the newest successful automatic backups."
             }
             Self::PendingReleaseProcessing => {
-                "Process delayed pending releases whose hold period has expired."
+                "Compatibility job; pending releases are re-evaluated during RSS sync."
             }
             Self::StagedNzbPrune => "Prune expired staged NZB artifacts.",
             Self::DiscoverySync => {
@@ -347,7 +347,6 @@ impl JobKey {
             | Self::PluginRegistryRefresh
             | Self::Housekeeping
             | Self::HealthChecks
-            | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
             Self::DiscoverySync => JobScheduleKind::StartupAndInterval,
             Self::AutoBackup => JobScheduleKind::DailyAtTime,
@@ -360,6 +359,7 @@ impl JobKey {
             | Self::MediaFileDeletion
             | Self::RecycleBinRestore
             | Self::RecycleBinPurge
+            | Self::PendingReleaseProcessing
             | Self::AcquisitionSearch
             | Self::ApplicationUpgrade => JobScheduleKind::Manual,
         }
@@ -377,7 +377,7 @@ impl JobKey {
             Self::Housekeeping => "Every 24 hours",
             Self::HealthChecks => "Every 6 hours",
             Self::AutoBackup => "Daily at configured local time",
-            Self::PendingReleaseProcessing => "Every minute",
+            Self::PendingReleaseProcessing => "Re-evaluated during RSS sync",
             Self::StagedNzbPrune => "Every hour",
             Self::DiscoverySync => "Dynamic discovery evaluator with daily backstop",
             Self::LibraryScanMovies
@@ -404,7 +404,6 @@ impl JobKey {
             Self::PluginRegistryRefresh => Some(24 * 3600),
             Self::Housekeeping => Some(24 * 3600),
             Self::HealthChecks => Some(6 * 3600),
-            Self::PendingReleaseProcessing => Some(60),
             Self::StagedNzbPrune => Some(3600),
             Self::DiscoverySync => Some(24 * 3600),
             _ => None,
@@ -825,6 +824,18 @@ mod tests {
 
         assert_eq!(definition.schedule.description, "Every 2 hours");
         assert_eq!(definition.schedule.initial_delay_seconds, None);
+    }
+
+    #[test]
+    fn pending_release_processing_is_not_scheduled_separately_from_rss() {
+        let definition = JobDefinition::from_key(JobKey::PendingReleaseProcessing, None);
+
+        assert_eq!(definition.schedule.kind, JobScheduleKind::Manual);
+        assert_eq!(definition.schedule.interval_seconds, None);
+        assert_eq!(
+            definition.schedule.description,
+            "Re-evaluated during RSS sync"
+        );
     }
 
     #[test]

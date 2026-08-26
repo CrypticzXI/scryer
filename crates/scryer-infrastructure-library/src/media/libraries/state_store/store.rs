@@ -7,9 +7,9 @@ use scryer_application::{
     AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
     AcquisitionScopeStatus, AppResult, BlocklistRepository, DownloadSourceKind,
     HousekeepingMediaFileRootRow, HousekeepingRepository, LibraryProbeRepository,
-    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleasePageSort,
-    PendingReleaseRepository, PendingReleaseStatus, PendingReleasesPageQuery, ReleaseDecision,
-    ReleaseSeedMinimums, SubtitleDownloadRepository,
+    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleaseObservation,
+    PendingReleasePageSort, PendingReleaseRepository, PendingReleaseRole, PendingReleaseStatus,
+    PendingReleasesPageQuery, ReleaseDecision, ReleaseSeedMinimums, SubtitleDownloadRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -1486,9 +1486,10 @@ impl HousekeepingRepository for HousekeepingStore {
 const PENDING_RELEASE_COLUMNS: &str =
     "id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
     source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
-    added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
+    added_at, last_observed_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
     minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
-    season_pack_seed_time_minutes, seeders";
+    season_pack_seed_time_minutes, seeders, release_identity, coverage_identity, role,
+    last_decision_code, release_age_unknown";
 
 /// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
 /// so the paged read can JOIN `titles` for library scoping without ambiguous
@@ -1496,9 +1497,10 @@ const PENDING_RELEASE_COLUMNS: &str =
 const PENDING_RELEASE_COLUMNS_PR: &str =
     "pr.id, pr.wanted_item_id, pr.title_id, pr.release_title, pr.release_url, pr.release_size_bytes,
     pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.indexer_id, pr.release_guid,
-    pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash,
+    pr.added_at, pr.last_observed_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash,
     pr.minimum_seed_ratio, pr.minimum_seed_time_minutes, pr.season_pack_seed_ratio,
-    pr.season_pack_seed_time_minutes, pr.seeders";
+    pr.season_pack_seed_time_minutes, pr.seeders, pr.release_identity, pr.coverage_identity,
+    pr.role, pr.last_decision_code, pr.release_age_unknown";
 
 fn pending_release_row_to_item(
     row: &SqlRow,
@@ -1521,6 +1523,7 @@ fn pending_release_row_to_item(
         indexer_id: row.opt_text("indexer_id")?,
         release_guid: row.opt_text("release_guid")?,
         added_at: required_timestamp_text(row, "added_at")?,
+        last_observed_at: required_timestamp_text(row, "last_observed_at")?,
         delay_until: required_timestamp_text(row, "delay_until")?,
         status: PendingReleaseStatus::parse(&status).ok_or_else(|| {
             scryer_application::AppError::Repository("invalid pending release status".into())
@@ -1543,6 +1546,13 @@ fn pending_release_row_to_item(
         // Rows parked before migration 0169 read back as `None`, which the
         // promotion re-judge treats as unknown — and unknown stays eligible.
         seeders: row.opt_i64("seeders")?,
+        release_identity: row.text("release_identity")?,
+        coverage_identity: row.text("coverage_identity")?,
+        role: PendingReleaseRole::parse(&row.text("role")?).ok_or_else(|| {
+            scryer_application::AppError::Repository("invalid pending release role".into())
+        })?,
+        last_decision_code: row.opt_text("last_decision_code")?,
+        release_age_unknown: row.bool("release_age_unknown")?,
     })
 }
 
@@ -1563,6 +1573,7 @@ fn pending_release_insert_args(
     datastore: &StoreDatastore,
     release: &PendingRelease,
     encryption_key: Option<&EncryptionKey>,
+    observation: &PendingReleaseObservation,
 ) -> AppResult<Vec<SqlArg>> {
     Ok(vec![
         SqlArg::Text(release.id.clone()),
@@ -1578,7 +1589,8 @@ fn pending_release_insert_args(
         SqlArg::OptText(release.indexer_id.clone()),
         SqlArg::OptText(release.release_guid.clone()),
         timestamp_arg_for_datastore(datastore, &release.added_at)?,
-        timestamp_arg_for_datastore(datastore, &release.delay_until)?,
+        timestamp_arg_for_datastore(datastore, &observation.last_observed_at)?,
+        timestamp_arg_for_datastore(datastore, &observation.eligible_at)?,
         SqlArg::Text(release.status.as_str().to_string()),
         opt_timestamp_arg_for_datastore(datastore, release.grabbed_at.as_deref())?,
         SqlArg::OptText(encrypt_pending_release_source_password(
@@ -1592,6 +1604,11 @@ fn pending_release_insert_args(
         SqlArg::OptF64(release.seed_minimums.season_pack_seed_ratio),
         SqlArg::OptI64(release.seed_minimums.season_pack_seed_time_minutes),
         SqlArg::OptI64(release.seeders),
+        SqlArg::Text(observation.release_identity.clone()),
+        SqlArg::Text(observation.coverage_identity.clone()),
+        SqlArg::Text(observation.role.as_str().to_string()),
+        SqlArg::OptText(observation.latest_decision_code.clone()),
+        SqlArg::Bool(observation.release_age_unknown),
     ])
 }
 
@@ -1612,22 +1629,204 @@ fn decrypt_pending_release_source_password(
 #[async_trait]
 impl PendingReleaseRepository for PendingReleaseStore {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String> {
+        let observation = PendingReleaseObservation::derived(release, PendingReleaseRole::Primary);
+        self.insert_pending_release_observation(release, &observation)
+            .await
+    }
+
+    async fn insert_pending_release_with_role(
+        &self,
+        release: &PendingRelease,
+        role: PendingReleaseRole,
+    ) -> AppResult<String> {
+        let observation = PendingReleaseObservation::derived(release, role);
+        self.insert_pending_release_observation(release, &observation)
+            .await
+    }
+
+    async fn insert_pending_release_observation(
+        &self,
+        release: &PendingRelease,
+        observation: &PendingReleaseObservation,
+    ) -> AppResult<String> {
         let encryption_key = self.encryption_key()?;
+
+        // A row first seen without a publish timestamp retains its original
+        // clock. A later observation may carry a GUID or info hash, so match
+        // the unknown row by the listing facts rather than its old identity.
+        if release
+            .published_at
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            let provisional_sql = "SELECT id FROM pending_releases
+                WHERE coverage_identity = {}
+                  AND release_age_unknown = {}
+                  AND status IN ('waiting', 'standby', 'processing', 'needs_review')
+                  AND lower(trim(release_title)) = {}
+                  AND lower(trim(COALESCE(indexer_id, indexer_source, 'unknown'))) = {}
+                ORDER BY added_at ASC, id ASC
+                LIMIT 1";
+            let normalized_title = release.release_title.trim().to_ascii_lowercase();
+            let normalized_indexer = release
+                .indexer_id
+                .as_deref()
+                .or(release.indexer_source.as_deref())
+                .unwrap_or("unknown")
+                .trim()
+                .to_ascii_lowercase();
+            if let Some(existing) = SqlRuntime::fetch_all(
+                self.datastore.read_exec(),
+                provisional_sql,
+                &[
+                    SqlArg::Text(observation.coverage_identity.clone()),
+                    SqlArg::Bool(true),
+                    SqlArg::Text(normalized_title),
+                    SqlArg::Text(normalized_indexer),
+                ],
+            )
+            .await?
+            .into_iter()
+            .next()
+            {
+                let existing_id = existing.text("id")?;
+                execute_datastore_write(
+                    &self.datastore,
+                    "fill_pending_release_published_at",
+                    "UPDATE pending_releases
+                        SET release_url = {},
+                            source_kind = {},
+                            release_size_bytes = {},
+                            release_score = {},
+                            scoring_log_json = {},
+                            source_password = COALESCE({}, source_password),
+                            indexer_source = {},
+                            indexer_id = {},
+                            release_guid = {},
+                            info_hash = {},
+                            minimum_seed_ratio = {},
+                            minimum_seed_time_minutes = {},
+                            season_pack_seed_ratio = {},
+                            season_pack_seed_time_minutes = {},
+                            seeders = {},
+                            delay_until = {},
+                            status = 'waiting',
+                            role = {},
+                            last_decision_code = COALESCE({}, last_decision_code),
+                            published_at = {},
+                            release_identity = {},
+                            release_age_unknown = {},
+                            last_observed_at = {}
+                      WHERE id = {}",
+                    vec![
+                        SqlArg::OptText(release.release_url.clone()),
+                        SqlArg::OptText(
+                            release.source_kind.map(|value| value.as_str().to_string()),
+                        ),
+                        SqlArg::OptI64(release.release_size_bytes),
+                        SqlArg::I32(release.release_score),
+                        opt_json_arg_for_datastore(
+                            &self.datastore,
+                            release.scoring_log_json.as_deref(),
+                        )?,
+                        SqlArg::OptText(encrypt_pending_release_source_password(
+                            encryption_key.as_ref(),
+                            release.source_password.as_ref(),
+                        )?),
+                        SqlArg::OptText(release.indexer_source.clone()),
+                        SqlArg::OptText(release.indexer_id.clone()),
+                        SqlArg::OptText(release.release_guid.clone()),
+                        SqlArg::OptText(release.info_hash.clone()),
+                        SqlArg::OptF64(release.seed_minimums.min_seed_ratio),
+                        SqlArg::OptI64(release.seed_minimums.min_seed_time_minutes),
+                        SqlArg::OptF64(release.seed_minimums.season_pack_seed_ratio),
+                        SqlArg::OptI64(release.seed_minimums.season_pack_seed_time_minutes),
+                        SqlArg::OptI64(release.seeders),
+                        timestamp_arg_for_datastore(&self.datastore, &observation.eligible_at)?,
+                        SqlArg::Text(observation.role.as_str().to_string()),
+                        SqlArg::OptText(observation.latest_decision_code.clone()),
+                        opt_timestamp_arg_for_datastore(
+                            &self.datastore,
+                            release.published_at.as_deref(),
+                        )?,
+                        SqlArg::Text(observation.release_identity.clone()),
+                        SqlArg::Bool(false),
+                        timestamp_arg_for_datastore(
+                            &self.datastore,
+                            &observation.last_observed_at,
+                        )?,
+                        SqlArg::Text(existing_id.clone()),
+                    ],
+                )
+                .await?;
+                return Ok(existing_id);
+            }
+        }
+
         execute_datastore_write(
             &self.datastore,
             "insert_pending_release",
             "INSERT INTO pending_releases
              (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
               source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
-              added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
+              added_at, last_observed_at, delay_until, status, grabbed_at, source_password, published_at, info_hash,
               minimum_seed_ratio, minimum_seed_time_minutes, season_pack_seed_ratio,
-              season_pack_seed_time_minutes, seeders)
+              season_pack_seed_time_minutes, seeders, release_identity, coverage_identity, role,
+              last_decision_code, release_age_unknown)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-                     {}, {}, {}, {}, {})",
-            pending_release_insert_args(&self.datastore, release, encryption_key.as_ref())?,
+                     {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+             ON CONFLICT(release_identity)
+             WHERE status IN ('waiting', 'standby', 'processing', 'needs_review')
+             DO UPDATE SET
+                release_url = excluded.release_url,
+                source_kind = excluded.source_kind,
+                release_size_bytes = excluded.release_size_bytes,
+                release_score = excluded.release_score,
+                scoring_log_json = excluded.scoring_log_json,
+                indexer_source = excluded.indexer_source,
+                indexer_id = excluded.indexer_id,
+                release_guid = excluded.release_guid,
+                source_password = COALESCE(excluded.source_password, pending_releases.source_password),
+                info_hash = excluded.info_hash,
+                minimum_seed_ratio = excluded.minimum_seed_ratio,
+                minimum_seed_time_minutes = excluded.minimum_seed_time_minutes,
+                season_pack_seed_ratio = excluded.season_pack_seed_ratio,
+                season_pack_seed_time_minutes = excluded.season_pack_seed_time_minutes,
+                seeders = excluded.seeders,
+                delay_until = excluded.delay_until,
+                published_at = COALESCE(pending_releases.published_at, excluded.published_at),
+                release_age_unknown = excluded.release_age_unknown
+                    AND pending_releases.published_at IS NULL,
+                coverage_identity = excluded.coverage_identity,
+                role = excluded.role,
+                last_decision_code = COALESCE(excluded.last_decision_code, pending_releases.last_decision_code),
+                last_observed_at = excluded.last_observed_at",
+            pending_release_insert_args(
+                &self.datastore,
+                release,
+                encryption_key.as_ref(),
+                observation,
+            )?,
         )
         .await?;
-        Ok(release.id.clone())
+        let persisted = SqlRuntime::fetch_all(
+            self.datastore.read_exec(),
+            "SELECT id FROM pending_releases
+              WHERE release_identity = {}
+                AND status IN ('waiting', 'standby', 'processing', 'needs_review')
+              ORDER BY added_at ASC, id ASC
+              LIMIT 1",
+            &[SqlArg::Text(observation.release_identity.clone())],
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            scryer_application::AppError::Repository(
+                "pending release observation was not persisted".to_string(),
+            )
+        })?;
+        persisted.text("id")
     }
 
     async fn list_expired_pending_releases(&self, now: &str) -> AppResult<Vec<PendingRelease>> {
@@ -1648,12 +1847,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
     }
 
     async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
-        // `needs_review` rows are parked, not delayed, but they are open work and
-        // belong in the same review surface as `waiting` (§9 decision 2).
+        // Merge candidates remain actionable; manual-review rows are deliberately
+        // excluded so automatic processing cannot grab them.
         let sql = format!(
             "SELECT {PENDING_RELEASE_COLUMNS}
                FROM pending_releases
-              WHERE status IN ('waiting', 'needs_review')
+              WHERE status IN ('waiting', 'standby')
               ORDER BY delay_until ASC"
         );
         let encryption_key = self.encryption_key()?;
@@ -1661,6 +1860,26 @@ impl PendingReleaseRepository for PendingReleaseStore {
             self.datastore.read_exec(),
             &sql,
             &[],
+            encryption_key.as_ref(),
+        )
+        .await
+    }
+
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<PendingRelease>> {
+        let sql = format!(
+            "SELECT {PENDING_RELEASE_COLUMNS}
+              FROM pending_releases
+              WHERE release_age_unknown = {{}}
+                AND status IN ('waiting', 'standby', 'processing', 'needs_review')
+              ORDER BY indexer_id ASC, added_at ASC, id ASC"
+        );
+        let encryption_key = self.encryption_key()?;
+        fetch_pending_releases(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Bool(true)],
             encryption_key.as_ref(),
         )
         .await
@@ -1824,6 +2043,44 @@ impl PendingReleaseRepository for PendingReleaseStore {
         Ok(())
     }
 
+    async fn expire_pending_release(&self, id: &str, decision_code: &str) -> AppResult<()> {
+        execute_datastore_write(
+            &self.datastore,
+            "expire_pending_release",
+            "UPDATE pending_releases
+                SET status = 'expired', last_decision_code = {}
+              WHERE id = {}",
+            vec![
+                SqlArg::Text(decision_code.to_string()),
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        id: &str,
+        decision_code: &str,
+    ) -> AppResult<()> {
+        execute_datastore_write(
+            &self.datastore,
+            "mark_release_age_unknown_pending_release_needs_review",
+            "UPDATE pending_releases
+                SET status = 'needs_review', last_decision_code = {}
+              WHERE id = {}
+                AND release_age_unknown = 1
+                AND status IN ('waiting', 'standby', 'processing')",
+            vec![
+                SqlArg::Text(decision_code.to_string()),
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn update_pending_release_delay_until(
         &self,
         id: &str,
@@ -1965,23 +2222,23 @@ impl PendingReleaseRepository for PendingReleaseStore {
         Ok(rows > 0)
     }
 
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        wanted_item_id: &str,
-        except_id: &str,
+        lower_or_equal_ids: &[String],
     ) -> AppResult<()> {
-        execute_datastore_write(
-            &self.datastore,
-            "supersede_pending_releases_for_acquisition_scope_state",
-            "UPDATE pending_releases
-                SET status = 'superseded'
-              WHERE wanted_item_id = {} AND id != {} AND status = 'waiting'",
-            vec![
-                SqlArg::Text(wanted_item_id.to_string()),
-                SqlArg::Text(except_id.to_string()),
-            ],
-        )
-        .await?;
+        for id in lower_or_equal_ids {
+            execute_datastore_write(
+                &self.datastore,
+                "retire_lower_or_equal_overlapping_pending_release",
+                "UPDATE pending_releases
+                    SET status = 'superseded',
+                        last_decision_code = 'grabbed_overlap_retired'
+                  WHERE id = {}
+                    AND status IN ('waiting', 'standby', 'processing', 'needs_review')",
+                vec![SqlArg::Text(id.clone())],
+            )
+            .await?;
+        }
         Ok(())
     }
 

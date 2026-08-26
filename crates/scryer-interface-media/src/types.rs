@@ -1027,6 +1027,10 @@ pub struct PendingReleasePayload {
     pub added_at: DateTime<Utc>,
     /// Time before which the release is held, in UTC.
     pub delay_until: DateTime<Utc>,
+    /// Current machine-readable reason this release is held, or null when none was recorded.
+    pub last_decision_code: Option<String>,
+    /// Arbitration role independent of the release lifecycle state.
+    pub role: PendingReleaseRoleValue,
     /// Lifecycle state of the pending release.
     pub status: PendingReleaseStatusValue,
 }

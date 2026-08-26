@@ -175,6 +175,36 @@ fn cross_indexer_release_dedup_prefers_higher_priority_source() {
 }
 
 #[test]
+fn cross_indexer_release_dedup_prefers_profile_protocol_before_indexer_priority() {
+    let results = vec![
+        make_search_result(
+            "Preferred Torrent",
+            "Signal.Run.S01E12.720p.WEB-DL.x264-NTb",
+            "https://example.test/torrent",
+            DownloadSourceKind::TorrentFile,
+        ),
+        make_search_result(
+            "Higher Priority Usenet",
+            "Signal.Run.S01E12.720p.WEB-DL.x264-NTb",
+            "https://example.test/usenet",
+            DownloadSourceKind::NzbUrl,
+        ),
+    ];
+
+    let deduped = dedupe_cross_indexer_release_results(
+        results,
+        &HashMap::from([
+            ("Preferred Torrent".to_string(), 50),
+            ("Higher Priority Usenet".to_string(), 10),
+        ]),
+        "torrent",
+    );
+
+    assert_eq!(deduped.len(), 1);
+    assert_eq!(deduped[0].source, "Preferred Torrent");
+}
+
+#[test]
 fn release_blocklist_matches_magnet_and_legacy_http_aliases_without_changing_search_key() {
     let mut result = make_search_result(
         "Torrent Indexer",

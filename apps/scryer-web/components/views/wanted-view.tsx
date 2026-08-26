@@ -1415,6 +1415,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </div>
+                    <div>
+                      <span className="block">{t("pending.colReason")}</span>
+                      <span className="text-foreground">{item.lastDecisionCode ?? "—"}</span>
+                    </div>
+                    <div>
+                      <span className="block">{t("pending.colRole")}</span>
+                      <span className="text-foreground">{item.role === "PRIMARY" ? t("pending.role.primary") : t("pending.role.fallback")}</span>
+                    </div>
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {formatDate(item.addedAt, dateTimeFormat)}
@@ -1472,6 +1480,8 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                   <TableHead className="w-32 text-center">{t("pending.colIndexer")}</TableHead>
                   <TableHead className="w-32 text-center">{t("pending.colAddedAt")}</TableHead>
                   <TableHead className="w-32 text-center">{t("pending.colDelayUntil")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("pending.colReason")}</TableHead>
+                  <TableHead className="w-24 text-center">{t("pending.colRole")}</TableHead>
                   <TableActionsHead className="w-24">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
@@ -1518,6 +1528,12 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                             {formatTimeRemaining(item.delayUntil, t)}
                           </span>
                         </TableCell>
+                        <TableCell className="truncate text-center text-xs" title={item.lastDecisionCode ?? undefined}>
+                          {item.lastDecisionCode ?? "—"}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          {item.role === "PRIMARY" ? t("pending.role.primary") : t("pending.role.fallback")}
+                        </TableCell>
                         <TableActionsCell className="w-24">
                           <div className="flex justify-center gap-1">
                             <IconButton
@@ -1543,7 +1559,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                       </TableRow>
                       {expanded ? (
                         <TableRow>
-                          <TableCell colSpan={10} className="bg-background/30 p-4">
+                          <TableCell colSpan={12} className="bg-background/30 p-4">
                             <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
                               <div>
                                 <span className="block text-muted-foreground">Title ID</span>
@@ -1561,6 +1577,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                                 <span className="block text-muted-foreground">{t("pending.colDelayUntil")}</span>
                                 <span className="text-foreground">{formatDate(item.delayUntil, dateTimeFormat)}</span>
                               </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colReason")}</span>
+                                <span className="text-foreground">{item.lastDecisionCode ?? "—"}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colRole")}</span>
+                                <span className="text-foreground">{item.role === "PRIMARY" ? t("pending.role.primary") : t("pending.role.fallback")}</span>
+                              </div>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1570,7 +1594,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                 })}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground">
+                    <TableCell colSpan={12} className="text-center text-muted-foreground">
                       {t("pending.noItems")}
                     </TableCell>
                   </TableRow>

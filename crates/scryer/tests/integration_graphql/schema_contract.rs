@@ -5560,6 +5560,14 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
         assert_eq!(field["type"]["name"], "ID", "{label}");
     };
+    let assert_settings_non_null_boolean = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "Boolean", "{label}");
+    };
+    let assert_settings_optional_boolean = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "Boolean", "{label}");
+    };
     let assert_settings_non_null_id_list = |field: Value, label: &str| {
         assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
         assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
@@ -5586,6 +5594,16 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         settings_input_field("delayProfileInput", "id"),
         "DelayProfileInput.id",
     );
+    for field_name in ["enableUsenet", "enableTorrent", "bypassIfHighestQuality"] {
+        assert_settings_optional_boolean(
+            settings_input_field("delayProfileInput", field_name),
+            &format!("DelayProfileInput.{field_name}"),
+        );
+        assert_settings_non_null_boolean(
+            settings_output_field("delayProfile", field_name),
+            &format!("DelayProfilePayload.{field_name}"),
+        );
+    }
     assert_settings_non_null_id(
         settings_output_field("qualityProfile", "id"),
         "QualityProfilePayload.id",

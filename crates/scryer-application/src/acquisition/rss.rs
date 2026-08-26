@@ -15,12 +15,304 @@ use crate::acquisition_search_queries::{
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use crate::settings::keys::default_indexer_routing_categories_for_scope;
+use crate::types::{PendingReleaseObservation, PendingReleaseRole};
 use chrono::{DateTime, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 const RSS_SYNC_MAX_GUIDS: usize = 2000;
+
+fn normalized_rss_published_at(release: &IndexerSearchResult) -> Option<String> {
+    release
+        .published_at
+        .as_deref()
+        .and_then(crate::quality_profile::parse_published_at)
+        .map(|published_at| published_at.to_rfc3339())
+}
+
+/// Stable identity for a release observed through RSS or reconstructed from a
+/// pending row. This deliberately favors indexer-issued ids and the canonical
+/// artifact over mutable scoring or parse output.
+fn rss_release_identity(release: &IndexerSearchResult) -> String {
+    let indexer = release
+        .indexer_id
+        .as_deref()
+        .unwrap_or(release.source.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    if let Some(guid) = release
+        .guid
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return format!("guid:{indexer}:{}", guid.trim().to_ascii_lowercase());
+    }
+    if let Some(info_hash) = release
+        .extra
+        .get("info_hash")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return format!("hash:{}", info_hash.trim().to_ascii_lowercase());
+    }
+    if let Some(source) = release
+        .canonical_download_source()
+        .map(|(source, _)| source)
+        .or_else(|| release.download_url.clone())
+        .or_else(|| release.link.clone())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return format!("source:{}", source.trim());
+    }
+    format!(
+        "listing:{indexer}:{}:{}",
+        release.title.trim().to_ascii_lowercase(),
+        normalized_rss_published_at(release).unwrap_or_else(|| "unknown".to_string())
+    )
+}
+
+fn rss_listing_identity_prefix(release: &IndexerSearchResult) -> String {
+    let indexer = release
+        .indexer_id
+        .as_deref()
+        .unwrap_or(release.source.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    format!(
+        "listing:{indexer}:{}:",
+        release.title.trim().to_ascii_lowercase()
+    )
+}
+
+fn rss_coverage_identity(scope: &SubmissionScope) -> String {
+    match scope {
+        SubmissionScope::Title => "title".to_string(),
+        SubmissionScope::Episode { episode_id } => format!("episode:{episode_id}"),
+        SubmissionScope::EpisodeSet { episode_ids } => {
+            let mut episode_ids = episode_ids.clone();
+            episode_ids.sort();
+            format!("episodes:{}", episode_ids.join(","))
+        }
+        SubmissionScope::Collection { collection_id } => format!("collection:{collection_id}"),
+        SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        } => format!("series-movie:{series_movie_link_id}"),
+        SubmissionScope::Orphan => "orphan".to_string(),
+    }
+}
+
+/// Rebuild just enough durable indexer evidence for a pending row to pass
+/// through the current parse, scoring, and policy path. Stored scoring and
+/// parsed metadata are intentionally not reused after a profile change.
+fn pending_release_as_rss_result(pending: &PendingRelease) -> IndexerSearchResult {
+    let mut extra = HashMap::new();
+    extra.insert(
+        "_rss_reconstructed_pending".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    if let Some(info_hash) = pending.info_hash.as_deref() {
+        extra.insert("info_hash".to_string(), serde_json::json!(info_hash));
+    }
+    if let Some(seeders) = pending.seeders {
+        extra.insert("seeders".to_string(), serde_json::json!(seeders));
+    }
+    if let Some(value) = pending.seed_minimums.min_seed_ratio {
+        extra.insert("minimum_seed_ratio".to_string(), serde_json::json!(value));
+    }
+    if let Some(value) = pending.seed_minimums.min_seed_time_minutes {
+        extra.insert(
+            "minimum_seed_time_minutes".to_string(),
+            serde_json::json!(value),
+        );
+    }
+    if let Some(value) = pending.seed_minimums.season_pack_seed_ratio {
+        extra.insert(
+            "season_pack_seed_ratio".to_string(),
+            serde_json::json!(value),
+        );
+    }
+    if let Some(value) = pending.seed_minimums.season_pack_seed_time_minutes {
+        extra.insert(
+            "season_pack_seed_time_minutes".to_string(),
+            serde_json::json!(value),
+        );
+    }
+    if matches!(pending.source_kind, Some(DownloadSourceKind::MagnetUri))
+        && let Some(url) = pending.release_url.as_deref()
+    {
+        extra.insert("magnet_url".to_string(), serde_json::json!(url));
+    }
+
+    IndexerSearchResult {
+        indexer_id: pending.indexer_id.clone(),
+        source: pending
+            .indexer_source
+            .clone()
+            .unwrap_or_else(|| "pending release".to_string()),
+        title: pending.release_title.clone(),
+        link: pending.release_url.clone(),
+        download_url: pending.release_url.clone(),
+        source_kind: pending.source_kind,
+        size_bytes: pending.release_size_bytes,
+        published_at: pending.published_at.clone(),
+        thumbs_up: None,
+        thumbs_down: None,
+        indexer_languages: None,
+        indexer_subtitles: None,
+        indexer_grabs: None,
+        password_hint: pending.source_password.clone(),
+        parsed_release_metadata: None,
+        quality_profile_decision: None,
+        extra,
+        response_attributes: IndexerResponseAttributes::default(),
+        guid: pending.release_guid.clone(),
+        info_url: None,
+        provenance: None,
+        candidate_token: None,
+        queue_scope: None,
+        coverage_scope: None,
+        auto_eligible: None,
+        auto_decision_code: None,
+        auto_decision_summary: None,
+    }
+}
+
+fn rss_scopes_overlap(
+    left: &SubmissionScope,
+    right: &SubmissionScope,
+    episodes: &[Episode],
+) -> bool {
+    if matches!(left, SubmissionScope::Orphan) || matches!(right, SubmissionScope::Orphan) {
+        return false;
+    }
+    match (left, right) {
+        (
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: left,
+            },
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id: right,
+            },
+        ) => return left == right,
+        (SubmissionScope::SeriesMovie { .. }, _) | (_, SubmissionScope::SeriesMovie { .. }) => {
+            return false;
+        }
+        (SubmissionScope::Title, _) | (_, SubmissionScope::Title) => return true,
+        _ => {}
+    }
+    let episode_ids = |scope: &SubmissionScope| match scope {
+        SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+        SubmissionScope::Collection { collection_id } => episodes
+            .iter()
+            .filter(|episode| episode.collection_id.as_deref() == Some(collection_id))
+            .map(|episode| episode.id.clone())
+            .collect(),
+        SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => {
+            Vec::new()
+        }
+    };
+    let left = episode_ids(left).into_iter().collect::<HashSet<_>>();
+    episode_ids(right).into_iter().any(|id| left.contains(&id))
+}
+
+fn rss_pending_counts_for_oldest(status: PendingReleaseStatus) -> bool {
+    matches!(
+        status,
+        PendingReleaseStatus::Waiting
+            | PendingReleaseStatus::Standby
+            | PendingReleaseStatus::Processing
+    )
+}
+
+fn rss_pending_can_be_retired(status: PendingReleaseStatus) -> bool {
+    matches!(
+        status,
+        PendingReleaseStatus::Waiting | PendingReleaseStatus::Standby
+    )
+}
+
+fn rss_pending_is_active(status: PendingReleaseStatus) -> bool {
+    matches!(
+        status,
+        PendingReleaseStatus::Waiting
+            | PendingReleaseStatus::Standby
+            | PendingReleaseStatus::Processing
+            | PendingReleaseStatus::NeedsReview
+    )
+}
+
+fn rss_pending_matches_candidate(
+    pending: &PendingRelease,
+    pending_scope: &SubmissionScope,
+    candidate: &IndexerSearchResult,
+    candidate_scope: &SubmissionScope,
+    episodes: &[Episode],
+) -> bool {
+    pending.release_identity == rss_release_identity(candidate)
+        || pending
+            .release_guid
+            .as_deref()
+            .filter(|guid| !guid.trim().is_empty())
+            .zip(
+                candidate
+                    .guid
+                    .as_deref()
+                    .filter(|guid| !guid.trim().is_empty()),
+            )
+            .is_some_and(|(pending_guid, candidate_guid)| {
+                let pending_indexer = pending
+                    .indexer_id
+                    .as_deref()
+                    .or(pending.indexer_source.as_deref())
+                    .unwrap_or_default()
+                    .trim();
+                let candidate_indexer = candidate
+                    .indexer_id
+                    .as_deref()
+                    .unwrap_or(candidate.source.as_str())
+                    .trim();
+                pending_guid
+                    .trim()
+                    .eq_ignore_ascii_case(candidate_guid.trim())
+                    && pending_indexer.eq_ignore_ascii_case(candidate_indexer)
+            })
+        || (pending.release_age_unknown
+            && pending.release_identity.starts_with("listing:")
+            && rss_listing_identity_prefix(&pending_release_as_rss_result(pending))
+                == rss_listing_identity_prefix(candidate)
+            && rss_scopes_overlap(candidate_scope, pending_scope, episodes))
+}
+
+fn rss_is_permanent_rejection(code: ReleaseAutoDecisionCode) -> bool {
+    matches!(
+        code,
+        ReleaseAutoDecisionCode::QualityBlocked
+            | ReleaseAutoDecisionCode::ProtocolDisabled
+            | ReleaseAutoDecisionCode::DbBlocklisted
+            | ReleaseAutoDecisionCode::CategoryMismatch
+            | ReleaseAutoDecisionCode::TitleMismatch
+            | ReleaseAutoDecisionCode::EpisodeMismatch
+            | ReleaseAutoDecisionCode::EpisodeNotMonitored
+    )
+}
+
+fn rss_pending_submission_scope(
+    pending: &PendingRelease,
+    title: &Title,
+    episodes: &[Episode],
+    collections: &[Collection],
+) -> SubmissionScope {
+    let context = crate::release_parser::build_release_parse_context_for_title(
+        title,
+        episodes,
+        Some(title.facet.as_str()),
+    );
+    let parsed = parse_release_metadata_for_target(&pending.release_title, &context);
+    crate::acquisition_coverage::resolve_release_coverage(&parsed, episodes, collections, None)
+        .submission_scope_or(&SubmissionScope::Title)
+}
 
 fn rss_categories_for_routing_entry(scope_id: &str, entry: &IndexerRoutingEntry) -> Vec<String> {
     if entry.categories.is_empty() {
@@ -380,23 +672,6 @@ impl AppUseCase {
     }
 
     pub(crate) async fn run_scheduled_rss_sync(&self) -> AppResult<RssSyncReport> {
-        // Process expired pending releases BEFORE evaluating fresh RSS.
-        // Ensures delayed releases are grabbed before new RSS results
-        // compete for the same wanted item.  Mirrors Sonarr's pattern of
-        // including pending releases in the RSS decision cycle.
-        match self.process_expired_pending_releases().await {
-            Ok(grabbed) if grabbed > 0 => {
-                info!(
-                    grabbed,
-                    "rss sync: promoted expired pending releases before RSS fetch"
-                );
-            }
-            Err(e) => {
-                warn!(error = %e, "rss sync: pending release processing failed, continuing with RSS");
-            }
-            _ => {}
-        }
-
         let now = Utc::now();
         let sync_start = std::time::Instant::now();
         info!("starting RSS sync cycle");
@@ -478,36 +753,77 @@ impl AppUseCase {
             )
             .await;
 
-        let response = match rss_results {
+        let fresh_results = match rss_results {
             Ok(r) => r,
             Err(err) => {
-                warn!(error = %err, "RSS sync: failed to fetch RSS feed from indexers");
-                metrics::counter!("scryer_rss_sync_total").increment(1);
-                metrics::histogram!("scryer_rss_sync_duration_seconds")
-                    .record(sync_start.elapsed().as_secs_f64());
-                return Ok(RssSyncReport::default());
+                // A temporary feed failure must not suppress already-held
+                // releases. They are re-evaluated through this same pass.
+                warn!(error = %err, "RSS sync: failed to fetch RSS feed from indexers; evaluating active pending releases");
+                IndexerSearchResponse {
+                    results: Vec::new(),
+                    completion: IndexerSearchCompletion::Partial {
+                        reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                        retry_after: None,
+                    },
+                    api_current: None,
+                    api_max: None,
+                    grab_current: None,
+                    grab_max: None,
+                    indexer_outcomes: Vec::new(),
+                }
             }
-        };
-
-        if response.results.is_empty() {
-            info!("RSS sync: no results from indexers");
-            metrics::counter!("scryer_rss_sync_total").increment(1);
-            metrics::histogram!("scryer_rss_sync_duration_seconds")
-                .record(sync_start.elapsed().as_secs_f64());
-            return Ok(RssSyncReport::default());
         }
+        .results;
 
         info!(
-            result_count = response.results.len(),
+            result_count = fresh_results.len(),
             "RSS sync: fetched releases from indexers"
         );
+
+        // Load the active set before applying the process-local GUID filter.
+        // In particular, an unknown-age row must accept a later observation of
+        // the same release when the indexer finally supplies its publish time.
+        let active_pending = self
+            .services
+            .workflow
+            .pending_releases
+            .list_waiting_pending_releases()
+            .await
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "RSS sync: failed to load active pending releases");
+                Vec::new()
+            });
+        // Manual-review rows do not re-enter the automatic candidate set by
+        // themselves, but a later valid feed observation must still bypass
+        // the process-local seen filter so it can hydrate and re-evaluate one.
+        let active_unknown_age = self
+            .services
+            .workflow
+            .pending_releases
+            .list_active_release_age_unknown_pending_releases()
+            .await
+            .unwrap_or_else(|error| {
+                warn!(error = %error, "RSS sync: failed to load unknown-age pending releases");
+                Vec::new()
+            });
+        let unknown_age_identities = active_unknown_age
+            .iter()
+            .map(|pending| pending.release_identity.clone())
+            .collect::<HashSet<_>>();
+        let unknown_age_listing_prefixes = active_unknown_age
+            .iter()
+            .filter(|pending| pending.release_identity.starts_with("listing:"))
+            .map(pending_release_as_rss_result)
+            .map(|release| rss_listing_identity_prefix(&release))
+            .collect::<HashSet<_>>();
 
         // Dedup against previously seen GUIDs (in-memory, resets on restart)
         let mut seen_guids = self.runtime.acquisition.rss_seen_guids.write().await;
         let initial_seen_count = seen_guids.len();
 
         let mut new_results: Vec<IndexerSearchResult> = Vec::new();
-        for result in response.results {
+        for result in fresh_results {
+            let release_identity = rss_release_identity(&result);
             let guid = result
                 .guid
                 .as_deref()
@@ -515,7 +831,13 @@ impl AppUseCase {
                 .or(result.link.as_deref())
                 .unwrap_or(&result.title);
 
-            if seen_guids.insert(guid.to_string()) {
+            // Record every fresh GUID, then give an active unknown-age row one
+            // more look even if it was already seen this process lifetime.
+            let is_new_guid = seen_guids.insert(guid.to_string());
+            if unknown_age_identities.contains(&release_identity)
+                || unknown_age_listing_prefixes.contains(&rss_listing_identity_prefix(&result))
+                || is_new_guid
+            {
                 new_results.push(result);
             }
         }
@@ -538,15 +860,11 @@ impl AppUseCase {
             "RSS sync: filtered to new releases"
         );
 
-        if new_results.is_empty() {
-            metrics::counter!("scryer_rss_sync_total").increment(1);
-            metrics::histogram!("scryer_rss_sync_duration_seconds")
-                .record(sync_start.elapsed().as_secs_f64());
-            return Ok(RssSyncReport::default());
-        }
-
-        // Parse each release and match against monitored titles
+        // Parse fresh releases and match them against monitored titles. Active
+        // pending rows are merged below by their durable title association, so
+        // a changed title parser cannot strand a previously accepted release.
         let mut matched_by_title: HashMap<String, Vec<IndexerSearchResult>> = HashMap::new();
+        let mut matched_identities: HashMap<String, HashSet<String>> = HashMap::new();
         let mut matched_count = 0usize;
         let total_new = new_results.len();
 
@@ -559,14 +877,36 @@ impl AppUseCase {
                 matched_count += 1;
                 matched_by_title
                     .entry(title_info.title_id.clone())
-                    .or_default()
-                    .push(result);
+                    .or_default();
+                let identities = matched_identities
+                    .entry(title_info.title_id.clone())
+                    .or_default();
+                if identities.insert(rss_release_identity(&result)) {
+                    matched_by_title
+                        .entry(title_info.title_id.clone())
+                        .or_default()
+                        .push(result);
+                }
+            }
+        }
+
+        let pending_count = active_pending.len();
+        for pending in active_pending {
+            let title_id = pending.title_id.clone();
+            let result = pending_release_as_rss_result(&pending);
+            if matched_identities
+                .entry(title_id.clone())
+                .or_default()
+                .insert(rss_release_identity(&result))
+            {
+                matched_by_title.entry(title_id).or_default().push(result);
             }
         }
 
         info!(
             matched = matched_count,
             titles_matched = matched_by_title.len(),
+            active_pending = pending_count,
             "RSS sync: matched releases to monitored titles"
         );
 
@@ -657,6 +997,8 @@ impl AppUseCase {
             }
         }
 
+        self.reconcile_release_age_unknown_pending(&now).await;
+
         info!(
             fetched = report.releases_fetched,
             matched = report.releases_matched,
@@ -676,6 +1018,115 @@ impl AppUseCase {
             .increment(report.releases_grabbed as u64);
 
         Ok(report)
+    }
+
+    /// Unknown publication times can never authorize an automatic grab. Once
+    /// the current policy's observation window has elapsed, keep the row for
+    /// an operator rather than silently retrying it forever.
+    async fn reconcile_release_age_unknown_pending(&self, now: &DateTime<Utc>) {
+        let pending = match self
+            .services
+            .workflow
+            .pending_releases
+            .list_active_release_age_unknown_pending_releases()
+            .await
+        {
+            Ok(pending) => pending,
+            Err(error) => {
+                warn!(error = %error, "RSS sync: failed to load unknown-age pending releases");
+                return;
+            }
+        };
+        if pending.is_empty() {
+            self.runtime
+                .acquisition
+                .rss_unknown_age_last_warned_at
+                .write()
+                .await
+                .clear();
+            return;
+        }
+
+        let profiles = self.load_delay_profiles().await;
+        let mut warned_indexers = HashMap::<String, (usize, String)>::new();
+        for release in pending {
+            let Some(first_seen_at) = crate::quality_profile::parse_published_at(&release.added_at)
+            else {
+                continue;
+            };
+            let Some(title) = self
+                .services
+                .catalog
+                .titles
+                .get_by_id(&release.title_id)
+                .await
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let Some(profile) =
+                crate::delay_profile::resolve_delay_profile(&profiles, &title.tags, &title.facet)
+            else {
+                continue;
+            };
+            if *now
+                < profile
+                    .release_age_unknown_escalation_deadline(release.source_kind, first_seen_at)
+            {
+                let indexer = release
+                    .indexer_id
+                    .clone()
+                    .or(release.indexer_source.clone())
+                    .unwrap_or_else(|| "unknown indexer".to_string());
+                let entry = warned_indexers
+                    .entry(indexer)
+                    .or_insert((0, release.last_observed_at.clone()));
+                entry.0 += 1;
+                if release.last_observed_at > entry.1 {
+                    entry.1 = release.last_observed_at.clone();
+                }
+                continue;
+            }
+            if let Err(error) = self
+                .services
+                .workflow
+                .pending_releases
+                .mark_release_age_unknown_pending_release_needs_review(
+                    &release.id,
+                    ReleaseAutoDecisionCode::ReleaseAgeUnknown.as_str(),
+                )
+                .await
+            {
+                warn!(
+                    error = %error,
+                    release = release.release_title.as_str(),
+                    "RSS sync: failed to escalate unknown-age pending release for review"
+                );
+            }
+        }
+        let mut last_warned_at = self
+            .runtime
+            .acquisition
+            .rss_unknown_age_last_warned_at
+            .write()
+            .await;
+        last_warned_at.retain(|indexer, _| warned_indexers.contains_key(indexer));
+        for (indexer, (count, last_observation)) in warned_indexers {
+            if last_warned_at
+                .get(&indexer)
+                .is_some_and(|last_warning| *now - *last_warning < chrono::Duration::hours(1))
+            {
+                continue;
+            }
+            warn!(
+                indexer = indexer.as_str(),
+                count,
+                last_observation = last_observation.as_str(),
+                "RSS sync: releases remain pending because this indexer omitted publication time"
+            );
+            last_warned_at.insert(indexer, *now);
+        }
     }
 
     /// One title's in-flight submissions and their tracked states, read **once
@@ -1473,8 +1924,8 @@ impl AppUseCase {
                 episode.as_ref(),
             )
             .await;
-        if let Some(scope) = scope_override {
-            subject.submission_scope = scope;
+        if let Some(scope) = scope_override.as_ref() {
+            subject.submission_scope = scope.clone();
         }
         let existing_files = self
             .services
@@ -1594,22 +2045,58 @@ impl AppUseCase {
             admission = admission.with_queued(queued);
         }
 
-        let mut selected: Option<&IndexerSearchResult> = None;
+        let title_pending = self
+            .services
+            .workflow
+            .pending_releases
+            .list_pending_releases_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        let pending_scopes = title_pending
+            .iter()
+            .map(|pending| {
+                (
+                    pending,
+                    rss_pending_submission_scope(
+                        pending,
+                        title,
+                        &catalog_episodes,
+                        &catalog_collections,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut selected: Option<usize> = None;
+        let mut next_pending_role = PendingReleaseRole::Primary;
 
-        for candidate in scored {
+        for (candidate_index, candidate) in scored.iter().enumerate() {
+            let candidate_scope = candidate
+                .coverage_scope
+                .as_ref()
+                .unwrap_or(&subject.submission_scope);
+            let candidate_coverage_identity = rss_coverage_identity(candidate_scope);
+            let oldest_overlapping_pending_published_at = pending_scopes
+                .iter()
+                .filter(|(pending, scope)| {
+                    rss_pending_counts_for_oldest(pending.status)
+                        && rss_scopes_overlap(candidate_scope, scope, &catalog_episodes)
+                })
+                .filter_map(|(pending, _)| {
+                    pending
+                        .published_at
+                        .as_deref()
+                        .and_then(crate::quality_profile::parse_published_at)
+                })
+                .min();
             let is_allowed = candidate
                 .quality_profile_decision
                 .as_ref()
                 .map(|d| d.allowed)
                 .unwrap_or(false);
-            if !is_allowed {
+            if is_allowed && dl_snapshot.is_active(&candidate.title) {
                 continue;
             }
-
-            if dl_snapshot.is_active(&candidate.title) {
-                continue;
-            }
-            if dl_snapshot.failed_item(None, &candidate.title).is_some() {
+            if is_allowed && dl_snapshot.failed_item(None, &candidate.title).is_some() {
                 continue;
             }
 
@@ -1633,11 +2120,24 @@ impl AppUseCase {
                 db_blocklist: &db_blocklist,
                 existing_files: &existing_files,
                 delay_profiles,
+                user_invoked: false,
+                oldest_overlapping_pending_published_at,
                 failed_routes: None,
                 minimum_seeders: &minimum_seeders,
                 unmonitored_episode_ids: &unmonitored_episode_ids,
             };
-            let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
+            let route_key = crate::acquisition_workflow::DownloadRouteKey::for_candidate(candidate)
+                .map(|route| format!("__rss_failed_route:{route:?}"));
+            let decision_code = if !is_allowed {
+                ReleaseAutoDecisionCode::QualityBlocked
+            } else if route_key
+                .as_ref()
+                .is_some_and(|route| grabbed_urls.contains(route))
+            {
+                ReleaseAutoDecisionCode::DownloadClientUnavailable
+            } else {
+                evaluate_auto_candidate(candidate, &evaluation_context)
+            };
             let candidate_score = candidate
                 .quality_profile_decision
                 .as_ref()
@@ -1659,59 +2159,184 @@ impl AppUseCase {
             )
             .await;
 
-            if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
-                let delay_minutes = crate::delay_profile::grab_time_delay_decision(
-                    delay_profiles,
-                    &title.tags,
-                    &title.facet,
-                    candidate.source_kind,
-                    candidate
-                        .published_at
-                        .as_deref()
-                        .and_then(crate::quality_profile::parse_published_at),
-                    candidate_score,
-                    None,
-                    now,
-                )
-                .map(|delay| delay.effective_delay_minutes)
-                .unwrap_or_default();
+            if rss_is_permanent_rejection(decision_code) {
+                for pending in pending_scopes.iter().filter_map(|(pending, scope)| {
+                    (rss_pending_is_active(pending.status)
+                        && rss_pending_matches_candidate(
+                            pending,
+                            scope,
+                            candidate,
+                            candidate_scope,
+                            &catalog_episodes,
+                        ))
+                    .then_some(*pending)
+                }) {
+                    if let Err(error) = self
+                        .services
+                        .workflow
+                        .pending_releases
+                        .expire_pending_release(&pending.id, decision_code.as_str())
+                        .await
+                    {
+                        warn!(
+                            error = %error,
+                            pending_id = pending.id.as_str(),
+                            decision = decision_code.as_str(),
+                            "RSS sync: failed to expire permanently rejected pending release"
+                        );
+                    }
+                }
+                continue;
+            }
+
+            if matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::PendingDelay
+                    | ReleaseAutoDecisionCode::MinimumAge
+                    | ReleaseAutoDecisionCode::ReleaseAgeUnknown
+                    | ReleaseAutoDecisionCode::DownloadClientUnavailable
+            ) {
+                let delay = crate::acquisition_release_search::auto_candidate_delay_decision(
+                    candidate,
+                    &evaluation_context,
+                );
                 let canonical_source = candidate.canonical_download_source();
-                self.insert_pending_release(
-                    &wanted,
-                    title,
-                    &candidate.title,
-                    canonical_source.as_ref().map(|(source, _)| source.as_str()),
-                    canonical_source
+                let release_identity = rss_release_identity(candidate);
+                let existing_pending = pending_scopes
+                    .iter()
+                    .find(|(pending, scope)| {
+                        rss_pending_is_active(pending.status)
+                            && rss_pending_matches_candidate(
+                                pending,
+                                scope,
+                                candidate,
+                                candidate_scope,
+                                &catalog_episodes,
+                            )
+                    })
+                    .map(|(pending, _)| *pending);
+                let first_seen_at = existing_pending
+                    .and_then(|pending| {
+                        crate::quality_profile::parse_published_at(&pending.added_at)
+                    })
+                    .unwrap_or(*now);
+                // Pending reconstruction is not a fresh indexer observation.
+                // A real RSS observation, including another invalid timestamp,
+                // advances the health diagnostic's last-observed timestamp.
+                let observed_now = !candidate
+                    .extra
+                    .get("_rss_reconstructed_pending")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let last_observed_at = if observed_now {
+                    now.to_rfc3339()
+                } else {
+                    existing_pending
+                        .map(|pending| pending.last_observed_at.clone())
+                        .unwrap_or_else(|| now.to_rfc3339())
+                };
+                let eligible_at =
+                    if matches!(decision_code, ReleaseAutoDecisionCode::ReleaseAgeUnknown) {
+                        crate::delay_profile::resolve_delay_profile(
+                            delay_profiles,
+                            &title.tags,
+                            &title.facet,
+                        )
+                        .map(|profile| {
+                            profile.release_age_unknown_escalation_deadline(
+                                candidate.source_kind,
+                                first_seen_at,
+                            )
+                        })
+                        .unwrap_or(*now)
+                    } else {
+                        delay
+                            .and_then(|decision| decision.eligible_at)
+                            .unwrap_or(*now)
+                    }
+                    .to_rfc3339();
+                let pending = PendingRelease {
+                    id: Id::new().0,
+                    wanted_item_id: wanted.id.clone(),
+                    title_id: title.id.clone(),
+                    release_title: candidate.title.clone(),
+                    release_url: canonical_source.as_ref().map(|(source, _)| source.clone()),
+                    source_kind: canonical_source
                         .as_ref()
                         .map(|(_, kind)| *kind)
                         .or(candidate.source_kind),
-                    candidate.size_bytes,
-                    candidate_score,
-                    serialize_decision_explanation(&decision_candidate),
-                    Some(candidate.source.as_str()),
-                    candidate.indexer_id.as_deref(),
-                    candidate.guid.as_deref(),
-                    delay_minutes,
-                    candidate.password_hint.as_deref(),
-                    candidate.published_at.as_deref(),
-                    candidate.extra.get("info_hash").and_then(|v| v.as_str()),
-                    crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
-                    crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
-                )
-                .await;
+                    release_size_bytes: candidate.size_bytes,
+                    release_score: candidate_score,
+                    scoring_log_json: serialize_decision_explanation(&decision_candidate),
+                    indexer_source: Some(candidate.source.clone()),
+                    indexer_id: candidate.indexer_id.clone(),
+                    release_guid: candidate.guid.clone(),
+                    added_at: first_seen_at.to_rfc3339(),
+                    last_observed_at: last_observed_at.clone(),
+                    // Compatibility cache only; policy authority is
+                    // `PendingReleaseObservation::eligible_at`.
+                    delay_until: eligible_at.clone(),
+                    status: PendingReleaseStatus::Waiting,
+                    grabbed_at: None,
+                    source_password: normalize_release_password(candidate.password_hint.as_deref()),
+                    // Invalid indexer timestamps are the same policy state as
+                    // an absent timestamp. Do not pass malformed values into
+                    // the datastore's typed timestamp conversion.
+                    published_at: normalized_rss_published_at(candidate),
+                    info_hash: candidate
+                        .extra
+                        .get("info_hash")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    seed_minimums: crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
+                    seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+                    release_identity: release_identity.clone(),
+                    coverage_identity: candidate_coverage_identity.clone(),
+                    role: next_pending_role,
+                    last_decision_code: Some(decision_code.as_str().to_string()),
+                    release_age_unknown: matches!(
+                        decision_code,
+                        ReleaseAutoDecisionCode::ReleaseAgeUnknown
+                    ),
+                };
+                let observation = PendingReleaseObservation {
+                    eligible_at,
+                    latest_decision_code: Some(decision_code.as_str().to_string()),
+                    release_identity,
+                    coverage_identity: candidate_coverage_identity,
+                    role: next_pending_role,
+                    release_age_unknown: matches!(
+                        decision_code,
+                        ReleaseAutoDecisionCode::ReleaseAgeUnknown
+                    ),
+                    last_observed_at,
+                };
+                if let Err(error) = self
+                    .insert_pending_release_observation(&pending, &observation)
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        title_id = title.id.as_str(),
+                        release = candidate.title.as_str(),
+                        "RSS sync: failed to persist delayed release observation"
+                    );
+                }
                 report.releases_held += 1;
-                return;
+                next_pending_role = PendingReleaseRole::Fallback;
+                continue;
             }
 
             if decision_code.is_eligible() {
-                selected = Some(candidate);
+                selected = Some(candidate_index);
                 break;
             }
         }
 
-        let Some(best) = selected else {
+        let Some(best_index) = selected else {
             return;
         };
+        let best = &scored[best_index];
 
         let candidate_score = best
             .quality_profile_decision
@@ -1922,7 +2547,7 @@ impl AppUseCase {
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
-                            scope: submission_scope,
+                            scope: submission_scope.clone(),
                         },
                         accepted_identity,
                     )
@@ -2027,6 +2652,98 @@ impl AppUseCase {
                     ))
                     .await;
 
+                let winner_tier = best
+                    .quality_profile_decision
+                    .as_ref()
+                    .and_then(|decision| decision.tier_index);
+                let winner_revision = best
+                    .parsed_release_metadata
+                    .as_ref()
+                    .map_or(0, crate::acquisition::scoring::revision_rank);
+                let winner_pending = pending_scopes
+                    .iter()
+                    .find(|(pending, scope)| {
+                        rss_pending_is_active(pending.status)
+                            && rss_pending_matches_candidate(
+                                pending,
+                                scope,
+                                best,
+                                &submission_scope,
+                                &catalog_episodes,
+                            )
+                    })
+                    .map(|(pending, _)| *pending);
+                let lower_or_equal_ids = pending_scopes
+                    .iter()
+                    .filter(|(pending, scope)| {
+                        rss_pending_can_be_retired(pending.status)
+                            && winner_pending.is_none_or(|winner| winner.id != pending.id)
+                            && rss_scopes_overlap(&submission_scope, scope, &catalog_episodes)
+                    })
+                    .filter_map(|(pending, scope)| {
+                        let pending_candidate = scored.iter().find(|candidate| {
+                            rss_pending_matches_candidate(
+                                pending,
+                                scope,
+                                candidate,
+                                scope,
+                                &catalog_episodes,
+                            )
+                        })?;
+                        let pending_tier = pending_candidate
+                            .quality_profile_decision
+                            .as_ref()
+                            .and_then(|decision| decision.tier_index);
+                        let pending_revision = pending_candidate
+                            .parsed_release_metadata
+                            .as_ref()
+                            .map_or(0, crate::acquisition::scoring::revision_rank);
+                        let lower_or_equal = match (winner_tier, pending_tier) {
+                            (Some(winner), Some(pending)) => {
+                                winner < pending
+                                    || (winner == pending && winner_revision >= pending_revision)
+                            }
+                            (Some(_), None) => true,
+                            (None, _) => false,
+                        };
+                        lower_or_equal.then(|| pending.id.clone())
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(winner) = winner_pending
+                    && let Err(error) = self
+                        .services
+                        .workflow
+                        .pending_releases
+                        .compare_and_set_pending_release_status(
+                            &winner.id,
+                            winner.status,
+                            PendingReleaseStatus::Grabbed,
+                            Some(&now.to_rfc3339()),
+                        )
+                        .await
+                {
+                    warn!(
+                        error = %error,
+                        pending_id = winner.id.as_str(),
+                        release = best.title.as_str(),
+                        "RSS sync: failed to mark grabbed pending winner"
+                    );
+                }
+                if !lower_or_equal_ids.is_empty()
+                    && let Err(error) = self
+                        .services
+                        .workflow
+                        .pending_releases
+                        .retire_lower_or_equal_overlapping_pending_releases(&lower_or_equal_ids)
+                        .await
+                {
+                    warn!(
+                        error = %error,
+                        release = best.title.as_str(),
+                        "RSS sync: failed to retire lower-or-equal pending overlaps after grab"
+                    );
+                }
+
                 report.releases_grabbed += 1;
             }
             Err(err) => {
@@ -2042,8 +2759,7 @@ impl AppUseCase {
                 // attempt, never blocklisted. Only a definitive failure burns
                 // the release for this title.
                 let defer = is_download_submit_unavailable_error(&err)
-                    || err.is_download_submit_ambiguous()
-                    || err.is_download_source_gone();
+                    || err.is_download_submit_ambiguous();
                 if err.is_download_source_gone() {
                     info!(
                         release = best.title.as_str(),
@@ -2095,7 +2811,52 @@ impl AppUseCase {
                 {
                     warn!(error = %error, "ambiguous download submission persistence failed");
                 }
+                if is_download_submit_unavailable_error(&err) {
+                    if let Some(route) =
+                        crate::acquisition_workflow::DownloadRouteKey::for_candidate(best)
+                    {
+                        grabbed_urls.insert(format!("__rss_failed_route:{route:?}"));
+                    }
+                    // Walk the failed head again only to persist its temporary
+                    // route-unavailable observation; the marker makes the
+                    // evaluator skip that route and continue to another one.
+                    Box::pin(self.try_grab_rss_release(
+                        title,
+                        &wanted,
+                        &scored[best_index..],
+                        _category,
+                        scope_override,
+                        dl_snapshot,
+                        queue,
+                        delay_profiles,
+                        grabbed_urls,
+                        report,
+                        now,
+                    ))
+                    .await;
+                    return;
+                }
                 if defer {
+                    return;
+                }
+                if err.is_download_source_gone() {
+                    // A vanished artifact is not a verdict about the release
+                    // itself. Continue this ranked pass with the next viable
+                    // candidate, rather than waiting for another RSS interval.
+                    Box::pin(self.try_grab_rss_release(
+                        title,
+                        &wanted,
+                        &scored[best_index + 1..],
+                        _category,
+                        scope_override,
+                        dl_snapshot,
+                        queue,
+                        delay_profiles,
+                        grabbed_urls,
+                        report,
+                        now,
+                    ))
+                    .await;
                     return;
                 }
                 if let Err(error) = self
@@ -2120,6 +2881,49 @@ impl AppUseCase {
                         "failed to persist blocklist entry for failed RSS grab"
                     );
                 }
+                for pending in pending_scopes.iter().filter_map(|(pending, scope)| {
+                    (rss_pending_is_active(pending.status)
+                        && rss_pending_matches_candidate(
+                            pending,
+                            scope,
+                            best,
+                            &submission_scope,
+                            &catalog_episodes,
+                        ))
+                    .then_some(*pending)
+                }) {
+                    if let Err(error) = self
+                        .services
+                        .workflow
+                        .pending_releases
+                        .expire_pending_release(
+                            &pending.id,
+                            ReleaseAutoDecisionCode::DbBlocklisted.as_str(),
+                        )
+                        .await
+                    {
+                        warn!(
+                            error = %error,
+                            pending_id = pending.id.as_str(),
+                            release = best.title.as_str(),
+                            "RSS sync: failed to expire pending release after definitive grab failure"
+                        );
+                    }
+                }
+                Box::pin(self.try_grab_rss_release(
+                    title,
+                    &wanted,
+                    &scored[best_index + 1..],
+                    _category,
+                    scope_override,
+                    dl_snapshot,
+                    queue,
+                    delay_profiles,
+                    grabbed_urls,
+                    report,
+                    now,
+                ))
+                .await;
             }
         }
     }
@@ -2925,5 +3729,132 @@ mod tests {
                 collection_id: "season-1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn rss_pending_status_filters_keep_active_fallbacks_without_retiring_processing() {
+        assert!(rss_pending_counts_for_oldest(PendingReleaseStatus::Waiting));
+        assert!(rss_pending_counts_for_oldest(PendingReleaseStatus::Standby));
+        assert!(rss_pending_counts_for_oldest(
+            PendingReleaseStatus::Processing
+        ));
+        assert!(!rss_pending_counts_for_oldest(
+            PendingReleaseStatus::NeedsReview
+        ));
+
+        assert!(rss_pending_can_be_retired(PendingReleaseStatus::Waiting));
+        assert!(rss_pending_can_be_retired(PendingReleaseStatus::Standby));
+        assert!(!rss_pending_can_be_retired(
+            PendingReleaseStatus::Processing
+        ));
+
+        for status in [
+            PendingReleaseStatus::Waiting,
+            PendingReleaseStatus::Standby,
+            PendingReleaseStatus::Processing,
+            PendingReleaseStatus::NeedsReview,
+        ] {
+            assert!(rss_pending_is_active(status));
+        }
+        assert!(!rss_pending_is_active(PendingReleaseStatus::Grabbed));
+        assert!(!rss_pending_is_active(PendingReleaseStatus::Expired));
+        assert!(!rss_pending_is_active(PendingReleaseStatus::Superseded));
+    }
+
+    #[test]
+    fn rss_only_expires_narrow_permanent_policy_rejections() {
+        for code in [
+            ReleaseAutoDecisionCode::QualityBlocked,
+            ReleaseAutoDecisionCode::ProtocolDisabled,
+            ReleaseAutoDecisionCode::DbBlocklisted,
+            ReleaseAutoDecisionCode::CategoryMismatch,
+            ReleaseAutoDecisionCode::TitleMismatch,
+            ReleaseAutoDecisionCode::EpisodeMismatch,
+            ReleaseAutoDecisionCode::EpisodeNotMonitored,
+        ] {
+            assert!(rss_is_permanent_rejection(code));
+        }
+        for code in [
+            ReleaseAutoDecisionCode::QueuedBetterOrEqual,
+            ReleaseAutoDecisionCode::AlreadyActive,
+            ReleaseAutoDecisionCode::PendingDelay,
+            ReleaseAutoDecisionCode::MinimumAge,
+            ReleaseAutoDecisionCode::ReleaseAgeUnknown,
+            ReleaseAutoDecisionCode::DownloadClientUnavailable,
+        ] {
+            assert!(!rss_is_permanent_rejection(code));
+        }
+    }
+
+    #[test]
+    fn rss_unknown_listing_identity_matches_a_hydrated_candidate() {
+        let pending = PendingRelease {
+            id: "pending-1".to_string(),
+            wanted_item_id: "wanted-1".to_string(),
+            title_id: "title-1".to_string(),
+            release_title: "Example.Release.1080p".to_string(),
+            release_url: None,
+            source_kind: None,
+            release_size_bytes: None,
+            release_score: 0,
+            scoring_log_json: None,
+            indexer_source: Some("Example Indexer".to_string()),
+            indexer_id: Some("indexer-1".to_string()),
+            release_guid: None,
+            added_at: "2026-08-01T00:00:00Z".to_string(),
+            last_observed_at: "2026-08-01T00:00:00Z".to_string(),
+            delay_until: "2026-08-02T00:00:00Z".to_string(),
+            status: PendingReleaseStatus::NeedsReview,
+            grabbed_at: None,
+            source_password: None,
+            published_at: None,
+            info_hash: None,
+            seed_minimums: crate::ReleaseSeedMinimums::default(),
+            seeders: None,
+            release_identity: "listing:indexer-1:example.release.1080p:unknown".to_string(),
+            coverage_identity: "title".to_string(),
+            role: PendingReleaseRole::Primary,
+            last_decision_code: Some("release_age_unknown".to_string()),
+            release_age_unknown: true,
+        };
+        let mut hydrated = pending_release_as_rss_result(&pending);
+        hydrated.published_at = Some("not-a-timestamp".to_string());
+        assert_eq!(normalized_rss_published_at(&hydrated), None);
+        assert_eq!(rss_release_identity(&hydrated), pending.release_identity);
+
+        let mut unrelated_guidless = hydrated.clone();
+        unrelated_guidless.title = "Different.Release.1080p".to_string();
+        assert!(!rss_pending_matches_candidate(
+            &pending,
+            &SubmissionScope::Title,
+            &unrelated_guidless,
+            &SubmissionScope::Title,
+            &[],
+        ));
+
+        hydrated.guid = Some("now-has-a-guid".to_string());
+        hydrated.published_at = Some("2026-08-01T01:00:00Z".to_string());
+
+        assert_ne!(
+            rss_release_identity(&hydrated),
+            pending.release_identity,
+            "the indexer can change the stable identity once it supplies a GUID"
+        );
+        assert!(rss_pending_matches_candidate(
+            &pending,
+            &SubmissionScope::Title,
+            &hydrated,
+            &SubmissionScope::Title,
+            &[],
+        ));
+
+        hydrated.indexer_id = Some("different-indexer".to_string());
+        assert!(!rss_pending_matches_candidate(
+            &pending,
+            &SubmissionScope::Title,
+            &hydrated,
+            &SubmissionScope::Title,
+            &[],
+        ));
     }
 }

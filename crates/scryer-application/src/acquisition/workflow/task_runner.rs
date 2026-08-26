@@ -285,9 +285,9 @@ fn submission_blocks_search_for_wanted_item(
     // races that, and the release it would find is very likely the one that just
     // failed. Sonarr excludes `FailedPending` from `QueueSpecification` for the
     // same reason — it wants the failure resolved first, not the scope frozen.
-    if tracked_state.is_some_and(|state| {
-        matches!(state, scryer_domain::TrackedDownloadState::FailedPending)
-    }) {
+    if tracked_state
+        .is_some_and(|state| matches!(state, scryer_domain::TrackedDownloadState::FailedPending))
+    {
         return true;
     }
 
@@ -515,22 +515,19 @@ impl ConvergenceWorkGraph {
             }
 
             let title_id = target.title_id.clone();
-            let group = graph
-                .titles
-                .entry(title_id.clone())
-                .or_insert_with(|| {
-                    ready.push_back(ConvergenceWork {
-                        target_index,
-                        kind: ConvergenceWorkKind::TitleAnchor {
-                            title_id: title_id.clone(),
-                        },
-                    });
-                    SeriesTitleWorkGroup {
-                        anchor_index: target_index,
-                        seasons: Vec::new(),
-                        ungrouped_indices: Vec::new(),
-                    }
+            let group = graph.titles.entry(title_id.clone()).or_insert_with(|| {
+                ready.push_back(ConvergenceWork {
+                    target_index,
+                    kind: ConvergenceWorkKind::TitleAnchor {
+                        title_id: title_id.clone(),
+                    },
                 });
+                SeriesTitleWorkGroup {
+                    anchor_index: target_index,
+                    seasons: Vec::new(),
+                    ungrouped_indices: Vec::new(),
+                }
+            });
 
             let season = target
                 .season_number
@@ -833,17 +830,16 @@ async fn try_series_pack_for_title(
         )
         .await?;
 
-    let (evaluated_candidates, qualifying_collection_ids) =
-        evaluate_series_pack_candidates(
-            app,
-            title,
-            &title_subject,
-            candidates,
-            &episodes,
-            &owned_episode_ids,
-            claimed_episode_ids,
-        )
-        .await;
+    let (evaluated_candidates, qualifying_collection_ids) = evaluate_series_pack_candidates(
+        app,
+        title,
+        &title_subject,
+        candidates,
+        &episodes,
+        &owned_episode_ids,
+        claimed_episode_ids,
+    )
+    .await;
 
     if evaluated_candidates.is_empty() {
         record_series_pack_search_coverage(
@@ -909,19 +905,10 @@ async fn try_series_pack_for_title(
             continue;
         }
 
-        let Some(candidate_scope) = candidate
-            .parsed_release_metadata
-            .as_ref()
-            .map(|parsed| {
-                crate::acquisition_coverage::resolve_release_coverage(
-                    parsed,
-                    &episodes,
-                    &[],
-                    None,
-                )
+        let Some(candidate_scope) = candidate.parsed_release_metadata.as_ref().map(|parsed| {
+            crate::acquisition_coverage::resolve_release_coverage(parsed, &episodes, &[], None)
                 .submission_scope()
-            })
-        else {
+        }) else {
             warn!(
                 release = candidate.title.as_str(),
                 "series-pack search: evaluated candidate lost parsed metadata"
@@ -1013,9 +1000,9 @@ async fn evaluate_series_pack_candidates(
             continue;
         }
 
-        collection_ids.extend(
-            crate::acquisition_coverage::series_pack_collection_ids(parsed, episodes),
-        );
+        collection_ids.extend(crate::acquisition_coverage::series_pack_collection_ids(
+            parsed, episodes,
+        ));
         let scope =
             crate::acquisition_coverage::resolve_release_coverage(parsed, episodes, &[], None)
                 .submission_scope();
@@ -1051,7 +1038,7 @@ async fn evaluate_series_pack_candidates(
         let mut scoped_subject = title_subject.clone();
         scoped_subject.submission_scope = SubmissionScope::EpisodeSet { episode_ids };
         for candidate in app
-            .evaluate_search_results_for_subject(title, &scoped_subject, candidates)
+            .evaluate_search_results_for_subject(title, &scoped_subject, candidates, false)
             .await
         {
             let key = crate::app_usecase_discovery::release_search_key(&candidate);
@@ -1093,7 +1080,12 @@ async fn series_pack_candidate_anchors(
         .await?;
     let mut states_by_episode = states
         .into_iter()
-        .filter_map(|state| state.episode_id.clone().map(|episode_id| (episode_id, state)))
+        .filter_map(|state| {
+            state
+                .episode_id
+                .clone()
+                .map(|episode_id| (episode_id, state))
+        })
         .collect::<HashMap<_, _>>();
     let mut anchors = HashMap::new();
 
@@ -1162,8 +1154,7 @@ async fn persist_series_pack_runner_ups(
         .iter()
         .skip(start_index)
         .filter_map(|candidate| {
-            anchors
-                .get(&crate::app_usecase_discovery::release_search_key(candidate))
+            anchors.get(&crate::app_usecase_discovery::release_search_key(candidate))
         })
         .map(|anchor| anchor.id.clone())
         .collect::<Vec<_>>();
@@ -1213,7 +1204,6 @@ async fn record_series_pack_search_coverage(
             .await;
     }
 }
-
 
 #[expect(
     clippy::too_many_arguments,
@@ -1386,69 +1376,72 @@ async fn process_single_target(
     // exhausted list (or a scope that never saved one) reaches the convergence
     // gate below.
     let claimed_episode_ids = cycle.claimed_episode_ids();
-    let stale_standby_indexer_ids = if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
-        match try_saved_candidates(
-            app,
-            item,
-            None,
-            Some(&claimed_episode_ids),
-            dl_snapshot,
-            now,
-        )
-        .await
-        {
-            StandbyRecoveryOutcome::Recovered { scope }
-            | StandbyRecoveryOutcome::Active { scope } => {
-                if let Some(episode_ids) = episode_ids_for_scope(&scope) {
-                    cycle.claim_episode_ids(episode_ids.iter().cloned());
-                }
-                if let SubmissionScope::Collection { collection_id } = &scope {
-                    if let Ok(episodes) = app
-                        .services
-                        .catalog
-                        .shows
-                        .list_episodes_for_collection(collection_id)
-                        .await
-                    {
-                        cycle.claim_episode_ids(episodes.into_iter().map(|episode| episode.id));
+    let stale_standby_indexer_ids =
+        if item.status == AcquisitionScopeStatus::Wanted && !item.id.is_empty() {
+            match try_saved_candidates(
+                app,
+                item,
+                None,
+                Some(&claimed_episode_ids),
+                dl_snapshot,
+                now,
+            )
+            .await
+            {
+                StandbyRecoveryOutcome::Recovered { scope }
+                | StandbyRecoveryOutcome::Active { scope } => {
+                    if let Some(episode_ids) = episode_ids_for_scope(&scope) {
+                        cycle.claim_episode_ids(episode_ids.iter().cloned());
                     }
-                    if let Some(season) = target
-                        .season_number
-                        .as_deref()
-                        .or(episode.as_ref().and_then(|episode| episode.season_number.as_deref()))
-                        .and_then(|season| season.parse::<u32>().ok())
-                    {
-                        cycle.mark_season_pack_grabbed(&(title.id.clone(), season));
+                    if let SubmissionScope::Collection { collection_id } = &scope {
+                        if let Ok(episodes) = app
+                            .services
+                            .catalog
+                            .shows
+                            .list_episodes_for_collection(collection_id)
+                            .await
+                        {
+                            cycle.claim_episode_ids(episodes.into_iter().map(|episode| episode.id));
+                        }
+                        if let Some(season) = target
+                            .season_number
+                            .as_deref()
+                            .or(episode
+                                .as_ref()
+                                .and_then(|episode| episode.season_number.as_deref()))
+                            .and_then(|season| season.parse::<u32>().ok())
+                        {
+                            cycle.mark_season_pack_grabbed(&(title.id.clone(), season));
+                        }
                     }
+                    info!(
+                        title = title.name.as_str(),
+                        scope_key = target.scope_key.as_str(),
+                        "grabbed the next saved search result; no indexer query spent"
+                    );
+                    return Ok(());
                 }
-                info!(
-                    title = title.name.as_str(),
-                    scope_key = target.scope_key.as_str(),
-                    "grabbed the next saved search result; no indexer query spent"
-                );
-                return Ok(());
+                StandbyRecoveryOutcome::Deferred { .. } => {
+                    info!(
+                        title = title.name.as_str(),
+                        scope_key = target.scope_key.as_str(),
+                        "saved search result kept pending until the download client recovers"
+                    );
+                    return Ok(());
+                }
+                StandbyRecoveryOutcome::Parked { .. } => {
+                    info!(
+                        title = title.name.as_str(),
+                        scope_key = target.scope_key.as_str(),
+                        "best saved search result is held by its delay profile"
+                    );
+                    return Ok(());
+                }
+                StandbyRecoveryOutcome::Exhausted { stale_indexer_ids } => stale_indexer_ids,
             }
-            StandbyRecoveryOutcome::Deferred { .. } => {
-                info!(
-                    title = title.name.as_str(),
-                    scope_key = target.scope_key.as_str(),
-                    "saved search result kept pending until the download client recovers"
-                );
-                return Ok(());
-            }
-            StandbyRecoveryOutcome::Parked { .. } => {
-                info!(
-                    title = title.name.as_str(),
-                    scope_key = target.scope_key.as_str(),
-                    "best saved search result is held by its delay profile"
-                );
-                return Ok(());
-            }
-            StandbyRecoveryOutcome::Exhausted { stale_indexer_ids } => stale_indexer_ids,
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
 
     let search_title = app
         .release_search_title_for_wanted_item(&title, item, episode.as_ref())
@@ -1742,17 +1735,14 @@ async fn process_single_target(
                     }
                 }
 
-                'season_pack_candidates: for (best_pack_index, best_pack) in pack_results
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, candidate)| {
+                'season_pack_candidates: for (best_pack_index, best_pack) in
+                    pack_results.iter().enumerate().filter(|(_, candidate)| {
                         candidate_is_season_pack_for_season(candidate, season_num)
                             && candidate.auto_eligible == Some(true)
                     })
                 {
-                    let pack_route = DownloadRouteKey::for_candidate(best_pack).expect(
-                        "candidate route key always exists, including unknown source kind",
-                    );
+                    let pack_route = DownloadRouteKey::for_candidate(best_pack)
+                        .expect("candidate route key always exists, including unknown source kind");
                     if failed_routes.contains(&pack_route) {
                         continue;
                     }
@@ -1820,8 +1810,7 @@ async fn process_single_target(
                                 seed_goal_ratio: None,
                                 seed_goal_seconds: None,
                                 tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
-                                tracker_min_seed_time_minutes: seed_minimums
-                                    .min_seed_time_minutes,
+                                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
                                 season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
                                 season_pack_seed_time_minutes: seed_minimums
                                     .season_pack_seed_time_minutes,
@@ -1860,7 +1849,7 @@ async fn process_single_target(
                                             client_item_id: Some(grab.job_id.as_str()),
                                             accepted_info_hash: grab.info_hash.as_deref(),
                                         },
-                                );
+                                    );
                                 cycle.mark_submitted(&url_str);
                                 cycle.mark_season_pack_grabbed(&season_key);
                                 let _ = app
@@ -1897,10 +1886,7 @@ async fn process_single_target(
                                         .list_episodes_for_collection(collection_id)
                                         .await
                                         .map(|episodes| {
-                                            episodes
-                                                .into_iter()
-                                                .map(|episode| episode.id)
-                                                .collect()
+                                            episodes.into_iter().map(|episode| episode.id).collect()
                                         })
                                         .unwrap_or_default(),
                                     SubmissionScope::Title
@@ -1947,9 +1933,7 @@ async fn process_single_target(
                                             source_hint: None,
                                             source_provider_id: best_pack.indexer_id.clone(),
                                             release_size_bytes: best_pack.size_bytes,
-                                            source_provider_name: Some(
-                                                best_pack.source.clone(),
-                                            ),
+                                            source_provider_name: Some(best_pack.source.clone()),
                                             source_kind: None,
                                             source_title: Some(best_pack.title.clone()),
                                             request_signature: request_signature.clone(),
@@ -2023,8 +2007,7 @@ async fn process_single_target(
                                 break 'season_pack_candidates;
                             }
                             Err(err) => {
-                                let submit_unavailable =
-                                    is_download_submit_unavailable_error(&err);
+                                let submit_unavailable = is_download_submit_unavailable_error(&err);
                                 let ambiguous = err.is_download_submit_ambiguous();
                                 if submit_unavailable && !failed_routes.contains(&pack_route) {
                                     failed_routes.push(pack_route.clone());
@@ -2117,9 +2100,7 @@ async fn process_single_target(
                                             source_hint: pack_hint,
                                             quality: None,
                                             download_id: None,
-                                            reason: Some(format!(
-                                                "season pack grab failed: {err}"
-                                            )),
+                                            reason: Some(format!("season pack grab failed: {err}")),
                                             data: blocklist_entry_data(
                                                 item.episode_id.as_slice(),
                                                 pack_scope.collection_id(),
@@ -2198,7 +2179,7 @@ async fn process_single_target(
         })
         .collect::<Vec<_>>();
     let cached_results = app
-        .evaluate_search_results_for_subject(&search_title, &subject, cached_results)
+        .evaluate_search_results_for_subject(&search_title, &subject, cached_results, false)
         .await;
 
     // A complete season query already discovered these episode candidates.
@@ -2315,9 +2296,7 @@ async fn process_single_target(
     // than a number remembered on the scope row — and so the cutoff check below
     // can ask about the *score* half of the cutoff, not just the quality half.
     let admission = {
-        let scoring_context = app
-            .resolve_canonical_scoring_context(&title, profile)
-            .await;
+        let scoring_context = app.resolve_canonical_scoring_context(&title, profile).await;
         app.admission_subject_for_scope(
             &title,
             &item.submission_scope(),
@@ -2399,6 +2378,7 @@ async fn process_single_target(
         .await;
     }
     let mut grab_attempts: usize = 0;
+    let mut next_pending_role = PendingReleaseRole::Primary;
 
     for (candidate_index, candidate) in results.iter().enumerate() {
         let is_allowed = candidate
@@ -2454,8 +2434,16 @@ async fn process_single_target(
             skipped_for_failed = true;
         }
 
-        record_release_decision(app, item, &title, candidate, decision_code, incumbent_bar, now)
-            .await;
+        record_release_decision(
+            app,
+            item,
+            &title,
+            candidate,
+            decision_code,
+            incumbent_bar,
+            now,
+        )
+        .await;
 
         if !decision_code.is_eligible() {
             app.emit_acquisition_candidate_rejected_event(
@@ -2497,7 +2485,12 @@ async fn process_single_target(
                 // does present a disambiguator is still grabbable this cycle.
                 continue;
             }
-            if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
+            if matches!(
+                decision_code,
+                ReleaseAutoDecisionCode::PendingDelay
+                    | ReleaseAutoDecisionCode::MinimumAge
+                    | ReleaseAutoDecisionCode::ReleaseAgeUnknown
+            ) {
                 let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
                     serde_json::to_string(
                         &decision
@@ -2510,47 +2503,98 @@ async fn process_single_target(
                 });
 
                 let canonical_source = candidate.canonical_download_source();
-                app.insert_pending_release(
-                    item,
-                    &title,
-                    &candidate.title,
-                    canonical_source.as_ref().map(|(source, _)| source.as_str()),
-                    canonical_source
+                let parsed_published_at = candidate
+                    .published_at
+                    .as_deref()
+                    .and_then(crate::quality_profile::parse_published_at);
+                let normalized_published_at =
+                    parsed_published_at.map(|published_at| published_at.to_rfc3339());
+                let delay = automatic_candidate_delay_decision(
+                    candidate,
+                    &search_title,
+                    &admission,
+                    profile,
+                    &delay_profiles,
+                    false,
+                    None,
+                    now,
+                );
+                let eligible_at =
+                    if matches!(decision_code, ReleaseAutoDecisionCode::ReleaseAgeUnknown) {
+                        crate::delay_profile::resolve_delay_profile(
+                            &delay_profiles,
+                            &search_title.tags,
+                            &search_title.facet,
+                        )
+                        .map(|profile| {
+                            profile.release_age_unknown_escalation_deadline(
+                                candidate.source_kind,
+                                *now,
+                            )
+                        })
+                        .unwrap_or(*now)
+                    } else {
+                        delay
+                            .and_then(|decision| decision.eligible_at)
+                            .unwrap_or(*now)
+                    };
+                let pending = PendingRelease {
+                    id: Id::new().0,
+                    wanted_item_id: item.id.clone(),
+                    title_id: title.id.clone(),
+                    release_title: candidate.title.clone(),
+                    release_url: canonical_source.as_ref().map(|(source, _)| source.clone()),
+                    source_kind: canonical_source
                         .as_ref()
                         .map(|(_, kind)| *kind)
                         .or(candidate.source_kind),
-                    candidate.size_bytes,
-                    candidate_score,
-                    scoring_json,
-                    Some(candidate.source.as_str()),
-                    candidate.indexer_id.as_deref(),
-                    candidate.guid.as_deref(),
-                    crate::delay_profile::grab_time_delay_decision(
-                        &delay_profiles,
-                        &search_title.tags,
-                        &search_title.facet,
-                        candidate.source_kind,
-                        candidate
-                            .published_at
-                            .as_deref()
-                            .and_then(crate::quality_profile::parse_published_at),
-                        candidate_score,
-                        None,
-                        now,
-                    )
-                    .map(|delay| delay.effective_delay_minutes)
-                    .unwrap_or_default(),
-                    candidate.password_hint.as_deref(),
-                    candidate.published_at.as_deref(),
-                    candidate
+                    release_size_bytes: candidate.size_bytes,
+                    release_score: candidate_score,
+                    scoring_log_json: scoring_json,
+                    indexer_source: Some(candidate.source.clone()),
+                    indexer_id: candidate.indexer_id.clone(),
+                    release_guid: candidate.guid.clone(),
+                    added_at: now.to_rfc3339(),
+                    last_observed_at: now.to_rfc3339(),
+                    delay_until: eligible_at.to_rfc3339(),
+                    status: PendingReleaseStatus::Waiting,
+                    grabbed_at: None,
+                    source_password: crate::normalize_release_password(
+                        candidate.password_hint.as_deref(),
+                    ),
+                    published_at: normalized_published_at,
+                    info_hash: candidate
                         .extra
                         .get("info_hash")
-                        .and_then(|value| value.as_str()),
-                    crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
-                    crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
-                )
-                .await;
-                return Ok(());
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    seed_minimums: crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
+                    seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+                    release_identity: String::new(),
+                    coverage_identity: String::new(),
+                    role: next_pending_role,
+                    last_decision_code: Some(decision_code.as_str().to_string()),
+                    release_age_unknown: matches!(
+                        decision_code,
+                        ReleaseAutoDecisionCode::ReleaseAgeUnknown
+                    ),
+                };
+                let observation = PendingReleaseObservation::derived(&pending, next_pending_role);
+                match app
+                    .insert_pending_release_observation(&pending, &observation)
+                    .await
+                {
+                    Ok(_) => next_pending_role = PendingReleaseRole::Fallback,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            title = title.name.as_str(),
+                            release = candidate.title.as_str(),
+                            decision = decision_code.as_str(),
+                            "pending release: failed to persist automatic search hold"
+                        );
+                    }
+                }
             }
             continue;
         }
@@ -2567,9 +2611,7 @@ async fn process_single_target(
 
         // Submit to download client
         let canonical_source = candidate.canonical_download_source();
-        let source_hint = canonical_source
-            .as_ref()
-            .map(|(source, _)| source.clone());
+        let source_hint = canonical_source.as_ref().map(|(source, _)| source.clone());
 
         // Successful or ambiguous submissions stay globally deduplicated, but
         // a failed URL is suppressed only within its source/indexer route.
@@ -2600,7 +2642,10 @@ async fn process_single_target(
         }
 
         let source_title = Some(candidate.title.clone());
-        let canonical_source_kind = canonical_source.as_ref().map(|(_, kind)| *kind).or(candidate.source_kind);
+        let canonical_source_kind = canonical_source
+            .as_ref()
+            .map(|(_, kind)| *kind)
+            .or(candidate.source_kind);
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
         let source_password = normalize_release_password(candidate.password_hint.as_deref());
@@ -2870,8 +2915,10 @@ async fn process_single_target(
                     if let Some((client_id, client_type)) =
                         err.ambiguous_download_submission_client()
                     {
-                        let submission_scope =
-                            direct_download_submission_scope_for_wanted_item(item, episode.as_ref());
+                        let submission_scope = direct_download_submission_scope_for_wanted_item(
+                            item,
+                            episode.as_ref(),
+                        );
                         if let Err(error) = app
                             .services
                             .workflow
@@ -3469,7 +3516,7 @@ mod task_runner_tests {
 
     fn episode_submission(title_id: &str, episode_id: &str, job_id: &str) -> DownloadSubmission {
         DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: title_id.to_string(),
             purpose: DownloadSubmissionPurpose::Standard,
             facet: "series".to_string(),
@@ -3762,12 +3809,14 @@ mod task_runner_tests {
     fn poisoned_convergence_cycle_state_remains_recoverable() {
         let cycle = Arc::new(ConvergenceCycleCoordinator::default());
         let poisoned = Arc::clone(&cycle);
-        assert!(std::thread::spawn(move || {
-            let _guard = poisoned.state.lock().expect("test lock");
-            panic!("poison the test lock");
-        })
-        .join()
-        .is_err());
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = poisoned.state.lock().expect("test lock");
+                panic!("poison the test lock");
+            })
+            .join()
+            .is_err()
+        );
 
         assert_eq!(
             cycle.claim_submission(

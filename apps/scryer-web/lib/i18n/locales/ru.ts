@@ -604,6 +604,13 @@ const ru: LocaleDictionary = {
     "settings.delayProfilePreferred": "Предпочтительный протокол",
     "settings.delayProfilePreferredHelp":
         "Обход ограничений по оценке применяется только к релизам, использующим предпочтительный протокол.",
+    "settings.delayProfileProtocolModeLabel": "Режим протокола",
+    "settings.delayProfileProtocolModeHelp":
+        "Задержки отсчитываются с момента публикации релиза индексатором. Предпочтительный протокол выбирает между равнозначными релизами и определяет возможность обхода задержки.",
+    "settings.delayProfileProtocolMode.preferUsenet": "Предпочитать Usenet",
+    "settings.delayProfileProtocolMode.preferTorrent": "Предпочитать торрент",
+    "settings.delayProfileProtocolMode.onlyUsenet": "Только Usenet",
+    "settings.delayProfileProtocolMode.onlyTorrent": "Только торрент",
     "settings.delayProfileMinAge": "Минимальный возраст (минуты)",
     "settings.delayProfileMinAgeHelp":
         "Только для Usenet. Жёсткое ограничение: релизы моложе указанного значения будут удерживаться независимо от оценки. Это предотвращает загрузку незавершённых NZB-файлов. 0 — функция отключена.",
@@ -611,6 +618,9 @@ const ru: LocaleDictionary = {
     "settings.delayProfileBypassPlaceholder": "Оставьте пустым, чтобы не обходить задержку",
     "settings.delayProfileBypassHelp":
         "Если оценка релиза с предпочтительным протоколом равна или превышает этот порог, он будет загружен немедленно независимо от установленной задержки.",
+    "settings.delayProfileBypassHighestQualityLabel": "Обходить задержку для наивысшего качества",
+    "settings.delayProfileBypassHighestQualityHelp":
+        "Немедленно загружать подходящий релиз наивысшего качества, если он использует предпочтительный протокол.",
     "settings.delayProfileFacetsLabel": "Применяется к",
     "settings.delayProfileFacetsHelp":
         "Типы контента, к которым применяется этот профиль. Оставьте все флажки снятыми, чтобы применять ко всем типам.",
@@ -3586,6 +3596,10 @@ const ru: LocaleDictionary = {
     "pending.colIndexer": "Индексатор",
     "pending.colAddedAt": "Добавлен",
     "pending.colDelayUntil": "Доступен",
+    "pending.colReason": "Причина",
+    "pending.colRole": "Роль",
+    "pending.role.primary": "Основной",
+    "pending.role.fallback": "Резервный",
 
     "pending.status.needsReview": "Требует проверки",
     "pending.phase.needsReview": "Проверка",

@@ -389,6 +389,13 @@ const it: LocaleDictionary = {
   "settings.delayProfilePreferred": "Protocollo preferito",
   "settings.delayProfilePreferredHelp":
     "Il bypass basato sul punteggio si applica solo alle release del protocollo preferito.",
+  "settings.delayProfileProtocolModeLabel": "Modalità protocollo",
+  "settings.delayProfileProtocolModeHelp":
+    "I ritardi vengono misurati dal momento in cui l'indicizzatore pubblica la release. Il protocollo preferito sceglie tra release equivalenti e controlla l'idoneità al bypass.",
+  "settings.delayProfileProtocolMode.preferUsenet": "Preferisci Usenet",
+  "settings.delayProfileProtocolMode.preferTorrent": "Preferisci Torrent",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Solo Usenet",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Solo Torrent",
   "settings.delayProfileMinAge": "Età minima (minuti)",
   "settings.delayProfileMinAgeHelp":
     "Solo Usenet. Blocco rigido — le release più recenti vengono trattenute indipendentemente dal punteggio. Impedisce l'acquisizione di NZB incompleti. 0 = disattivato.",
@@ -397,6 +404,9 @@ const it: LocaleDictionary = {
     "Lascia vuoto per non bypassare mai",
   "settings.delayProfileBypassHelp":
     "Se una release del protocollo preferito raggiunge o supera questa soglia di punteggio, viene acquisita immediatamente indipendentemente dal ritardo.",
+  "settings.delayProfileBypassHighestQualityLabel": "Ignora ritardo per qualità più alta",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "Acquisisci subito la release idonea di qualità più alta se usa il protocollo preferito.",
   "settings.delayProfileFacetsLabel": "Si applica a",
   "settings.delayProfileFacetsHelp":
     "A quali tipi di contenuto si applica questo profilo. Lascia tutto deselezionato per tutti i tipi.",
@@ -1517,6 +1527,10 @@ const it: LocaleDictionary = {
   "pending.colIndexer": "Indexer",
   "pending.colAddedAt": "Aggiunto",
   "pending.colDelayUntil": "Disponibile",
+  "pending.colReason": "Motivo",
+  "pending.colRole": "Ruolo",
+  "pending.role.primary": "Principale",
+  "pending.role.fallback": "Alternativa",
   "pending.forceGrab": "Scarica ora",
   "pending.dismiss": "Ignora",
   "pending.grabbed": "Release scaricata.",

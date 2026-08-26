@@ -1045,8 +1045,86 @@ impl TrackingPendingReleaseRepo {
 #[async_trait]
 impl PendingReleaseRepository for TrackingPendingReleaseRepo {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String> {
-        self.store.lock().await.push(release.clone());
-        Ok(release.id.clone())
+        let observation = PendingReleaseObservation::derived(release, PendingReleaseRole::Primary);
+        self.insert_pending_release_observation(release, &observation)
+            .await
+    }
+
+    async fn insert_pending_release_with_role(
+        &self,
+        release: &PendingRelease,
+        role: PendingReleaseRole,
+    ) -> AppResult<String> {
+        let observation = PendingReleaseObservation::derived(release, role);
+        self.insert_pending_release_observation(release, &observation)
+            .await
+    }
+
+    async fn insert_pending_release_observation(
+        &self,
+        release: &PendingRelease,
+        observation: &PendingReleaseObservation,
+    ) -> AppResult<String> {
+        let mut store = self.store.lock().await;
+        if !observation.release_identity.is_empty()
+            && let Some(existing) = store.iter_mut().find(|existing| {
+                existing.release_identity == observation.release_identity
+                    && matches!(
+                        existing.status,
+                        PendingReleaseStatus::Waiting
+                            | PendingReleaseStatus::Standby
+                            | PendingReleaseStatus::Processing
+                            | PendingReleaseStatus::NeedsReview
+                    )
+            })
+        {
+            let persisted_id = existing.id.clone();
+            if existing.status == PendingReleaseStatus::NeedsReview
+                && !observation.release_age_unknown
+            {
+                existing.status = PendingReleaseStatus::Waiting;
+            }
+            existing.release_url = release.release_url.clone();
+            existing.source_kind = release.source_kind;
+            existing.release_size_bytes = release.release_size_bytes;
+            existing.release_score = release.release_score;
+            existing.scoring_log_json = release.scoring_log_json.clone();
+            existing.indexer_source = release.indexer_source.clone();
+            existing.indexer_id = release.indexer_id.clone();
+            existing.release_guid = release.release_guid.clone();
+            if release.source_password.is_some() {
+                existing.source_password = release.source_password.clone();
+            }
+            existing.info_hash = release.info_hash.clone();
+            existing.seed_minimums = release.seed_minimums.clone();
+            existing.seeders = release.seeders;
+            existing.delay_until = observation.eligible_at.clone();
+            let already_had_publication_time = existing.published_at.is_some();
+            if !already_had_publication_time {
+                existing.published_at = release.published_at.clone();
+            }
+            existing.release_age_unknown =
+                observation.release_age_unknown && !already_had_publication_time;
+            existing.coverage_identity = observation.coverage_identity.clone();
+            existing.role = observation.role;
+            if observation.latest_decision_code.is_some() {
+                existing.last_decision_code = observation.latest_decision_code.clone();
+            }
+            existing.last_observed_at = observation.last_observed_at.clone();
+            return Ok(persisted_id);
+        }
+
+        let mut stored = release.clone();
+        stored.delay_until = observation.eligible_at.clone();
+        stored.last_observed_at = observation.last_observed_at.clone();
+        stored.release_identity = observation.release_identity.clone();
+        stored.coverage_identity = observation.coverage_identity.clone();
+        stored.role = observation.role;
+        stored.last_decision_code = observation.latest_decision_code.clone();
+        stored.release_age_unknown = observation.release_age_unknown;
+        let persisted_id = stored.id.clone();
+        store.push(stored);
+        Ok(persisted_id)
     }
 
     async fn list_expired_pending_releases(&self, now: &str) -> AppResult<Vec<PendingRelease>> {
@@ -1069,7 +1147,34 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .lock()
             .await
             .iter()
-            .filter(|release| release.status.is_open_for_review())
+            .filter(|release| {
+                matches!(
+                    release.status,
+                    PendingReleaseStatus::Waiting | PendingReleaseStatus::Standby
+                )
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<PendingRelease>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| {
+                release.release_age_unknown
+                    && matches!(
+                        release.status,
+                        PendingReleaseStatus::Waiting
+                            | PendingReleaseStatus::Standby
+                            | PendingReleaseStatus::Processing
+                            | PendingReleaseStatus::NeedsReview
+                    )
+            })
             .cloned()
             .collect())
     }
@@ -1181,6 +1286,28 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         {
             release.status = status;
             release.grabbed_at = grabbed_at.map(str::to_string);
+        }
+        Ok(())
+    }
+
+    async fn expire_pending_release(&self, id: &str, _: &str) -> AppResult<()> {
+        self.update_pending_release_status(id, PendingReleaseStatus::Expired, None)
+            .await
+    }
+
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        id: &str,
+        _: &str,
+    ) -> AppResult<()> {
+        if let Some(release) = self
+            .store
+            .lock()
+            .await
+            .iter_mut()
+            .find(|release| release.id == id && release.published_at.is_none())
+        {
+            release.status = PendingReleaseStatus::NeedsReview;
         }
         Ok(())
     }
@@ -1298,15 +1425,19 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         Ok(true)
     }
 
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        wanted_item_id: &str,
-        except_id: &str,
+        lower_or_equal_ids: &[String],
     ) -> AppResult<()> {
         for release in self.store.lock().await.iter_mut() {
-            if release.wanted_item_id == wanted_item_id
-                && release.id != except_id
-                && release.status == PendingReleaseStatus::Waiting
+            if lower_or_equal_ids.contains(&release.id)
+                && matches!(
+                    release.status,
+                    PendingReleaseStatus::Waiting
+                        | PendingReleaseStatus::Standby
+                        | PendingReleaseStatus::Processing
+                        | PendingReleaseStatus::NeedsReview
+                )
             {
                 release.status = PendingReleaseStatus::Superseded;
             }

@@ -1327,6 +1327,23 @@ file = "postgres/migrations/0184_indexer_search_diagnostics.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 185
+description = "pending release identity and arbitration history"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0185_pending_release_identity_arbitration.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0185_pending_release_identity_arbitration.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

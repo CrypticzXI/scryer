@@ -386,6 +386,13 @@ const ja: LocaleDictionary = {
   "settings.delayProfilePreferred": "優先プロトコル",
   "settings.delayProfilePreferredHelp":
     "スコアベースのバイパスは優先プロトコルのリリースにのみ適用されます。",
+  "settings.delayProfileProtocolModeLabel": "プロトコルモード",
+  "settings.delayProfileProtocolModeHelp":
+    "遅延はインデクサーがリリースを公開した時点から計測されます。優先プロトコルは同等のリリースから選択し、バイパスの適用可否を決定します。",
+  "settings.delayProfileProtocolMode.preferUsenet": "Usenet を優先",
+  "settings.delayProfileProtocolMode.preferTorrent": "Torrent を優先",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Usenet のみ",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Torrent のみ",
   "settings.delayProfileMinAge": "最小経過時間（分）",
   "settings.delayProfileMinAgeHelp":
     "Usenet のみ。ハードゲート — これより新しいリリースはスコアに関係なく保留されます。不完全な NZB の取得を防ぎます。0 = 無効。",
@@ -393,6 +400,9 @@ const ja: LocaleDictionary = {
   "settings.delayProfileBypassPlaceholder": "バイパスしない場合は空欄",
   "settings.delayProfileBypassHelp":
     "優先プロトコルのリリーススコアがこの閾値以上の場合、遅延に関係なく即座に取得します。",
+  "settings.delayProfileBypassHighestQualityLabel": "最高品質では遅延をバイパス",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "優先プロトコルの場合、対象の最高品質リリースを直ちに取得します。",
   "settings.delayProfileFacetsLabel": "適用対象",
   "settings.delayProfileFacetsHelp":
     "このプロファイルが適用されるコンテンツタイプです。すべてチェックを外すとすべてのタイプに適用されます。",
@@ -1480,6 +1490,10 @@ const ja: LocaleDictionary = {
   "pending.colIndexer": "インデクサー",
   "pending.colAddedAt": "追加日時",
   "pending.colDelayUntil": "利用可能",
+  "pending.colReason": "理由",
+  "pending.colRole": "役割",
+  "pending.role.primary": "優先",
+  "pending.role.fallback": "代替",
   "pending.forceGrab": "今すぐ取得",
   "pending.dismiss": "取り消し",
   "pending.grabbed": "リリースを取得しました。",
