@@ -3179,7 +3179,7 @@ pub async fn start_background_acquisition_poller(
 
     app.set_job_next_run_at(
         JobKey::PluginRegistryRefresh,
-        Utc::now() + chrono::Duration::hours(24),
+        Utc::now() + chrono::Duration::hours(1),
     )
     .await;
     app.set_job_next_run_at(
@@ -3213,7 +3213,7 @@ pub async fn start_background_acquisition_poller(
     let mut poll_interval = new_skip_interval(std::time::Duration::from_secs(
         settings.poll_interval_seconds.max(1) as u64,
     ));
-    let mut registry_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(24));
+    let mut registry_refresh_interval = tokio::time::interval(std::time::Duration::from_hours(1));
     let mut health_check_interval = tokio::time::interval(std::time::Duration::from_hours(6));
     let mut staged_nzb_prune_interval = tokio::time::interval(std::time::Duration::from_hours(1));
     let mut housekeeping_interval = tokio::time::interval(std::time::Duration::from_hours(24));
@@ -3290,7 +3290,7 @@ pub async fn start_background_acquisition_poller(
                 run_task("registry_refresh", async move {
                     app.set_job_next_run_at(
                         JobKey::PluginRegistryRefresh,
-                        Utc::now() + chrono::Duration::hours(24),
+                        Utc::now() + chrono::Duration::hours(1),
                     ).await;
                     if let Err(e) = app.run_scheduled_job_now(JobKey::PluginRegistryRefresh, JobTriggerSource::ScheduledInterval).await {
                         warn!(error = %e, "periodic plugin registry refresh failed");
@@ -3468,7 +3468,7 @@ mod task_runner_tests {
         assert_eq!(JobKey::RssSync.interval_seconds(), Some(15 * 60));
         assert_eq!(
             JobKey::PluginRegistryRefresh.interval_seconds(),
-            Some(24 * 60 * 60)
+            Some(60 * 60)
         );
         assert_eq!(JobKey::HealthChecks.interval_seconds(), Some(6 * 60 * 60));
         assert_eq!(JobKey::StagedNzbPrune.interval_seconds(), Some(60 * 60));

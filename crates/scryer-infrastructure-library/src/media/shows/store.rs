@@ -21,7 +21,8 @@ const COLLECTION_COLUMNS: &str = "id, title_id, collection_type, collection_inde
 const SERIES_MOVIE_LINK_COLUMNS: &str = "sml.id AS link_id, sml.series_title_id, sml.placement, \
     sml.narrative_order, sml.after_season, sml.before_season, sml.linked_episode_id, \
     sml.association_confidence, sml.continuity_status, sml.movie_form, sml.confidence, \
-    sml.signal_summary, sml.source, sml.monitored AS link_monitored, sml.legacy_collection_id, \
+    sml.signal_summary, sml.source, sml.monitoring_override, sml.metadata_active, \
+    sml.monitored AS link_monitored, sml.legacy_collection_id, \
     sml.created_at AS link_created_at, sml.updated_at AS link_updated_at, \
     me.id AS movie_id, me.title AS movie_title, me.sort_title AS movie_sort_title, \
     me.slug AS movie_slug, me.year AS movie_year, me.overview AS movie_overview, \
@@ -679,16 +680,24 @@ async fn upsert_series_movie_link_tx(
         find_existing_series_movie_link_id_tx(tx, &link.series_title_id, &movie_id).await?
     {
         link.id = existing_link_id;
+        if let Some(existing) = load_series_movie_link_tx(tx, &link.id).await? {
+            if link.monitoring_override.is_none() {
+                link.monitoring_override = existing.monitoring_override;
+            }
+            if let Some(monitored) = link.monitoring_override {
+                link.monitored = monitored;
+            }
+        }
     }
 
     tx.execute(
         "INSERT INTO series_movie_links (
              id, series_title_id, movie_entity_id, placement, narrative_order, after_season,
              before_season, linked_episode_id, association_confidence, continuity_status,
-             movie_form, confidence, signal_summary, source, monitored, legacy_collection_id,
-             created_at, updated_at
+             movie_form, confidence, signal_summary, source, monitoring_override, metadata_active,
+             monitored, legacy_collection_id, created_at, updated_at
          ) VALUES (
-             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
          )
          ON CONFLICT(id) DO UPDATE SET
              series_title_id = excluded.series_title_id,
@@ -704,6 +713,8 @@ async fn upsert_series_movie_link_tx(
              confidence = excluded.confidence,
              signal_summary = excluded.signal_summary,
              source = excluded.source,
+             monitoring_override = excluded.monitoring_override,
+             metadata_active = excluded.metadata_active,
              monitored = excluded.monitored,
              legacy_collection_id = COALESCE(excluded.legacy_collection_id, series_movie_links.legacy_collection_id),
              updated_at = excluded.updated_at",
@@ -722,6 +733,8 @@ async fn upsert_series_movie_link_tx(
             SqlArg::OptText(link.confidence.clone()),
             SqlArg::OptText(link.signal_summary.clone()),
             SqlArg::OptText(link.source.clone()),
+            SqlArg::OptBool(link.monitoring_override),
+            SqlArg::Bool(link.metadata_active),
             SqlArg::Bool(link.monitored),
             SqlArg::OptText(link.legacy_collection_id.clone()),
             SqlArg::Timestamp(link.created_at),
@@ -871,10 +884,20 @@ async fn delete_stale_series_movie_links_tx(
     title_id: &str,
     retained_link_ids: &[String],
 ) -> AppResult<()> {
+    let now = chrono::Utc::now();
     if retained_link_ids.is_empty() {
         tx.execute(
-            "DELETE FROM series_movie_links WHERE series_title_id = {} AND COALESCE(source, '') = 'anibridge'",
-            &[SqlArg::Text(title_id.to_string())],
+            "UPDATE series_movie_links
+             SET metadata_active = {},
+                 monitored = CASE WHEN monitoring_override IS NULL THEN {} ELSE monitored END,
+                 updated_at = {}
+             WHERE series_title_id = {} AND COALESCE(source, '') = 'anibridge'",
+            &[
+                SqlArg::Bool(false),
+                SqlArg::Bool(false),
+                SqlArg::Timestamp(now),
+                SqlArg::Text(title_id.to_string()),
+            ],
         )
         .await?;
         return Ok(());
@@ -882,12 +905,18 @@ async fn delete_stale_series_movie_links_tx(
 
     let placeholders = bind_placeholders(retained_link_ids.len());
     let sql = format!(
-        "DELETE FROM series_movie_links
+        "UPDATE series_movie_links
+         SET metadata_active = {{}},
+             monitored = CASE WHEN monitoring_override IS NULL THEN {{}} ELSE monitored END,
+             updated_at = {{}}
          WHERE series_title_id = {{}}
            AND COALESCE(source, '') = 'anibridge'
            AND id NOT IN ({placeholders})"
     );
-    let mut args = Vec::with_capacity(retained_link_ids.len() + 1);
+    let mut args = Vec::with_capacity(retained_link_ids.len() + 4);
+    args.push(SqlArg::Bool(false));
+    args.push(SqlArg::Bool(false));
+    args.push(SqlArg::Timestamp(now));
     args.push(SqlArg::Text(title_id.to_string()));
     args.extend(retained_link_ids.iter().cloned().map(SqlArg::Text));
     tx.execute(&sql, &args).await?;
@@ -1737,6 +1766,8 @@ fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
         confidence: row.opt_text("confidence")?,
         signal_summary: row.opt_text("signal_summary")?,
         source: row.opt_text("source")?,
+        monitoring_override: row.opt_bool("monitoring_override")?,
+        metadata_active: row.bool("metadata_active")?,
         monitored: row.bool("link_monitored")?,
         legacy_collection_id: row.opt_text("legacy_collection_id")?,
         created_at: row.timestamp("link_created_at")?,

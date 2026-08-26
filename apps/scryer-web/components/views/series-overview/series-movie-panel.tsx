@@ -94,6 +94,10 @@ function buildMovieBadges(
     badges.push({ label: t("search.monitorType.unmonitored"), tone: "slate" });
   }
 
+  if (link.metadataActive === false) {
+    badges.push({ label: "Metadata inactive", tone: "amber" });
+  }
+
   if (link.movieForm === "recap") {
     badges.push({ label: t("episode.recap"), tone: "slate" });
   } else if (link.movieForm === "special") {

@@ -632,6 +632,8 @@ async fn seed_series_movie_link(
         confidence: None,
         signal_summary: None,
         source: Some("test".to_string()),
+        monitoring_override: None,
+        metadata_active: true,
         monitored: true,
         legacy_collection_id: None,
         created_at: now,

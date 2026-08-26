@@ -150,8 +150,8 @@ fn register_http_batch(
 }
 
 fn http_batch_limiter_key(plugin_id: &str, url: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(url)
-        .map_err(|error| format!("invalid plugin HTTP batch URL: {error}"))?;
+    let parsed =
+        url::Url::parse(url).map_err(|error| format!("invalid plugin HTTP batch URL: {error}"))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| "plugin HTTP batch URL is missing a host".to_string())?;
@@ -428,8 +428,10 @@ impl CommandHost {
                             let key = http_batch_limiter_key(&services.plugin_id, &request.url)?;
                             registration.wait_for_start(&key)?;
                             let http = &services.http;
-                            let item_plugin_id =
-                                format!("{}#http-batch-{}-{index}", services.plugin_id, registration.id);
+                            let item_plugin_id = format!(
+                                "{}#http-batch-{}-{index}",
+                                services.plugin_id, registration.id
+                            );
                             handles.push(scope.spawn(move || {
                                 let result = http
                                     .request(
@@ -459,7 +461,9 @@ impl CommandHost {
                                 .into_iter()
                                 .map(|handle| {
                                     handle.join().unwrap_or_else(|_| {
-                                        service_error("plugin HTTP batch worker panicked".to_string())
+                                        service_error(
+                                            "plugin HTTP batch worker panicked".to_string(),
+                                        )
                                     })
                                 })
                                 .collect::<Vec<_>>(),
@@ -467,9 +471,7 @@ impl CommandHost {
                     })?;
                     Ok(PluginHttpBatchResponse { results })
                 })();
-                PluginHostResponse::HttpBatch(
-                    response.map_or_else(service_error, PluginResult::Ok),
-                )
+                PluginHostResponse::HttpBatch(response.map_or_else(service_error, PluginResult::Ok))
             }
             request => unsupported_response(request),
         }
@@ -716,20 +718,10 @@ mod tests {
     fn overlapping_http_batches_share_the_most_restrictive_active_rate() {
         let url = "https://batch-rate.example.test/search";
         let key = http_batch_limiter_key("batch-rate-test", url).expect("valid limiter key");
-        let three_per_second = register_http_batch(
-            "batch-rate-test",
-            [url.to_string()],
-            3,
-            1_000,
-        )
-        .expect("first batch should register");
-        let two_per_second = register_http_batch(
-            "batch-rate-test",
-            [url.to_string()],
-            2,
-            1_000,
-        )
-        .expect("overlapping batch should register");
+        let three_per_second = register_http_batch("batch-rate-test", [url.to_string()], 3, 1_000)
+            .expect("first batch should register");
+        let two_per_second = register_http_batch("batch-rate-test", [url.to_string()], 2, 1_000)
+            .expect("overlapping batch should register");
 
         let effective_spacing = HTTP_BATCH_LIMITER
             .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))

@@ -597,15 +597,12 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
 /// `ImportDecision::Failed` and are retried by the phase rule in
 /// `completed_import_result_is_retryable` regardless of the message (Sonarr's
 /// model — no error-string catalogue). This list only recognises the transient
-/// conditions Scryer itself reports as a `Skipped`/`Rejected` result: a source
-/// still being unpacked or changing under the importer, or an active-download
-/// marker.
+/// conditions Scryer itself reports as a `Skipped`/`Rejected` result after an
+/// execution race. Import-check outcomes such as a source still unpacking are
+/// represented by `ImportSkipReason`, never their message text.
 fn completed_import_error_message_is_retryable(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     const SCRYER_TRANSIENT_PHRASES: &[&str] = &[
-        "active-download marker",
-        "still being unpacked",
-        "still_unpacking",
         "source changed",
         "temporarily",
         "not found or inaccessible",

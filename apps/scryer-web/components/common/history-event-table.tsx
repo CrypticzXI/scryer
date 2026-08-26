@@ -22,6 +22,11 @@ import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { formatUiDate, formatUiTime } from "@/lib/utils/date-format";
+import {
+  compareHistoryEpisodes,
+  formatHistoryEpisodeLabel,
+  type HistoryEpisodeDisplay,
+} from "@/lib/utils/history-episodes";
 import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
@@ -88,25 +93,7 @@ function historyEpisodeHref(event: TitleHistoryEvent, episodeId: string): string
   return titleHref ? `${titleHref}&episodeId=${encodeURIComponent(episodeId)}` : null;
 }
 
-type HistoryEpisode = {
-  id: string;
-  seasonNumber: string | number | null;
-  episodeNumber: string | number | null;
-  episodeLabel: string | null;
-  title: string | null;
-};
-
-function formatHistoryEpisodeLabel(episode: HistoryEpisode | null, episodeId: string): string {
-  if (!episode) {
-    return episodeId;
-  }
-
-  const episodeLabel = episode.episodeLabel?.trim() ||
-    (episode.seasonNumber != null && episode.episodeNumber != null
-      ? `S${String(episode.seasonNumber).padStart(2, "0")}E${String(episode.episodeNumber).padStart(2, "0")}`
-      : "Episode");
-  return episode.title?.trim() ? `${episodeLabel} · ${episode.title}` : episodeLabel;
-}
+type HistoryEpisode = HistoryEpisodeDisplay;
 
 function historyEpisodesQuery(episodeCount: number): string {
   const variables = Array.from(
@@ -153,16 +140,22 @@ function HistoryEpisodes({
     query,
     variables,
   });
+  const orderedEpisodes = episodeIds
+    .map((episodeId, index) => ({
+      episodeId,
+      episode: data?.[`episode${index}`] ?? null,
+    }))
+    .sort((left, right) => compareHistoryEpisodes(left.episode, right.episode));
 
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
       <span className="whitespace-nowrap text-muted-foreground">{label}</span>
-      <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1">
-        {episodeIds.map((episodeId, index) => {
+      <div className="flex min-w-0 flex-col gap-y-1">
+        {orderedEpisodes.map(({ episodeId, episode }) => {
           const href = historyEpisodeHref(event, episodeId);
           const label = fetching
             ? t("label.loading")
-            : formatHistoryEpisodeLabel(data?.[`episode${index}`] ?? null, episodeId);
+            : formatHistoryEpisodeLabel(episode, episodeId);
           return href ? (
             <Link
               key={episodeId}

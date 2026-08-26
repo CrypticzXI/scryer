@@ -30,18 +30,18 @@ use scryer_interface_media::mappers;
 use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
-    discovery_items_query_from_input, from_activity_event, from_application_upgrade_status,
-    from_backup_info, from_catalog_discovery, from_collection, from_dashboard_activity_stats,
-    from_delete_preview, from_delete_titles_preview, from_discovery_home,
-    from_discovery_home_cards, from_discovery_home_filter_options, from_discovery_item,
-    from_discovery_items_result, from_domain_event, from_download_queue_item, from_episode,
-    from_active_import_stream,
-    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
-    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
-    from_media_request, from_media_request_counts, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
-    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_storage_root_usage,
-    from_system_health, from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    discovery_items_query_from_input, from_active_import_stream, from_activity_event,
+    from_application_upgrade_status, from_backup_info, from_catalog_discovery, from_collection,
+    from_dashboard_activity_stats, from_delete_preview, from_delete_titles_preview,
+    from_discovery_home, from_discovery_home_cards, from_discovery_home_filter_options,
+    from_discovery_item, from_discovery_items_result, from_domain_event, from_download_queue_item,
+    from_episode, from_external_import_monitor_warmup_progress, from_job_definition, from_job_run,
+    from_library, from_library_scan_session, from_library_settings, from_linked_account,
+    from_media_rename_plan, from_media_request, from_media_request_counts,
+    from_pending_import_connection, from_pending_import_counts, from_pending_release,
+    from_provider_type, from_runtime_path_style, from_smg_scryer_update_notice,
+    from_smg_version_compatibility_notice, from_storage_root_usage, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
@@ -903,10 +903,7 @@ mod indexer_error_payload_tests {
         let response = payload.response.expect("captured response");
         assert_eq!(response.status, 500);
         assert_eq!(response.body_base64, "/wA=");
-        assert_eq!(
-            response.headers[0].value.as_deref(),
-            Some("visible")
-        );
+        assert_eq!(response.headers[0].value.as_deref(), Some("visible"));
         assert_eq!(response.headers[0].value_base64, "dmlzaWJsZQ==");
         assert_eq!(response.headers[1].value, None);
         assert_eq!(response.headers[1].value_base64, "/w==");

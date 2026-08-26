@@ -666,12 +666,7 @@ mod tests {
         let episodes = (1..=26)
             .map(|number| {
                 let number = number.to_string();
-                episode(
-                    &format!("ep-{number}"),
-                    "17",
-                    &number,
-                    Some(&number),
-                )
+                episode(&format!("ep-{number}"), "17", &number, Some(&number))
             })
             .collect::<Vec<_>>();
         let mut parsed = parsed_with_episode(ParsedEpisodeMetadata {
@@ -682,15 +677,17 @@ mod tests {
             season_part: Some(2),
             ..Default::default()
         });
-        parsed.raw_title =
-            "Fixture.Anime.Continuation.S17.Part.2.1080p.WEB-DL-GRP".to_string();
+        parsed.raw_title = "Fixture.Anime.Continuation.S17.Part.2.1080p.WEB-DL-GRP".to_string();
         let episode = parsed.episode.as_ref().expect("season-pack metadata");
         assert_eq!(episode.season, Some(17));
         assert_eq!(episode.season_part, Some(2));
         assert!(episode.is_partial_season);
 
         let coverage = resolve_release_coverage(&parsed, &episodes, &[], episodes.first());
-        assert_eq!(coverage, ReleaseCoverage::Collection("season-17".to_string()));
+        assert_eq!(
+            coverage,
+            ReleaseCoverage::Collection("season-17".to_string())
+        );
         assert_eq!(
             coverage_runtime_minutes(&coverage, &parsed, &episodes, Some(24)),
             Some(13 * 24)

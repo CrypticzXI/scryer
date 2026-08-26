@@ -1005,7 +1005,7 @@ async fn import_additional_movie_download(
     if let crate::import_checks::ImportVerdict::Reject { reason, code } =
         crate::import_checks::run_import_checks(&check_ctx)
     {
-        let artifact_result = if code == "duplicate_file" {
+        let artifact_result = if code.is_duplicate_file() {
             "already_present"
         } else {
             "rejected"
@@ -1018,7 +1018,7 @@ async fn import_additional_movie_download(
             source_video,
             "movie",
             artifact_result,
-            Some(code),
+            Some(code.as_str()),
             None,
             linked_episode_artifacts,
         )
@@ -1437,7 +1437,7 @@ async fn import_movie_download(
     if let crate::import_checks::ImportVerdict::Reject { reason, code } =
         crate::import_checks::run_import_checks(&check_ctx)
     {
-        let artifact_result = if code == "duplicate_file" {
+        let artifact_result = if code.is_duplicate_file() {
             "already_present"
         } else {
             "rejected"
@@ -1450,7 +1450,7 @@ async fn import_movie_download(
             &source_video,
             "movie",
             artifact_result,
-            Some(code),
+            Some(code.as_str()),
             None,
             &[],
         )

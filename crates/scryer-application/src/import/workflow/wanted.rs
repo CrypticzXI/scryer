@@ -149,7 +149,7 @@ async fn execute_resolved_episode_import(
         {
             return Ok(EpisodeImportOutcome::Skipped {
                 message: reason,
-                reason_code: Some(code.to_string()),
+                reason_code: Some(code.as_str().to_string()),
                 skip_reason: Some(
                     skip_reason_for_import_check_rejection(app, code, &dest_path).await?,
                 ),
@@ -324,7 +324,7 @@ async fn execute_resolved_episode_import(
         tracing::debug!(file = %precheck_dest_path.display(), %code, %reason, "skipping episode file");
         return Ok(EpisodeImportOutcome::Skipped {
             message: reason,
-            reason_code: Some(code.to_string()),
+            reason_code: Some(code.as_str().to_string()),
             skip_reason: Some(
                 skip_reason_for_import_check_rejection(app, code, &precheck_dest_path).await?,
             ),

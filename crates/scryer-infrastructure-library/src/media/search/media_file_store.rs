@@ -614,6 +614,7 @@ impl MediaFileRepository for MediaFileStore {
               INNER JOIN titles t ON t.id = sml.series_title_id
               INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
               WHERE {} AND {}
+                AND ({} OR {})
                 AND t.deleted_at IS NULL
                 AND NOT EXISTS (
                     SELECT 1 FROM file_series_movie_link_map fsmlm
@@ -624,6 +625,8 @@ impl MediaFileRepository for MediaFileStore {
               ORDER BY sml.id",
             bool_column_is_true(dialect, "sml.monitored"),
             bool_column_is_true(dialect, "t.monitored"),
+            bool_column_is_true(dialect, "sml.metadata_active"),
+            bool_column_is_true(dialect, "sml.monitoring_override"),
         );
         let series_movie_links = SqlRuntime::fetch_all(self.datastore.read_exec(), &link_sql, &[])
             .await?
@@ -2075,7 +2078,9 @@ mod tests {
             movie_form: Some("movie".to_string()),
             confidence: Some("high".to_string()),
             signal_summary: None,
-            source: Some("test".to_string()),
+            source: Some("anibridge".to_string()),
+            monitoring_override: None,
+            metadata_active: true,
             monitored: true,
             legacy_collection_id: None,
             created_at: now,
@@ -2126,6 +2131,47 @@ mod tests {
         assert!(
             !link_candidate.link_created_at.is_empty(),
             "series movie link timestamp should be serialized"
+        );
+
+        ShowRepository::delete_stale_series_movie_links(&shows, &title.id, &[])
+            .await
+            .expect("stale series movie link should become inactive");
+        let mut inactive_link =
+            ShowRepository::list_series_movie_links_for_title(&shows, &title.id)
+                .await
+                .expect("series movie links should list")
+                .into_iter()
+                .find(|candidate| candidate.id == link.id)
+                .expect("stale series movie link should be retained");
+        assert!(!inactive_link.metadata_active);
+        assert!(!inactive_link.monitored);
+        let inactive = media_files
+            .list_missing_scope_candidates()
+            .await
+            .expect("missing scope candidates should load");
+        assert!(
+            inactive
+                .series_movie_links
+                .iter()
+                .all(|candidate| candidate.series_movie_link_id != link.id),
+            "policy-disabled inactive links must not be acquired"
+        );
+
+        inactive_link.monitoring_override = Some(true);
+        inactive_link.monitored = true;
+        ShowRepository::upsert_series_movie_link(&shows, inactive_link)
+            .await
+            .expect("explicitly enabled inactive series movie link should update");
+        let explicitly_enabled = media_files
+            .list_missing_scope_candidates()
+            .await
+            .expect("missing scope candidates should load");
+        assert!(
+            explicitly_enabled
+                .series_movie_links
+                .iter()
+                .any(|candidate| candidate.series_movie_link_id == link.id),
+            "an explicit operator choice remains eligible after metadata retires the link"
         );
 
         let _ = std::fs::remove_file(db);

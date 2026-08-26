@@ -358,11 +358,7 @@ pub fn builtin_anime_profile() -> QualityProfile {
         id: "anime".to_string(),
         name: "Anime".to_string(),
         criteria: QualityProfileCriteria {
-            quality_tiers: vec![
-                "1080P".to_string(),
-                "720P".to_string(),
-                "576P".to_string(),
-            ],
+            quality_tiers: vec!["1080P".to_string(), "720P".to_string(), "576P".to_string()],
             archival_quality: Some("1080P".to_string()),
             allow_unknown_quality: false,
             source_allowlist: Vec::new(),
@@ -1731,7 +1727,10 @@ mod tests {
 
         let release =
             parse_release_metadata("Fixture.Anime.S06E01.576p.DVD.Opus.Dual.Audio.AV1-GRP");
-        assert_eq!(normalize_quality_tier(release.quality.as_deref()), Some("576P".to_string()));
+        assert_eq!(
+            normalize_quality_tier(release.quality.as_deref()),
+            Some("576P".to_string())
+        );
         let result = evaluate_against_profile(&profile, &release, false, &balanced_weights());
         assert!(result.allowed, "576p anime release was blocked: {result:?}");
     }

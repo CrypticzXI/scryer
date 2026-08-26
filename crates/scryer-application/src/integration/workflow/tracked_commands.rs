@@ -2918,11 +2918,10 @@ async fn handle_tracked_download_background_work_result(
     {
         // A rejected import is an operator decision point; record it durably
         // so restarts don't erase it and reconciliation doesn't re-offer it.
-        crate::tracked_downloads::persist_tracked_download_state_marker(
+        crate::tracked_downloads::persist_import_blocked_state_marker(
             app,
             td,
-            TrackedDownloadState::ImportBlocked,
-            Some("import_blocked_after_import"),
+            crate::tracked_downloads::ImportBlockedReason::AfterImport,
             td.status_messages.first().map(String::as_str),
         )
         .await;

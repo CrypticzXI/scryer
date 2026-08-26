@@ -8,9 +8,7 @@ use scryer_application::{
     NormalizedIndexerSearchCandidate, ReusableIndexerSearchCandidate,
 };
 
-use crate::queries::sql_runtime::{
-    SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err,
-};
+use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
 
 fn sqlite_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -439,25 +437,16 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
         let placeholders = std::iter::repeat_n("{}", order.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let candidate_args = || {
-            order
-                .iter()
-                .cloned()
-                .map(SqlArg::Text)
-                .collect::<Vec<_>>()
-        };
+        let candidate_args = || order.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
         let values_sql = format!(
             "SELECT candidate_id, value_kind, value
              FROM indexer_search_candidate_values
              WHERE candidate_id IN ({placeholders})
              ORDER BY candidate_id, value_kind, ordinal"
         );
-        let value_rows = SqlRuntime::fetch_all(
-            self.datastore.read_exec(),
-            &values_sql,
-            &candidate_args(),
-        )
-        .await?;
+        let value_rows =
+            SqlRuntime::fetch_all(self.datastore.read_exec(), &values_sql, &candidate_args())
+                .await?;
         for row in &value_rows {
             let candidate_id = row.text("candidate_id")?;
             let Some(candidate) = candidates.get_mut(&candidate_id) else {
@@ -1129,7 +1118,8 @@ mod tests {
             .await
             .map_err(repo_err)?;
         }
-        let store = IndexerSearchLearningStore::new(StoreDatastore::Postgres { pool: pool.clone() });
+        let store =
+            IndexerSearchLearningStore::new(StoreDatastore::Postgres { pool: pool.clone() });
 
         store.prune_indexer("idx-pruned").await?;
         let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM indexer_search_learning")

@@ -1703,7 +1703,7 @@ fn graphql_post_execution_timeout() -> Duration {
     // remain above both the longest valid indexer operation and an operator's
     // configured download-client feedback window, otherwise it silently wins.
     graphql_post_execution_timeout_for(
-        scryer_infrastructure_acquisition::downloads::clients::download_client_feedback_timeout()
+        scryer_infrastructure_acquisition::downloads::clients::download_client_feedback_timeout(),
     )
 }
 

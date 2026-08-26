@@ -2383,11 +2383,13 @@ async fn cancel_import_worker(session: &mut ImportFileWorkerSession) -> AppError
         Ok(Ok(status)) => AppError::canceled(format!(
             "filesystem worker {pid:?} was cancelled ({status})"
         )),
-        other => hold_unconfirmed_import_worker(
-            child,
-            format!("cancelled worker {pid:?} stop could not be confirmed: {other:?}"),
-        )
-        .await,
+        other => {
+            hold_unconfirmed_import_worker(
+                child,
+                format!("cancelled worker {pid:?} stop could not be confirmed: {other:?}"),
+            )
+            .await
+        }
     }
 }
 
@@ -2628,7 +2630,9 @@ impl FileImporter for FsFileImporter {
             };
             let mut session = spawn_import_file_worker(executable, &prepare_request).await?;
             let prepared = loop {
-                match next_import_worker_event_or_cancel(&mut session, cancellation.as_ref()).await? {
+                match next_import_worker_event_or_cancel(&mut session, cancellation.as_ref())
+                    .await?
+                {
                     ImportFileWorkerEvent::Stage { .. } => {}
                     ImportFileWorkerEvent::Prepared { prepared, .. } => {
                         wait_for_import_worker_exit(&mut session, "after preparing import").await?;

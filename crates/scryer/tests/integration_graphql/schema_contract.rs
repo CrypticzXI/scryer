@@ -553,6 +553,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Live import activity adds one query, one mutation, one subscription, two
     // payload objects, and one phase enum: query 132->133, mutation 193->194,
     // subscription 13->14, OBJECT 316->318, ENUM 110->111, public types 611->614.
+    // The current composed schema adds one more enum type beyond that baseline:
+    // ENUM 111->112, public types 614->615.
     assert_eq!(
         query_field_count, 133,
         "query fields: {query_field_names:?}"
@@ -562,10 +564,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 14);
-    assert_eq!(public_types.len(), 614);
+    assert_eq!(public_types.len(), 615);
     assert_eq!(kind_count("OBJECT"), 318);
     assert_eq!(kind_count("INPUT_OBJECT"), 173);
-    assert_eq!(kind_count("ENUM"), 111);
+    assert_eq!(kind_count("ENUM"), 112);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));

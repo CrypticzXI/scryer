@@ -452,7 +452,9 @@ impl AppUseCase {
                         && row.fingerprint == expected
                         && stale_before.is_none_or(|cutoff| {
                             chrono::DateTime::parse_from_rfc3339(&row.searched_at)
-                                .map(|searched_at| searched_at.with_timezone(&chrono::Utc) >= cutoff)
+                                .map(|searched_at| {
+                                    searched_at.with_timezone(&chrono::Utc) >= cutoff
+                                })
                                 .unwrap_or(false)
                         })
                 })

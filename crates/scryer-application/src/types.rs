@@ -2124,7 +2124,9 @@ impl IndexerSearchCompletion {
 /// contribute candidates, but must be retried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexerSearchOutcome {
-    Complete { empty: bool },
+    Complete {
+        empty: bool,
+    },
     Partial {
         empty: bool,
         reason: Option<IndexerSearchIncompleteReason>,

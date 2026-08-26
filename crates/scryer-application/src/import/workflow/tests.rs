@@ -1087,16 +1087,22 @@ mod tests {
     #[test]
     fn invalid_and_sample_check_codes_are_permanent_policy_mismatches() {
         assert_eq!(
-            skip_reason_for_import_check_code("invalid_extension"),
+            skip_reason_for_import_check_code(crate::import_checks::ImportCheckCode::InvalidExtension),
             ImportSkipReason::PolicyMismatch
         );
         assert_eq!(
-            skip_reason_for_import_check_code("sample_file"),
+            skip_reason_for_import_check_code(crate::import_checks::ImportCheckCode::SampleFile),
             ImportSkipReason::PolicyMismatch
         );
         assert_eq!(
-            skip_reason_for_import_check_code("sample_directory"),
+            skip_reason_for_import_check_code(
+                crate::import_checks::ImportCheckCode::SampleDirectory,
+            ),
             ImportSkipReason::PolicyMismatch
+        );
+        assert_eq!(
+            skip_reason_for_import_check_code(crate::import_checks::ImportCheckCode::StillUnpacking),
+            ImportSkipReason::DownloadInProgress
         );
     }
 
@@ -1158,12 +1164,9 @@ mod tests {
             ImportStatus::Pending
         );
 
-        // Scryer's own transient markers are the only message-based hint.
-        for transient in [
-            "source is still being unpacked by the client",
-            "active-download marker present",
-            "destination temporarily unavailable",
-        ] {
+        // These execution races lack a structured outcome and remain the only
+        // message-based retry hints. Import-check rejection reasons are typed.
+        for transient in ["source changed during copy", "destination temporarily unavailable"] {
             result.error_message = Some(transient.to_string());
             assert_eq!(
                 completed_import_status_for_result(&result, ImportStatus::Failed),
@@ -1232,6 +1235,7 @@ mod tests {
         result.decision = ImportDecision::Skipped;
         result.error_message = Some("not enough room".to_string());
         for environmental in [
+            ImportSkipReason::DownloadInProgress,
             ImportSkipReason::DiskFull,
             ImportSkipReason::PermissionDenied,
         ] {

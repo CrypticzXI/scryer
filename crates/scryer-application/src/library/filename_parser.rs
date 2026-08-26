@@ -1421,6 +1421,8 @@ mod tests {
             confidence: None,
             signal_summary: None,
             source: Some("test".into()),
+            monitoring_override: None,
+            metadata_active: true,
             monitored: true,
             legacy_collection_id: None,
             created_at: now,

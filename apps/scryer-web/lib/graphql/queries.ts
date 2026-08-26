@@ -300,6 +300,8 @@ const SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS = `
       continuityStatus
       movieForm
       signalSummary
+      monitoringOverride
+      metadataActive
       monitored
       movie {
         id
