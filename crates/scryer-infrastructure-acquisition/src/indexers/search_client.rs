@@ -5328,10 +5328,12 @@ mod tests {
         }
     }
 
+    type CandidateDeadlineLog = StdArc<StdMutex<Vec<Vec<Option<chrono::DateTime<Utc>>>>>>;
+
     #[derive(Default)]
     struct RecordingScheduler {
         candidate_ids: StdArc<StdMutex<Vec<Vec<String>>>>,
-        candidate_deadlines: StdArc<StdMutex<Vec<Vec<Option<chrono::DateTime<Utc>>>>>>,
+        candidate_deadlines: CandidateDeadlineLog,
         feedback_candidate_ids: StdArc<StdMutex<Vec<String>>>,
         reverse_decisions: bool,
         skip_retry_after: Option<std::time::Duration>,
@@ -5360,7 +5362,7 @@ mod tests {
                     request
                         .candidates
                         .iter()
-                        .map(|candidate| candidate.deadline_at.clone())
+                        .map(|candidate| candidate.deadline_at)
                         .collect(),
                 );
             let mut decisions = request

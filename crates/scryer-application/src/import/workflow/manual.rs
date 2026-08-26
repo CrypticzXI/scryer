@@ -1092,18 +1092,27 @@ async fn preview_manual_import(
                     .find_episode_by_title_and_numbers(title_id, &season_str, &ep_str)
                     .await
                 {
-                    let label = format!(
-                        "S{:02}E{:02}{}",
-                        ep_meta.season.unwrap_or(1),
-                        ep_num,
-                        episode
-                            .title
-                            .as_ref()
-                            .map(|t| format!(" - {}", t))
-                            .unwrap_or_default()
-                    );
                     suggested_episode_id = Some(episode.id.clone());
-                    suggested_episode_label = Some(label);
+                    suggested_episode_label = Some(
+                        if episode
+                            .absolute_number
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty())
+                        {
+                            manual_import_episode_label(&episode)
+                        } else {
+                            format!(
+                                "S{:02}E{:02}{}",
+                                ep_meta.season.unwrap_or(1),
+                                ep_num,
+                                episode
+                                    .title
+                                    .as_ref()
+                                    .map(|title| format!(" - {title}"))
+                                    .unwrap_or_default()
+                            )
+                        },
+                    );
                 }
             }
 
@@ -1119,17 +1128,8 @@ async fn preview_manual_import(
                     .find_episode_by_title_and_absolute_number(title_id, &abs_str)
                     .await
                 {
-                    let label = format!(
-                        "#{}{}",
-                        abs,
-                        episode
-                            .title
-                            .as_ref()
-                            .map(|t| format!(" - {}", t))
-                            .unwrap_or_default()
-                    );
                     suggested_episode_id = Some(episode.id.clone());
-                    suggested_episode_label = Some(label);
+                    suggested_episode_label = Some(manual_import_episode_label(&episode));
                 }
             }
         }
@@ -1221,6 +1221,36 @@ fn manual_episode_suggestion_for_grabbed_scope(
 }
 
 fn manual_import_episode_label(episode: &scryer_domain::Episode) -> String {
+    if let Some(absolute) = episode
+        .absolute_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let normalized_number = |value: Option<&str>| {
+            let digits = value
+                .unwrap_or_default()
+                .chars()
+                .filter(char::is_ascii_digit)
+                .collect::<String>();
+            if digits.is_empty() {
+                "??".to_string()
+            } else {
+                digits
+            }
+        };
+        let season = normalized_number(episode.season_number.as_deref());
+        let number = normalized_number(episode.episode_number.as_deref());
+        let title = episode
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!(" — {value}"))
+            .unwrap_or_default();
+        return format!("S{season:0>2}E{number:0>2} · Absolute {absolute}{title}");
+    }
+
     episode.episode_label.clone().unwrap_or_else(|| {
         let season = episode.season_number.as_deref().unwrap_or("1");
         let number = episode.episode_number.as_deref().unwrap_or("?");
@@ -2809,6 +2839,19 @@ async fn execute_manual_import_with_release_evidence_locked(
                     Some(message),
                 ));
             }
+            Ok(EpisodeImportOutcome::Ignored { message, .. }) => {
+                // Automatic pack planning is never active for an operator's
+                // explicit manual mapping. Keep this arm non-successful if a
+                // future caller reaches it rather than turning it into a
+                // manual ignore action.
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(manual_import_error_from_skip_reason(None)),
+                    Some(message),
+                ));
+            }
             Ok(EpisodeImportOutcome::Rejected { rejection, .. }) => {
                 results.push(manual_import_file_result(
                     mapping,
@@ -3405,8 +3448,64 @@ mod manual_archive_workspace_tests {
 mod manual_preview_suggestion_tests {
     use super::*;
 
+    fn episode_for_label(absolute_number: Option<&str>) -> scryer_domain::Episode {
+        scryer_domain::Episode {
+            id: "episode-19".to_string(),
+            title_id: "title-1".to_string(),
+            collection_id: Some("season-1".to_string()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("19".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("provider label is not the import target".to_string()),
+            title: Some("Episode Title".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: absolute_number.map(str::to_string),
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        }
+    }
+
     fn file_episode(stem: &str) -> Option<crate::ParsedEpisodeMetadata> {
         parse_release_metadata(stem).episode
+    }
+
+    #[test]
+    fn manual_episode_label_names_the_absolute_number() {
+        assert_eq!(
+            manual_import_episode_label(&episode_for_label(Some("19"))),
+            "S01E19 · Absolute 19 — Episode Title"
+        );
+
+        let mut decorated = episode_for_label(Some("19"));
+        decorated.season_number = Some("Season 1".to_string());
+        decorated.episode_number = Some("Episode 19".to_string());
+        assert_eq!(
+            manual_import_episode_label(&decorated),
+            "S01E19 · Absolute 19 — Episode Title"
+        );
+
+        decorated.season_number = None;
+        decorated.episode_number = None;
+        assert_eq!(
+            manual_import_episode_label(&decorated),
+            "S??E?? · Absolute 19 — Episode Title"
+        );
+    }
+
+    #[test]
+    fn manual_episode_label_without_absolute_number_preserves_catalog_label() {
+        assert_eq!(
+            manual_import_episode_label(&episode_for_label(None)),
+            "provider label is not the import target"
+        );
     }
 
     fn suggestion(

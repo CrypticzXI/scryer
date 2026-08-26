@@ -1363,7 +1363,7 @@ export const beginManualImportSelectionMutation = `mutation BeginManualImportSel
       episodeType
       episodeNumber
       seasonNumber
-      episodeLabel
+      absoluteNumber
       title
       monitored
     }

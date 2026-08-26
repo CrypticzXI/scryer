@@ -1,4 +1,6 @@
-use super::verification::verify_import_inner_with_release_evidence;
+use super::verification::{
+    skipped_aggregate_has_terminal_artifact_dispositions, verify_import_inner_with_release_evidence,
+};
 use super::*;
 
 const IMPORT_MARK_RETRY_INITIAL_SECONDS: u64 = 15;
@@ -224,7 +226,24 @@ pub(super) async fn apply_import_result_with_completed(
 ) -> bool {
     let already_imported = result.decision == ImportDecision::Skipped
         && result.skip_reason == Some(ImportSkipReason::AlreadyImported);
-    if result.decision == ImportDecision::Imported || already_imported {
+    let skipped_aggregate_is_verifiable = if result.decision == ImportDecision::Skipped
+        && !already_imported
+    {
+        match skipped_aggregate_has_terminal_artifact_dispositions(app, td, completed).await {
+            Ok(verifiable) => verifiable,
+            Err(error) => {
+                tracing::warn!(tracked_id = %td.id, error = %error, "import verification evidence is unavailable");
+                schedule_import_verification_retry(td);
+                return false;
+            }
+        }
+    } else {
+        false
+    };
+    if result.decision == ImportDecision::Imported
+        || already_imported
+        || skipped_aggregate_is_verifiable
+    {
         td.clear_no_video_import_retry();
         td.clear_import_execution_retry();
         let verified = match verify_import_inner_with_release_evidence(

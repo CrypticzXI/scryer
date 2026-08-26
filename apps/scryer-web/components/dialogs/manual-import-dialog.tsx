@@ -69,7 +69,7 @@ type AvailableEpisode = {
   episodeType: string;
   episodeNumber: string | null;
   seasonNumber: string | null;
-  episodeLabel: string | null;
+  absoluteNumber: string | null;
   title: string | null;
   monitored: boolean;
 };
@@ -96,9 +96,15 @@ function formatFileSize(bytes: number) {
 }
 
 function episodeLabel(ep: AvailableEpisode): string {
-  const season = ep.seasonNumber?.replace(/\D/g, "") ?? "?";
-  const epNum = ep.episodeNumber?.replace(/\D/g, "") ?? "?";
-  const tag = `S${season.padStart(2, "0")}E${epNum.padStart(2, "0")}`;
+  const season = ep.seasonNumber?.replace(/\D/g, "") ?? "";
+  const episode = ep.episodeNumber?.replace(/\D/g, "") ?? "";
+  const seasonTag = season ? season.padStart(2, "0") : "??";
+  const episodeTag = episode ? episode.padStart(2, "0") : "??";
+  const tag = `S${seasonTag}E${episodeTag}`;
+  const absolute = ep.absoluteNumber?.trim();
+  if (absolute) {
+    return `${tag} · Absolute ${absolute}${ep.title ? ` — ${ep.title}` : ""}`;
+  }
   return ep.title ? `${tag} - ${ep.title}` : tag;
 }
 

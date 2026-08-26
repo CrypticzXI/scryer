@@ -306,6 +306,7 @@ include!("poller.rs");
 include!("completed.rs");
 include!("movie.rs");
 include!("series_movie.rs");
+include!("series_plan.rs");
 include!("series.rs");
 include!("paths.rs");
 include!("metadata.rs");

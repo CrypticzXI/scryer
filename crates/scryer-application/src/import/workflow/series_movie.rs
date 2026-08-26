@@ -790,6 +790,10 @@ async fn dispatch_completed_import_target(
         ))
         .await
     } else if target.is_series {
+        let source_root = target
+            .extracted_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new(&completed.dest_dir));
         Box::pin(import_series_download(
             app,
             actor,
@@ -797,6 +801,7 @@ async fn dispatch_completed_import_target(
             import_id,
             completed,
             release_evidence,
+            source_root,
             &target.video_files,
             started_at,
         ))

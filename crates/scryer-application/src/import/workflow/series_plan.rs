@@ -1,0 +1,933 @@
+#[derive(Clone, Debug)]
+enum PlannedEpisodeMemberDisposition {
+    Import {
+        episodes: Vec<scryer_domain::Episode>,
+    },
+    Ignore {
+        episodes: Vec<scryer_domain::Episode>,
+        reason_code: &'static str,
+        message: String,
+    },
+    Hold {
+        episodes: Vec<scryer_domain::Episode>,
+        reason_code: &'static str,
+        message: String,
+    },
+}
+
+#[derive(Default)]
+struct EpisodePackImportPlan {
+    members: HashMap<PathBuf, PlannedEpisodeMemberDisposition>,
+}
+
+impl EpisodePackImportPlan {
+    fn disposition_for(&self, source_path: &Path) -> Option<&PlannedEpisodeMemberDisposition> {
+        self.members.get(source_path)
+    }
+}
+
+struct VerifiedEpisodePack {
+    declared_seasons: Option<HashSet<u32>>,
+    is_extras_release: bool,
+}
+
+enum PlannedMemberDraft {
+    Resolved(Vec<scryer_domain::Episode>),
+    AmbiguousNumbering {
+        season: u32,
+        season_local: Option<Vec<scryer_domain::Episode>>,
+        absolute: Option<Vec<scryer_domain::Episode>>,
+    },
+    Ignore {
+        reason_code: &'static str,
+        message: String,
+    },
+    Hold {
+        episodes: Vec<scryer_domain::Episode>,
+        reason_code: &'static str,
+        message: String,
+    },
+}
+
+fn verified_episode_pack(
+    release_evidence: &ReleaseEvidence,
+    title: &scryer_domain::Title,
+) -> Option<VerifiedEpisodePack> {
+    let ReleaseEvidence::ScryerSubmission { scope, .. } = release_evidence else {
+        return None;
+    };
+    let pack_scope = match scope {
+        SubmissionScope::Collection { .. } => true,
+        SubmissionScope::EpisodeSet { episode_ids } => episode_ids.len() > 1,
+        _ => false,
+    };
+    if !pack_scope {
+        return None;
+    }
+
+    let release_title = release_evidence.release_title(None)?;
+    let parsed =
+        normalize_release_title_signal(parse_import_release_for_title(&release_title, title));
+    let episode = parsed.episode.as_ref()?;
+    let is_pack = episode.full_season
+        || episode.is_series_pack
+        || episode.is_multi_season
+        || episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack;
+    if !is_pack {
+        return None;
+    }
+
+    let declared_seasons = if !episode.season_numbers.is_empty() {
+        Some(episode.season_numbers.iter().copied().collect())
+    } else {
+        episode.season.map(|season| HashSet::from([season]))
+    };
+
+    Some(VerifiedEpisodePack {
+        declared_seasons,
+        is_extras_release: episode.is_season_extra,
+    })
+}
+
+async fn build_episode_pack_import_plan(
+    app: &AppUseCase,
+    title: &scryer_domain::Title,
+    release_evidence: &ReleaseEvidence,
+    source_root: &Path,
+    video_files: &[PathBuf],
+    expected_episode_ids: Option<&HashSet<String>>,
+) -> AppResult<Option<EpisodePackImportPlan>> {
+    let Some(pack) = verified_episode_pack(release_evidence, title) else {
+        return Ok(None);
+    };
+    let catalog_episodes = app
+        .services
+        .catalog
+        .shows
+        .list_episodes_for_title(&title.id)
+        .await?;
+
+    let mut drafts = Vec::with_capacity(video_files.len());
+    for source_path in video_files {
+        let draft = if pack.is_extras_release {
+            PlannedMemberDraft::Hold {
+                episodes: Vec::new(),
+                reason_code: "season_extras_release",
+                message: "Automatic import will not treat a season-range extras release as normal episodes. Open Manual Import and assign any wanted content."
+                    .to_string(),
+            }
+        } else {
+            plan_episode_pack_member(title, source_root, source_path, &catalog_episodes)
+        };
+        drafts.push(draft);
+    }
+
+    resolve_ambiguous_pack_numbering(&mut drafts, &catalog_episodes, expected_episode_ids);
+    hold_duplicate_pack_episode_mappings(&mut drafts);
+
+    let mut plan = EpisodePackImportPlan::default();
+    for (source_path, draft) in video_files.iter().cloned().zip(drafts) {
+        let disposition = finalize_pack_member_disposition(draft, &pack);
+        plan.members.insert(source_path, disposition);
+    }
+    Ok(Some(plan))
+}
+
+fn plan_episode_pack_member(
+    title: &scryer_domain::Title,
+    source_root: &Path,
+    source_path: &Path,
+    catalog: &[scryer_domain::Episode],
+) -> PlannedMemberDraft {
+    let parsed_stem = parsed_pack_member_for_catalog(title, source_path, catalog);
+    if has_disc_layout_ancestor(source_root, source_path) {
+        return PlannedMemberDraft::Hold {
+            episodes: Vec::new(),
+            reason_code: "disc_layout_member",
+            message: "Automatic import found a disc-layout pack member. Open Manual Import and assign the correct episode."
+                .to_string(),
+        };
+    }
+
+    if member_names_different_title(title, source_root, source_path, &parsed_stem) {
+        return PlannedMemberDraft::Hold {
+            episodes: Vec::new(),
+            reason_code: "member_title_mismatch",
+            message: "Automatic import found a pack member that names a different title. Open Manual Import and assign or discard it."
+                .to_string(),
+        };
+    }
+
+    if parsed_stem.episode.as_ref().is_some_and(|episode| {
+        matches!(
+            episode.special_kind,
+            Some(
+                crate::ParsedSpecialKind::Ncop
+                    | crate::ParsedSpecialKind::Nced
+                    | crate::ParsedSpecialKind::Extra
+            )
+        )
+    }) {
+        return PlannedMemberDraft::Ignore {
+            reason_code: "auxiliary_video",
+            message: "Recognized auxiliary pack video was intentionally ignored.".to_string(),
+        };
+    }
+
+    let folder_season = match nearest_explicit_season_ancestor(source_root, source_path) {
+        Ok(season) => season,
+        Err(()) => {
+            return PlannedMemberDraft::Hold {
+                episodes: Vec::new(),
+                reason_code: "conflicting_season_folders",
+                message: "Automatic import found conflicting season folders for this pack member. Open Manual Import and assign the correct episode."
+                    .to_string(),
+            };
+        }
+    };
+
+    let Some(identity) = parsed_stem
+        .episode
+        .clone()
+        .or_else(|| parsed_release_from_file_stem(source_path).episode)
+    else {
+        return PlannedMemberDraft::Hold {
+            episodes: Vec::new(),
+            reason_code: "unparseable_pack_member",
+            message: "Automatic import could not identify this pack member. Open Manual Import and assign the correct episode."
+                .to_string(),
+        };
+    };
+
+    plan_parsed_pack_identity(
+        title.facet == scryer_domain::MediaFacet::Anime,
+        &identity,
+        folder_season,
+        catalog,
+    )
+}
+
+fn plan_parsed_pack_identity(
+    is_anime: bool,
+    identity: &crate::ParsedEpisodeMetadata,
+    folder_season: Option<u32>,
+    catalog: &[scryer_domain::Episode],
+) -> PlannedMemberDraft {
+    if let Some(air_date) = identity.air_date {
+        let matches = catalog_episodes_for_air_date(catalog, air_date, identity.daily_part);
+        return resolved_or_missing(matches, "daily episode");
+    }
+
+    if let Some(season) = identity.season {
+        if folder_season.is_some_and(|folder| folder != season) {
+            return PlannedMemberDraft::Hold {
+                episodes: Vec::new(),
+                reason_code: "member_season_conflict",
+                message: "Automatic import found a filename season that conflicts with its season folder. Open Manual Import and assign the correct episode."
+                    .to_string(),
+            };
+        }
+        let standard =
+            catalog_episodes_for_season_numbers(catalog, season, &identity.episode_numbers);
+        let Some(standard) = standard else {
+            return missing_catalog_member("season and episode");
+        };
+        let absolute_numbers = parsed_absolute_numbers(identity);
+        if !absolute_numbers.is_empty() {
+            let Some(absolute) = catalog_episodes_for_absolute_numbers(catalog, &absolute_numbers)
+            else {
+                return missing_catalog_member("absolute episode companion");
+            };
+            if episode_id_set(&standard) != episode_id_set(&absolute) {
+                return PlannedMemberDraft::Hold {
+                    episodes: standard,
+                    reason_code: "member_identity_conflict",
+                    message: "Automatic import found season/episode and absolute-number identities that resolve to different catalog episodes. Open Manual Import and choose the correct episode."
+                        .to_string(),
+                };
+            }
+        }
+        return PlannedMemberDraft::Resolved(standard);
+    }
+
+    if !identity.special_absolute_episode_numbers.is_empty() {
+        let matches = catalog_episodes_for_season_numbers(
+            catalog,
+            0,
+            &identity.special_absolute_episode_numbers,
+        );
+        return matches
+            .map(PlannedMemberDraft::Resolved)
+            .unwrap_or_else(|| missing_catalog_member("special episode"));
+    }
+
+    let numbers = parsed_absolute_numbers(identity);
+    if numbers.is_empty() {
+        return PlannedMemberDraft::Hold {
+            episodes: Vec::new(),
+            reason_code: "unparseable_pack_member",
+            message: "Automatic import could not identify this pack member. Open Manual Import and assign the correct episode."
+                .to_string(),
+        };
+    }
+
+    if let Some(season) = folder_season {
+        let season_local = catalog_episodes_for_season_numbers(catalog, season, &numbers);
+        let absolute = catalog_episodes_for_absolute_numbers(catalog, &numbers).and_then(|items| {
+            items
+                .iter()
+                .all(|episode| catalog_episode_season(episode) == Some(season))
+                .then_some(items)
+        });
+        if let (Some(local), Some(absolute)) = (&season_local, &absolute)
+            && episode_id_set(local) == episode_id_set(absolute)
+        {
+            return PlannedMemberDraft::Resolved(local.clone());
+        }
+        return PlannedMemberDraft::AmbiguousNumbering {
+            season,
+            season_local,
+            absolute,
+        };
+    }
+
+    if is_anime {
+        return catalog_episodes_for_absolute_numbers(catalog, &numbers)
+            .map(PlannedMemberDraft::Resolved)
+            .unwrap_or_else(|| missing_catalog_member("absolute episode"));
+    }
+
+    PlannedMemberDraft::Hold {
+        episodes: Vec::new(),
+        reason_code: "ambiguous_pack_numbering",
+        message: "Automatic import found a bare episode number without a usable season folder. Open Manual Import and assign the correct episode."
+            .to_string(),
+    }
+}
+
+fn parsed_pack_member_for_catalog(
+    title: &scryer_domain::Title,
+    source_path: &Path,
+    catalog: &[scryer_domain::Episode],
+) -> crate::ParsedReleaseMetadata {
+    let Some(stem) = source_video_stem(Some(source_path)) else {
+        return parsed_release_from_file_stem(source_path);
+    };
+    let context = crate::build_release_parse_context_for_title(title, catalog, None);
+    crate::parse_release_metadata_for_target(&stem, &context)
+}
+
+fn resolved_or_missing(
+    episodes: Option<Vec<scryer_domain::Episode>>,
+    label: &str,
+) -> PlannedMemberDraft {
+    episodes
+        .map(PlannedMemberDraft::Resolved)
+        .unwrap_or_else(|| missing_catalog_member(label))
+}
+
+fn missing_catalog_member(label: &str) -> PlannedMemberDraft {
+    PlannedMemberDraft::Hold {
+        episodes: Vec::new(),
+        reason_code: "episode_not_found_for_title",
+        message: format!(
+            "Automatic import could not map the member's {label} identity to this title's catalog. Open Manual Import and assign the correct episode."
+        ),
+    }
+}
+
+fn parsed_absolute_numbers(identity: &crate::ParsedEpisodeMetadata) -> Vec<u32> {
+    if !identity.absolute_episode_numbers.is_empty() {
+        identity.absolute_episode_numbers.clone()
+    } else if let Some(number) = identity.absolute_episode {
+        vec![number]
+    } else if identity.season.is_none() {
+        identity.episode_numbers.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+fn catalog_episode_season(episode: &scryer_domain::Episode) -> Option<u32> {
+    episode
+        .season_number
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u32>().ok())
+}
+
+fn catalog_episode_number(episode: &scryer_domain::Episode) -> Option<u32> {
+    episode
+        .episode_number
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u32>().ok())
+}
+
+fn catalog_episode_absolute_number(episode: &scryer_domain::Episode) -> Option<u32> {
+    episode
+        .absolute_number
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u32>().ok())
+}
+
+fn catalog_episodes_for_season_numbers(
+    catalog: &[scryer_domain::Episode],
+    season: u32,
+    numbers: &[u32],
+) -> Option<Vec<scryer_domain::Episode>> {
+    resolve_unique_catalog_numbers(numbers, |number| {
+        catalog
+            .iter()
+            .filter(|episode| {
+                catalog_episode_season(episode) == Some(season)
+                    && catalog_episode_number(episode) == Some(number)
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+fn catalog_episodes_for_absolute_numbers(
+    catalog: &[scryer_domain::Episode],
+    numbers: &[u32],
+) -> Option<Vec<scryer_domain::Episode>> {
+    resolve_unique_catalog_numbers(numbers, |number| {
+        catalog
+            .iter()
+            .filter(|episode| catalog_episode_absolute_number(episode) == Some(number))
+            .cloned()
+            .collect()
+    })
+}
+
+fn resolve_unique_catalog_numbers(
+    numbers: &[u32],
+    mut matches: impl FnMut(u32) -> Vec<scryer_domain::Episode>,
+) -> Option<Vec<scryer_domain::Episode>> {
+    if numbers.is_empty() {
+        return None;
+    }
+    let mut resolved = Vec::with_capacity(numbers.len());
+    let mut seen = HashSet::new();
+    for number in numbers {
+        let mut candidates = matches(*number);
+        if candidates.len() != 1 {
+            return None;
+        }
+        let episode = candidates.pop()?;
+        if !seen.insert(episode.id.clone()) {
+            return None;
+        }
+        resolved.push(episode);
+    }
+    Some(resolved)
+}
+
+fn catalog_episodes_for_air_date(
+    catalog: &[scryer_domain::Episode],
+    air_date: chrono::NaiveDate,
+    daily_part: Option<u32>,
+) -> Option<Vec<scryer_domain::Episode>> {
+    let air_date = air_date.format("%Y-%m-%d").to_string();
+    let mut matches: Vec<_> = catalog
+        .iter()
+        .filter(|episode| episode.air_date.as_deref() == Some(air_date.as_str()))
+        .cloned()
+        .collect();
+    matches.sort_by_key(catalog_episode_number);
+    if let Some(part) = daily_part {
+        matches
+            .into_iter()
+            .nth(part.saturating_sub(1) as usize)
+            .map(|episode| vec![episode])
+    } else {
+        (!matches.is_empty()).then_some(matches)
+    }
+}
+
+fn episode_id_set(episodes: &[scryer_domain::Episode]) -> HashSet<String> {
+    episodes.iter().map(|episode| episode.id.clone()).collect()
+}
+
+fn resolve_ambiguous_pack_numbering(
+    drafts: &mut [PlannedMemberDraft],
+    catalog: &[scryer_domain::Episode],
+    expected_episode_ids: Option<&HashSet<String>>,
+) {
+    let mut seasons = HashSet::new();
+    for draft in drafts.iter() {
+        if let PlannedMemberDraft::AmbiguousNumbering { season, .. } = draft {
+            seasons.insert(*season);
+        }
+    }
+
+    for season in seasons {
+        let indexes: Vec<_> = drafts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, draft)| match draft {
+                PlannedMemberDraft::AmbiguousNumbering {
+                    season: member_season,
+                    ..
+                } if *member_season == season => Some(index),
+                _ => None,
+            })
+            .collect();
+        let fixed_ids = resolved_episode_ids_for_season(drafts, season);
+        let local = numbering_candidate(drafts, &indexes, true, &fixed_ids);
+        let absolute = numbering_candidate(drafts, &indexes, false, &fixed_ids);
+
+        let selected_local = match (&local, &absolute) {
+            (Some(_), None) => Some(true),
+            (None, Some(_)) => Some(false),
+            (Some(local), Some(absolute)) if local == absolute => Some(true),
+            (Some(local), Some(absolute)) => {
+                let local_proven = numbering_candidate_is_proven(
+                    local,
+                    &fixed_ids,
+                    season,
+                    catalog,
+                    expected_episode_ids,
+                );
+                let absolute_proven = numbering_candidate_is_proven(
+                    absolute,
+                    &fixed_ids,
+                    season,
+                    catalog,
+                    expected_episode_ids,
+                );
+                match (local_proven, absolute_proven) {
+                    (true, false) => Some(true),
+                    (false, true) => Some(false),
+                    _ => None,
+                }
+            }
+            (None, None) => None,
+        };
+
+        for index in indexes {
+            let replacement = match (&drafts[index], selected_local) {
+                (
+                    PlannedMemberDraft::AmbiguousNumbering {
+                        season_local,
+                        ..
+                    },
+                    Some(true),
+                ) => season_local.clone().map(PlannedMemberDraft::Resolved),
+                (
+                    PlannedMemberDraft::AmbiguousNumbering {
+                        season_local: _,
+                        absolute,
+                        ..
+                    },
+                    Some(false),
+                ) => absolute.clone().map(PlannedMemberDraft::Resolved),
+                _ => None,
+            }
+            .unwrap_or_else(|| PlannedMemberDraft::Hold {
+                episodes: Vec::new(),
+                reason_code: "ambiguous_pack_numbering",
+                message: "Automatic import could not prove whether this season folder uses absolute or season-local numbering. Open Manual Import and assign the correct episode."
+                    .to_string(),
+            });
+            drafts[index] = replacement;
+        }
+    }
+}
+
+fn resolved_episode_ids_for_season(drafts: &[PlannedMemberDraft], season: u32) -> HashSet<String> {
+    drafts
+        .iter()
+        .filter_map(|draft| match draft {
+            PlannedMemberDraft::Resolved(episodes) => Some(episodes),
+            _ => None,
+        })
+        .flat_map(|episodes| episodes.iter())
+        .filter(|episode| catalog_episode_season(episode) == Some(season))
+        .map(|episode| episode.id.clone())
+        .collect()
+}
+
+fn numbering_candidate(
+    drafts: &[PlannedMemberDraft],
+    indexes: &[usize],
+    season_local: bool,
+    fixed_ids: &HashSet<String>,
+) -> Option<HashSet<String>> {
+    let mut ids = HashSet::new();
+    for index in indexes {
+        let PlannedMemberDraft::AmbiguousNumbering {
+            season_local: local,
+            absolute,
+            ..
+        } = &drafts[*index]
+        else {
+            return None;
+        };
+        let episodes = if season_local { local } else { absolute };
+        let episodes = episodes.as_ref()?;
+        for episode in episodes {
+            if fixed_ids.contains(&episode.id) || !ids.insert(episode.id.clone()) {
+                return None;
+            }
+        }
+    }
+    Some(ids)
+}
+
+fn numbering_candidate_is_proven(
+    candidate_ids: &HashSet<String>,
+    fixed_ids: &HashSet<String>,
+    season: u32,
+    catalog: &[scryer_domain::Episode],
+    expected_episode_ids: Option<&HashSet<String>>,
+) -> bool {
+    let mut resolved = fixed_ids.clone();
+    resolved.extend(candidate_ids.iter().cloned());
+
+    let catalog_standard: HashSet<_> = catalog
+        .iter()
+        .filter(|episode| episode.episode_type == scryer_domain::EpisodeType::Standard)
+        .filter(|episode| catalog_episode_season(episode) == Some(season))
+        .map(|episode| episode.id.clone())
+        .collect();
+    if !catalog_standard.is_empty() && resolved == catalog_standard {
+        return true;
+    }
+
+    let Some(expected) = expected_episode_ids else {
+        return false;
+    };
+    let catalog_ids_for_season: HashSet<_> = catalog
+        .iter()
+        .filter(|episode| catalog_episode_season(episode) == Some(season))
+        .map(|episode| episode.id.clone())
+        .collect();
+    let expected_for_season: HashSet<_> = expected
+        .intersection(&catalog_ids_for_season)
+        .cloned()
+        .collect();
+    !expected_for_season.is_empty()
+        && resolved
+            .intersection(expected)
+            .cloned()
+            .collect::<HashSet<_>>()
+            == expected_for_season
+}
+
+fn hold_duplicate_pack_episode_mappings(drafts: &mut [PlannedMemberDraft]) {
+    let mut owners = HashMap::<String, Vec<usize>>::new();
+    for (index, draft) in drafts.iter().enumerate() {
+        if let PlannedMemberDraft::Resolved(episodes) = draft {
+            for episode in episodes {
+                owners.entry(episode.id.clone()).or_default().push(index);
+            }
+        }
+    }
+    let collisions: HashSet<_> = owners
+        .into_values()
+        .filter(|indexes| indexes.len() > 1)
+        .flatten()
+        .collect();
+    for index in collisions {
+        let episodes = match &drafts[index] {
+            PlannedMemberDraft::Resolved(episodes) => episodes.clone(),
+            _ => continue,
+        };
+        drafts[index] = PlannedMemberDraft::Hold {
+            episodes,
+            reason_code: "duplicate_pack_episode_mapping",
+            message: "Automatic import found multiple pack files that resolve to the same catalog episode. Open Manual Import and choose the correct file."
+                .to_string(),
+        };
+    }
+}
+
+fn finalize_pack_member_disposition(
+    draft: PlannedMemberDraft,
+    pack: &VerifiedEpisodePack,
+) -> PlannedEpisodeMemberDisposition {
+    match draft {
+        PlannedMemberDraft::Resolved(episodes) => {
+            let standard_outside_declared = pack.declared_seasons.as_ref().is_some_and(
+                |declared| {
+                    episodes.iter().any(|episode| {
+                        episode.episode_type == scryer_domain::EpisodeType::Standard
+                            && catalog_episode_season(episode)
+                                .is_none_or(|season| !declared.contains(&season))
+                    })
+                },
+            );
+            if standard_outside_declared {
+                return PlannedEpisodeMemberDisposition::Hold {
+                    episodes,
+                    reason_code: "episode_outside_declared_pack_seasons",
+                    message: "Automatic import resolved an episode outside the seasons declared by this pack. Open Manual Import and verify the member."
+                        .to_string(),
+                };
+            }
+            if episodes.iter().any(|episode| episode.monitored) {
+                PlannedEpisodeMemberDisposition::Import { episodes }
+            } else {
+                PlannedEpisodeMemberDisposition::Ignore {
+                    episodes,
+                    reason_code: "unmonitored_pack_episode",
+                    message: "Unmonitored catalog episode in a verified pack was intentionally ignored."
+                        .to_string(),
+                }
+            }
+        }
+        PlannedMemberDraft::Ignore {
+            reason_code,
+            message,
+        } => PlannedEpisodeMemberDisposition::Ignore {
+            episodes: Vec::new(),
+            reason_code,
+            message,
+        },
+        PlannedMemberDraft::Hold {
+            episodes,
+            reason_code,
+            message,
+        } => PlannedEpisodeMemberDisposition::Hold {
+            episodes,
+            reason_code,
+            message,
+        },
+        PlannedMemberDraft::AmbiguousNumbering { .. } => {
+            PlannedEpisodeMemberDisposition::Hold {
+                episodes: Vec::new(),
+                reason_code: "ambiguous_pack_numbering",
+                message: "Automatic import could not prove this pack member's numbering convention. Open Manual Import and assign the correct episode."
+                    .to_string(),
+            }
+        }
+    }
+}
+
+fn nearest_explicit_season_ancestor(
+    source_root: &Path,
+    source_path: &Path,
+) -> Result<Option<u32>, ()> {
+    let mut season = None;
+    let mut current = source_path.parent();
+    while let Some(parent) = current {
+        if parent == source_root {
+            break;
+        }
+        if !parent.starts_with(source_root) {
+            break;
+        }
+        if let Some(candidate) = parent.file_name().and_then(|name| name.to_str())
+            && let Some(candidate) = explicit_season_folder_number(candidate)
+        {
+            if season.is_some_and(|existing| existing != candidate) {
+                return Err(());
+            }
+            season = Some(candidate);
+        }
+        current = parent.parent();
+    }
+    Ok(season)
+}
+
+fn explicit_season_folder_number(folder_name: &str) -> Option<u32> {
+    let normalized = folder_name.trim().to_ascii_uppercase();
+    let direct = normalized
+        .strip_prefix("SEASON ")
+        .or_else(|| normalized.strip_prefix("SEASON."))
+        .or_else(|| normalized.strip_prefix("SEASON_"))
+        .or_else(|| normalized.strip_prefix('S'))?;
+    let digits = direct.trim();
+    (!digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| digits.parse::<u32>().ok())
+        .flatten()
+}
+
+fn member_names_different_title(
+    title: &scryer_domain::Title,
+    source_root: &Path,
+    source_path: &Path,
+    parsed_stem: &crate::ParsedReleaseMetadata,
+) -> bool {
+    if parsed_stem.episode.is_some()
+        && has_usable_release_title_signal(parsed_stem)
+        && !parsed_title_matches_catalog_title(parsed_stem, title)
+    {
+        return true;
+    }
+
+    let mut current = source_path.parent();
+    while let Some(parent) = current {
+        if parent == source_root || !parent.starts_with(source_root) {
+            break;
+        }
+        if let Some(name) = parent.file_name().and_then(|name| name.to_str())
+            && !is_generic_pack_layout_directory(name)
+        {
+            let parsed_parent = normalize_release_title_signal(parse_release_metadata(name));
+            let word_count = parsed_parent
+                .normalized_title
+                .split_whitespace()
+                .filter(|word| word.chars().any(|ch| ch.is_alphabetic()))
+                .count();
+            if word_count >= 2
+                && has_usable_release_title_signal(&parsed_parent)
+                && !parsed_title_matches_catalog_title(&parsed_parent, title)
+            {
+                return true;
+            }
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn has_disc_layout_ancestor(source_root: &Path, source_path: &Path) -> bool {
+    let mut current = source_path.parent();
+    while let Some(parent) = current {
+        if !parent.starts_with(source_root) {
+            break;
+        }
+        if parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_disc_layout_directory)
+        {
+            return true;
+        }
+        if parent == source_root {
+            break;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn is_generic_pack_layout_directory(name: &str) -> bool {
+    explicit_season_folder_number(name).is_some()
+        || is_disc_layout_directory(name)
+        || matches!(
+            name.trim().to_ascii_uppercase().as_str(),
+            "DISC"
+                | "CD"
+                | "DISC 1"
+                | "DISC 2"
+                | "CD 1"
+                | "CD 2"
+                | "EXTRAS"
+                | "SPECIALS"
+                | "BONUS"
+                | "BONUS FEATURES"
+                | "OPENINGS"
+                | "ENDINGS"
+                | "CLEAN OPENINGS"
+                | "CLEAN ENDINGS"
+        )
+}
+
+fn is_disc_layout_directory(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_uppercase().as_str(),
+        "BDMV" | "CERTIFICATE" | "HVDVD_TS" | "VIDEO_TS"
+    )
+}
+
+fn parsed_title_matches_catalog_title(
+    parsed: &crate::ParsedReleaseMetadata,
+    title: &scryer_domain::Title,
+) -> bool {
+    let mut expected = Vec::with_capacity(1 + title.aliases.len() + title.tagged_aliases.len());
+    expected.push(crate::app_usecase_rss::normalize_for_matching(&title.name));
+    expected.extend(
+        title
+            .aliases
+            .iter()
+            .map(|alias| crate::app_usecase_rss::normalize_for_matching(alias)),
+    );
+    expected.extend(
+        title
+            .tagged_aliases
+            .iter()
+            .map(|alias| crate::app_usecase_rss::normalize_for_matching(&alias.name)),
+    );
+
+    let candidates = if parsed.normalized_title_variants.is_empty() {
+        vec![parsed.normalized_title.as_str()]
+    } else {
+        parsed
+            .normalized_title_variants
+            .iter()
+            .map(String::as_str)
+            .collect()
+    };
+    candidates.into_iter().any(|candidate| {
+        let normalized = crate::app_usecase_rss::normalize_for_matching(candidate);
+        !normalized.is_empty() && expected.iter().any(|value| value == &normalized)
+    })
+}
+
+#[cfg(test)]
+mod series_plan_tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn catalog_episode(id: &str, episode: u32, absolute: u32) -> scryer_domain::Episode {
+        scryer_domain::Episode {
+            id: id.to_string(),
+            title_id: "title-1".to_string(),
+            collection_id: Some("season-1".to_string()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some(episode.to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some(format!("S01E{episode:02}")),
+            title: Some(format!("Episode {episode}")),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: Some(absolute.to_string()),
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn hybrid_identity(absolute: u32) -> crate::ParsedEpisodeMetadata {
+        crate::ParsedEpisodeMetadata {
+            season: Some(1),
+            season_numbers: vec![1],
+            episode_numbers: vec![1],
+            absolute_episode: Some(absolute),
+            absolute_episode_numbers: vec![absolute],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agreeing_hybrid_identity_resolves_one_catalog_episode() {
+        let catalog = vec![catalog_episode("ep-1", 1, 1), catalog_episode("ep-2", 2, 2)];
+        assert!(matches!(
+            plan_parsed_pack_identity(false, &hybrid_identity(1), None, &catalog),
+            PlannedMemberDraft::Resolved(ref episodes) if episodes.len() == 1 && episodes[0].id == "ep-1"
+        ));
+    }
+
+    #[test]
+    fn conflicting_hybrid_identity_is_held() {
+        let catalog = vec![catalog_episode("ep-1", 1, 1), catalog_episode("ep-2", 2, 2)];
+        assert!(matches!(
+            plan_parsed_pack_identity(false, &hybrid_identity(2), None, &catalog),
+            PlannedMemberDraft::Hold {
+                reason_code: "member_identity_conflict",
+                ..
+            }
+        ));
+    }
+}

@@ -848,18 +848,6 @@ mod tests {
         }
     }
 
-    struct FailingCapsSnapshotRefresher;
-
-    #[async_trait]
-    impl IndexerCapsSnapshotRefresher for FailingCapsSnapshotRefresher {
-        async fn fetch_for_config(
-            &self,
-            _config: &IndexerConfig,
-        ) -> AppResult<Option<scryer_domain::IndexerCapsSnapshot>> {
-            Err(AppError::Repository("synthetic caps failure".into()))
-        }
-    }
-
     struct EmptyCapsSnapshotRefresher;
 
     #[async_trait]
@@ -910,10 +898,12 @@ mod tests {
         }
     }
 
+    type RecordedIndexerErrors = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
     struct RecordingIndexerConfigRepo {
         created: Arc<Mutex<Vec<IndexerConfig>>>,
         cleared_ids: Arc<Mutex<Vec<String>>>,
-        recorded_errors: Arc<Mutex<Vec<(String, Option<String>)>>>,
+        recorded_errors: RecordedIndexerErrors,
     }
 
     impl RecordingIndexerConfigRepo {

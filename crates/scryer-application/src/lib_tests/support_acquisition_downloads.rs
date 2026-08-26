@@ -1120,7 +1120,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
                 existing.source_password = release.source_password.clone();
             }
             existing.info_hash = release.info_hash.clone();
-            existing.seed_minimums = release.seed_minimums.clone();
+            existing.seed_minimums = release.seed_minimums;
             existing.seeders = release.seeders;
             existing.delay_until = observation.eligible_at.clone();
             let already_had_publication_time = existing.published_at.is_some();

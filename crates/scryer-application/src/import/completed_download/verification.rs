@@ -8,11 +8,19 @@ pub(super) enum ExpectedEpisodeResolution {
     AtLeastOne(HashSet<String>),
 }
 
-enum SourceVideoEpisodeResolution {
+pub(super) enum SourceVideoEpisodeResolution {
     Unavailable,
     NoVisibleVideos,
     Unmapped,
     Resolved(HashSet<String>),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ArtifactSourceDisposition {
+    Successful,
+    Ignored,
+    Rejected,
+    Undisposed,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +118,11 @@ async fn verify_import_with_mode(
         _ => current_visible_video_file_count(app, td, completed).await,
     };
     let source_video_units = visible_source_episode_units(app, td, &artifacts, completed).await;
+    let visible_sources_terminal =
+        visible_source_files_have_terminal_dispositions(app, td, &artifacts, completed).await;
+    if visible_sources_terminal == Some(false) {
+        return Ok(false);
+    }
     let mut successful_units = HashSet::new();
     let mut successful_source_files = HashSet::new();
     let mut rejected_units = HashSet::new();
@@ -133,7 +146,9 @@ async fn verify_import_with_mode(
         }
     }
 
-    if successful_units.is_empty() {
+    let all_sources_intentionally_ignored = matches!(mode, ImportVerificationMode::Automatic)
+        && artifact_sources_are_all_intentionally_ignored(&artifacts, td);
+    if successful_units.is_empty() && !all_sources_intentionally_ignored {
         return Ok(false);
     }
 
@@ -154,13 +169,29 @@ async fn verify_import_with_mode(
 
     match expected_episode_units_with_release_evidence(app, td, release_evidence).await {
         ExpectedEpisodeResolution::Resolved(expected_episode_units) => {
+            let expected_episode_units = if matches!(mode, ImportVerificationMode::Automatic) {
+                expected_episode_units_after_ignored_unmonitored(
+                    app,
+                    td,
+                    &artifacts,
+                    expected_episode_units,
+                )
+                .await?
+            } else {
+                expected_episode_units
+            };
             if expected_episode_units.is_empty() {
+                return Ok(all_sources_intentionally_ignored);
+            }
+            if successful_units.is_empty() {
                 return Ok(false);
             }
 
-            if let Some(source_units_complete) =
-                source_video_units_are_complete(&source_video_units, &successful_units)
-            {
+            if let Some(source_units_complete) = source_video_expected_units_are_complete(
+                &source_video_units,
+                &successful_units,
+                &expected_episode_units,
+            ) {
                 return Ok(source_units_complete);
             }
 
@@ -169,14 +200,22 @@ async fn verify_import_with_mode(
                 .all(|unit| successful_units.contains(unit)));
         }
         ExpectedEpisodeResolution::AtLeastOne(expected_episode_units) => {
+            let expected_episode_units = if matches!(mode, ImportVerificationMode::Automatic) {
+                expected_episode_units_after_ignored_unmonitored(
+                    app,
+                    td,
+                    &artifacts,
+                    expected_episode_units,
+                )
+                .await?
+            } else {
+                expected_episode_units
+            };
             if expected_episode_units.is_empty() {
-                return Ok(false);
+                return Ok(all_sources_intentionally_ignored);
             }
-
-            if let Some(source_units_complete) =
-                source_video_units_are_complete(&source_video_units, &successful_units)
-            {
-                return Ok(source_units_complete);
+            if successful_units.is_empty() {
+                return Ok(false);
             }
 
             return Ok(expected_episode_units
@@ -184,6 +223,9 @@ async fn verify_import_with_mode(
                 .any(|unit| successful_units.contains(unit)));
         }
         ExpectedEpisodeResolution::Unresolved => {
+            if successful_units.is_empty() {
+                return Ok(false);
+            }
             if matches!(mode, ImportVerificationMode::Automatic)
                 && successful_units_cover_visible_files(
                     successful_units.len(),
@@ -203,6 +245,10 @@ async fn verify_import_with_mode(
         ExpectedEpisodeResolution::NotApplicable => {}
     }
 
+    if successful_units.is_empty() {
+        return Ok(false);
+    }
+
     Ok(match mode {
         ImportVerificationMode::Automatic => {
             if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
@@ -214,16 +260,25 @@ async fn verify_import_with_mode(
     })
 }
 
-fn source_video_units_are_complete(
+fn source_video_expected_units_are_complete(
     source_video_units: &SourceVideoEpisodeResolution,
     successful_units: &HashSet<String>,
+    expected_episode_units: &HashSet<String>,
 ) -> Option<bool> {
     match source_video_units {
         SourceVideoEpisodeResolution::Resolved(units) if !units.is_empty() => {
-            Some(units.iter().all(|unit| successful_units.contains(unit)))
+            let expected_source_units = units
+                .iter()
+                .filter(|unit| expected_episode_units.contains(*unit))
+                .collect::<Vec<_>>();
+            (!expected_source_units.is_empty()).then(|| {
+                expected_source_units
+                    .into_iter()
+                    .all(|unit| successful_units.contains(unit))
+            })
         }
-        SourceVideoEpisodeResolution::Unmapped => Some(false),
-        SourceVideoEpisodeResolution::Resolved(_)
+        SourceVideoEpisodeResolution::Unmapped
+        | SourceVideoEpisodeResolution::Resolved(_)
         | SourceVideoEpisodeResolution::NoVisibleVideos
         | SourceVideoEpisodeResolution::Unavailable => None,
     }
@@ -234,6 +289,56 @@ fn successful_units_cover_visible_files(
     current_visible_files: usize,
 ) -> bool {
     current_visible_files > 0 && successful_unit_count >= current_visible_files
+}
+
+async fn expected_episode_units_after_ignored_unmonitored(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    artifacts: &[crate::ImportArtifact],
+    expected_episode_units: HashSet<String>,
+) -> AppResult<HashSet<String>> {
+    let ignored_unmonitored =
+        ignored_unmonitored_expected_episode_ids(app, td, artifacts, &expected_episode_units)
+            .await?;
+    Ok(expected_episode_units
+        .difference(&ignored_unmonitored)
+        .cloned()
+        .collect())
+}
+
+async fn ignored_unmonitored_expected_episode_ids(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    artifacts: &[crate::ImportArtifact],
+    expected_episode_units: &HashSet<String>,
+) -> AppResult<HashSet<String>> {
+    let Some(title_id) = tracked_title_id(td) else {
+        return Ok(HashSet::new());
+    };
+    let ignored_episode_ids = artifacts
+        .iter()
+        .filter(|artifact| artifact.result == "ignored")
+        .filter(|artifact| artifact_matches_tracked_title(artifact, title_id))
+        .filter_map(|artifact| artifact.episode_id.as_deref())
+        .map(str::trim)
+        .filter(|episode_id| expected_episode_units.contains(*episode_id))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    if ignored_episode_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let ignored_episode_ids = ignored_episode_ids.into_iter().collect::<Vec<_>>();
+    Ok(app
+        .services
+        .catalog
+        .shows
+        .get_episodes_by_ids(&ignored_episode_ids)
+        .await?
+        .into_iter()
+        .filter(|episode| episode.title_id == title_id && !episode.monitored)
+        .map(|episode| episode.id)
+        .collect())
 }
 
 #[cfg(test)]
@@ -396,7 +501,76 @@ pub(super) async fn current_visible_video_file_count(
         .unwrap_or(0)
 }
 
-async fn visible_source_episode_units(
+pub(super) async fn skipped_aggregate_has_terminal_artifact_dispositions(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: Option<&CompletedDownload>,
+) -> AppResult<bool> {
+    let artifacts = import_artifacts_for_completed_download(app, td, completed).await?;
+    Ok(artifact_sources_are_successfully_disposed(&artifacts, td))
+}
+
+pub(super) async fn visible_source_files_have_terminal_dispositions(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    artifacts: &[crate::ImportArtifact],
+    completed: Option<&CompletedDownload>,
+) -> Option<bool> {
+    let completed_lookup;
+    let completed = match completed {
+        Some(completed) => completed,
+        None => {
+            let found = find_completed_download(app, td, None).await?;
+            completed_lookup = found;
+            &completed_lookup
+        }
+    };
+    let filter_samples = td.facet.as_deref() != Some("movie");
+    let files = crate::import_workflow::find_video_files(
+        std::path::Path::new(&completed.dest_dir),
+        filter_samples,
+    )
+    .ok()?;
+    if files.is_empty() {
+        return Some(artifact_sources_are_successfully_disposed(artifacts, td));
+    }
+
+    let mut visible_file_name_counts: HashMap<String, usize> = HashMap::new();
+    for file in &files {
+        *visible_file_name_counts
+            .entry(normalized_source_file_name(file))
+            .or_default() += 1;
+    }
+    for file in files {
+        let normalized_file_name = normalized_source_file_name(&file);
+        let allow_filename_fallback = visible_file_name_counts
+            .get(&normalized_file_name)
+            .copied()
+            .unwrap_or_default()
+            == 1;
+        let Some(rows) = import_artifact_rows_for_source_file(
+            &file,
+            completed,
+            artifacts,
+            allow_filename_fallback,
+        ) else {
+            return Some(false);
+        };
+        let disposition = artifact_source_disposition(&rows);
+        if !matches!(
+            disposition,
+            ArtifactSourceDisposition::Successful | ArtifactSourceDisposition::Ignored
+        ) || (disposition == ArtifactSourceDisposition::Ignored
+            && !ignored_artifact_rows_match_tracked_title(&rows, td))
+        {
+            return Some(false);
+        }
+    }
+
+    Some(true)
+}
+
+pub(super) async fn visible_source_episode_units(
     app: &AppUseCase,
     td: &TrackedDownload,
     artifacts: &[crate::ImportArtifact],
@@ -543,6 +717,94 @@ fn artifact_source_episode_units(
     }
 }
 
+fn artifact_sources_are_successfully_disposed(
+    artifacts: &[crate::ImportArtifact],
+    td: &TrackedDownload,
+) -> bool {
+    let Some(groups) = import_artifact_source_groups(artifacts) else {
+        return false;
+    };
+    !groups.is_empty()
+        && groups.values().all(|rows| {
+            let disposition = artifact_source_disposition(rows);
+            matches!(disposition, ArtifactSourceDisposition::Successful)
+                || (disposition == ArtifactSourceDisposition::Ignored
+                    && ignored_artifact_rows_match_tracked_title(rows, td))
+        })
+}
+
+fn artifact_sources_are_all_intentionally_ignored(
+    artifacts: &[crate::ImportArtifact],
+    td: &TrackedDownload,
+) -> bool {
+    let Some(groups) = import_artifact_source_groups(artifacts) else {
+        return false;
+    };
+    !groups.is_empty()
+        && groups.values().all(|rows| {
+            artifact_source_disposition(rows) == ArtifactSourceDisposition::Ignored
+                && ignored_artifact_rows_match_tracked_title(rows, td)
+        })
+}
+
+fn import_artifact_source_groups(
+    artifacts: &[crate::ImportArtifact],
+) -> Option<HashMap<ImportArtifactSourceKey, Vec<&crate::ImportArtifact>>> {
+    let mut groups: HashMap<ImportArtifactSourceKey, Vec<&crate::ImportArtifact>> = HashMap::new();
+    for artifact in artifacts {
+        let source_key = import_artifact_source_key(artifact)?;
+        groups.entry(source_key).or_default().push(artifact);
+    }
+
+    Some(groups)
+}
+
+fn tracked_title_id(td: &TrackedDownload) -> Option<&str> {
+    td.title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+fn artifact_matches_tracked_title(artifact: &crate::ImportArtifact, title_id: &str) -> bool {
+    artifact.title_id.as_deref().map(str::trim) == Some(title_id)
+}
+
+fn ignored_artifact_rows_match_tracked_title(
+    artifacts: &[&crate::ImportArtifact],
+    td: &TrackedDownload,
+) -> bool {
+    let Some(title_id) = tracked_title_id(td) else {
+        return false;
+    };
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.result == "ignored")
+        .all(|artifact| artifact_matches_tracked_title(artifact, title_id))
+}
+
+fn artifact_source_disposition(artifacts: &[&crate::ImportArtifact]) -> ArtifactSourceDisposition {
+    let mut has_ignored = false;
+    let mut has_rejected = false;
+    let mut has_undisposed = false;
+    for artifact in artifacts {
+        match artifact.result.as_str() {
+            "imported" | "already_present" => return ArtifactSourceDisposition::Successful,
+            "ignored" => has_ignored = true,
+            "rejected" => has_rejected = true,
+            _ => has_undisposed = true,
+        }
+    }
+
+    if has_rejected {
+        ArtifactSourceDisposition::Rejected
+    } else if has_ignored && !has_undisposed {
+        ArtifactSourceDisposition::Ignored
+    } else {
+        ArtifactSourceDisposition::Undisposed
+    }
+}
+
 fn episode_units_from_import_artifacts_for_source_file(
     file: &Path,
     completed: &CompletedDownload,
@@ -580,6 +842,46 @@ fn episode_units_from_import_artifacts_for_source_file(
     }
 
     episode_units_from_artifact_rows(file_name_matches.into_iter())
+}
+
+fn import_artifact_rows_for_source_file<'a>(
+    file: &Path,
+    completed: &CompletedDownload,
+    artifacts: &'a [crate::ImportArtifact],
+    allow_filename_fallback: bool,
+) -> Option<Vec<&'a crate::ImportArtifact>> {
+    let relative_path = file
+        .strip_prefix(&completed.dest_dir)
+        .ok()
+        .map(path_to_stored_string)
+        .filter(|path| !path.is_empty());
+    if let Some(relative_path) = relative_path.as_deref() {
+        let rows = artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.relative_path.as_deref().map(str::trim) == Some(relative_path)
+            })
+            .collect::<Vec<_>>();
+        if !rows.is_empty() {
+            return Some(rows);
+        }
+    }
+
+    if !allow_filename_fallback {
+        return None;
+    }
+
+    let normalized_file_name = normalized_source_file_name(file);
+    let rows = artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact
+                .normalized_file_name
+                .trim()
+                .eq_ignore_ascii_case(&normalized_file_name)
+        })
+        .collect::<Vec<_>>();
+    (!rows.is_empty() && artifact_rows_have_unique_source_key(&rows)).then_some(rows)
 }
 
 fn episode_units_from_artifact_rows<'a>(

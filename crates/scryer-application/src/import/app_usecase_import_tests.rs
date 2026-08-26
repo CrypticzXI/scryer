@@ -437,6 +437,74 @@ fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
 }
 
 #[test]
+fn exact_submission_episode_fallback_requires_one_episode_and_one_video() {
+    let evidence = |scope| ReleaseEvidence::ScryerSubmission {
+        title_id: "title-1".to_string(),
+        facet: "series".to_string(),
+        source_title: Some("Test.Series.S01E01.1080p.WEB-DL.x264".to_string()),
+        observed_release_name: None,
+        release_size_bytes: None,
+        purpose: crate::DownloadSubmissionPurpose::Standard,
+        scope,
+    };
+    let episode = evidence(SubmissionScope::Episode {
+        episode_id: "ep-1".to_string(),
+    });
+    assert_eq!(sole_submission_episode_id(&episode, false), Some("ep-1"));
+    assert_eq!(sole_submission_episode_id(&episode, true), None);
+
+    let singleton_set = evidence(SubmissionScope::EpisodeSet {
+        episode_ids: vec!["ep-1".to_string()],
+    });
+    assert_eq!(
+        sole_submission_episode_id(&singleton_set, false),
+        Some("ep-1")
+    );
+
+    let ambiguous_set = evidence(SubmissionScope::EpisodeSet {
+        episode_ids: vec!["ep-1".to_string(), "ep-2".to_string()],
+    });
+    assert_eq!(sole_submission_episode_id(&ambiguous_set, false), None);
+    let collection = evidence(SubmissionScope::Collection {
+        collection_id: "season-1".to_string(),
+    });
+    assert_eq!(sole_submission_episode_id(&collection, false), None);
+    let title = evidence(SubmissionScope::Title);
+    assert_eq!(sole_submission_episode_id(&title, false), None);
+    assert_eq!(
+        sole_submission_episode_id(
+            &ReleaseEvidence::DownloaderObservation {
+                release_name: Some("Test.Series.S01E01.1080p.WEB-DL.x264".to_string()),
+            },
+            false,
+        ),
+        None
+    );
+}
+
+#[test]
+fn unresolved_absolute_episode_message_names_the_detected_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let release_title = "Test Series - 19 (WEB 1080p x264 10-bit AAC) [A1B2C3D4]";
+    let file_path = dir.path().join(format!("{release_title}.mkv"));
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let evidence = ReleaseEvidence::DownloaderObservation {
+        release_name: Some(release_title.to_string()),
+    };
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &evidence,
+        &titled(MediaFacet::Series, "Test Series", Some(2020)),
+        false,
+    );
+
+    assert_eq!(
+        unresolved_episode_import_message(&parsed, &file_path, &evidence, 1),
+        "Automatic import found absolute episode 19, but could not map it to a season and episode for this title. Open Manual Import and assign the correct episode."
+    );
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_does_not_use_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
