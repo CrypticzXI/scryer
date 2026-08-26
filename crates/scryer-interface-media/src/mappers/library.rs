@@ -689,6 +689,8 @@ pub fn from_series_movie_link(
         continuity_status: link.continuity_status,
         movie_form: link.movie_form,
         signal_summary: link.signal_summary,
+        monitoring_override: link.monitoring_override,
+        metadata_active: link.metadata_active,
         monitored: link.monitored,
     }
 }

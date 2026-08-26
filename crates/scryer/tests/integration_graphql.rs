@@ -2114,6 +2114,8 @@ async fn create_test_series_movie_link(
         confidence: Some("high".to_string()),
         signal_summary: Some("test fixture".to_string()),
         source: Some("test".to_string()),
+        monitoring_override: None,
+        metadata_active: true,
         monitored: true,
         legacy_collection_id,
         created_at: now,

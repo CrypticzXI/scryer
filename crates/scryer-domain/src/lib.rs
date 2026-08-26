@@ -785,6 +785,10 @@ pub struct SeriesMovieLink {
     pub confidence: Option<String>,
     pub signal_summary: Option<String>,
     pub source: Option<String>,
+    /// Explicit operator choice; absent values follow title/metadata policy.
+    pub monitoring_override: Option<bool>,
+    /// False when metadata no longer reports this derived relationship.
+    pub metadata_active: bool,
     pub monitored: bool,
     pub legacy_collection_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -1061,12 +1065,7 @@ impl NabTransportKind {
 pub fn is_nab_provider_type(provider_type: &str) -> bool {
     matches!(
         provider_type.trim().to_ascii_lowercase().as_str(),
-        "amenzb"
-            | "animetosho-xyz"
-            | "dognzb"
-            | "newznab"
-            | "nzbgeek"
-            | "torznab"
+        "amenzb" | "animetosho-xyz" | "dognzb" | "newznab" | "nzbgeek" | "torznab"
     )
 }
 

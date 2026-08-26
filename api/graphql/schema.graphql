@@ -16466,6 +16466,14 @@ type SeriesMovieLinkPayload {
 	"""
 	signalSummary: String
 	"""
+	Explicit operator monitoring choice, or null when title policy manages this link.
+	"""
+	monitoringOverride: Boolean
+	"""
+	Whether current metadata still reports this series-movie relationship.
+	"""
+	metadataActive: Boolean!
+	"""
 	Whether acquisition and monitoring are enabled for this link.
 	"""
 	monitored: Boolean!

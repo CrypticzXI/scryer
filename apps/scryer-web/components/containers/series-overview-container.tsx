@@ -210,6 +210,8 @@ export type SeriesMovieLink = {
   confidence: string | null;
   signalSummary: string | null;
   source: string | null;
+  monitoringOverride: boolean | null;
+  metadataActive: boolean;
   monitored: boolean;
   createdAt: string;
   updatedAt: string;

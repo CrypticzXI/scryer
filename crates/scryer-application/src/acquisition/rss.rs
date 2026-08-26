@@ -1703,7 +1703,8 @@ impl AppUseCase {
         for link in links {
             // Target-ness (§D5): a monitored link. Missing vs below-cutoff vs
             // satisfied is decided by the cutoff/upgrade gate downstream.
-            if !link.monitored {
+            if !link.monitored || (!link.metadata_active && link.monitoring_override != Some(true))
+            {
                 continue;
             }
             let wanted = match self
