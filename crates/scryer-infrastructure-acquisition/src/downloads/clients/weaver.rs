@@ -901,6 +901,13 @@ pub fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueItem {
 
     let scryer_metadata =
         extract_scryer_metadata(&job.attributes, job.client_request_id.as_deref());
+    let title_name = job
+        .original_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&job.name)
+        .to_string();
 
     // Calculate remaining seconds from progress and download speed.
     // We don't have per-job speed, so leave it as None.
@@ -908,7 +915,7 @@ pub fn weaver_item_to_queue_item(job: &WeaverQueueItem) -> DownloadQueueItem {
         id: job.id.to_string(),
         title_id: scryer_metadata.title_id,
         episode_id: None,
-        title_name: job.name.clone(),
+        title_name,
         facet: scryer_metadata.facet,
         category: job
             .category
@@ -2122,6 +2129,7 @@ mod tests {
         let job = json!({
             "id": 42,
             "name": "Example Job",
+            "originalTitle": "Example.Release.1080p.WEB-DL-GROUP",
             "state": "FAILED",
             "error": "archive corrupt",
             "progressPercent": 25.0,
@@ -2145,6 +2153,7 @@ mod tests {
         let item = weaver_item_to_queue_item(&job);
 
         assert_eq!(item.state, DownloadQueueState::Failed);
+        assert_eq!(item.title_name, "Example.Release.1080p.WEB-DL-GROUP");
         assert_eq!(item.title_id.as_deref(), Some("title-1"));
         assert!(item.is_scryer_origin);
         assert_eq!(item.attention_reason.as_deref(), Some("archive corrupt"));
@@ -2174,6 +2183,7 @@ mod tests {
         let job: WeaverQueueItem = serde_json::from_value(job).expect("job should deserialize");
         let item = weaver_item_to_queue_item(&job);
 
+        assert_eq!(item.title_name, "Origin Fallback");
         assert_eq!(item.title_id.as_deref(), Some("title-77"));
         assert!(item.is_scryer_origin);
         assert_eq!(item.download_id, None);
