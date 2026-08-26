@@ -4,6 +4,7 @@ import test from "node:test";
 import type { Translate } from "@/components/root/types";
 import {
   buildFixTitleMatchSearchVariables,
+  fixTitleMatchDialogIdentity,
   handleFixTitleMatchComplete,
 } from "./fix-title-match.ts";
 
@@ -27,6 +28,17 @@ test("Fix Match search variables use canonical GraphQL facet enums", () => {
       limit: 8,
     });
   }
+});
+
+test("Fix Match dialog identity is stable across equivalent title objects", () => {
+  assert.equal(
+    fixTitleMatchDialogIdentity({ id: "movie-1", facet: "MOVIE" }),
+    fixTitleMatchDialogIdentity({ id: "movie-1", facet: " movie " }),
+  );
+  assert.notEqual(
+    fixTitleMatchDialogIdentity({ id: "movie-1", facet: "MOVIE" }),
+    fixTitleMatchDialogIdentity({ id: "movie-2", facet: "MOVIE" }),
+  );
 });
 
 test("Fix Match completion refreshes before reporting success", async () => {

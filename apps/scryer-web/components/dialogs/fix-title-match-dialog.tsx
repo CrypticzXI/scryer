@@ -17,7 +17,10 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { fixTitleMatchMutation } from "@/lib/graphql/mutations";
 import { searchMetadataQuery } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
-import { buildFixTitleMatchSearchVariables } from "@/lib/fix-title-match";
+import {
+  buildFixTitleMatchSearchVariables,
+  fixTitleMatchDialogIdentity,
+} from "@/lib/fix-title-match";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -64,9 +67,11 @@ export function FixTitleMatchDialog({
   const [searching, setSearching] = React.useState(false);
   const [applying, setApplying] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const titleIdentity = fixTitleMatchDialogIdentity(title);
+  const titleName = title?.name ?? "";
 
   React.useEffect(() => {
-    if (!open || !title) {
+    if (!open || titleIdentity === null) {
       setQuery("");
       setResults([]);
       setSelectedResultKey(null);
@@ -74,11 +79,11 @@ export function FixTitleMatchDialog({
       return;
     }
 
-    setQuery(title.name);
+    setQuery(titleName);
     setResults([]);
     setSelectedResultKey(null);
     setError(null);
-  }, [open, title]);
+  }, [open, titleIdentity, titleName]);
 
   React.useEffect(() => {
     if (!open || !title) {
