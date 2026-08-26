@@ -1141,43 +1141,6 @@ impl TrackedDownloadService {
                 if state == TrackedDownloadState::ImportBlocked {
                     set_import_blocked_status(td, None);
                 }
-                return;
-            }
-        }
-
-        // Fall back to the latest import record for restart recovery if the
-        // tracked state was not persisted before shutdown. This is only safe
-        // after the current DownloadId resolves to a Scryer submission.
-        if let Some(submission) = download_id_submission {
-            let submission_identity = ClientJobLocator::from_submission(&submission);
-            let download_identity = app
-                .services
-                .workflow
-                .download_submissions
-                .get_submission_identity(&submission_identity)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let imported = !download_submission_identity_is_empty(&download_identity)
-                && app
-                    .services
-                    .workflow
-                    .imports
-                    .is_already_imported_by_download_id(&submission_identity, &download_identity)
-                    .await
-                    .unwrap_or(false);
-            if imported {
-                td.state = TrackedDownloadState::Imported;
-                let _ = app
-                    .services
-                    .workflow
-                    .download_submissions
-                    .update_tracked_state(
-                        &submission_identity,
-                        TrackedDownloadState::Imported.as_str(),
-                    )
-                    .await;
             }
         }
 
@@ -2838,38 +2801,6 @@ mod tests {
                 .collect())
         }
 
-        async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
-            Ok(self.stored_imports().iter().any(|record| {
-                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
-                    && record.source_system == identity.client_type
-                    && record.source_ref == identity.item_id
-                    && matches!(
-                        record.status,
-                        ImportStatus::Completed | ImportStatus::Skipped
-                    )
-            }))
-        }
-
-        async fn is_already_imported_by_download_id(
-            &self,
-            source_identity: &ClientJobLocator,
-            identity: &crate::DownloadSubmissionIdentity,
-        ) -> AppResult<bool> {
-            let Some(download_id) = identity.download_id.as_deref() else {
-                return Ok(false);
-            };
-            Ok(self.stored_imports().iter().any(|record| {
-                record.source_client_id.as_deref().unwrap_or("")
-                    == source_identity.client_id_or_empty()
-                    && record.source_system == source_identity.client_type
-                    && record.download_id.as_deref() == Some(download_id)
-                    && matches!(
-                        record.status,
-                        ImportStatus::Completed | ImportStatus::Skipped
-                    )
-            }))
-        }
-
         async fn list_imports(&self, _: usize) -> AppResult<Vec<ImportRecord>> {
             Ok(vec![])
         }
@@ -4398,7 +4329,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconstruct_state_recovers_imported_from_completed_import_record() {
+    async fn reconstruct_state_does_not_trust_status_only_import_record() {
         let download_id = "scryer-download:restart-recovery";
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: Some(crate::DownloadSubmission {
@@ -4442,9 +4373,9 @@ mod tests {
                 source_system: "nzbget".to_string(),
                 source_ref: "dl-1".to_string(),
                 import_type: ImportType::SeriesDownload,
-                status: ImportStatus::Completed,
+                status: ImportStatus::Skipped,
                 payload_json: "{}".to_string(),
-                result_json: None,
+                result_json: Some(r#"{"skip_reason":"already_imported"}"#.to_string()),
                 download_id: Some(download_id.to_string()),
                 import_transfer_phase: None,
                 import_transfer_bytes: None,
@@ -4467,14 +4398,13 @@ mod tests {
         tracker.track(&app, item).await;
 
         let tracked = tracker.find(&tracked_id).expect("tracked download");
-        assert_eq!(tracked.state, TrackedDownloadState::Imported);
-        assert_eq!(
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(
             download_submissions
                 .tracked_state_updates
                 .lock()
                 .await
-                .as_slice(),
-            ["imported"]
+                .is_empty()
         );
     }
 

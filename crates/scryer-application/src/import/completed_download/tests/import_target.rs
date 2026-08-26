@@ -216,6 +216,48 @@ async fn title_parse_observation_imports_into_the_checked_title() {
 }
 
 #[tokio::test]
+async fn status_only_import_record_does_not_suppress_blocked_import_retry() {
+    let (_dir, completed) = completed_without_video(Some(PAPER_LANTERN_RELEASE));
+    let import_repo = Arc::new(TestImportRepo::with_records(vec![test_import_record(
+        "status-only-import",
+        &source_identity(),
+        ImportStatus::Completed,
+        completed_request_payload(
+            &completed,
+            observation_evidence_json(PAPER_LANTERN_RELEASE),
+            Some("title-a"),
+        ),
+    )]));
+    let app = app_for_import(
+        Arc::new(TestDownloadSubmissionRepo::default()),
+        import_repo.clone(),
+    );
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    // Restart reconstruction restores this durable state and message, but not
+    // the in-memory `import_attempted` flag. Scryer submissions must still
+    // reopen the legacy status-only block before the submission guard runs.
+    let mut td = import_pending_observation("title-a", TitleMatchType::Submission);
+    td.client_item.is_scryer_origin = true;
+    td.state = TrackedDownloadState::ImportBlocked;
+    td.status = TrackedDownloadStatus::Warning;
+    td.status_messages = vec!["Import blocked: already_imported".to_string()];
+
+    check_with_lookup(&app, &mut td, Some(&lookup)).await;
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    import_with_lookup(&app, &import_actor(), &mut td, &lookup).await;
+
+    let result = assert_lands_in(&import_repo, "title-a").await;
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles));
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert!(
+        td.status_messages
+            .iter()
+            .all(|message| message != "Import blocked: already_imported")
+    );
+}
+
+#[tokio::test]
 async fn retry_after_tracked_download_is_gone_lands_in_the_persisted_target() {
     // No tracked download and no submission row remain; only the failed
     // import's persisted request knows the download was validated for title-b.

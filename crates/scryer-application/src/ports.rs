@@ -4128,38 +4128,6 @@ pub trait ImportRepository: Send + Sync {
         Ok(Vec::new())
     }
 
-    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool>;
-
-    /// Read by canonical download id when it is available, then retain the
-    /// legacy source-tuple lookup on a miss.
-    async fn is_already_imported_for_download(
-        &self,
-        _canonical_download_id: Option<&DownloadId>,
-        identity: &ClientJobLocator,
-    ) -> AppResult<bool> {
-        self.is_already_imported(identity).await
-    }
-
-    async fn is_already_imported_by_download_id(
-        &self,
-        _source_identity: &ClientJobLocator,
-        _identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        Ok(false)
-    }
-
-    /// Canonical-aware counterpart of the legacy source-plus-download-id
-    /// ownership lookup.
-    async fn is_already_imported_by_download_id_for_download(
-        &self,
-        _canonical_download_id: Option<&DownloadId>,
-        source_identity: &ClientJobLocator,
-        identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        self.is_already_imported_by_download_id(source_identity, identity)
-            .await
-    }
-
     /// Replaces the caller's previous unconsumed selection for the same source and title.
     async fn replace_manual_import_selection(
         &self,

@@ -478,23 +478,6 @@ async fn prepare_completed_import_request(
     .await?;
     let submission_resolution = submission_resolution
         .unwrap_or(CompletedDownloadSubmissionResolution::DownloaderObservation);
-    // 1. DEDUP CHECK
-    if completed_download_already_imported_for_current_attempt(
-        app,
-        &completed,
-        &submission_resolution,
-        canonical_download_id,
-    )
-    .await?
-    {
-        let result = ImportResult {
-            decision: ImportDecision::Skipped,
-            skip_reason: Some(ImportSkipReason::AlreadyImported),
-            release_burned: false,
-            ..base_completed_import_result("", &completed, &release_evidence, started_at)
-        };
-        return Ok(CompletedImportProgress::Finished(result));
-    }
 
     // Queue the import request for tracking
     let import_type = {

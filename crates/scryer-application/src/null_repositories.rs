@@ -631,9 +631,6 @@ impl ImportRepository for NullImportRepository {
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn is_already_imported(&self, _: &ClientJobLocator) -> AppResult<bool> {
-        Ok(false)
-    }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }

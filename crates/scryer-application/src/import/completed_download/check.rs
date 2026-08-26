@@ -36,9 +36,24 @@ pub(crate) async fn check_with_lookup(
     }
 
     // Don't re-evaluate a post-import block. Import already ran and returned
-    // Skipped/Failed — stay blocked until the user explicitly retries.
-    if td.state == TrackedDownloadState::ImportBlocked && td.import_attempted {
-        return;
+    // Skipped/Failed — stay blocked until the user explicitly retries. The
+    // former status-only deduplication path is the exception: it never ran an
+    // import, so reopen its exact legacy block and let verification decide.
+    if td.state == TrackedDownloadState::ImportBlocked {
+        let status_only_already_imported = td.status_messages.iter().any(|message| {
+            message
+                .trim()
+                .eq_ignore_ascii_case("Import blocked: already_imported")
+        });
+        if !status_only_already_imported {
+            return;
+        }
+        tracing::info!(
+            id = %td.id,
+            "check: reopening legacy status-only already-imported block"
+        );
+        td.reset_for_import_retry();
+        td.state = TrackedDownloadState::Downloading;
     }
 
     // A blocked download that was explicitly assigned by the user should remain

@@ -22,34 +22,6 @@ impl ImportStore {
     }
 }
 
-fn already_imported_status_predicate(datastore: &StoreDatastore) -> String {
-    let skip_reason = match datastore {
-        StoreDatastore::Sqlite { .. } => "json_extract(result_json, '$.skip_reason')".to_string(),
-        StoreDatastore::Postgres { .. } => "result_json #>> '{skip_reason}'".to_string(),
-    };
-    format!("(status = 'completed' OR (status = 'skipped' AND {skip_reason} = 'already_imported'))")
-}
-
-async fn is_already_imported_by_canonical_download_id(
-    datastore: &StoreDatastore,
-    canonical_download_id: &scryer_domain::download_identity::DownloadId,
-) -> AppResult<bool> {
-    let already_imported_predicate = already_imported_status_predicate(datastore);
-    let row = SqlRuntime::fetch_optional(
-        datastore.read_exec(),
-        &format!(
-            "SELECT COUNT(1) AS count
-             FROM imports
-             WHERE canonical_download_id = {{}}
-               AND {already_imported_predicate}"
-        ),
-        &[SqlArg::Text(canonical_download_id.to_string())],
-    )
-    .await?
-    .ok_or_else(|| AppError::Repository("missing canonical import count".into()))?;
-    Ok(row.i64("count")? > 0)
-}
-
 async fn active_binding_download_id(
     datastore: &StoreDatastore,
     locator: &ClientJobLocator,
@@ -341,99 +313,6 @@ impl ImportRepository for ImportStore {
             ],
         )
         .await
-    }
-
-    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
-        let already_imported_predicate = already_imported_status_predicate(&self.datastore);
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT COUNT(1) AS count
-             FROM imports
-             WHERE COALESCE(source_client_id, '') = {{}}
-               AND source_system = {{}}
-               AND source_ref = {{}}
-               AND {already_imported_predicate}"
-            ),
-            &[
-                SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                SqlArg::Text(identity.client_type.clone()),
-                SqlArg::Text(identity.item_id.clone()),
-            ],
-        )
-        .await?
-        .ok_or_else(|| AppError::Repository("missing import count".into()))?;
-        Ok(row.i64("count")? > 0)
-    }
-
-    async fn is_already_imported_for_download(
-        &self,
-        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        identity: &ClientJobLocator,
-    ) -> AppResult<bool> {
-        let canonical_download_id = match canonical_download_id {
-            Some(id) => Some(id.to_string()),
-            None => active_binding_download_id(&self.datastore, identity)
-                .await?
-                .map(|id| id.to_string()),
-        };
-        let Some(canonical_download_id) = canonical_download_id else {
-            return Ok(false);
-        };
-        is_already_imported_by_canonical_download_id(
-            &self.datastore,
-            &scryer_domain::download_identity::DownloadId::parse(&canonical_download_id)
-                .expect("canonical binding ids are validated"),
-        )
-        .await
-    }
-
-    async fn is_already_imported_by_download_id(
-        &self,
-        source_identity: &ClientJobLocator,
-        identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        let Some(download_id) = identity
-            .download_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return Ok(false);
-        };
-
-        let already_imported_predicate = already_imported_status_predicate(&self.datastore);
-        let row = SqlRuntime::fetch_optional(
-            self.datastore.read_exec(),
-            &format!(
-                "SELECT COUNT(1) AS count
-             FROM imports
-             WHERE {already_imported_predicate}
-               AND COALESCE(source_client_id, '') = {{}}
-               AND source_system = {{}}
-               AND download_id = {{}}"
-            ),
-            &[
-                SqlArg::Text(normalize_download_client_id(
-                    source_identity.client_id.as_deref(),
-                )),
-                SqlArg::Text(source_identity.client_type.clone()),
-                SqlArg::Text(download_id.to_string()),
-            ],
-        )
-        .await?
-        .ok_or_else(|| AppError::Repository("missing import identity count".into()))?;
-        Ok(row.i64("count")? > 0)
-    }
-
-    async fn is_already_imported_by_download_id_for_download(
-        &self,
-        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
-        source_identity: &ClientJobLocator,
-        _identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        self.is_already_imported_for_download(canonical_download_id, source_identity)
-            .await
     }
 
     async fn replace_manual_import_selection(
@@ -1224,56 +1103,6 @@ mod tests {
             archive_workspace_root: None,
             candidates: Vec::new(),
         }
-    }
-
-    #[tokio::test]
-    async fn canonical_ownership_lookup_finds_canonical_import_rows_before_legacy_tuples() {
-        let store = store().await;
-        let canonical_download_id = scryer_domain::download_identity::DownloadId::new();
-        let written_source_identity = source_identity("canonical-item");
-        let import_id = store
-            .queue_import_request_with_identity_for_download(
-                written_source_identity,
-                ImportType::MovieDownload.as_str().to_string(),
-                "{}".to_string(),
-                None,
-                Some(&canonical_download_id),
-            )
-            .await
-            .expect("canonical import should be written");
-        store
-            .update_import_status(&import_id, ImportStatus::Completed, None)
-            .await
-            .expect("canonical import should complete");
-
-        let other_source_identity = source_identity("different-item");
-        assert!(
-            store
-                .is_already_imported_for_download(
-                    Some(&canonical_download_id),
-                    &other_source_identity,
-                )
-                .await
-                .expect("canonical ownership should succeed")
-        );
-        assert!(
-            store
-                .is_already_imported_by_download_id_for_download(
-                    Some(&canonical_download_id),
-                    &other_source_identity,
-                    &DownloadSubmissionIdentity {
-                        download_id: Some("legacy-id-that-does-not-match".to_string()),
-                    },
-                )
-                .await
-                .expect("canonical download-id ownership should succeed")
-        );
-        assert!(
-            !store
-                .is_already_imported(&other_source_identity)
-                .await
-                .expect("legacy tuple should not match")
-        );
     }
 
     #[tokio::test]

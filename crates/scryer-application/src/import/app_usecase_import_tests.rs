@@ -2554,10 +2554,6 @@ impl crate::ImportRepository for RecoveryImportRepo {
         Ok(self.records.clone())
     }
 
-    async fn is_already_imported(&self, _: &crate::ClientJobLocator) -> AppResult<bool> {
-        Ok(false)
-    }
-
     async fn delete_manual_import_selections_for_source(
         &self,
         source_identity: &crate::ClientJobLocator,

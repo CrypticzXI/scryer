@@ -716,15 +716,6 @@ impl crate::ImportRepository for TestImportRepo {
             .collect())
     }
 
-    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
-        Ok(self.records.lock().await.iter().any(|record| {
-            record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
-                && record.source_system == identity.client_type
-                && record.source_ref == identity.item_id
-                && record.status == ImportStatus::Completed
-        }))
-    }
-
     async fn list_imports(&self, _: usize) -> AppResult<Vec<scryer_domain::ImportRecord>> {
         Ok(self.records.lock().await.clone())
     }

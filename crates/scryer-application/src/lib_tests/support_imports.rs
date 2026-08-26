@@ -772,20 +772,6 @@ impl MediaFileRepository for MockMediaFileRepo {
     }
 }
 
-fn import_record_counts_as_already_imported(record: &ImportRecord) -> bool {
-    match record.status {
-        ImportStatus::Completed => true,
-        ImportStatus::Skipped => record
-            .result_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<scryer_domain::ImportResult>(json).ok())
-            .is_some_and(|result| {
-                result.skip_reason == Some(scryer_domain::ImportSkipReason::AlreadyImported)
-            }),
-        _ => false,
-    }
-}
-
 /// Keeps every per-file import artifact so tests can assert what each file in a
 /// pack was recorded as (imported / rejected / already present) and why.
 #[derive(Default, Clone)]
@@ -1066,45 +1052,6 @@ impl ImportRepository for TrackingImportRepo {
             })
             .cloned()
             .collect())
-    }
-
-    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
-        Ok(self
-            .records
-            .lock()
-            .await
-            .iter()
-            .rev()
-            .find(|record| {
-                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
-                    && record.source_system == identity.client_type
-                    && record.source_ref == identity.item_id
-            })
-            .is_some_and(import_record_counts_as_already_imported))
-    }
-
-    async fn is_already_imported_by_download_id(
-        &self,
-        source_identity: &ClientJobLocator,
-        identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        let Some(download_id) = identity
-            .download_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return Ok(false);
-        };
-        let records = self.records.lock().await;
-        Ok(records.iter().rev().any(|record| {
-            if !import_record_counts_as_already_imported(record) {
-                return false;
-            }
-            record.source_client_id.as_deref().unwrap_or("") == source_identity.client_id_or_empty()
-                && record.source_system == source_identity.client_type
-                && record.download_id.as_deref() == Some(download_id)
-        }))
     }
 
     async fn list_imports(&self, limit: usize) -> AppResult<Vec<ImportRecord>> {
