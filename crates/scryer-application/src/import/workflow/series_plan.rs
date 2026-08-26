@@ -443,7 +443,7 @@ fn catalog_episodes_for_air_date(
             .nth(part.saturating_sub(1) as usize)
             .map(|episode| vec![episode])
     } else {
-        (!matches.is_empty()).then_some(matches)
+        (matches.len() == 1).then_some(matches)
     }
 }
 
@@ -721,7 +721,7 @@ fn nearest_explicit_season_ancestor(
             break;
         }
         if let Some(candidate) = parent.file_name().and_then(|name| name.to_str())
-            && let Some(candidate) = explicit_season_folder_number(candidate)
+            && let Some(candidate) = single_season_folder_number(candidate)
         {
             if season.is_some_and(|existing| existing != candidate) {
                 return Err(());
@@ -733,17 +733,18 @@ fn nearest_explicit_season_ancestor(
     Ok(season)
 }
 
-fn explicit_season_folder_number(folder_name: &str) -> Option<u32> {
-    let normalized = folder_name.trim().to_ascii_uppercase();
-    let direct = normalized
-        .strip_prefix("SEASON ")
-        .or_else(|| normalized.strip_prefix("SEASON."))
-        .or_else(|| normalized.strip_prefix("SEASON_"))
-        .or_else(|| normalized.strip_prefix('S'))?;
-    let digits = direct.trim();
-    (!digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
-        .then(|| digits.parse::<u32>().ok())
-        .flatten()
+fn single_season_folder_number(folder_name: &str) -> Option<u32> {
+    let episode = parse_release_metadata(folder_name).episode?;
+    let season = episode.season?;
+    ((episode.season_numbers.is_empty() || episode.season_numbers == [season])
+        && episode.episode_numbers.is_empty()
+        && episode.absolute_episode.is_none()
+        && episode.absolute_episode_numbers.is_empty()
+        && episode.special_absolute_episode_numbers.is_empty()
+        && !episode.is_multi_season
+        && !episode.is_season_extra
+        && episode.special_kind.is_none())
+    .then_some(season)
 }
 
 fn member_names_different_title(
@@ -759,13 +760,14 @@ fn member_names_different_title(
         return true;
     }
 
+    let mut child = source_path;
     let mut current = source_path.parent();
     while let Some(parent) = current {
         if parent == source_root || !parent.starts_with(source_root) {
             break;
         }
         if let Some(name) = parent.file_name().and_then(|name| name.to_str())
-            && !is_generic_pack_layout_directory(name)
+            && folder_is_title_container(parent, child)
         {
             let parsed_parent = normalize_release_title_signal(parse_release_metadata(name));
             let word_count = parsed_parent
@@ -780,6 +782,7 @@ fn member_names_different_title(
                 return true;
             }
         }
+        child = parent;
         current = parent.parent();
     }
     false
@@ -806,26 +809,13 @@ fn has_disc_layout_ancestor(source_root: &Path, source_path: &Path) -> bool {
     false
 }
 
-fn is_generic_pack_layout_directory(name: &str) -> bool {
-    explicit_season_folder_number(name).is_some()
-        || is_disc_layout_directory(name)
-        || matches!(
-            name.trim().to_ascii_uppercase().as_str(),
-            "DISC"
-                | "CD"
-                | "DISC 1"
-                | "DISC 2"
-                | "CD 1"
-                | "CD 2"
-                | "EXTRAS"
-                | "SPECIALS"
-                | "BONUS"
-                | "BONUS FEATURES"
-                | "OPENINGS"
-                | "ENDINGS"
-                | "CLEAN OPENINGS"
-                | "CLEAN ENDINGS"
-        )
+fn folder_is_title_container(parent: &Path, child: &Path) -> bool {
+    child.parent() == Some(parent)
+        && child
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(single_season_folder_number)
+            .is_some()
 }
 
 fn is_disc_layout_directory(name: &str) -> bool {
@@ -928,6 +918,74 @@ mod series_plan_tests {
                 reason_code: "member_identity_conflict",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn nearest_season_ancestor_accepts_decorated_single_season_folder() {
+        let root = Path::new("/census");
+        for (folder, expected) in [
+            ("Season 03 Archive", 3),
+            ("S02 (BD)", 2),
+            ("Season 4 - WEB", 4),
+        ] {
+            let member = root.join("Synthetic Title").join(folder).join("member.mkv");
+            assert_eq!(
+                nearest_explicit_season_ancestor(root, &member),
+                Ok(Some(expected)),
+                "{folder}"
+            );
+        }
+    }
+
+    #[test]
+    fn season_folder_parser_rejects_episode_multi_season_and_extras_shapes() {
+        for folder in ["S01E02", "S01-S02", "Season 01 Extras"] {
+            assert_eq!(single_season_folder_number(folder), None, "{folder}");
+        }
+    }
+
+    #[test]
+    fn only_a_season_child_makes_a_folder_title_bearing() {
+        let title_folder = Path::new("/census/Census Title");
+        let season_folder = title_folder.join("Season 01 Archive");
+        let commentary_folder = season_folder.join("Commentary Notes");
+
+        assert!(folder_is_title_container(title_folder, &season_folder));
+        assert!(!folder_is_title_container(
+            &season_folder,
+            &commentary_folder
+        ));
+    }
+
+    #[test]
+    fn date_only_pack_identity_requires_one_catalog_match_or_explicit_part() {
+        let mut first = catalog_episode("ep-1", 1, 1);
+        first.air_date = Some("2040-01-02".to_string());
+        let mut second = catalog_episode("ep-2", 2, 2);
+        second.air_date = Some("2040-01-02".to_string());
+        let catalog = vec![first, second];
+        let date = chrono::NaiveDate::from_ymd_opt(2040, 1, 2).expect("valid census date");
+        let date_only = crate::ParsedEpisodeMetadata {
+            air_date: Some(date),
+            ..Default::default()
+        };
+        let part_two = crate::ParsedEpisodeMetadata {
+            air_date: Some(date),
+            daily_part: Some(2),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            plan_parsed_pack_identity(false, &date_only, None, &catalog),
+            PlannedMemberDraft::Hold {
+                reason_code: "episode_not_found_for_title",
+                ..
+            }
+        ));
+        assert!(matches!(
+            plan_parsed_pack_identity(false, &part_two, None, &catalog),
+            PlannedMemberDraft::Resolved(ref episodes) if episodes[0].id == "ep-2"
         ));
     }
 }

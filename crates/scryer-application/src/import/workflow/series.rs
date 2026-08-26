@@ -231,25 +231,14 @@ async fn import_series_download(
 
     let move_import_has_failure =
         import_mode == scryer_domain::ImportMode::Move && failed_count > 0;
-    let (decision, status, skip_reason) = if failed_count > 0 {
-        (ImportDecision::Failed, ImportStatus::Failed, None)
-    } else if rejected_count > 0 {
-        (
-            ImportDecision::Rejected,
-            ImportStatus::Failed,
-            last_rejection_skip_reason,
-        )
-    } else if imported_count > 0 {
-        (ImportDecision::Imported, ImportStatus::Completed, None)
-    } else {
-        // All files skipped (no parseable episode info, already imported, etc.)
-        // — this is a permanent condition, not worth retrying.
-        (
-            ImportDecision::Skipped,
-            ImportStatus::Skipped,
-            last_skipped_skip_reason,
-        )
-    };
+    let (decision, status, skip_reason) = aggregate_episode_import_outcome(
+        import_mode,
+        imported_count,
+        rejected_count,
+        failed_count,
+        last_rejection_skip_reason,
+        last_skipped_skip_reason,
+    );
     let release_burned = matches!(&decision, ImportDecision::Rejected) && release_burned;
 
     let error_message = if imported_count == 0
@@ -544,6 +533,113 @@ fn append_unique_episode_ids(target: &mut Vec<String>, source: &[String]) {
         }
     }
 }
+
+fn aggregate_episode_import_outcome(
+    import_mode: scryer_domain::ImportMode,
+    imported_count: usize,
+    rejected_count: usize,
+    failed_count: usize,
+    last_rejection_skip_reason: Option<ImportSkipReason>,
+    last_skipped_skip_reason: Option<ImportSkipReason>,
+) -> (ImportDecision, ImportStatus, Option<ImportSkipReason>) {
+    if import_mode == scryer_domain::ImportMode::Move && failed_count > 0 {
+        (ImportDecision::Failed, ImportStatus::Failed, None)
+    } else if rejected_count > 0 {
+        (
+            ImportDecision::Rejected,
+            ImportStatus::Failed,
+            last_rejection_skip_reason,
+        )
+    } else if imported_count > 0 {
+        (ImportDecision::Imported, ImportStatus::Completed, None)
+    } else if failed_count > 0 {
+        (ImportDecision::Failed, ImportStatus::Failed, None)
+    } else {
+        (
+            ImportDecision::Skipped,
+            ImportStatus::Skipped,
+            last_skipped_skip_reason,
+        )
+    }
+}
+
+#[cfg(test)]
+mod aggregate_episode_import_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn imported_member_wins_over_another_non_move_failure() {
+        assert_eq!(
+            aggregate_episode_import_outcome(
+                scryer_domain::ImportMode::HardlinkOrCopy,
+                1,
+                0,
+                1,
+                None,
+                None,
+            ),
+            (ImportDecision::Imported, ImportStatus::Completed, None)
+        );
+    }
+
+    #[test]
+    fn rejected_member_wins_over_another_import() {
+        assert_eq!(
+            aggregate_episode_import_outcome(
+                scryer_domain::ImportMode::HardlinkOrCopy,
+                1,
+                1,
+                0,
+                Some(ImportSkipReason::PolicyMismatch),
+                None,
+            ),
+            (
+                ImportDecision::Rejected,
+                ImportStatus::Failed,
+                Some(ImportSkipReason::PolicyMismatch),
+            )
+        );
+    }
+
+    #[test]
+    fn move_failure_wins_over_another_import() {
+        assert_eq!(
+            aggregate_episode_import_outcome(scryer_domain::ImportMode::Move, 1, 0, 1, None, None,),
+            (ImportDecision::Failed, ImportStatus::Failed, None)
+        );
+    }
+
+    #[test]
+    fn all_ignored_members_are_skipped() {
+        assert_eq!(
+            aggregate_episode_import_outcome(
+                scryer_domain::ImportMode::HardlinkOrCopy,
+                0,
+                0,
+                0,
+                None,
+                None,
+            ),
+            (ImportDecision::Skipped, ImportStatus::Skipped, None)
+        );
+    }
+
+    #[test]
+    fn all_failed_members_fail() {
+        assert_eq!(
+            aggregate_episode_import_outcome(
+                scryer_domain::ImportMode::HardlinkOrCopy,
+                0,
+                0,
+                1,
+                None,
+                None,
+            ),
+            (ImportDecision::Failed, ImportStatus::Failed, None)
+        );
+    }
+}
+
 async fn expected_episode_ids_for_completed_download(
     app: &AppUseCase,
     title: &scryer_domain::Title,

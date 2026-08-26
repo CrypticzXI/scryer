@@ -1,5 +1,5 @@
 use super::verification::{
-    skipped_aggregate_has_terminal_artifact_dispositions, verify_import_inner_with_release_evidence,
+    verify_import_inner_with_release_evidence, verify_skipped_import_with_release_evidence,
 };
 use super::*;
 
@@ -226,35 +226,36 @@ pub(super) async fn apply_import_result_with_completed(
 ) -> bool {
     let already_imported = result.decision == ImportDecision::Skipped
         && result.skip_reason == Some(ImportSkipReason::AlreadyImported);
-    let skipped_aggregate_is_verifiable = if result.decision == ImportDecision::Skipped
-        && !already_imported
-    {
-        match skipped_aggregate_has_terminal_artifact_dispositions(app, td, completed).await {
-            Ok(verifiable) => verifiable,
-            Err(error) => {
-                tracing::warn!(tracked_id = %td.id, error = %error, "import verification evidence is unavailable");
-                schedule_import_verification_retry(td);
-                return false;
-            }
-        }
-    } else {
-        false
-    };
+    let intentionally_ignored_aggregate =
+        result.decision == ImportDecision::Skipped && result.skip_reason.is_none();
     if result.decision == ImportDecision::Imported
         || already_imported
-        || skipped_aggregate_is_verifiable
+        || intentionally_ignored_aggregate
     {
-        td.clear_no_video_import_retry();
-        td.clear_import_execution_retry();
-        let verified = match verify_import_inner_with_release_evidence(
-            app,
-            td,
-            files_imported_this_pass,
-            completed,
-            release_evidence,
-        )
-        .await
-        {
+        if result.decision == ImportDecision::Imported || already_imported {
+            td.clear_no_video_import_retry();
+            td.clear_import_execution_retry();
+        }
+        let verification = if intentionally_ignored_aggregate {
+            verify_skipped_import_with_release_evidence(
+                app,
+                td,
+                files_imported_this_pass,
+                completed,
+                release_evidence,
+            )
+            .await
+        } else {
+            verify_import_inner_with_release_evidence(
+                app,
+                td,
+                files_imported_this_pass,
+                completed,
+                release_evidence,
+            )
+            .await
+        };
+        let verified = match verification {
             Ok(verified) => verified,
             Err(error) => {
                 tracing::warn!(tracked_id = %td.id, error = %error, "import verification evidence is unavailable");
@@ -263,6 +264,8 @@ pub(super) async fn apply_import_result_with_completed(
             }
         };
         if verified {
+            td.clear_no_video_import_retry();
+            td.clear_import_execution_retry();
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();

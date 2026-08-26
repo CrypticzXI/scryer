@@ -23,6 +23,13 @@ enum ArtifactSourceDisposition {
     Undisposed,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ArtifactMemberCompletion {
+    Incomplete,
+    Terminal,
+    AllIntentionallyIgnored,
+}
+
 #[derive(Clone, Copy)]
 enum ImportVerificationMode {
     Automatic,
@@ -65,6 +72,7 @@ pub async fn verify_manual_import(
         ImportVerificationMode::Manual {
             expected_mapping_count,
         },
+        false,
     )
     .await
 }
@@ -93,6 +101,26 @@ pub(super) async fn verify_import_inner_with_release_evidence(
         completed,
         release_evidence,
         ImportVerificationMode::Automatic,
+        false,
+    )
+    .await
+}
+
+pub(super) async fn verify_skipped_import_with_release_evidence(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
+) -> AppResult<bool> {
+    verify_import_with_mode(
+        app,
+        td,
+        files_imported_this_pass,
+        completed,
+        release_evidence,
+        ImportVerificationMode::Automatic,
+        true,
     )
     .await
 }
@@ -104,10 +132,17 @@ async fn verify_import_with_mode(
     completed: Option<&CompletedDownload>,
     release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
     mode: ImportVerificationMode,
+    require_terminal_artifact_members: bool,
 ) -> AppResult<bool> {
     let artifacts = import_artifacts_for_completed_download(app, td, completed).await?;
 
     if artifacts.is_empty() {
+        return Ok(false);
+    }
+
+    let artifact_members = artifact_member_completion(&artifacts, td);
+    if require_terminal_artifact_members && artifact_members == ArtifactMemberCompletion::Incomplete
+    {
         return Ok(false);
     }
 
@@ -147,7 +182,7 @@ async fn verify_import_with_mode(
     }
 
     let all_sources_intentionally_ignored = matches!(mode, ImportVerificationMode::Automatic)
-        && artifact_sources_are_all_intentionally_ignored(&artifacts, td);
+        && artifact_members == ArtifactMemberCompletion::AllIntentionallyIgnored;
     if successful_units.is_empty() && !all_sources_intentionally_ignored {
         return Ok(false);
     }
@@ -501,15 +536,6 @@ pub(super) async fn current_visible_video_file_count(
         .unwrap_or(0)
 }
 
-pub(super) async fn skipped_aggregate_has_terminal_artifact_dispositions(
-    app: &AppUseCase,
-    td: &TrackedDownload,
-    completed: Option<&CompletedDownload>,
-) -> AppResult<bool> {
-    let artifacts = import_artifacts_for_completed_download(app, td, completed).await?;
-    Ok(artifact_sources_are_successfully_disposed(&artifacts, td))
-}
-
 pub(super) async fn visible_source_files_have_terminal_dispositions(
     app: &AppUseCase,
     td: &TrackedDownload,
@@ -532,7 +558,9 @@ pub(super) async fn visible_source_files_have_terminal_dispositions(
     )
     .ok()?;
     if files.is_empty() {
-        return Some(artifact_sources_are_successfully_disposed(artifacts, td));
+        return Some(
+            artifact_member_completion(artifacts, td) != ArtifactMemberCompletion::Incomplete,
+        );
     }
 
     let mut visible_file_name_counts: HashMap<String, usize> = HashMap::new();
@@ -556,13 +584,7 @@ pub(super) async fn visible_source_files_have_terminal_dispositions(
         ) else {
             return Some(false);
         };
-        let disposition = artifact_source_disposition(&rows);
-        if !matches!(
-            disposition,
-            ArtifactSourceDisposition::Successful | ArtifactSourceDisposition::Ignored
-        ) || (disposition == ArtifactSourceDisposition::Ignored
-            && !ignored_artifact_rows_match_tracked_title(&rows, td))
-        {
+        if !artifact_source_is_terminal(&rows, td) {
             return Some(false);
         }
     }
@@ -717,34 +739,46 @@ fn artifact_source_episode_units(
     }
 }
 
-fn artifact_sources_are_successfully_disposed(
+fn artifact_member_completion(
     artifacts: &[crate::ImportArtifact],
     td: &TrackedDownload,
-) -> bool {
+) -> ArtifactMemberCompletion {
     let Some(groups) = import_artifact_source_groups(artifacts) else {
-        return false;
+        return ArtifactMemberCompletion::Incomplete;
     };
-    !groups.is_empty()
-        && groups.values().all(|rows| {
-            let disposition = artifact_source_disposition(rows);
-            matches!(disposition, ArtifactSourceDisposition::Successful)
-                || (disposition == ArtifactSourceDisposition::Ignored
-                    && ignored_artifact_rows_match_tracked_title(rows, td))
-        })
+    if groups.is_empty() {
+        return ArtifactMemberCompletion::Incomplete;
+    }
+
+    let mut all_ignored = true;
+    for rows in groups.values() {
+        match artifact_source_disposition(rows) {
+            ArtifactSourceDisposition::Successful => all_ignored = false,
+            ArtifactSourceDisposition::Ignored
+                if ignored_artifact_rows_match_tracked_title(rows, td) => {}
+            ArtifactSourceDisposition::Ignored
+            | ArtifactSourceDisposition::Rejected
+            | ArtifactSourceDisposition::Undisposed => {
+                return ArtifactMemberCompletion::Incomplete;
+            }
+        }
+    }
+
+    if all_ignored {
+        ArtifactMemberCompletion::AllIntentionallyIgnored
+    } else {
+        ArtifactMemberCompletion::Terminal
+    }
 }
 
-fn artifact_sources_are_all_intentionally_ignored(
-    artifacts: &[crate::ImportArtifact],
-    td: &TrackedDownload,
-) -> bool {
-    let Some(groups) = import_artifact_source_groups(artifacts) else {
-        return false;
-    };
-    !groups.is_empty()
-        && groups.values().all(|rows| {
-            artifact_source_disposition(rows) == ArtifactSourceDisposition::Ignored
-                && ignored_artifact_rows_match_tracked_title(rows, td)
-        })
+fn artifact_source_is_terminal(artifacts: &[&crate::ImportArtifact], td: &TrackedDownload) -> bool {
+    match artifact_source_disposition(artifacts) {
+        ArtifactSourceDisposition::Successful => true,
+        ArtifactSourceDisposition::Ignored => {
+            ignored_artifact_rows_match_tracked_title(artifacts, td)
+        }
+        ArtifactSourceDisposition::Rejected | ArtifactSourceDisposition::Undisposed => false,
+    }
 }
 
 fn import_artifact_source_groups(

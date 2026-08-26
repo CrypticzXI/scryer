@@ -140,7 +140,7 @@ async fn apply_result_terminalizes_verified_all_ignored_skip_as_successful_no_op
     let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
     let mut result = failed_execution_result("all source videos were intentionally ignored");
     result.decision = ImportDecision::Skipped;
-    result.skip_reason = Some(ImportSkipReason::NoVideoFiles);
+    result.skip_reason = None;
 
     assert!(apply_import_result(&app, &mut td, result, 0).await);
     assert_eq!(td.state, TrackedDownloadState::Imported);
