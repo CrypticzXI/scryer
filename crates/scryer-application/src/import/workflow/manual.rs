@@ -1271,11 +1271,22 @@ pub async fn begin_manual_import_selection(
     )
     .await?;
     let completed = resolve_authorized_manual_import_source(app, &authorized.identity).await?;
-    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+    let canonical_download_id = match crate::download_identity::resolve_observed_client_job(
         app,
         crate::download_identity::observed_completed_job(&completed),
     )
-    .await;
+    .await
+    {
+        crate::download_identity::ObservedClientJobResolution::Resolved(download_id) => {
+            Some(download_id)
+        }
+        crate::download_identity::ObservedClientJobResolution::Conflict => {
+            return Err(AppError::Validation(
+                "manual import source has a conflicting canonical download identity".to_string(),
+            ));
+        }
+        crate::download_identity::ObservedClientJobResolution::Unavailable => None,
+    };
     let release_evidence =
         resolve_release_evidence_for_completed_download(app, &completed, None).await?;
     if let Some(submission_title_id) = release_evidence.title_id()

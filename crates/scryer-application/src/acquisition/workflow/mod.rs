@@ -17,11 +17,11 @@ use crate::types::{
 };
 use crate::{JobKey, JobTriggerSource};
 use chrono::{DateTime, Duration, Utc};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use scryer_domain::{
     DomainEventPayload, DomainEventStream, DownloadFailedEventData, Id, NewDomainEvent,
     ReleaseBlocklistedEventData, ReleaseGrabbedEventData,
 };
-use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},

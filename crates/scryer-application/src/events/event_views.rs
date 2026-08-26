@@ -1533,9 +1533,15 @@ mod tests {
         event.actor_display_name = "Manual Grabber".to_string();
 
         let history = title_history_record_from_domain_event(&event).expect("history record");
-        assert_eq!(history.actor_kind, Some(scryer_domain::DomainEventActorKind::User));
+        assert_eq!(
+            history.actor_kind,
+            Some(scryer_domain::DomainEventActorKind::User)
+        );
         assert_eq!(history.actor_user_id.as_deref(), Some("user-1"));
-        assert_eq!(history.actor_display_name.as_deref(), Some("Manual Grabber"));
+        assert_eq!(
+            history.actor_display_name.as_deref(),
+            Some("Manual Grabber")
+        );
     }
 
     #[test]

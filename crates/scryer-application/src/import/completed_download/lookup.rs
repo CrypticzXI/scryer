@@ -87,7 +87,7 @@ pub(crate) async fn load_completed_download_lookup(
         .await?;
     let canonical_download_ids =
         resolve_completed_download_observations(app, &completed_downloads).await;
-    Ok(index_completed_downloads_with_canonical_download_ids(
+    Ok(index_completed_download_observations(
         completed_downloads,
         canonical_download_ids,
         CompletedDownloadLookupCoverage::Full,
@@ -137,7 +137,7 @@ async fn load_recent_completed_download_lookup_for_client_scope_or_default_exclu
         Ok(completed_downloads) => {
             let canonical_download_ids =
                 resolve_completed_download_observations(app, &completed_downloads).await;
-            index_completed_downloads_with_canonical_download_ids(
+            index_completed_download_observations(
                 completed_downloads,
                 canonical_download_ids,
                 CompletedDownloadLookupCoverage::Recent,
@@ -213,10 +213,10 @@ pub(crate) async fn load_completed_download_lookup_for_tracked_client_items_excl
 pub(super) async fn resolve_completed_download_observations(
     app: &AppUseCase,
     completed_downloads: &[CompletedDownload],
-) -> Vec<Option<scryer_domain::download_identity::DownloadId>> {
-    let mut canonical_download_ids = Vec::with_capacity(completed_downloads.len());
+) -> Vec<crate::download_identity::ObservedClientJobResolution> {
+    let mut resolutions = Vec::with_capacity(completed_downloads.len());
     for completed in completed_downloads {
-        canonical_download_ids.push(
+        resolutions.push(
             crate::download_identity::resolve_observed_client_job(
                 app,
                 crate::download_identity::observed_completed_job(completed),
@@ -224,7 +224,33 @@ pub(super) async fn resolve_completed_download_observations(
             .await,
         );
     }
-    canonical_download_ids
+    resolutions
+}
+
+fn index_completed_download_observations(
+    downloads: Vec<CompletedDownload>,
+    resolutions: Vec<crate::download_identity::ObservedClientJobResolution>,
+    coverage: CompletedDownloadLookupCoverage,
+) -> CompletedDownloadLookup {
+    debug_assert_eq!(downloads.len(), resolutions.len());
+    let (downloads, canonical_download_ids): (Vec<_>, Vec<_>) = downloads
+        .into_iter()
+        .zip(resolutions)
+        .filter_map(|(completed, resolution)| match resolution {
+            crate::download_identity::ObservedClientJobResolution::Resolved(download_id) => {
+                Some((completed, Some(download_id)))
+            }
+            crate::download_identity::ObservedClientJobResolution::Conflict => None,
+            crate::download_identity::ObservedClientJobResolution::Unavailable => {
+                Some((completed, None))
+            }
+        })
+        .unzip();
+    index_completed_downloads_with_canonical_download_ids(
+        downloads,
+        canonical_download_ids,
+        coverage,
+    )
 }
 
 fn download_queue_item_needs_completed_lookup(item: &DownloadQueueItem) -> bool {

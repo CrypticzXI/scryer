@@ -255,7 +255,10 @@ async fn accepted_grab_adopts_a_foreign_binding_and_keeps_its_goals() {
             observed_at: chrono::Utc::now(),
         })
         .await
-        .expect("foreign observation should resolve");
+        .expect("foreign observation should resolve")
+    else {
+        panic!("foreign observation should produce a resolved identity");
+    };
     assert!(newly_foreign);
 
     let requested_download_id = scryer_domain::download_identity::DownloadId::new();
@@ -409,7 +412,10 @@ async fn ambiguous_submissions_attach_only_when_the_observation_is_unambiguous()
     } = registry
         .resolve_observation(&collision_observation)
         .await
-        .expect("ambiguous name collision should fall through to foreign");
+        .expect("ambiguous name collision should fall through to foreign")
+    else {
+        panic!("ambiguous name collision should produce a resolved identity");
+    };
     assert!(newly_foreign);
     assert!(!attached);
     assert_ne!(collision_id, second_id);
@@ -537,6 +543,120 @@ async fn readding_a_completed_delete_locator_creates_a_new_canonical_submission(
         .expect("tuple projection should load");
     assert_eq!(projected.len(), 1);
     assert_eq!(projected[0].download_id, second_id);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn active_binding_reconcile_query_is_client_scoped_recency_filtered_and_bounded() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_active_binding_reconcile_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("database should migrate through the canonical binding schema");
+    let registry = DownloadRegistryStore::new(services.datastore());
+    let old = chrono::Utc::now() - chrono::Duration::minutes(11);
+    let fresh = chrono::Utc::now();
+
+    let observe = |client_id: &str, item_id: &str| ObservedClientJob {
+        locator: ClientJobLocator::new(Some(client_id), "qbittorrent", item_id),
+        wire_token: None,
+        observed_name: Some(item_id.to_string()),
+        observed_at: old,
+    };
+    let eligible = match registry
+        .resolve_observation(&observe("client-one", "eligible-old"))
+        .await
+        .expect("eligible observation should resolve")
+    {
+        ObservationResolution::Resolved { download_id, .. } => download_id,
+        ObservationResolution::Conflict { .. } => {
+            panic!("eligible observation should not conflict")
+        }
+    };
+    let recently_seen = match registry
+        .resolve_observation(&observe("client-one", "recently-seen"))
+        .await
+        .expect("recent observation should resolve")
+    {
+        ObservationResolution::Resolved { download_id, .. } => download_id,
+        ObservationResolution::Conflict { .. } => panic!("recent observation should not conflict"),
+    };
+    let other_client = match registry
+        .resolve_observation(&observe("client-two", "other-client"))
+        .await
+        .expect("other-client observation should resolve")
+    {
+        ObservationResolution::Resolved { download_id, .. } => download_id,
+        ObservationResolution::Conflict { .. } => {
+            panic!("other-client observation should not conflict")
+        }
+    };
+    let ended = match registry
+        .resolve_observation(&observe("client-one", "already-ended"))
+        .await
+        .expect("ended observation should resolve")
+    {
+        ObservationResolution::Resolved { download_id, .. } => download_id,
+        ObservationResolution::Conflict { .. } => panic!("ended observation should not conflict"),
+    };
+    registry
+        .end_binding(&ended)
+        .await
+        .expect("binding should end");
+
+    sqlx::query(
+        "UPDATE download_client_bindings
+         SET created_at = ?1, last_seen_at = ?2
+         WHERE download_id = ?3",
+    )
+    .bind(old.to_rfc3339())
+    .bind(old.to_rfc3339())
+    .bind(eligible.to_string())
+    .execute(services.pool())
+    .await
+    .expect("eligible binding should age");
+    sqlx::query(
+        "UPDATE download_client_bindings
+         SET created_at = ?1, last_seen_at = ?2
+         WHERE download_id = ?3",
+    )
+    .bind(old.to_rfc3339())
+    .bind(fresh.to_rfc3339())
+    .bind(recently_seen.to_string())
+    .execute(services.pool())
+    .await
+    .expect("recent binding should update");
+    sqlx::query(
+        "UPDATE download_client_bindings
+         SET created_at = ?1, last_seen_at = ?2
+         WHERE download_id = ?3",
+    )
+    .bind(old.to_rfc3339())
+    .bind(old.to_rfc3339())
+    .bind(other_client.to_string())
+    .execute(services.pool())
+    .await
+    .expect("other-client binding should age");
+
+    let candidates = registry
+        .list_active_bindings_for_client_before(
+            "client-one",
+            "qBittorrent",
+            chrono::Utc::now() - chrono::Duration::minutes(10),
+            1,
+        )
+        .await
+        .expect("reconcile candidates should load");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].download_id, eligible);
+    assert_eq!(
+        candidates[0].native_item_id.as_deref(),
+        Some("eligible-old")
+    );
 
     drop(services);
     let _ = std::fs::remove_file(db);

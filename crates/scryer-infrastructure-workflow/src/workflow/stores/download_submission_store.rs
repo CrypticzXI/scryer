@@ -7,8 +7,9 @@ use scryer_application::{
     DownloadSubmissionIdentity, DownloadSubmissionRepository, IdentityTrackedStateTarget,
     PersistedSeedGoals, SeedGoalGrabRecord, SeedGoalResolutionSource,
 };
-use scryer_domain::{Id, download_identity::DownloadId};
+use scryer_domain::{Id, TrackedDownloadState, download_identity::DownloadId};
 
+use super::unique_violation::run_in_transaction_retrying_unique_violation;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
 #[derive(Clone)]
@@ -75,7 +76,7 @@ async fn active_binding_download_id(
          WHERE ended_at IS NULL
            AND native_item_id IS NOT NULL
            AND COALESCE(client_config_id, '') = {}
-           AND LOWER(COALESCE(client_type_snapshot, '')) = {}
+           AND LOWER(TRIM(COALESCE(client_type_snapshot, ''))) = {}
            AND native_item_id = {}
          ORDER BY created_at, download_id
          LIMIT 1",
@@ -102,23 +103,59 @@ async fn active_binding_download_id(
 /// existing locator bindings are adopted and their parent is upgraded to
 /// `scryer_submission`. Without one, this preserves the tracked-state stub
 /// behavior by creating a foreign-observation parent.
+///
+/// Adoption covers the live job: dedup-by-hash clients hand back the same
+/// native job for a re-submitted release, and one active binding per locator is
+/// the identity invariant. A binding whose download already reached a terminal
+/// outcome is *not* live — the job left the client (or was deleted out from
+/// under us) and only the binding row lagged behind. Adopting it would hand a
+/// fresh grab a download id that already carries an import or failure history,
+/// so the whole grab reads as already finished. Such a binding is ended here
+/// and the claim proceeds as if the locator were unbound — for an accepted
+/// grab whatever the parent's origin, and on the tracked-state stub path only
+/// for foreign parents (see below).
+///
+/// The read-then-insert is not atomic under a datastore with concurrent
+/// writers: two claimants can both find the locator unbound (or both end the
+/// same stale binding) and the loser's insert then hits the 0180 active-locator
+/// unique index. Nothing is recovered here — the transaction is already lost.
+/// Every public store method whose transaction reaches this helper is wrapped
+/// in [`run_in_transaction_retrying_unique_violation`] instead, so the whole
+/// method re-runs once in a fresh transaction and the first branch above adopts
+/// the winner's committed binding through the ordinary path.
 pub(super) async fn claim_or_create_binding_download_id_tx(
     tx: &mut SqlTx<'_>,
     locator: &ClientJobLocator,
     requested_download_id: Option<DownloadId>,
 ) -> AppResult<DownloadId> {
     if let Some(download_id) = active_binding_download_id(SqlExec::Tx(tx), locator).await? {
-        if requested_download_id.is_some() {
-            SqlRuntime::execute(
-                SqlExec::Tx(tx),
-                "UPDATE downloads
-                 SET origin = 'scryer_submission'
-                 WHERE id = {}",
-                &[SqlArg::Text(download_id.to_string())],
-            )
-            .await?;
+        // Re-claiming the same identity is not a stale adopt: there is no other
+        // download's history to inherit, and the binding row is that identity's
+        // own (`download_id` is the bindings primary key).
+        let reclaims_bound_identity = requested_download_id == Some(download_id);
+        let stale = !reclaims_bound_identity
+            && bound_download_is_terminal_tx(tx, &download_id).await?
+            // On the stub path the guard is for foreign re-adds only. A
+            // Scryer-owned binding ends through the queue-delete /
+            // authoritative-absence lifecycle, and a duplicate terminal-state
+            // write for a job that is still in the client must not detach it
+            // from its submission and seed goals.
+            && (requested_download_id.is_some()
+                || !bound_download_is_scryer_submission_tx(tx, &download_id).await?);
+        if !stale {
+            if requested_download_id.is_some() {
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE downloads
+                     SET origin = 'scryer_submission'
+                     WHERE id = {}",
+                    &[SqlArg::Text(download_id.to_string())],
+                )
+                .await?;
+            }
+            return Ok(download_id);
         }
-        return Ok(download_id);
+        end_binding_tx(tx, &download_id).await?;
     }
 
     let now = Utc::now();
@@ -170,6 +207,88 @@ pub(super) async fn claim_or_create_binding_download_id_tx(
     Ok(download_id)
 }
 
+/// Did this download already reach a terminal outcome?
+///
+/// Read from the same durable rows the tracking layer reconstructs state from
+/// on first see (`TrackedDownloadService::reconstruct_state`): the canonical
+/// identity state first, then the canonical submission's `tracked_state`.
+/// Terminality itself is [`TrackedDownloadState::is_terminal`], so this cannot
+/// drift into a parallel notion of "done".
+async fn bound_download_is_terminal_tx(
+    tx: &mut SqlTx<'_>,
+    download_id: &DownloadId,
+) -> AppResult<bool> {
+    let identity_state = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT tracked_state
+         FROM download_identity_states
+         WHERE canonical_download_id = {}
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1",
+        &[SqlArg::Text(download_id.to_string())],
+    )
+    .await?
+    .map(|row| row.text("tracked_state"))
+    .transpose()?;
+    let tracked_state = match identity_state {
+        Some(tracked_state) => Some(tracked_state),
+        None => SqlRuntime::fetch_optional(
+            SqlExec::Tx(tx),
+            "SELECT tracked_state
+             FROM download_submissions
+             WHERE id = {}
+             LIMIT 1",
+            &[SqlArg::Text(download_id.to_string())],
+        )
+        .await?
+        .map(|row| row.opt_text("tracked_state"))
+        .transpose()?
+        .flatten(),
+    };
+    Ok(tracked_state
+        .as_deref()
+        .and_then(TrackedDownloadState::from_str_opt)
+        .is_some_and(TrackedDownloadState::is_terminal))
+}
+
+/// Is the bound parent a Scryer-owned download rather than a foreign
+/// observation? Only the no-requested-id (tracked-state stub) path asks.
+async fn bound_download_is_scryer_submission_tx(
+    tx: &mut SqlTx<'_>,
+    download_id: &DownloadId,
+) -> AppResult<bool> {
+    Ok(SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT origin
+         FROM downloads
+         WHERE id = {}
+         LIMIT 1",
+        &[SqlArg::Text(download_id.to_string())],
+    )
+    .await?
+    .map(|row| row.text("origin"))
+    .transpose()?
+    .is_some_and(|origin| origin == "scryer_submission"))
+}
+
+/// End a binding inside the caller's transaction, with the same `ended_at`
+/// mechanics as the registry store's `end_binding`.
+async fn end_binding_tx(tx: &mut SqlTx<'_>, download_id: &DownloadId) -> AppResult<()> {
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "UPDATE download_client_bindings
+         SET ended_at = {}
+         WHERE download_id = {}
+           AND ended_at IS NULL",
+        &[
+            SqlArg::Timestamp(Utc::now()),
+            SqlArg::Text(download_id.to_string()),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 async fn client_name_snapshot_tx(
     tx: &mut SqlTx<'_>,
     locator: &ClientJobLocator,
@@ -196,13 +315,17 @@ fn canonical_tracked_state_key(canonical_download_id: &DownloadId) -> String {
 #[async_trait]
 impl DownloadSubmissionRepository for DownloadSubmissionStore {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
-        SqlRuntime::run_in_transaction(&self.datastore, "record_download_submission", move |tx| {
-            let submission = submission.clone();
-            Box::pin(async move {
-                record_download_submission_tx(tx, &submission).await?;
-                Ok(())
-            })
-        })
+        run_in_transaction_retrying_unique_violation(
+            &self.datastore,
+            "record_download_submission",
+            move |tx| {
+                let submission = submission.clone();
+                Box::pin(async move {
+                    record_download_submission_tx(tx, &submission).await?;
+                    Ok(())
+                })
+            },
+        )
         .await
     }
 
@@ -225,7 +348,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
     ) -> AppResult<()> {
-        SqlRuntime::run_in_transaction(
+        run_in_transaction_retrying_unique_violation(
             &self.datastore,
             "record_download_submission_with_identity",
             move |tx| {
@@ -1043,33 +1166,39 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     ) -> AppResult<()> {
         let identity = identity.clone();
         let tracked_state = tracked_state.to_string();
-        SqlRuntime::run_in_transaction(&self.datastore, "update_tracked_state", move |tx| {
-            let identity = identity.clone();
-            let tracked_state = tracked_state.clone();
-            Box::pin(async move {
-                let canonical_download_id =
-                    claim_or_create_binding_download_id_tx(tx, &identity, None).await?;
-                SqlRuntime::execute(
-                    SqlExec::Tx(tx),
-                    "INSERT INTO download_submissions
-                     (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, tracked_state, tracked_state_at)
-                     VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, 'standard', NULL, NULL, {}, {})
-                     ON CONFLICT(id) DO UPDATE
-                     SET tracked_state = excluded.tracked_state,
-                         tracked_state_at = excluded.tracked_state_at",
-                    &[
-                        SqlArg::Text(canonical_download_id.to_string()),
-                        SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
-                        SqlArg::Text(identity.client_type.clone()),
-                        SqlArg::Text(identity.item_id.clone()),
-                        SqlArg::Text(tracked_state),
-                        SqlArg::Timestamp(Utc::now()),
-                    ],
-                )
-                .await?;
-                Ok(())
-            })
-        })
+        run_in_transaction_retrying_unique_violation(
+            &self.datastore,
+            "update_tracked_state",
+            move |tx| {
+                let identity = identity.clone();
+                let tracked_state = tracked_state.clone();
+                Box::pin(async move {
+                    let canonical_download_id =
+                        claim_or_create_binding_download_id_tx(tx, &identity, None).await?;
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "INSERT INTO download_submissions
+                         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, tracked_state, tracked_state_at)
+                         VALUES ({}, '', '', {}, {}, {}, NULL, NULL, NULL, NULL, 'standard', NULL, NULL, {}, {})
+                         ON CONFLICT(id) DO UPDATE
+                         SET tracked_state = excluded.tracked_state,
+                             tracked_state_at = excluded.tracked_state_at",
+                        &[
+                            SqlArg::Text(canonical_download_id.to_string()),
+                            SqlArg::Text(normalize_download_client_id(
+                                identity.client_id.as_deref(),
+                            )),
+                            SqlArg::Text(identity.client_type.clone()),
+                            SqlArg::Text(identity.item_id.clone()),
+                            SqlArg::Text(tracked_state),
+                            SqlArg::Timestamp(Utc::now()),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
         .await
     }
 
@@ -1097,7 +1226,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
     /// never a bare orphan stub, and `record_download_submission_tx` later
     /// conflict-updates the remaining columns without touching the seed ones.
     async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
-        SqlRuntime::run_in_transaction(
+        run_in_transaction_retrying_unique_violation(
             &self.datastore,
             "record_download_submission_seed_goals",
             move |tx| {
@@ -1351,6 +1480,7 @@ fn seed_goals_from_row(row: &SqlRow) -> AppResult<Option<PersistedSeedGoals>> {
 #[cfg(test)]
 mod seed_goal_tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use scryer_application::{DownloadSubmissionPurpose, SubmissionScope};
     use sqlx::sqlite::SqlitePoolOptions;
@@ -1908,5 +2038,292 @@ mod seed_goal_tests {
             row.opt_text("download_id").expect("legacy download id"),
             Some("legacy-failure-id".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn a_token_less_identity_state_round_trips_on_the_canonical_download_id() {
+        // Plugin download clients omit the legacy wire token entirely. The row
+        // is keyed by the canonical download id, so it is written with a NULL
+        // `download_id` and still reads back on the restart path.
+        let store = store().await;
+        let canonical_download_id = DownloadId::new();
+        let identity = DownloadSubmissionIdentity { download_id: None };
+        let source_identity = ClientJobLocator::new(Some("primary"), "plugin", "plugin-job");
+
+        store
+            .record_identity_tracked_state_for_download(
+                Some(&canonical_download_id),
+                &identity,
+                Some(&source_identity),
+                "failed",
+                Some("import_gate_rejected"),
+                Some("failure detail"),
+            )
+            .await
+            .expect("token-less state should persist");
+
+        let row = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT identity_key, canonical_download_id, download_id
+             FROM download_identity_states
+             LIMIT 1",
+            &[],
+        )
+        .await
+        .expect("token-less state row should load")
+        .expect("token-less state row should exist");
+        assert_eq!(
+            row.text("identity_key").expect("canonical identity key"),
+            format!("download:{canonical_download_id}")
+        );
+        assert_eq!(
+            row.opt_text("canonical_download_id")
+                .expect("canonical column"),
+            Some(canonical_download_id.to_string())
+        );
+        assert_eq!(
+            row.opt_text("download_id").expect("legacy download id"),
+            None
+        );
+
+        assert_eq!(
+            store
+                .get_identity_tracked_state_for_download(
+                    Some(&canonical_download_id),
+                    &identity,
+                    Some(&source_identity),
+                )
+                .await
+                .expect("token-less state should read back"),
+            Some("failed".to_string())
+        );
+        assert_eq!(
+            store
+                .get_identity_tracked_state_reason_for_download(
+                    Some(&canonical_download_id),
+                    &identity,
+                    Some(&source_identity),
+                )
+                .await
+                .expect("token-less reason should read back"),
+            Some("import_gate_rejected".to_string())
+        );
+        assert_eq!(
+            store
+                .get_identity_tracked_state_detail_for_download(
+                    Some(&canonical_download_id),
+                    &identity,
+                    Some(&source_identity),
+                )
+                .await
+                .expect("token-less detail should read back"),
+            Some("failure detail".to_string())
+        );
+    }
+
+    /// Verbatim sqlite text for the 0180 active-locator index, as `repo_err`
+    /// flattens sqlx failures into `AppError::Repository`.
+    const ACTIVE_LOCATOR_VIOLATION: &str = "error returned from database: (code: 2067) UNIQUE \
+         constraint failed: index 'idx_download_client_bindings_active_locator_unique'";
+    const FOREIGN_KEY_VIOLATION: &str = "error returned from database: (code: 787) FOREIGN KEY \
+         constraint failed";
+
+    /// The 0180 index the claim's binding insert races on. The shared fixture
+    /// omits it, so the retry tests add it verbatim.
+    async fn create_active_locator_unique_index(store: &DownloadSubmissionStore) {
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "CREATE UNIQUE INDEX idx_download_client_bindings_active_locator_unique
+                 ON download_client_bindings(client_config_id, client_type_snapshot, native_item_id)
+                 WHERE native_item_id IS NOT NULL
+                   AND ended_at IS NULL",
+            &[],
+        )
+        .await
+        .expect("active-locator unique index should be created");
+    }
+
+    async fn count_rows(store: &DownloadSubmissionStore, table: &str) -> i64 {
+        SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            &format!("SELECT COUNT(*) AS row_count FROM {table}"),
+            &[],
+        )
+        .await
+        .expect("count should read")
+        .expect("count should return a row")
+        .i64("row_count")
+        .expect("count should decode")
+    }
+
+    async fn insert_committed_winner(
+        store: &DownloadSubmissionStore,
+        download_id: &DownloadId,
+        locator: &ClientJobLocator,
+    ) {
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO downloads (id, origin, created_at) VALUES ({}, 'foreign_observation', {})",
+            &[
+                SqlArg::Text(download_id.to_string()),
+                SqlArg::Timestamp(Utc::now()),
+            ],
+        )
+        .await
+        .expect("winner download should insert");
+        SqlRuntime::execute(
+            store.datastore.read_exec(),
+            "INSERT INTO download_client_bindings (
+                download_id, client_config_id, client_type_snapshot, client_name_snapshot,
+                native_item_id, created_at, last_seen_at, ended_at
+             ) VALUES ({}, {}, {}, NULL, {}, {}, {}, NULL)",
+            &[
+                SqlArg::Text(download_id.to_string()),
+                SqlArg::OptText(locator.client_id.clone()),
+                SqlArg::Text(locator.client_type.clone()),
+                SqlArg::Text(locator.item_id.clone()),
+                SqlArg::Timestamp(Utc::now()),
+                SqlArg::Timestamp(Utc::now()),
+            ],
+        )
+        .await
+        .expect("winner binding should insert");
+    }
+
+    /// The losing claimant's whole transaction is gone by the time the
+    /// violation surfaces, so the wrapper must re-run the operation from the
+    /// top rather than patch anything up in place.
+    ///
+    /// Sqlite serializes writers behind the store's writer gate, so the race
+    /// cannot be lost there for real; the first attempt's failure is injected
+    /// after a genuine claim so the rollback is observable.
+    #[tokio::test]
+    async fn a_claim_that_loses_the_locator_race_reruns_in_a_fresh_transaction() {
+        let store = store().await;
+        create_active_locator_unique_index(&store).await;
+        let locator = ClientJobLocator::new(Some("primary"), "qbittorrent", "raced-job");
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let claimed = run_in_transaction_retrying_unique_violation(
+            &store.datastore,
+            "claim_retry_test",
+            |tx| {
+                let locator = locator.clone();
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    let claimed =
+                        claim_or_create_binding_download_id_tx(tx, &locator, None).await?;
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Err(AppError::Repository(ACTIVE_LOCATOR_VIOLATION.to_string()));
+                    }
+                    Ok(claimed)
+                })
+            },
+        )
+        .await
+        .expect("the retry should claim the locator");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "exactly one retry");
+        // The losing attempt minted its own download and binding; both rolled
+        // back, so only the retry's rows survive.
+        assert_eq!(count_rows(&store, "downloads").await, 1);
+        assert_eq!(count_rows(&store, "download_client_bindings").await, 1);
+        assert_eq!(
+            active_binding_download_id(store.datastore.read_exec(), &locator)
+                .await
+                .expect("active binding should load"),
+            Some(claimed)
+        );
+    }
+
+    /// The retry adopts the winner through the claim's ordinary
+    /// already-bound-locator branch — there is no special-case recovery path,
+    /// and no second identity is minted.
+    #[tokio::test]
+    async fn a_claim_retry_adopts_the_winner_that_committed_the_locator() {
+        let store = store().await;
+        create_active_locator_unique_index(&store).await;
+        let locator = ClientJobLocator::new(Some("primary"), "qbittorrent", "raced-job");
+        let winner = DownloadId::new();
+        insert_committed_winner(&store, &winner, &locator).await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let claimed = run_in_transaction_retrying_unique_violation(
+            &store.datastore,
+            "claim_retry_test",
+            |tx| {
+                let locator = locator.clone();
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        // This claimant read the locator as unbound before the
+                        // winner committed, so its insert lost the race.
+                        return Err(AppError::Repository(ACTIVE_LOCATOR_VIOLATION.to_string()));
+                    }
+                    claim_or_create_binding_download_id_tx(tx, &locator, None).await
+                })
+            },
+        )
+        .await
+        .expect("the retry should adopt the winner");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(claimed, winner);
+        assert_eq!(count_rows(&store, "downloads").await, 1);
+        assert_eq!(count_rows(&store, "download_client_bindings").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_unique_violation_surfaces_the_error_instead_of_spinning() {
+        let store = store().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let error = run_in_transaction_retrying_unique_violation::<DownloadId, _>(
+            &store.datastore,
+            "claim_retry_test",
+            |_tx| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(AppError::Repository(ACTIVE_LOCATOR_VIOLATION.to_string()))
+                })
+            },
+        )
+        .await
+        .expect_err("a persistent conflict must not be swallowed");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "exactly one retry");
+        let AppError::Repository(message) = error else {
+            panic!("the original repository error should surface");
+        };
+        assert_eq!(message, ACTIVE_LOCATOR_VIOLATION);
+    }
+
+    #[tokio::test]
+    async fn a_failure_that_is_not_a_unique_violation_is_never_retried() {
+        let store = store().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let error = run_in_transaction_retrying_unique_violation::<DownloadId, _>(
+            &store.datastore,
+            "claim_retry_test",
+            |_tx| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    // Deliberately not "database is locked": the sqlite busy
+                    // retries inside `run_in_transaction` own that one.
+                    Err(AppError::Repository(FOREIGN_KEY_VIOLATION.to_string()))
+                })
+            },
+        )
+        .await
+        .expect_err("an unrelated failure must propagate");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "no retry");
+        let AppError::Repository(message) = error else {
+            panic!("the original repository error should surface");
+        };
+        assert_eq!(message, FOREIGN_KEY_VIOLATION);
     }
 }

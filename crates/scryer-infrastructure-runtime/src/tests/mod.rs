@@ -31,6 +31,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+mod canonical_download_binding_staleness;
 mod canonical_download_registry;
 mod discovery_pending_context_changes;
 mod emby_media_servers;

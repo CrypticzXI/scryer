@@ -850,6 +850,30 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(self.identity_states.lock().await.get(&key).cloned())
     }
 
+    async fn get_identity_tracked_state_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&ClientJobLocator>,
+    ) -> AppResult<Option<String>> {
+        // Mirror the real store: legacy-keyed writes always carry a canonical
+        // id there, so a canonical read still finds rows written through the
+        // legacy API. The double keeps them under separate keys, so fall back
+        // to the caller's identity when the canonical key misses.
+        if let Some(download_id) = canonical_download_id {
+            let mut canonical_identity = identity.clone();
+            canonical_identity.download_id = Some(download_id.to_wire());
+            if let Some(state) = self
+                .get_identity_tracked_state(&canonical_identity, source_identity)
+                .await?
+            {
+                return Ok(Some(state));
+            }
+        }
+        self.get_identity_tracked_state(identity, source_identity)
+            .await
+    }
+
     async fn get_identity_tracked_state_reason(
         &self,
         identity: &DownloadSubmissionIdentity,
@@ -1476,6 +1500,9 @@ pub(super) struct StubDownloadClient {
     pub(super) deleted_items: Arc<Mutex<Vec<(String, bool)>>>,
     pub(super) deleted_requests: DeletedDownloadRequests,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
+    pub(super) queue_error: Arc<Mutex<Option<String>>>,
+    pub(super) recent_activity_error: Arc<Mutex<Option<String>>>,
+    pub(super) snapshot_authoritative_client_ids: Arc<Mutex<HashSet<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
     pub(super) submit_errors: Arc<Mutex<std::collections::VecDeque<StubSubmitError>>>,
     /// NZB payload the real pre-submission category gate is run against, so a
@@ -1513,6 +1540,21 @@ impl StubDownloadClient {
 
     pub(super) async fn set_delete_error(&self, error: Option<&str>) {
         *self.delete_error.lock().await = error.map(str::to_string);
+    }
+
+    pub(super) async fn set_queue_error(&self, error: Option<&str>) {
+        *self.queue_error.lock().await = error.map(str::to_string);
+    }
+
+    pub(super) async fn set_recent_activity_error(&self, error: Option<&str>) {
+        *self.recent_activity_error.lock().await = error.map(str::to_string);
+    }
+
+    pub(super) async fn set_snapshot_authoritative_client_ids(
+        &self,
+        client_ids: impl IntoIterator<Item = String>,
+    ) {
+        *self.snapshot_authoritative_client_ids.lock().await = client_ids.into_iter().collect();
     }
 
     pub(super) async fn set_submit_error(&self, error: Option<StubSubmitError>) {
@@ -1636,6 +1678,9 @@ impl DownloadClient for StubDownloadClient {
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
         *self.queue_calls.lock().await += 1;
+        if let Some(error) = self.queue_error.lock().await.clone() {
+            return Err(AppError::Repository(error));
+        }
         Ok(self.queue_items.lock().await.clone())
     }
 
@@ -1654,6 +1699,9 @@ impl DownloadClient for StubDownloadClient {
 
     async fn list_recent_activity(&self, limit: usize) -> AppResult<Vec<DownloadQueueItem>> {
         self.recent_activity_calls.lock().await.push(limit);
+        if let Some(error) = self.recent_activity_error.lock().await.clone() {
+            return Err(AppError::Repository(error));
+        }
         Ok(self
             .history_items
             .lock()
@@ -1662,6 +1710,53 @@ impl DownloadClient for StubDownloadClient {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    async fn list_snapshot_outcome_excluding_client_types(
+        &self,
+        recent_activity_limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<crate::ports::DownloadClientSnapshotOutcome> {
+        let excluded = |items: &mut Vec<DownloadQueueItem>| {
+            items.retain(|item| {
+                !excluded_client_types
+                    .iter()
+                    .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+            });
+        };
+        let queue = self.list_queue().await.map(|mut items| {
+            excluded(&mut items);
+            items
+        });
+        let activity = self
+            .list_recent_activity(recent_activity_limit)
+            .await
+            .map(|mut items| {
+                excluded(&mut items);
+                items
+            });
+        match (queue, activity) {
+            (Ok(mut queue_items), Ok(activity_items)) => {
+                queue_items.extend(activity_items);
+                Ok(crate::ports::DownloadClientSnapshotOutcome {
+                    items: queue_items,
+                    authoritative_client_ids: self
+                        .snapshot_authoritative_client_ids
+                        .lock()
+                        .await
+                        .clone(),
+                    any_client_read_succeeded: true,
+                })
+            }
+            (Ok(items), Err(_)) | (Err(_), Ok(items)) => {
+                Ok(crate::ports::DownloadClientSnapshotOutcome {
+                    items,
+                    any_client_read_succeeded: true,
+                    ..Default::default()
+                })
+            }
+            (Err(error), Err(_)) => Err(error),
+        }
     }
 
     async fn list_recent_activity_for_title(

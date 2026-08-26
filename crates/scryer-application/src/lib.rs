@@ -177,9 +177,10 @@ pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payloa
 pub use quality::release_dedup;
 pub use services::{
     ActiveImportStream, ActiveImportStreamHandle, ActiveImportStreamPhase, ActiveImportStreamSync,
-    DownloadClientCategoryAdmissionSnapshot, DownloadClientCategorySnapshotStore, DownloadQueueSync,
-    ImportCancellation, PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
-    PluginInstallState, RuntimeFeature, RuntimePerformanceClass, RuntimePerformanceSnapshot,
+    DownloadClientCategoryAdmissionSnapshot, DownloadClientCategorySnapshotStore,
+    DownloadQueueSync, ImportCancellation, PluginInstallInProgressError,
+    PluginInstallOperationKind, PluginInstallProgressSnapshot, PluginInstallState, RuntimeFeature,
+    RuntimePerformanceClass, RuntimePerformanceSnapshot,
 };
 pub use upstream_scheduler::{
     AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,
@@ -444,9 +445,9 @@ pub use ports::{
     AcquisitionScopeStateRepository, AcquisitionStateRepository, ArchiveExtractorClient,
     ArchiveExtractorPluginProvider, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
-    DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadQueueCommandRepository,
-    DownloadRegistryRepository, DownloadSubmissionRepository, EmbyApiKeyExchange,
-    EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
+    DownloadClientFeedbackScope, DownloadClientPluginProvider, DownloadClientSnapshotOutcome,
+    DownloadQueueCommandRepository, DownloadRegistryRepository, DownloadSubmissionRepository,
+    EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
     EmbyConnectIdentityVerification, EmbyConnectServer, EmbyConnectUserType, EmbyServerIdentity,
     EmbyServerUser, ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupInstanceApiKeyDraft, ExternalImportSetupSecretDraft,

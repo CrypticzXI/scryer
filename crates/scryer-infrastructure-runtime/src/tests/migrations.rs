@@ -3690,3 +3690,345 @@ async fn migration_0179_postgres_backfills_token_identity_from_env() -> AppResul
     })?;
     result
 }
+
+#[tokio::test]
+async fn migration_0184_admits_token_less_identity_states_without_disturbing_existing_rows() {
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register");
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0184_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("0183 database should open");
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(183), true)
+        .await
+        .expect("fresh 0183 fixture should apply");
+
+    let now = "2026-08-25T12:00:00Z";
+    let token_download = "00000000-0000-4000-8000-000000000101";
+    let plugin_download = "00000000-0000-4000-8000-000000000102";
+    sqlx::query(
+        "INSERT INTO downloads (id, origin, created_at)
+         VALUES (?1, 'scryer_submission', ?3), (?2, 'scryer_submission', ?3)",
+    )
+    .bind(token_download)
+    .bind(plugin_download)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("canonical parents should insert");
+
+    // A token-bearing row written by the shipped code, with the identity_key
+    // exactly as the store produces it today.
+    let token_identity_key = format!("download:{token_download}");
+    sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, client_id, client_type,
+            download_client_item_id, tracked_state, reason, detail, created_at, updated_at
+         ) VALUES ('state-token-0184', ?1, ?2, 'legacy-token-0184', 'client-0184', 'nzbget',
+                   'native-0184', 'imported', 'reason-0184', 'detail-0184', ?3, ?3)",
+    )
+    .bind(&token_identity_key)
+    .bind(token_download)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("token-bearing identity state should insert");
+
+    // Before 0184 a plugin client that omits the wire token cannot record any
+    // durable state at all: the legacy CHECK rejects the row.
+    let pre_upgrade_token_less = sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state,
+            created_at, updated_at
+         ) VALUES ('state-plugin-0184', ?1, ?2, NULL, 'imported', ?3, ?3)",
+    )
+    .bind(format!("download:{plugin_download}"))
+    .bind(plugin_download)
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        pre_upgrade_token_less.is_err(),
+        "the pre-0184 schema must still require the legacy wire token"
+    );
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("0184 upgrade should apply");
+
+    // Restart continuity: the existing row keeps its identity_key byte for byte
+    // and every other column with it.
+    let (
+        preserved_key,
+        preserved_canonical,
+        preserved_download_id,
+        preserved_state,
+        preserved_reason,
+        preserved_detail,
+    ): (
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT identity_key, canonical_download_id, download_id, tracked_state, reason, detail
+           FROM download_identity_states WHERE id = 'state-token-0184'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("token-bearing row should survive the rebuild");
+    assert_eq!(preserved_key, token_identity_key);
+    assert_eq!(preserved_canonical, token_download);
+    assert_eq!(preserved_download_id.as_deref(), Some("legacy-token-0184"));
+    assert_eq!(preserved_state, "imported");
+    assert_eq!(preserved_reason.as_deref(), Some("reason-0184"));
+    assert_eq!(preserved_detail.as_deref(), Some("detail-0184"));
+
+    // The token-less row the plugin path needs now inserts.
+    sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state,
+            created_at, updated_at
+         ) VALUES ('state-plugin-0184', ?1, ?2, NULL, 'imported', ?3, ?3)",
+    )
+    .bind(format!("download:{plugin_download}"))
+    .bind(plugin_download)
+    .bind(now)
+    .execute(&pool)
+    .await
+    .expect("0184 must admit a token-less canonical identity state");
+
+    // canonical_download_id stays mandatory.
+    let null_canonical = sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state,
+            created_at, updated_at
+         ) VALUES ('state-null-0184', 'download:null-0184', NULL, 'legacy', 'imported', ?1, ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        null_canonical.is_err(),
+        "canonical download id must remain non-null"
+    );
+
+    // identity_key uniqueness still holds for the canonical-derived keys.
+    let duplicate_key = sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state,
+            created_at, updated_at
+         ) VALUES ('state-duplicate-0184', ?1, ?2, NULL, 'failed', ?3, ?3)",
+    )
+    .bind(format!("download:{plugin_download}"))
+    .bind(plugin_download)
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        duplicate_key.is_err(),
+        "identity_key must stay unique for token-less rows"
+    );
+
+    let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("foreign-key check should run");
+    assert!(
+        foreign_key_violations.is_empty(),
+        "0184 foreign keys must validate the fixture rows"
+    );
+    let orphan_canonical = sqlx::query(
+        "INSERT INTO download_identity_states (
+            id, identity_key, canonical_download_id, download_id, tracked_state,
+            created_at, updated_at
+         ) VALUES ('state-orphan-0184', 'download:orphan-0184', 'missing-download', NULL,
+                   'imported', ?1, ?1)",
+    )
+    .bind(now)
+    .execute(&pool)
+    .await;
+    assert!(
+        orphan_canonical.is_err(),
+        "the new canonical foreign key must reject an unknown downloads(id)"
+    );
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("0184 rerun should be skipped by the manifest ledger");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 184 AND success = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("0184 migration ledger should load"),
+        1
+    );
+
+    drop(pool);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0184_postgres_relaxes_the_token_check_and_adds_the_canonical_foreign_key()
+-> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_0184_migration_{}",
+        chrono::Utc::now().timestamp_micros()
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to create postgres schema: {error}"))
+        })?;
+    let mut schema_url = url::Url::parse(&raw_url)
+        .map_err(|error| AppError::Validation(format!("invalid postgres URL: {error}")))?;
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(schema_url.as_str())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to open postgres schema: {error}"))
+        })?;
+
+    let result = async {
+        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(183)).await?;
+        let now = "2026-08-25T12:00:00Z";
+        let token_download = "00000000-0000-4000-8000-000000000101";
+        let plugin_download = "00000000-0000-4000-8000-000000000102";
+        sqlx::query(
+            "INSERT INTO downloads (id, origin, created_at)
+             VALUES ($1, 'scryer_submission', ($3::text)::timestamptz),
+                    ($2, 'scryer_submission', ($3::text)::timestamptz)",
+        )
+        .bind(token_download)
+        .bind(plugin_download)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let token_identity_key = format!("download:{token_download}");
+        sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state,
+                created_at, updated_at
+             ) VALUES ('pg-state-token-0184', $1, $2, 'legacy-token-0184', 'imported',
+                       ($3::text)::timestamptz, ($3::text)::timestamptz)",
+        )
+        .bind(&token_identity_key)
+        .bind(token_download)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let pre_upgrade_token_less = sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state,
+                created_at, updated_at
+             ) VALUES ('pg-state-plugin-0184', $1, $2, NULL, 'imported',
+                       ($3::text)::timestamptz, ($3::text)::timestamptz)",
+        )
+        .bind(format!("download:{plugin_download}"))
+        .bind(plugin_download)
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(
+            pre_upgrade_token_less.is_err(),
+            "the pre-0184 schema must still require the legacy wire token"
+        );
+
+        let services = crate::PostgresServices::new_with_mode(
+            schema_url.as_str(),
+            crate::types::MigrationMode::Apply,
+        )
+        .await?;
+        drop(services);
+
+        let preserved_key: String = sqlx::query_scalar(
+            "SELECT identity_key FROM download_identity_states WHERE id = 'pg-state-token-0184'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(preserved_key, token_identity_key);
+
+        sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state,
+                created_at, updated_at
+             ) VALUES ('pg-state-plugin-0184', $1, $2, NULL, 'imported',
+                       ($3::text)::timestamptz, ($3::text)::timestamptz)",
+        )
+        .bind(format!("download:{plugin_download}"))
+        .bind(plugin_download)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        let null_canonical = sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state,
+                created_at, updated_at
+             ) VALUES ('pg-state-null-0184', 'download:pg-null-0184', NULL, 'legacy', 'imported',
+                       ($1::text)::timestamptz, ($1::text)::timestamptz)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(
+            null_canonical.is_err(),
+            "canonical download id must remain non-null"
+        );
+
+        let orphan_canonical = sqlx::query(
+            "INSERT INTO download_identity_states (
+                id, identity_key, canonical_download_id, download_id, tracked_state,
+                created_at, updated_at
+             ) VALUES ('pg-state-orphan-0184', 'download:pg-orphan-0184', 'missing-download', NULL,
+                       'imported', ($1::text)::timestamptz, ($1::text)::timestamptz)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await;
+        assert!(
+            orphan_canonical.is_err(),
+            "the new canonical foreign key must reject an unknown downloads(id)"
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pool);
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await;
+    drop(admin_pool);
+    cleanup.map_err(|error| {
+        AppError::Repository(format!("failed to drop postgres schema: {error}"))
+    })?;
+    result
+}
