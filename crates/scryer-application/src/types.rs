@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::DateTime;
 use scryer_domain::{
-    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
+    CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, IndexerConfig, Title,
+    download_identity::DownloadId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2002,6 +2003,95 @@ mod canonical_download_source_tests {
     }
 }
 
+/// Prefix shared by caps-health persistence and automatic-search suppression.
+pub const INDEXER_CAPS_REFRESH_ERROR_PREFIX: &str = "caps refresh failed:";
+
+/// Project an indexer's caps snapshot down to fields that can change search
+/// dispatch or the returned corpus. Health and display-only metadata must not
+/// reopen convergence.
+pub fn search_relevant_indexer_caps(raw: Option<&str>) -> serde_json::Value {
+    let value = raw.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    project_search_relevant_caps(value.as_ref())
+}
+
+fn project_search_relevant_caps(value: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(object) = value.and_then(serde_json::Value::as_object) else {
+        return serde_json::Value::Null;
+    };
+    let mut projected = serde_json::Map::new();
+    for key in [
+        "search",
+        "tv_search",
+        "movie_search",
+        "categories",
+        "limits_default",
+        "limits_max",
+    ] {
+        if let Some(value) = object.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(projected)
+}
+
+/// Project managed-indexer metadata down to fields that affect automatic
+/// search routing. Embedded caps and cosmetic manager metadata are represented
+/// elsewhere (or are intentionally irrelevant) in the search fingerprint.
+pub fn search_relevant_managed_indexer_metadata(raw: Option<&str>) -> serde_json::Value {
+    let Some(object) = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return serde_json::Value::Null;
+    };
+    let mut projected = serde_json::Map::new();
+    for key in ["enable_automatic_search"] {
+        if let Some(value) = object.get(key) {
+            projected.insert(key.to_string(), value.clone());
+        }
+    }
+    serde_json::Value::Object(projected)
+}
+
+/// Canonical search identity shared by coverage, reusable-candidate diagnostics,
+/// and learning invalidation. Keeping this projection in one place prevents
+/// those lifecycle decisions from drifting apart.
+pub fn indexer_search_identity(
+    config: &IndexerConfig,
+    search_semantics_version: Option<u32>,
+) -> serde_json::Value {
+    let config_json = config
+        .config_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let secret_fingerprint = config
+        .api_key_encrypted
+        .as_deref()
+        .map(|secret| crate::sha256_hex(format!("indexer-secret-v1:{secret}")));
+    let direct_caps = config
+        .caps_snapshot_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let managed_caps = config
+        .managed_metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("caps_snapshot").cloned());
+    let caps = project_search_relevant_caps(direct_caps.as_ref().or(managed_caps.as_ref()));
+    serde_json::json!({
+        "version": 2,
+        "provider": config.provider_type.trim().to_ascii_lowercase(),
+        "endpoint": config.base_url.trim().trim_end_matches('/'),
+        "config": config_json,
+        "secret_fingerprint": secret_fingerprint,
+        "proxy": config.indexer_proxy_config_id,
+        "routing": search_relevant_managed_indexer_metadata(config.managed_metadata_json.as_deref()),
+        "caps": caps,
+        "search_semantics": search_semantics_version,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexerSearchIncompleteReason {
     UpstreamFailure,
@@ -3583,6 +3673,178 @@ mod pending_import_reason_class_tests {
         assert_eq!(
             PendingImportReasonClass::from_reason_code("  no_metadata_search_results  "),
             PendingImportReasonClass::Unmatched
+        );
+    }
+}
+
+#[cfg(test)]
+mod indexer_search_identity_tests {
+    use super::indexer_search_identity;
+    use chrono::Utc;
+    use scryer_domain::IndexerConfig;
+
+    fn config() -> IndexerConfig {
+        IndexerConfig {
+            id: "idx-1".into(),
+            name: "Synthetic Indexer".into(),
+            provider_type: "newznab".into(),
+            base_url: "https://indexer.example.test".into(),
+            api_key_encrypted: Some("secret-a".into()),
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            download_client_id: None,
+            seeding_profile_id: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: Some(
+                serde_json::json!({
+                    "enable_rss": true,
+                    "enable_automatic_search": true,
+                    "display_name": "First",
+                    "caps_snapshot": {"cosmetic": "embedded"},
+                })
+                .to_string(),
+            ),
+            caps_snapshot_json: Some(
+                serde_json::json!({
+                    "search": true,
+                    "categories": [5000],
+                    "display_name": "First",
+                })
+                .to_string(),
+            ),
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            config_json: Some(serde_json::json!({"api_path": "/api"}).to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn cosmetic_managed_metadata_and_caps_do_not_change_search_identity() {
+        let original = config();
+        let mut cosmetic = original.clone();
+        cosmetic.managed_metadata_json = Some(
+            serde_json::json!({
+                "enable_rss": true,
+                "enable_automatic_search": true,
+                "display_name": "Second",
+                "caps_snapshot": {"cosmetic": "changed"},
+            })
+            .to_string(),
+        );
+        cosmetic.caps_snapshot_json = Some(
+            serde_json::json!({
+                "search": true,
+                "categories": [5000],
+                "display_name": "Second",
+            })
+            .to_string(),
+        );
+
+        assert_eq!(
+            indexer_search_identity(&original, Some(7)),
+            indexer_search_identity(&cosmetic, Some(7))
+        );
+    }
+
+    #[test]
+    fn every_search_relevant_indexer_change_changes_identity() {
+        let original = config();
+        let original_identity = indexer_search_identity(&original, Some(7));
+        let variants = [
+            {
+                let mut value = original.clone();
+                value.base_url = "https://other.example.test".into();
+                value
+            },
+            {
+                let mut value = original.clone();
+                value.api_key_encrypted = Some("secret-b".into());
+                value
+            },
+            {
+                let mut value = original.clone();
+                value.indexer_proxy_config_id = Some("proxy-1".into());
+                value
+            },
+            {
+                let mut value = original.clone();
+                value.managed_metadata_json = Some(
+                    serde_json::json!({
+                        "enable_rss": true,
+                        "enable_automatic_search": false,
+                    })
+                    .to_string(),
+                );
+                value
+            },
+            {
+                let mut value = original.clone();
+                value.caps_snapshot_json = Some(
+                    serde_json::json!({
+                        "search": true,
+                        "categories": [5000, 5070],
+                    })
+                    .to_string(),
+                );
+                value
+            },
+            {
+                let mut value = original.clone();
+                value.caps_snapshot_json = Some(
+                    serde_json::json!({
+                        "search": true,
+                        "categories": [5000],
+                        "limits_default": 100,
+                        "limits_max": 200,
+                    })
+                    .to_string(),
+                );
+                value
+            },
+        ];
+
+        for variant in variants {
+            assert_ne!(
+                original_identity,
+                indexer_search_identity(&variant, Some(7))
+            );
+        }
+    }
+
+    #[test]
+    fn managed_embedded_caps_are_used_when_no_direct_snapshot_exists() {
+        let mut original = config();
+        original.caps_snapshot_json = None;
+        original.managed_metadata_json = Some(
+            serde_json::json!({
+                "enable_rss": true,
+                "enable_automatic_search": true,
+                "caps_snapshot": {"search": true, "categories": [5000]},
+            })
+            .to_string(),
+        );
+        let mut changed = original.clone();
+        changed.managed_metadata_json = Some(
+            serde_json::json!({
+                "enable_rss": true,
+                "enable_automatic_search": true,
+                "caps_snapshot": {"search": true, "categories": [5000, 5070]},
+            })
+            .to_string(),
+        );
+
+        assert_ne!(
+            indexer_search_identity(&original, Some(7)),
+            indexer_search_identity(&changed, Some(7))
         );
     }
 }

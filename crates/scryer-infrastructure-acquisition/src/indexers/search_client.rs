@@ -22,7 +22,7 @@ use scryer_application::{
     SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
     SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
     SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode,
-    UpstreamScheduler,
+    UpstreamScheduler, INDEXER_CAPS_REFRESH_ERROR_PREFIX, indexer_search_identity,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -82,6 +82,14 @@ struct StrategyExecutionOutcome {
     retry_after: Option<std::time::Duration>,
     rate_limited: bool,
     timed_out: bool,
+}
+
+fn strategy_execution_is_complete(outcome: &StrategyExecutionOutcome) -> bool {
+    outcome.request_fired
+        && matches!(
+            outcome.response.as_ref(),
+            Ok(response) if response.completion == IndexerSearchCompletion::Complete
+        )
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -268,7 +276,18 @@ const SEARCH_CANDIDATE_REUSE_HOURS: i64 = 24;
 const SEARCH_CANDIDATE_RETENTION_DAYS: i64 = 7;
 const SEARCH_RUN_RETENTION_DAYS: i64 = 90;
 const SEARCH_DIAGNOSTIC_CLEANUP_LIMIT: u32 = 500;
+const SEARCH_DIAGNOSTIC_CLEANUP_RETRY_SECONDS: i64 = 3_600;
 static LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY: AtomicI64 = AtomicI64::new(i64::MIN);
+static NEXT_SEARCH_DIAGNOSTIC_CLEANUP_RETRY_AT: AtomicI64 = AtomicI64::new(i64::MIN);
+static SEARCH_DIAGNOSTIC_CLEANUP_RUNNING: AtomicBool = AtomicBool::new(false);
+
+struct SearchDiagnosticCleanupGuard;
+
+impl Drop for SearchDiagnosticCleanupGuard {
+    fn drop(&mut self) {
+        SEARCH_DIAGNOSTIC_CLEANUP_RUNNING.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Clone)]
 struct SearchDiagnosticsContext {
@@ -344,33 +363,10 @@ impl SearchDiagnosticsContext {
             "episode": episode,
             "absolute_episode": absolute_episode,
         }));
-        let config_json = config
-            .config_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let managed_metadata = config
-            .managed_metadata_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-            .unwrap_or(serde_json::Value::Null);
-        let secret_fingerprint = config.api_key_encrypted.as_deref().map(|secret| {
-            let mut digest = Sha256::new();
-            digest.update(b"indexer-secret-v1:");
-            digest.update(secret.as_bytes());
-            hex_encode(&digest.finalize())
-        });
-        let indexer_fingerprint = digest_json(&serde_json::json!({
-            "version": 2,
-            "provider": config.provider_type.trim().to_ascii_lowercase(),
-            "endpoint": config.base_url.trim().trim_end_matches('/'),
-            "config": config_json,
-            "secret_fingerprint": secret_fingerprint,
-            "proxy": config.indexer_proxy_config_id,
-            "routing": managed_metadata,
-            "caps": search_relevant_caps(config.caps_snapshot_json.as_deref()),
-            "search_semantics": search_semantics_version,
-        }));
+        let indexer_fingerprint = digest_json(&indexer_search_identity(
+            config,
+            search_semantics_version,
+        ));
 
         Some(Self {
             repository,
@@ -528,7 +524,7 @@ impl SearchDiagnosticsContext {
                 "failed to persist indexer search diagnostics"
             );
         }
-        maybe_cleanup_search_diagnostics(&self.repository, run.created_at).await;
+        maybe_cleanup_search_diagnostics(&self.repository, run.created_at);
     }
 }
 
@@ -545,22 +541,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         encoded.push(HEX[usize::from(byte & 0x0f)] as char);
     }
     encoded
-}
-
-fn search_relevant_caps(raw: Option<&str>) -> serde_json::Value {
-    let Some(object) = raw
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|value| value.as_object().cloned())
-    else {
-        return serde_json::Value::Null;
-    };
-    let mut projected = serde_json::Map::new();
-    for key in ["search", "tv_search", "movie_search", "categories", "limits"] {
-        if let Some(value) = object.get(key) {
-            projected.insert(key.to_string(), value.clone());
-        }
-    }
-    serde_json::Value::Object(projected)
 }
 
 fn normalized_credential_key(key: &str) -> String {
@@ -887,24 +867,58 @@ fn reusable_candidate_from_record(
     })
 }
 
-async fn maybe_cleanup_search_diagnostics(
+async fn drain_search_diagnostics(
+    repository: &Arc<dyn IndexerSearchLearningRepository>,
+    now: DateTime<Utc>,
+) -> AppResult<u32> {
+    let mut deleted_total = 0_u32;
+    loop {
+        let deleted = repository
+            .cleanup_search_diagnostics(
+                now - Duration::days(SEARCH_CANDIDATE_RETENTION_DAYS),
+                now - Duration::days(SEARCH_RUN_RETENTION_DAYS),
+                SEARCH_DIAGNOSTIC_CLEANUP_LIMIT,
+            )
+            .await?;
+        deleted_total = deleted_total.saturating_add(deleted);
+        if deleted == 0 {
+            return Ok(deleted_total);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+fn maybe_cleanup_search_diagnostics(
     repository: &Arc<dyn IndexerSearchLearningRepository>,
     now: DateTime<Utc>,
 ) {
     let day = now.timestamp().div_euclid(86_400);
-    if LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY.swap(day, Ordering::Relaxed) == day {
+    if LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY.load(Ordering::Relaxed) == day
+        || now.timestamp() < NEXT_SEARCH_DIAGNOSTIC_CLEANUP_RETRY_AT.load(Ordering::Relaxed)
+        || SEARCH_DIAGNOSTIC_CLEANUP_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
         return;
     }
-    if let Err(error) = repository
-        .cleanup_search_diagnostics(
-            now - Duration::days(SEARCH_CANDIDATE_RETENTION_DAYS),
-            now - Duration::days(SEARCH_RUN_RETENTION_DAYS),
-            SEARCH_DIAGNOSTIC_CLEANUP_LIMIT,
-        )
-        .await
-    {
-        warn!(error = %error, "failed to clean up indexer search diagnostics");
-    }
+    let repository = repository.clone();
+    tokio::spawn(async move {
+        let _running_guard = SearchDiagnosticCleanupGuard;
+        match drain_search_diagnostics(&repository, now).await {
+            Ok(deleted) => {
+                LAST_SEARCH_DIAGNOSTIC_CLEANUP_DAY.store(day, Ordering::Relaxed);
+                NEXT_SEARCH_DIAGNOSTIC_CLEANUP_RETRY_AT.store(i64::MIN, Ordering::Relaxed);
+                debug!(deleted, "cleaned up expired indexer search diagnostics");
+            }
+            Err(error) => {
+                NEXT_SEARCH_DIAGNOSTIC_CLEANUP_RETRY_AT.store(
+                    now.timestamp() + SEARCH_DIAGNOSTIC_CLEANUP_RETRY_SECONDS,
+                    Ordering::Relaxed,
+                );
+                warn!(error = %error, "failed to clean up indexer search diagnostics");
+            }
+        }
+    });
 }
 
 #[derive(Default)]
@@ -2345,7 +2359,7 @@ impl MultiIndexerSearchClient {
         if config
             .last_error_message
             .as_deref()
-            .is_some_and(|message| message.starts_with("caps refresh failed:"))
+            .is_some_and(|message| message.starts_with(INDEXER_CAPS_REFRESH_ERROR_PREFIX))
         {
             return false;
         }
@@ -3886,6 +3900,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                 for outcome in primary_outcomes {
                     batch_had_timeout |= outcome.timed_out;
+                    all_strategies_complete &= strategy_execution_is_complete(&outcome);
                     if !outcome.request_fired {
                         if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                             return (
@@ -3907,8 +3922,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                     primary_attempted = true;
                     match outcome.response {
                         Ok(mut response) => {
-                            all_strategies_complete &=
-                                response.completion == IndexerSearchCompletion::Complete;
                             if let Some(diagnostics) = search_diagnostics.as_ref() {
                                 diagnostics
                                     .record_response(&outcome.label, &response)
@@ -4052,6 +4065,7 @@ impl IndexerClient for MultiIndexerSearchClient {
 
                     for outcome in fallback_outcomes {
                         batch_had_timeout |= outcome.timed_out;
+                        all_strategies_complete &= strategy_execution_is_complete(&outcome);
                         if !outcome.request_fired {
                             if outcome.response.as_ref().is_err_and(|err| err.is_canceled()) {
                                 return (
@@ -4072,8 +4086,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                         any_strategy_fired = true;
                         match outcome.response {
                             Ok(mut response) => {
-                                all_strategies_complete &=
-                                    response.completion == IndexerSearchCompletion::Complete;
                                 if let Some(diagnostics) = search_diagnostics.as_ref() {
                                     diagnostics
                                         .record_response(&outcome.label, &response)
@@ -4504,6 +4516,10 @@ impl IndexerClient for MultiIndexerSearchClient {
             grab_max: None,
             indexer_outcomes,
         })
+    }
+
+    async fn prune_search_learning(&self, indexer_id: &str) -> AppResult<()> {
+        self.search_learning.prune_indexer(indexer_id).await
     }
 }
 
@@ -5052,6 +5068,51 @@ mod tests {
             MultiIndexerSearchClient::effective_indexer_search_timeout(None),
             std::time::Duration::from_secs(120)
         );
+    }
+
+    #[test]
+    fn only_fired_complete_strategy_executions_are_complete() {
+        let response = |completion| {
+            Ok(IndexerSearchResponse {
+                results: Vec::new(),
+                completion,
+                indexer_outcomes: Vec::new(),
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            })
+        };
+        let execution = |request_fired, response| StrategyExecutionOutcome {
+            label: "synthetic".into(),
+            title_guard_mode: TitleGuardMode::SkipTitleMatch,
+            response,
+            request_fired,
+            elapsed: std::time::Duration::ZERO,
+            retry_after: None,
+            rate_limited: false,
+            timed_out: false,
+        };
+
+        assert!(strategy_execution_is_complete(&execution(
+            true,
+            response(IndexerSearchCompletion::Complete),
+        )));
+        assert!(!strategy_execution_is_complete(&execution(
+            false,
+            response(IndexerSearchCompletion::Complete),
+        )));
+        assert!(!strategy_execution_is_complete(&execution(
+            true,
+            response(IndexerSearchCompletion::Partial {
+                reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                retry_after: None,
+            }),
+        )));
+        assert!(!strategy_execution_is_complete(&execution(
+            true,
+            Err(AppError::Repository("synthetic failure".into())),
+        )));
     }
 
     #[test]
@@ -6808,6 +6869,71 @@ mod tests {
 
         assert!(response.results.is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn automatic_search_skips_caps_failed_indexers_until_health_recovers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut unhealthy = mock_indexer_config();
+        unhealthy.last_error_message = Some("caps refresh failed: synthetic failure".into());
+        let client = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![unhealthy],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: true,
+                calls: calls.clone(),
+            }),
+        );
+
+        client
+            .search(
+                "Synthetic Series".to_string(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("automatic search should skip an unhealthy indexer");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let recovered = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(MockIndexerPluginProvider {
+                rss: true,
+                calls: calls.clone(),
+            }),
+        );
+        recovered
+            .search(
+                "Synthetic Series".to_string(),
+                HashMap::new(),
+                None,
+                Some("series".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Auto,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("automatic search should resume after health recovery");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -8991,6 +9117,8 @@ mod tests {
     #[derive(Default)]
     struct InMemorySearchLearningRepository {
         records: StdArc<StdMutex<HashMap<IndexerSearchLearningKey, IndexerSearchLearningRecord>>>,
+        cleanup_batches: StdArc<StdMutex<std::collections::VecDeque<u32>>>,
+        cleanup_limits: StdArc<StdMutex<Vec<u32>>>,
     }
 
     #[async_trait]
@@ -9048,6 +9176,24 @@ mod tests {
             Ok(record.clone())
         }
 
+        async fn cleanup_search_diagnostics(
+            &self,
+            _candidate_cutoff: DateTime<Utc>,
+            _run_cutoff: DateTime<Utc>,
+            limit: u32,
+        ) -> AppResult<u32> {
+            self.cleanup_limits
+                .lock()
+                .expect("cleanup limits mutex")
+                .push(limit);
+            Ok(self
+                .cleanup_batches
+                .lock()
+                .expect("cleanup batches mutex")
+                .pop_front()
+                .unwrap_or(0))
+        }
+
         async fn set_suppressed(
             &self,
             key: &IndexerSearchLearningKey,
@@ -9091,6 +9237,28 @@ mod tests {
             record.updated_at = Some(Utc::now().to_rfc3339());
             Ok(true)
         }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_cleanup_drains_bounded_batches_and_reports_total() {
+        let repo_impl = InMemorySearchLearningRepository::default();
+        repo_impl
+            .cleanup_batches
+            .lock()
+            .expect("cleanup batches mutex")
+            .extend([500, 500, 37, 0]);
+        let limits = repo_impl.cleanup_limits.clone();
+        let repo: StdArc<dyn IndexerSearchLearningRepository> = StdArc::new(repo_impl);
+
+        let deleted = drain_search_diagnostics(&repo, Utc::now())
+            .await
+            .expect("cleanup should drain all batches");
+
+        assert_eq!(deleted, 1_037);
+        assert_eq!(
+            limits.lock().expect("cleanup limits mutex").as_slice(),
+            &[500, 500, 500, 500]
+        );
     }
 
     #[tokio::test]
@@ -9275,6 +9443,61 @@ mod tests {
         .await;
 
         let _ = result.expect("automatic aggregate search should tolerate indexer errors");
+        let records = repo
+            .list_for_title("idx-1", "title-1", "movie")
+            .await
+            .expect("learning records");
+        assert!(records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn automatic_search_partial_responses_do_not_record_empty_learning() {
+        let repo: StdArc<dyn IndexerSearchLearningRepository> =
+            StdArc::new(InMemorySearchLearningRepository::default());
+        let (client, _calls) = scripted_search_client(movie_caps(), |_call| {
+            Ok(IndexerSearchResponse {
+                completion: IndexerSearchCompletion::Partial {
+                    reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                    retry_after: None,
+                },
+                indexer_outcomes: Vec::new(),
+                results: Vec::new(),
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            })
+        });
+        let client = client.with_search_learning_repository(repo.clone());
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "movie".into(),
+            subject_kind: ReleaseSearchSubjectKind::Title,
+            background_value: None,
+        };
+
+        let result = <MultiIndexerSearchClient as IndexerClient>::search(
+            &client,
+            "Lattice Zero".into(),
+            HashMap::from([("imdb_id".to_string(), "tt0133093".to_string())]),
+            Some("movie".into()),
+            Some("movie".into()),
+            None,
+            None,
+            None,
+            SearchMode::Auto,
+            IndexerErrorOperation::AutomaticSearch,
+            None,
+            None,
+            None,
+            vec![],
+            Some(context),
+            CancellationToken::new(),
+        )
+        .await;
+
+        let response = result.expect("partial candidates remain usable by the aggregate search");
+        assert!(matches!(response.completion, IndexerSearchCompletion::Partial { .. }));
         let records = repo
             .list_for_title("idx-1", "title-1", "movie")
             .await

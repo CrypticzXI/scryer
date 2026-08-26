@@ -93,10 +93,11 @@ pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) canonical_key: String,
     pub(crate) year: Option<i32>,
-    /// Years corroborated by season-scoped metadata. Generic aliases never
-    /// enter this set; only year-bearing aliases and the requested episode's
-    /// air year can relax the root-title year veto.
-    pub(crate) supported_release_years: HashSet<i32>,
+    /// The requested episode's air year is direct season-scoped evidence.
+    pub(crate) episode_release_years: HashSet<i32>,
+    /// Explicit trailing years keyed by the distinct alias that carries them.
+    /// A year only relaxes the veto when this exact alias matched.
+    pub(crate) alias_release_years: HashMap<String, i32>,
     pub(crate) parse_context: crate::ReleaseParseContext,
     /// Library-local collision data. Defaults to "not ambiguous" so every
     /// existing construction site keeps its behavior; the resolution paths
@@ -379,29 +380,35 @@ fn canonical_title_evidence_for_episode(
 ) -> CanonicalTitleEvidence {
     let lookup_keys = canonical_title_lookup_keys(title);
     let canonical_key = crate::title_matching::canonical_lookup_key(&title.name);
-    let mut supported_release_years = HashSet::new();
+    let mut alias_release_years = HashMap::new();
+    let canonical_shape = crate::import_title_resolution::strip_trailing_year_key(&canonical_key);
     for alias in title
         .aliases
         .iter()
         .map(String::as_str)
         .chain(title.tagged_aliases.iter().map(|alias| alias.name.as_str()))
     {
-        for token in alias.split(|character: char| !character.is_ascii_digit()) {
-            if token.len() == 4
-                && let Ok(year) = token.parse::<i32>()
-                && (1900..=2099).contains(&year)
-            {
-                supported_release_years.insert(year);
-            }
+        let alias_key = crate::title_matching::canonical_lookup_key(alias);
+        let alias_shape = crate::import_title_resolution::strip_trailing_year_key(&alias_key);
+        let explicit_year = alias_key
+            .split_whitespace()
+            .next_back()
+            .filter(|token| token.len() == 4)
+            .and_then(|token| token.parse::<i32>().ok())
+            .filter(|year| (1900..=2099).contains(year));
+        if alias_shape != alias_key
+            && alias_shape != canonical_shape
+            && let Some(year) = explicit_year
+        {
+            alias_release_years.insert(alias_key, year);
         }
     }
-    if let Some(air_year) = episode
+    let episode_release_years = episode
         .and_then(|episode| episode.air_date.as_deref())
         .and_then(|air_date| air_date.get(..4))
         .and_then(|year| year.parse::<i32>().ok())
-    {
-        supported_release_years.insert(air_year);
-    }
+        .into_iter()
+        .collect();
     let mut parse_context =
         crate::build_release_parse_context(title, episode, None, Some(title.facet.as_str()));
     if title.year.is_some() {
@@ -426,7 +433,8 @@ fn canonical_title_evidence_for_episode(
         lookup_keys,
         canonical_key,
         year: title.year,
-        supported_release_years,
+        episode_release_years,
+        alias_release_years,
         parse_context,
         ambiguity,
     }
@@ -752,18 +760,32 @@ pub(crate) fn match_parsed_release_to_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> Option<TitleEvidenceMatch> {
+    let root_or_episode_year = parsed.year.is_some_and(|parsed_year| {
+        evidence.year == Some(parsed_year)
+            || evidence.episode_release_years.contains(&parsed_year)
+    });
+    let mut evidence_match =
+        contextual_release_matches_title_evidence(parsed, evidence, root_or_episode_year)?;
+
     if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
-        && !evidence.supported_release_years.contains(&parsed_year)
     {
-        return None;
+        let matched_alias_supports_year = evidence
+            .alias_release_years
+            .get(&evidence_match.matched_key)
+            .is_some_and(|year| *year == parsed_year);
+        if !evidence.episode_release_years.contains(&parsed_year)
+            && !matched_alias_supports_year
+        {
+            return None;
+        }
+        if matched_alias_supports_year {
+            evidence_match.year_corroborated = true;
+            evidence_match.requires_external_id = false;
+        }
     }
 
-    let year_corroborated = parsed.year.is_some_and(|parsed_year| {
-        evidence.year == Some(parsed_year)
-            || evidence.supported_release_years.contains(&parsed_year)
-    });
-    contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
+    Some(evidence_match)
 }
 
 fn contextual_release_matches_title_evidence(
@@ -3178,14 +3200,15 @@ mod tests {
         title.name = "Fixture Sitcom".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
-        title.aliases = vec!["Fixture Sitcom US".to_string()];
+        title.aliases = vec!["Fixture Sitcom 2002 Archive".to_string()];
         title.tagged_aliases = vec![TaggedAlias {
             name: "Fixture Sitcom Television Series".to_string(),
             language: "eng".to_string(),
         }];
         let evidence = canonical_title_evidence(&title);
 
-        assert!(evidence.supported_release_years.is_empty());
+        assert!(evidence.episode_release_years.is_empty());
+        assert!(evidence.alias_release_years.is_empty());
         let conflicting = crate::parse_release_metadata(
             "Fixture.Sitcom.2002.S01E03.1080p.WEB-DL.DDP5.1.H.264-GRP",
         );
@@ -3206,7 +3229,12 @@ mod tests {
         title.tagged_aliases.clear();
         let evidence = canonical_title_evidence(&title);
 
-        assert!(evidence.supported_release_years.contains(&2023));
+        assert_eq!(
+            evidence
+                .alias_release_years
+                .get("fixture anime continuation 2023"),
+            Some(&2023)
+        );
         let continuation = crate::parse_release_metadata(
             "Fixture.Anime.Continuation.2023.S17E03.1080p.WEB-DL-GRP",
         );
@@ -3215,6 +3243,61 @@ mod tests {
             &continuation,
             &evidence
         ));
+    }
+
+    #[test]
+    fn unmatched_year_bearing_alias_does_not_support_the_canonical_title() {
+        let mut title = make_title();
+        title.name = "Synthetic Root".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(2004);
+        title.aliases = vec!["Synthetic Continuation (2023)".to_string()];
+        title.tagged_aliases.clear();
+        let evidence = canonical_title_evidence(&title);
+        let release = crate::parse_release_metadata(
+            "Synthetic.Root.2023.S02E03.1080p.WEB-DL-GRP",
+        );
+
+        assert!(!parsed_release_matches_title_evidence(&release, &evidence));
+    }
+
+    #[test]
+    fn requested_episode_air_year_supports_a_continuation_release_year() {
+        let mut title = make_title();
+        title.name = "Synthetic Continuation".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(2004);
+        title.aliases.clear();
+        title.tagged_aliases.clear();
+        let episode = Episode {
+            id: "episode-1".into(),
+            title_id: title.id.clone(),
+            collection_id: None,
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("3".into()),
+            season_number: Some("2".into()),
+            episode_label: None,
+            title: None,
+            air_date: Some("2023-07-01".into()),
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        let evidence = canonical_title_evidence_for_episode(&title, Some(&episode));
+        let release = crate::parse_release_metadata(
+            "Synthetic.Continuation.2023.S02E03.1080p.WEB-DL-GRP",
+        );
+
+        assert!(evidence.episode_release_years.contains(&2023));
+        assert!(parsed_release_matches_title_evidence(&release, &evidence));
     }
 
     // ── Identity ambiguity and required disambiguators ──────────────────────

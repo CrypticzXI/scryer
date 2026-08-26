@@ -3410,6 +3410,10 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         Ok(0)
     }
 
+    async fn prune_indexer(&self, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn set_suppressed(
         &self,
         key: &IndexerSearchLearningKey,
@@ -5342,6 +5346,10 @@ pub trait IndexerClient: Send + Sync {
         learning_context: Option<IndexerSearchLearningContext>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse>;
+
+    async fn prune_search_learning(&self, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 pub trait IndexerPluginProvider: Send + Sync {

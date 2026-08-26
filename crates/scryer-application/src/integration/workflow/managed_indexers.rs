@@ -169,7 +169,8 @@ impl AppUseCase {
             {
                 continue;
             }
-            self.services
+            let updated = self
+                .services
                 .integrations
                 .indexer_configs
                 .update(IndexerConfigUpdate {
@@ -179,6 +180,15 @@ impl AppUseCase {
                     ..Default::default()
                 })
                 .await?;
+            if crate::indexer_search_identity(existing, None)
+                != crate::indexer_search_identity(&updated, None)
+            {
+                self.prune_indexer_search_learning_best_effort(
+                    &updated.id,
+                    "managed_indexer_caps_change",
+                )
+                .await;
+            }
             enriched = enriched.saturating_add(1);
         }
         if enriched > 0 {

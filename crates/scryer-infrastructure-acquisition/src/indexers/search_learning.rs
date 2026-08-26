@@ -515,7 +515,7 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
         limit: u32,
     ) -> AppResult<u32> {
         let limit = i64::from(limit.max(1));
-        SqlRuntime::execute_write(
+        let deleted_candidates = SqlRuntime::execute_write(
             &self.datastore,
             "cleanup_indexer_search_candidates",
             "DELETE FROM indexer_search_candidates WHERE id IN (
@@ -530,7 +530,7 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
             ],
         )
         .await?;
-        SqlRuntime::execute_write(
+        let deleted_runs = SqlRuntime::execute_write(
             &self.datastore,
             "cleanup_indexer_search_runs",
             "DELETE FROM indexer_search_runs WHERE id IN (
@@ -541,7 +541,20 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
             vec![SqlArg::Timestamp(run_cutoff), SqlArg::I64(limit)],
         )
         .await?;
-        Ok(0)
+        Ok(deleted_candidates
+            .saturating_add(deleted_runs)
+            .min(u64::from(u32::MAX)) as u32)
+    }
+
+    async fn prune_indexer(&self, indexer_id: &str) -> AppResult<()> {
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "prune_indexer_search_learning",
+            "DELETE FROM indexer_search_learning WHERE indexer_id = {}",
+            vec![SqlArg::Text(indexer_id.to_string())],
+        )
+        .await?;
+        Ok(())
     }
 
     async fn set_suppressed(
@@ -887,6 +900,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_store_prunes_learning_for_only_the_changed_indexer() {
+        let (store, _) = sqlite_store().await;
+        for indexer_id in ["idx-pruned", "idx-kept"] {
+            store
+                .record_outcome(
+                    &IndexerSearchLearningKey {
+                        indexer_id: indexer_id.into(),
+                        title_id: "title-1".into(),
+                        facet: "series".into(),
+                        strategy_key: "freetext".into(),
+                    },
+                    0,
+                )
+                .await
+                .expect("learning outcome should persist");
+        }
+
+        store
+            .prune_indexer("idx-pruned")
+            .await
+            .expect("indexer learning should prune");
+
+        assert!(
+            store
+                .list_for_title("idx-pruned", "title-1", "series")
+                .await
+                .expect("pruned records should list")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .list_for_title("idx-kept", "title-1", "series")
+                .await
+                .expect("unrelated records should list")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_store_reloads_only_fresh_matching_search_candidates() {
         let (store, _) = sqlite_store().await;
         let now = Utc::now();
@@ -991,5 +1044,118 @@ mod tests {
                 .expect("a fingerprint mismatch should be a cache miss")
                 .is_empty()
         );
+
+        let deleted = store
+            .cleanup_search_diagnostics(
+                now + chrono::Duration::seconds(1),
+                now + chrono::Duration::seconds(1),
+                10,
+            )
+            .await
+            .expect("expired diagnostics should clean up");
+        assert_eq!(deleted, 2, "the candidate and run deletions are reported");
+    }
+
+    #[tokio::test]
+    async fn postgres_cleanup_counts_and_indexer_pruning_from_env() -> AppResult<()> {
+        let Some(database_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping PostgreSQL search-learning cleanup test; SCRYER_TEST_POSTGRES_URL is not set"
+            );
+            return Ok(());
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .map_err(repo_err)?;
+        sqlx::query(
+            "CREATE TEMP TABLE indexer_search_learning (
+                indexer_id TEXT NOT NULL
+            ) ON COMMIT PRESERVE ROWS",
+        )
+        .execute(&pool)
+        .await
+        .map_err(repo_err)?;
+        sqlx::query(
+            "CREATE TEMP TABLE indexer_search_candidates (
+                id TEXT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL
+            ) ON COMMIT PRESERVE ROWS",
+        )
+        .execute(&pool)
+        .await
+        .map_err(repo_err)?;
+        sqlx::query(
+            "CREATE TEMP TABLE indexer_search_runs (
+                id TEXT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL
+            ) ON COMMIT PRESERVE ROWS",
+        )
+        .execute(&pool)
+        .await
+        .map_err(repo_err)?;
+        sqlx::query(
+            "INSERT INTO indexer_search_learning (indexer_id)
+             VALUES ('idx-pruned'), ('idx-pruned'), ('idx-kept')",
+        )
+        .execute(&pool)
+        .await
+        .map_err(repo_err)?;
+        let old_candidate = Utc::now() - chrono::Duration::days(8);
+        let old_run = Utc::now() - chrono::Duration::days(91);
+        for ordinal in 0..2 {
+            sqlx::query(
+                "INSERT INTO indexer_search_candidates (id, created_at, expires_at)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(format!("candidate-{ordinal}"))
+            .bind(old_candidate)
+            .bind(old_candidate)
+            .execute(&pool)
+            .await
+            .map_err(repo_err)?;
+            sqlx::query(
+                "INSERT INTO indexer_search_runs (id, created_at)
+                 VALUES ($1, $2)",
+            )
+            .bind(format!("run-{ordinal}"))
+            .bind(old_run)
+            .execute(&pool)
+            .await
+            .map_err(repo_err)?;
+        }
+        let store = IndexerSearchLearningStore::new(StoreDatastore::Postgres { pool: pool.clone() });
+
+        store.prune_indexer("idx-pruned").await?;
+        let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM indexer_search_learning")
+            .fetch_one(&pool)
+            .await
+            .map_err(repo_err)?;
+        assert_eq!(kept, 1);
+        assert_eq!(
+            store
+                .cleanup_search_diagnostics(Utc::now(), Utc::now(), 1)
+                .await?,
+            2
+        );
+        assert_eq!(
+            store
+                .cleanup_search_diagnostics(Utc::now(), Utc::now(), 1)
+                .await?,
+            2
+        );
+        assert_eq!(
+            store
+                .cleanup_search_diagnostics(Utc::now(), Utc::now(), 1)
+                .await?,
+            0
+        );
+
+        Ok(())
     }
 }

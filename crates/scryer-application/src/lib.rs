@@ -614,8 +614,10 @@ pub use types::{
     IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchCompletion,
     IndexerSearchIncompleteReason, IndexerSearchOutcome, IndexerSearchResponse,
     IndexerSearchResult, NewIndexerError, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
-    ReleaseStrategyKind,
-    extract_magnet_info_hash, is_valid_magnet_uri,
+    ReleaseStrategyKind, INDEXER_CAPS_REFRESH_ERROR_PREFIX,
+    extract_magnet_info_hash, indexer_search_identity, is_valid_magnet_uri,
+    search_relevant_indexer_caps,
+    search_relevant_managed_indexer_metadata,
 };
 pub use types::{
     EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID, EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX,
