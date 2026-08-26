@@ -535,23 +535,29 @@ async fn stop_seeding_for_terminal_download(
     }
 }
 
-fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
+fn skip_reason_for_import_check_code(
+    code: crate::import_checks::ImportCheckCode,
+) -> ImportSkipReason {
     match code {
-        "duplicate_file" => ImportSkipReason::AlreadyImported,
-        "insufficient_disk_space" => ImportSkipReason::DiskFull,
-        "invalid_extension" | "sample_file" | "sample_directory" => {
+        crate::import_checks::ImportCheckCode::DuplicateFile => ImportSkipReason::AlreadyImported,
+        crate::import_checks::ImportCheckCode::InsufficientDiskSpace => ImportSkipReason::DiskFull,
+        crate::import_checks::ImportCheckCode::StillUnpacking => {
+            ImportSkipReason::DownloadInProgress
+        }
+        crate::import_checks::ImportCheckCode::InvalidExtension
+        | crate::import_checks::ImportCheckCode::SampleFile
+        | crate::import_checks::ImportCheckCode::SampleDirectory => {
             ImportSkipReason::PolicyMismatch
         }
-        _ => ImportSkipReason::PolicyMismatch,
     }
 }
 
 async fn skip_reason_for_import_check_rejection(
     app: &AppUseCase,
-    code: &str,
+    code: crate::import_checks::ImportCheckCode,
     dest_path: &Path,
 ) -> AppResult<ImportSkipReason> {
-    if code == "duplicate_file" {
+    if code.is_duplicate_file() {
         let stored_dest_path = path_to_stored_string(dest_path);
         let cataloged = app
             .services
@@ -646,7 +652,11 @@ pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> boo
         _ => {
             matches!(
                 result.skip_reason,
-                Some(ImportSkipReason::DiskFull | ImportSkipReason::PermissionDenied)
+                Some(
+                    ImportSkipReason::DownloadInProgress
+                        | ImportSkipReason::DiskFull
+                        | ImportSkipReason::PermissionDenied
+                )
             ) || result
                 .error_message
                 .as_deref()

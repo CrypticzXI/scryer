@@ -240,6 +240,7 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
                 scope: crate::SubmissionScope::Title,
             },
             accepted_identity,
+            None,
         )
         .await
         .expect("record submission");

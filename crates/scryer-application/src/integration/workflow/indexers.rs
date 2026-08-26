@@ -13,6 +13,11 @@ struct PreparedManagedIndexerChild {
     routing_by_scope: HashMap<String, Vec<String>>,
 }
 
+pub(crate) struct CapsSnapshotRefreshOutcome {
+    snapshot_json: Option<String>,
+    error_message: Option<String>,
+}
+
 const PROWLARR_MANAGED_CHILD_RATE_LIMIT_SECONDS: i64 = 2;
 
 fn merge_managed_caps_snapshot(existing: Option<&str>, desired: Option<&str>) -> Option<String> {
@@ -245,6 +250,11 @@ impl AppUseCase {
             return Ok(None);
         };
         let Some(snapshot) = refresher.fetch_for_config(config).await? else {
+            if config.is_direct_nab() {
+                return Err(AppError::Repository(
+                    "caps refresh returned no Newznab caps snapshot".into(),
+                ));
+            }
             return Ok(None);
         };
         serde_json::to_string(&snapshot)
@@ -253,52 +263,92 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub(crate) async fn prune_indexer_search_learning_best_effort(
+        &self,
+        indexer_id: &str,
+        reason: &'static str,
+    ) {
+        if let Err(error) = self
+            .services
+            .integrations
+            .indexer_client
+            .prune_search_learning(indexer_id)
+            .await
+        {
+            tracing::warn!(
+                config_id = indexer_id,
+                reason,
+                error = %error,
+                "failed to invalidate indexer search learning"
+            );
+        }
+    }
+
+    async fn record_caps_refresh_failure(&self, config: &IndexerConfig, error: &AppError) {
+        let message = format!("{} {error}", crate::INDEXER_CAPS_REFRESH_ERROR_PREFIX);
+        if let Err(record_error) = self
+            .services
+            .integrations
+            .indexer_configs
+            .record_last_error(&config.id, Some(message))
+            .await
+        {
+            tracing::warn!(config_id = %config.id, error = %record_error, "failed to persist indexer caps health error");
+        }
+        if let Err(prune_error) = self
+            .services
+            .integrations
+            .scope_indexer_coverage
+            .prune_indexer(&config.id)
+            .await
+        {
+            tracing::warn!(config_id = %config.id, error = %prune_error, "failed to invalidate coverage after caps refresh failure");
+        }
+        self.prune_indexer_search_learning_best_effort(&config.id, "caps_refresh_failure")
+            .await;
+    }
+
     pub(crate) async fn refresh_caps_snapshot_json_best_effort(
         &self,
         config: &IndexerConfig,
         fallback: Option<&str>,
-    ) -> Option<String> {
+    ) -> CapsSnapshotRefreshOutcome {
         match self.fetch_caps_snapshot_json_for_config(config).await {
             Ok(Some(snapshot_json)) => {
-                if let Err(error) = self
-                    .services
-                    .integrations
-                    .indexer_configs
-                    .clear_last_error(&config.id)
-                    .await
+                if config.last_error_message.as_deref().is_some_and(|message| {
+                    message.starts_with(crate::INDEXER_CAPS_REFRESH_ERROR_PREFIX)
+                }) && let Err(error) = self
+                        .services
+                        .integrations
+                        .indexer_configs
+                        .clear_last_error(&config.id)
+                        .await
                 {
                     tracing::warn!(config_id = %config.id, error = %error, "failed to clear recovered indexer caps error");
                 }
-                Some(snapshot_json)
+                CapsSnapshotRefreshOutcome {
+                    snapshot_json: Some(snapshot_json),
+                    error_message: None,
+                }
             }
-            Ok(None) => fallback.map(ToOwned::to_owned),
+            Ok(None) => CapsSnapshotRefreshOutcome {
+                snapshot_json: fallback.map(ToOwned::to_owned),
+                error_message: None,
+            },
             Err(error) => {
-                let message = format!("caps refresh failed: {error}");
-                if let Err(record_error) = self
-                    .services
-                    .integrations
-                    .indexer_configs
-                    .record_last_error(&config.id, Some(message))
-                    .await
-                {
-                    tracing::warn!(config_id = %config.id, error = %record_error, "failed to persist indexer caps health error");
-                }
-                if let Err(prune_error) = self
-                    .services
-                    .integrations
-                    .scope_indexer_coverage
-                    .prune_indexer(&config.id)
-                    .await
-                {
-                    tracing::warn!(config_id = %config.id, error = %prune_error, "failed to invalidate coverage after caps refresh failure");
-                }
+                let error_message =
+                    format!("{} {error}", crate::INDEXER_CAPS_REFRESH_ERROR_PREFIX);
+                self.record_caps_refresh_failure(config, &error).await;
                 tracing::warn!(
                     config_id = %config.id,
                     provider_type = %config.provider_type,
                     error = %error,
                     "failed to refresh indexer caps snapshot; keeping the last known snapshot"
                 );
-                fallback.map(ToOwned::to_owned)
+                CapsSnapshotRefreshOutcome {
+                    snapshot_json: fallback.map(ToOwned::to_owned),
+                    error_message: Some(error_message),
+                }
             }
         }
     }
@@ -352,7 +402,9 @@ impl AppUseCase {
 
             match self.fetch_caps_snapshot_json_for_config(&config).await {
                 Ok(Some(snapshot_json)) => {
-                    if config.caps_snapshot_json.as_deref() != Some(snapshot_json.as_str()) {
+                    let updated = if config.caps_snapshot_json.as_deref()
+                        != Some(snapshot_json.as_str())
+                    {
                         self.services
                             .integrations
                             .indexer_configs
@@ -361,12 +413,35 @@ impl AppUseCase {
                                 caps_snapshot_json: Some(Some(snapshot_json)),
                                 ..Default::default()
                             })
-                            .await?;
+                            .await?
+                    } else {
+                        config.clone()
+                    };
+                    if crate::indexer_search_identity(&config, None)
+                        != crate::indexer_search_identity(&updated, None)
+                    {
+                        self.prune_indexer_search_learning_best_effort(
+                            &config.id,
+                            "caps_snapshot_change",
+                        )
+                        .await;
+                    }
+                    if config.last_error_message.as_deref().is_some_and(|message| {
+                        message.starts_with(crate::INDEXER_CAPS_REFRESH_ERROR_PREFIX)
+                    }) && let Err(error) = self
+                            .services
+                            .integrations
+                            .indexer_configs
+                            .clear_last_error(&config.id)
+                            .await
+                    {
+                        tracing::warn!(config_id = %config.id, error = %error, "failed to clear recovered indexer caps error");
                     }
                     refreshed += 1;
                 }
                 Ok(None) => {}
                 Err(error) => {
+                    self.record_caps_refresh_failure(&config, &error).await;
                     tracing::warn!(
                         config_id = %config.id,
                         provider_type = %config.provider_type,
@@ -542,9 +617,14 @@ impl AppUseCase {
                 })?;
             self.validate_indexer_download_client_mapping(&config, &client)?;
         }
-        config.caps_snapshot_json = self
+        let caps_refresh = self
             .refresh_caps_snapshot_json_best_effort(&config, None)
             .await;
+        config.caps_snapshot_json = caps_refresh.snapshot_json;
+        if let Some(error_message) = caps_refresh.error_message {
+            config.last_error_message = Some(error_message);
+            config.last_error_at = Some(Utc::now());
+        }
 
         let created = self
             .services
@@ -754,7 +834,7 @@ impl AppUseCase {
                 })?;
             self.validate_indexer_download_client_mapping(&preview_config, &client)?;
         }
-        let refreshed_caps_snapshot_json = self
+        let caps_refresh = self
             .refresh_caps_snapshot_json_best_effort(
                 &preview_config,
                 existing.caps_snapshot_json.as_deref(),
@@ -790,11 +870,21 @@ impl AppUseCase {
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
-                caps_snapshot_json: Some(refreshed_caps_snapshot_json),
+                caps_snapshot_json: Some(caps_refresh.snapshot_json),
                 config_json: normalized_config_json,
             })
             .await?;
-        if should_validate_connection {
+        if caps_refresh.error_message.is_none()
+            && crate::indexer_search_identity(&existing, None)
+            != crate::indexer_search_identity(&updated, None)
+        {
+            self.prune_indexer_search_learning_best_effort(
+                &updated.id,
+                "search_relevant_config_change",
+            )
+            .await;
+        }
+        if should_validate_connection && caps_refresh.error_message.is_none() {
             self.services
                 .integrations
                 .indexer_configs
@@ -1116,6 +1206,15 @@ impl AppUseCase {
                         })
                         .await
                 );
+                if crate::indexer_search_identity(&existing, None)
+                    != crate::indexer_search_identity(&updated, None)
+                {
+                    self.prune_indexer_search_learning_best_effort(
+                        &updated.id,
+                        "managed_indexer_search_change",
+                    )
+                    .await;
+                }
                 indexers_changed = true;
                 apply_managed_child_routing(
                     &mut routing_by_scope,

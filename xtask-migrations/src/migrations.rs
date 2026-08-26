@@ -953,7 +953,8 @@ ALTER TABLE ONLY public.download_jobs
 
     #[test]
     fn postgres_baseline_generation_appends_builtin_seed_data() {
-        let generated = append_postgres_builtin_baseline_seeds(140, "CREATE TABLE users ();\n".into());
+        let generated =
+            append_postgres_builtin_baseline_seeds(140, "CREATE TABLE users ();\n".into());
         assert!(generated.ends_with(POSTGRES_BUILTIN_BASELINE_SEED_SQL));
         assert_eq!(generated.matches("INSERT INTO ").count(), 14);
         assert_eq!(

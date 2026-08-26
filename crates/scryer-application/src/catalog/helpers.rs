@@ -232,6 +232,7 @@ pub(crate) fn series_movie_link_from_anime_movie(
     narrative_order: String,
     after_season: i32,
     linked_episode_id: Option<String>,
+    monitored: bool,
 ) -> SeriesMovieLink {
     let now = Utc::now();
     SeriesMovieLink {
@@ -249,7 +250,9 @@ pub(crate) fn series_movie_link_from_anime_movie(
         confidence: non_empty_owned(anime_movie.confidence.as_str()),
         signal_summary: non_empty_owned(anime_movie.signal_summary.as_str()),
         source: Some("anibridge".to_string()),
-        monitored: true,
+        monitoring_override: None,
+        metadata_active: true,
+        monitored,
         legacy_collection_id: None,
         created_at: now,
         updated_at: now,
@@ -450,6 +453,7 @@ mod anime_movie_mapping_tests {
             "1.5".to_string(),
             1,
             Some("episode-1".to_string()),
+            false,
         );
         assert_eq!(link.series_title_id, "title-1");
         assert_eq!(link.linked_episode_id.as_deref(), Some("episode-1"));

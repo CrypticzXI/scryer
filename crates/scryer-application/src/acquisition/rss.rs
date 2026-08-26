@@ -1,4 +1,7 @@
 use super::*;
+use crate::acquisition::submission::{
+    CanonicalDownloadSubmissionIntent, CanonicalDownloadSubmissionOutcome,
+};
 use crate::acquisition_decision_helpers::{
     blocklist_entry_data, is_download_submit_unavailable_error,
 };
@@ -1703,7 +1706,8 @@ impl AppUseCase {
         for link in links {
             // Target-ness (§D5): a monitored link. Missing vs below-cutoff vs
             // satisfied is decided by the cutoff/upgrade gate downstream.
-            if !link.monitored {
+            if !link.monitored || (!link.metadata_active && link.monitoring_override != Some(true))
+            {
                 continue;
             }
             let wanted = match self
@@ -2464,41 +2468,51 @@ impl AppUseCase {
             submission_scope.series_movie_link_id(),
         );
 
-        let grab_result = self
-            .services
-            .integrations
-            .download_client
-            .submit_download(&DownloadClientAddRequest {
-                title: title.clone(),
-                search_facet: Some(subject.search_facet.clone()),
-                purpose: crate::DownloadSubmissionPurpose::Standard,
-                download_id: Some(download_id),
-                source_hint: source_hint.clone(),
-                staged_nzb: None,
-                resolved_download_artifact: None,
-                source_kind: canonical_source_kind,
-                source_title: source_title.clone(),
-                source_password: source_password.clone(),
-                category: Some(download_cat),
-                queue_priority: None,
-                download_directory: None,
-                release_title: Some(best.title.clone()),
-                indexer_name: Some(best.source.clone()),
-                indexer_id: best.indexer_id.clone(),
-                info_hash_hint: info_hash_hint.clone(),
-                seed_goal_ratio: None,
-                seed_goal_seconds: None,
-                tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
-                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
-                season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
-                season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
-                is_recent,
-                season_pack: is_season_pack.then_some(true),
+        let canonical_result = self
+            .submit_canonical_download(CanonicalDownloadSubmissionIntent {
+                request: DownloadClientAddRequest {
+                    title: title.clone(),
+                    search_facet: Some(subject.search_facet.clone()),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                    download_id: Some(download_id),
+                    source_hint: source_hint.clone(),
+                    staged_nzb: None,
+                    resolved_download_artifact: None,
+                    source_kind: canonical_source_kind,
+                    source_title: source_title.clone(),
+                    source_password: source_password.clone(),
+                    category: Some(download_cat),
+                    queue_priority: None,
+                    download_directory: None,
+                    release_title: Some(best.title.clone()),
+                    indexer_name: Some(best.source.clone()),
+                    indexer_id: best.indexer_id.clone(),
+                    info_hash_hint: info_hash_hint.clone(),
+                    seed_goal_ratio: None,
+                    seed_goal_seconds: None,
+                    tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                    tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
+                    season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                    season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
+                    is_recent,
+                    season_pack: is_season_pack.then_some(true),
+                },
+                scope: submission_scope.clone(),
+                conflict_policy: SubmissionConflictPolicy::Skip,
+                request_signature: request_signature.clone(),
+                source_provider_name: Some(best.source.clone()),
+                release_size_bytes: best.size_bytes,
             })
             .await;
 
-        match grab_result {
-            Ok(grab) => {
+        let canonical_submission = match canonical_result {
+            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => Ok(submission),
+            Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => return,
+            Err(error) => Err(error),
+        };
+
+        match canonical_submission {
+            Ok(_canonical_submission) => {
                 {
                     let facet_label = serde_json::to_string(&title.facet)
                         .unwrap_or_else(|_| "\"other\"".to_string())
@@ -2507,102 +2521,6 @@ impl AppUseCase {
                     metrics::counter!("scryer_grabs_total", "indexer" => best.source.clone(), "facet" => facet_label).increment(1);
                 }
                 self.record_indexer_grab(best.indexer_id.as_deref(), Some(best.source.as_str()));
-
-                let facet_str =
-                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let submission_download_id = grab.download_id.unwrap_or(download_id);
-                let submission_identity = DownloadSubmissionIdentity {
-                    download_id: Some(submission_download_id.to_wire()),
-                };
-                let accepted_identity =
-                    crate::download_identity::accepted_download_submission_identity(
-                        crate::download_identity::AcceptedDownloadIdentityInput {
-                            initial_download_id: submission_identity.download_id.as_deref(),
-                            source_kind: best.source_kind,
-                            source_hint: source_hint.as_deref(),
-                            info_hash_hint: info_hash_hint.as_deref(),
-                            client_type: Some(grab.client_type.as_str()),
-                            client_item_id: Some(grab.job_id.as_str()),
-                            accepted_info_hash: grab.info_hash.as_deref(),
-                        },
-                    );
-                let log_download_id = accepted_identity.download_id.clone();
-                if let Err(error) = self
-                    .services
-                    .workflow
-                    .download_submissions
-                    .record_submission_with_identity(
-                        DownloadSubmission {
-                            download_id: submission_download_id,
-                            title_id: title.id.clone(),
-                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                            facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id.clone(),
-                            download_client_type: grab.client_type.clone(),
-                            download_client_item_id: grab.job_id.clone(),
-                            source_hint: None,
-                            source_provider_id: best.indexer_id.clone(),
-                            source_provider_name: Some(best.source.clone()),
-                            release_size_bytes: best.size_bytes,
-                            source_kind: None,
-                            source_title: source_title.clone(),
-                            request_signature: request_signature.clone(),
-                            scope: submission_scope.clone(),
-                        },
-                        accepted_identity,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        client_id = ?grab.client_id,
-                        client_type = %grab.client_type,
-                        download_client_item_id = %grab.job_id,
-                        download_id = ?log_download_id,
-                        "download_identity_persistence_failed"
-                    );
-                    let _ = self
-                        .services
-                        .workflow
-                        .release_attempts
-                        .record_release_attempt(
-                            Some(title.id.clone()),
-                            source_hint_for_attempt.clone(),
-                            source_title_for_attempt.clone(),
-                            ReleaseDownloadAttemptOutcome::Failed,
-                            Some(error.to_string()),
-                            source_password,
-                        )
-                        .await;
-                    // The client accepted a job Scryer can no longer track, so
-                    // burn the release for this title (visible and removable in
-                    // the blocklist) rather than re-grabbing it into a duplicate.
-                    if let Err(blocklist_error) = self
-                        .services
-                        .workflow
-                        .blocklist_repo
-                        .add(&NewBlocklistEntry {
-                            title_id: title.id.clone(),
-                            source_title: source_title_for_attempt,
-                            source_hint: source_hint_for_attempt,
-                            quality: None,
-                            download_id: None,
-                            reason: Some(format!(
-                                "grab accepted but download tracking could not be persisted: {error}"
-                            )),
-                            data: blocklist_data,
-                        })
-                        .await
-                    {
-                        warn!(
-                            error = %blocklist_error,
-                            title_id = title.id.as_str(),
-                            release = best.title.as_str(),
-                            "failed to persist blocklist entry for untracked RSS grab"
-                        );
-                    }
-                    return;
-                }
 
                 let _ = self
                     .services
@@ -2783,34 +2701,6 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
-                if err.is_download_submit_ambiguous()
-                    && let Some((client_id, client_type)) =
-                        err.ambiguous_download_submission_client()
-                    && let Err(error) = self
-                        .services
-                        .workflow
-                        .download_submissions
-                        .record_ambiguous_submission(DownloadSubmission {
-                            download_id,
-                            title_id: title.id.clone(),
-                            facet: title.facet.as_str().to_string(),
-                            download_client_id: client_id.map(str::to_string),
-                            download_client_type: client_type.to_string(),
-                            download_client_item_id: String::new(),
-                            source_hint: None,
-                            source_provider_id: best.indexer_id.clone(),
-                            source_provider_name: Some(best.source.clone()),
-                            source_kind: None,
-                            source_title: source_title.clone(),
-                            release_size_bytes: best.size_bytes,
-                            request_signature: request_signature.clone(),
-                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                            scope: submission_scope.clone(),
-                        })
-                        .await
-                {
-                    warn!(error = %error, "ambiguous download submission persistence failed");
-                }
                 if is_download_submit_unavailable_error(&err) {
                     if let Some(route) =
                         crate::acquisition_workflow::DownloadRouteKey::for_candidate(best)

@@ -395,6 +395,9 @@ pub fn to_gql_error(err: AppError) -> Error {
             coded_gql_error(message, "MANUAL_RECONCILIATION_REQUIRED")
         }
         AppError::ImportEvidenceUnavailable(message) => repository_gql_error(message),
+        error @ AppError::ImportSourceInspection { .. }
+        | error @ AppError::UnsupportedImportSource { .. }
+        | error @ AppError::ImportSourceChanged { .. } => repository_gql_error(error.to_string()),
         AppError::Repository(message) => repository_gql_error(message),
     }
 }
@@ -457,6 +460,9 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::Canceled(_) => "Canceled",
         AppError::ManualReconciliationRequired(_) => "ManualReconciliationRequired",
         AppError::ImportEvidenceUnavailable(_) => "ImportEvidenceUnavailable",
+        AppError::ImportSourceInspection { .. } => "ImportSourceInspection",
+        AppError::UnsupportedImportSource { .. } => "UnsupportedImportSource",
+        AppError::ImportSourceChanged { .. } => "ImportSourceChanged",
         AppError::Repository(_) => "Repository",
     }
 }

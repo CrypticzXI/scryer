@@ -821,6 +821,10 @@ pub struct SeriesMovieLink {
     pub confidence: Option<String>,
     pub signal_summary: Option<String>,
     pub source: Option<String>,
+    /// Explicit operator choice; absent values follow title/metadata policy.
+    pub monitoring_override: Option<bool>,
+    /// False when metadata no longer reports this derived relationship.
+    pub metadata_active: bool,
     pub monitored: bool,
     pub legacy_collection_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -1097,12 +1101,7 @@ impl NabTransportKind {
 pub fn is_nab_provider_type(provider_type: &str) -> bool {
     matches!(
         provider_type.trim().to_ascii_lowercase().as_str(),
-        "amenzb"
-            | "animetosho-xyz"
-            | "dognzb"
-            | "newznab"
-            | "nzbgeek"
-            | "torznab"
+        "amenzb" | "animetosho-xyz" | "dognzb" | "newznab" | "nzbgeek" | "torznab"
     )
 }
 
@@ -2093,6 +2092,7 @@ pub enum ImportSkipReason {
     UnresolvedIdentity,
     UnparseableEpisode,
     NoVideoFiles,
+    DownloadInProgress,
     DiskFull,
     PermissionDenied,
     PasswordRequired,
@@ -2109,6 +2109,7 @@ impl ImportSkipReason {
             Self::UnresolvedIdentity => "unresolved_identity",
             Self::UnparseableEpisode => "unparseable_episode",
             Self::NoVideoFiles => "no_video_files",
+            Self::DownloadInProgress => "download_in_progress",
             Self::DiskFull => "disk_full",
             Self::PermissionDenied => "permission_denied",
             Self::PasswordRequired => "password_required",
@@ -2205,12 +2206,22 @@ pub struct ImportRecord {
     pub updated_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportDestinationDisposition {
+    #[default]
+    Created,
+    AlreadyPresent,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportFileResult {
     pub strategy: ImportStrategy,
     pub source_path: std::path::PathBuf,
     pub dest_path: std::path::PathBuf,
     pub size_bytes: u64,
+    #[serde(default)]
+    pub destination_disposition: ImportDestinationDisposition,
     pub source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 

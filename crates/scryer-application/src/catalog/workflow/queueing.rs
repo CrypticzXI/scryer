@@ -153,7 +153,7 @@ fn wanted_item_candidate_for_episode_id(
 }
 fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubmission {
     DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: title_id.to_string(),
         // Scope matching only; this submission is never persisted.
         release_size_bytes: None,
@@ -243,7 +243,7 @@ fn queue_state_is_replaceable(state: DownloadQueueState) -> bool {
             | DownloadQueueState::Warning
     )
 }
-fn queue_item_matches_submission(
+pub(crate) fn queue_item_matches_submission(
     item: &DownloadQueueItem,
     submission: &DownloadSubmission,
 ) -> bool {
@@ -253,14 +253,6 @@ fn queue_item_matches_submission(
             .as_deref()
             .map(|client_id| client_id == item.client_id)
             .unwrap_or(true)
-}
-fn blocking_queue_item_for_submission<'a>(
-    queue: &'a [DownloadQueueItem],
-    submission: &DownloadSubmission,
-) -> Option<&'a DownloadQueueItem> {
-    queue.iter().find(|item| {
-        queue_item_matches_submission(item, submission) && queue_state_blocks_submission(item.state)
-    })
 }
 impl AppUseCase {
     pub(crate) fn is_recent_for_queue_priority(&self, baseline_date: Option<&str>) -> Option<bool> {
@@ -440,76 +432,6 @@ impl AppUseCase {
             source_kind,
         );
         let source_password = normalize_release_password(source_password.as_deref());
-        let scope_guard = self.lock_download_submission_scope(&title.id, &scope).await;
-        let dedupe_guard = self
-            .lock_download_submission_signature(&title.id, request_signature.as_deref())
-            .await;
-
-        if let Some(signature) = request_signature.as_deref()
-            && let Some(existing) = self
-                .services
-                .workflow
-                .download_submissions
-                .find_by_title_and_request_signature(&title.id, signature, purpose, &scope)
-                .await?
-        {
-            let queue = self
-                .services
-                .integrations
-                .download_client
-                .list_queue()
-                .await?;
-            if blocking_queue_item_for_submission(&queue, &existing).is_some() {
-                drop(dedupe_guard);
-                drop(scope_guard);
-                return Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
-                    job_id: existing.download_client_item_id,
-                    queued_release: QueuedReleaseSelection {
-                        indexer_id,
-                        source_hint,
-                        source_kind,
-                        source_title,
-                        source_password,
-                        info_hash_hint,
-                        size_bytes,
-                        seeders,
-                    },
-                    reused_existing: true,
-                }));
-            }
-        }
-
-        let conflicts = if purpose.is_additional_file() {
-            Vec::new()
-        } else {
-            self.find_blocking_download_submissions(title, &scope)
-                .await?
-        };
-        if !conflicts.is_empty() {
-            match conflict_policy {
-                SubmissionConflictPolicy::Abort | SubmissionConflictPolicy::Skip => {
-                    drop(dedupe_guard);
-                    drop(scope_guard);
-                    return Ok(QueueDownloadOutcome::Conflict(conflicts[0].clone()));
-                }
-                SubmissionConflictPolicy::ReplaceEarly
-                    if conflicts.iter().all(|conflict| conflict.replaceable) =>
-                {
-                    self.replace_blocking_download_submissions(&conflicts)
-                        .await?;
-                }
-                SubmissionConflictPolicy::ReplaceEarly => {
-                    let conflict = conflicts
-                        .into_iter()
-                        .find(|conflict| !conflict.replaceable)
-                        .expect("non-empty conflicts should contain a non-replaceable item");
-                    drop(dedupe_guard);
-                    drop(scope_guard);
-                    return Ok(QueueDownloadOutcome::Conflict(conflict));
-                }
-            }
-        }
-
         let _ = self
             .services
             .workflow
@@ -533,48 +455,74 @@ impl AppUseCase {
         );
         let download_id = scryer_domain::download_identity::DownloadId::new();
         let job_result = self
-            .services
-            .integrations
-            .download_client
-            .submit_download(&DownloadClientAddRequest {
-                title: title.clone(),
-                search_facet: matches!(scope, SubmissionScope::SeriesMovie { .. })
-                    .then_some(scryer_domain::MediaFacet::Movie),
-                purpose,
-                download_id: Some(download_id),
-                source_hint,
-                staged_nzb: None,
-                resolved_download_artifact: None,
-                source_kind,
-                source_title,
-                source_password: source_password.clone(),
-                category: Some(category),
-                queue_priority: None,
-                download_directory: None,
-                release_title: None,
-                indexer_name: None,
-                indexer_id: indexer_id.clone(),
-                info_hash_hint: info_hash_hint.clone(),
-                seed_goal_ratio: None,
-                seed_goal_seconds: None,
-                // Manual/interactive queueing carries a resolved source URL,
-                // not the indexer release object, so there is no `extra` map to
-                // read tracker minimums from on this path.
-                tracker_min_seed_ratio: None,
-                tracker_min_seed_time_minutes: None,
-                season_pack_seed_ratio: None,
-                season_pack_seed_time_minutes: None,
-                is_recent,
-                season_pack: matches!(
-                    scope,
-                    SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
-                )
-                .then_some(true),
+            .submit_canonical_download(CanonicalDownloadSubmissionIntent {
+                request: DownloadClientAddRequest {
+                    title: title.clone(),
+                    search_facet: matches!(scope, SubmissionScope::SeriesMovie { .. })
+                        .then_some(scryer_domain::MediaFacet::Movie),
+                    purpose,
+                    download_id: Some(download_id),
+                    source_hint,
+                    staged_nzb: None,
+                    resolved_download_artifact: None,
+                    source_kind,
+                    source_title: source_title_for_attempt.clone(),
+                    source_password: source_password.clone(),
+                    category: Some(category),
+                    queue_priority: None,
+                    download_directory: None,
+                    release_title: None,
+                    indexer_name: None,
+                    indexer_id: indexer_id.clone(),
+                    info_hash_hint: info_hash_hint.clone(),
+                    seed_goal_ratio: None,
+                    seed_goal_seconds: None,
+                    // Manual/interactive queueing carries a resolved source URL,
+                    // not the indexer release object, so there is no `extra` map to
+                    // read tracker minimums from on this path.
+                    tracker_min_seed_ratio: None,
+                    tracker_min_seed_time_minutes: None,
+                    season_pack_seed_ratio: None,
+                    season_pack_seed_time_minutes: None,
+                    is_recent,
+                    season_pack: matches!(
+                        scope,
+                        SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
+                    )
+                    .then_some(true),
+                },
+                scope: scope.clone(),
+                conflict_policy,
+                request_signature: request_signature.clone(),
+                source_provider_name: source_provider_name.clone(),
+                release_size_bytes: size_bytes,
             })
             .await;
 
         let grab = match job_result {
-            Ok(grab) => {
+            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission))
+                if !submission.newly_submitted =>
+            {
+                return Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
+                    job_id: submission.grab.job_id,
+                    queued_release: QueuedReleaseSelection {
+                        indexer_id,
+                        source_hint: source_hint_for_attempt,
+                        source_kind,
+                        source_title: source_title_for_attempt,
+                        source_password,
+                        info_hash_hint,
+                        size_bytes,
+                        seeders,
+                    },
+                    reused_existing: true,
+                }));
+            }
+            Ok(CanonicalDownloadSubmissionOutcome::Conflict(conflict)) => {
+                return Ok(QueueDownloadOutcome::Conflict(conflict));
+            }
+            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submitted)) => {
+                let grab = submitted.grab.clone();
                 {
                     let facet_label = serde_json::to_string(&title.facet)
                         .unwrap_or_else(|_| "\"other\"".to_string())
@@ -583,98 +531,6 @@ impl AppUseCase {
                     metrics::counter!("scryer_grabs_total", "indexer" => "manual", "facet" => facet_label).increment(1);
                 }
                 self.record_indexer_grab(indexer_id.as_deref(), source_provider_name.as_deref());
-                let facet_str =
-                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
-                let submission_download_id = grab.download_id.unwrap_or(download_id);
-                let submission_identity = DownloadSubmissionIdentity {
-                    download_id: Some(submission_download_id.to_wire()),
-                };
-                let accepted_identity =
-                    crate::download_identity::accepted_download_submission_identity(
-                        crate::download_identity::AcceptedDownloadIdentityInput {
-                            initial_download_id: submission_identity.download_id.as_deref(),
-                            source_kind,
-                            source_hint: source_hint_for_attempt.as_deref(),
-                            info_hash_hint: info_hash_hint.as_deref(),
-                            client_type: Some(grab.client_type.as_str()),
-                            client_item_id: Some(grab.job_id.as_str()),
-                            accepted_info_hash: grab.info_hash.as_deref(),
-                        },
-                    );
-                let log_download_id = accepted_identity.download_id.clone();
-                if let Err(error) = self
-                    .services
-                    .workflow
-                    .download_submissions
-                    .record_submission_with_identity(
-                        DownloadSubmission {
-                            download_id: submission_download_id,
-                            title_id: title.id.clone(),
-                            facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id.clone(),
-                            download_client_type: grab.client_type.clone(),
-                            download_client_item_id: grab.job_id.clone(),
-                            source_hint: source_hint_for_attempt.clone(),
-                            source_provider_id: indexer_id.clone(),
-                            source_provider_name: source_provider_name.clone(),
-                            source_kind,
-                            source_title: source_title_for_attempt.clone(),
-                            release_size_bytes: size_bytes,
-                            request_signature: request_signature.clone(),
-                            purpose,
-                            scope: scope.clone(),
-                        },
-                        accepted_identity,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        client_id = ?grab.client_id,
-                        client_type = %grab.client_type,
-                        download_client_item_id = %grab.job_id,
-                        download_id = ?log_download_id,
-                        "download_identity_persistence_failed"
-                    );
-                    let _ = self
-                        .services
-                        .workflow
-                        .release_attempts
-                        .record_release_attempt(
-                            Some(title.id.clone()),
-                            source_hint_for_attempt.clone(),
-                            source_title_for_attempt.clone(),
-                            ReleaseDownloadAttemptOutcome::Failed,
-                            Some(error.to_string()),
-                            source_password.clone(),
-                        )
-                        .await;
-                    // The client accepted a job Scryer can no longer track, so
-                    // burn the release for this title (visible and removable in
-                    // the blocklist) rather than re-grabbing it into a duplicate.
-                    let blocklist_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
-                    let _ = self
-                        .services
-                        .workflow
-                        .blocklist_repo
-                        .add(&NewBlocklistEntry {
-                            title_id: title.id.clone(),
-                            source_title: source_title_for_attempt.clone(),
-                            source_hint: source_hint_for_attempt.clone(),
-                            quality: None,
-                            download_id: None,
-                            reason: Some(format!(
-                                "grab accepted but download tracking could not be persisted: {error}"
-                            )),
-                            data: blocklist_entry_data(
-                                &blocklist_episode_ids,
-                                scope.collection_id(),
-                                scope.series_movie_link_id(),
-                            ),
-                        })
-                        .await;
-                    return Err(error);
-                }
                 if source_title_for_attempt.is_none() {
                     // The persisted indexer release title is THE name the
                     // import parses at completion. Only the API/SDK
@@ -730,7 +586,9 @@ impl AppUseCase {
             }
             Err(error) => {
                 let source_gone = error.is_download_source_gone();
-                let submit_unavailable = is_download_submit_unavailable_error(&error) || source_gone;
+                let submit_unavailable = is_download_submit_unavailable_error(&error)
+                    || error.is_download_submit_ambiguous()
+                    || source_gone;
                 let error_message = error.to_string();
                 if source_gone {
                     tracing::info!(
@@ -755,34 +613,6 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
-                if error.is_download_submit_ambiguous()
-                    && let Some((client_id, client_type)) =
-                        error.ambiguous_download_submission_client()
-                    && let Err(persist_error) = self
-                        .services
-                        .workflow
-                        .download_submissions
-                        .record_ambiguous_submission(DownloadSubmission {
-                            download_id,
-                            title_id: title.id.clone(),
-                            facet: title.facet.as_str().to_string(),
-                            download_client_id: client_id.map(str::to_string),
-                            download_client_type: client_type.to_string(),
-                            download_client_item_id: String::new(),
-                            source_hint: source_hint_for_attempt.clone(),
-                            source_provider_id: indexer_id.clone(),
-                            source_provider_name: source_provider_name.clone(),
-                            source_kind,
-                            source_title: source_title_for_attempt.clone(),
-                            release_size_bytes: size_bytes,
-                            request_signature: request_signature.clone(),
-                            purpose,
-                            scope: scope.clone(),
-                        })
-                        .await
-                {
-                    tracing::warn!(error = %persist_error, "ambiguous download submission persistence failed");
-                }
                 if !submit_unavailable {
                     // The per-title blocklist entry is what search-time
                     // exclusion consults (and what the operator can remove);
@@ -807,14 +637,10 @@ impl AppUseCase {
                         })
                         .await;
                 }
-                drop(dedupe_guard);
-                drop(scope_guard);
                 return Err(error);
             }
         };
 
-        drop(dedupe_guard);
-        drop(scope_guard);
         let grabbed_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
 
         self.append_domain_event(new_title_domain_event(
@@ -1291,19 +1117,22 @@ impl AppUseCase {
         };
 
         let wanted = match &scope {
-            SubmissionScope::Title => self
-                .resolve_or_create_wanted_state_row(&format!("title:{}", title.id))
-                .await?,
-            SubmissionScope::Episode { episode_id } => self
-                .resolve_or_create_wanted_state_row(&format!("episode:{episode_id}"))
-                .await?,
+            SubmissionScope::Title => {
+                self.resolve_or_create_wanted_state_row(&format!("title:{}", title.id))
+                    .await?
+            }
+            SubmissionScope::Episode { episode_id } => {
+                self.resolve_or_create_wanted_state_row(&format!("episode:{episode_id}"))
+                    .await?
+            }
             SubmissionScope::SeriesMovie {
                 series_movie_link_id,
-            } => self
-                .resolve_or_create_wanted_state_row(&format!(
+            } => {
+                self.resolve_or_create_wanted_state_row(&format!(
                     "series_movie:{series_movie_link_id}"
                 ))
-                .await?,
+                .await?
+            }
             SubmissionScope::Orphan
             | SubmissionScope::EpisodeSet { .. }
             | SubmissionScope::Collection { .. } => None,
@@ -1318,23 +1147,18 @@ impl AppUseCase {
                 tokio_util::sync::CancellationToken::new(),
             )
             .await?;
-        if let Some(candidate) = results.iter().find(|candidate| {
-            candidate.auto_decision_code.as_deref() == Some("ambiguous_identity")
-        }) && let Some(wanted) = wanted.as_ref()
+        if let Some(candidate) = results
+            .iter()
+            .find(|candidate| candidate.auto_decision_code.as_deref() == Some("ambiguous_identity"))
+            && let Some(wanted) = wanted.as_ref()
         {
             let candidate_score = candidate
                 .quality_profile_decision
                 .as_ref()
                 .map(|decision| decision.preference_score)
                 .unwrap_or_default();
-            self.park_pending_release_for_review(
-                wanted,
-                &title,
-                candidate,
-                candidate_score,
-                None,
-            )
-            .await;
+            self.park_pending_release_for_review(wanted, &title, candidate, candidate_score, None)
+                .await;
         }
         let Some(best_index) = results
             .iter()
@@ -1393,7 +1217,10 @@ impl AppUseCase {
             QueuedReleaseSelection {
                 indexer_id: best.indexer_id.clone(),
                 source_hint: canonical_source.as_ref().map(|(source, _)| source.clone()),
-                source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
+                source_kind: canonical_source
+                    .as_ref()
+                    .map(|(_, kind)| *kind)
+                    .or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
                 info_hash_hint: best
@@ -1479,8 +1306,21 @@ mod grab_time_release_title_tests {
             Ok(())
         }
 
-        async fn record_ambiguous_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        async fn record_ambiguous_submission(
+            &self,
+            submission: DownloadSubmission,
+        ) -> AppResult<()> {
             self.record_submission(submission).await
+        }
+
+        async fn record_submission_with_identity(
+            &self,
+            submission: DownloadSubmission,
+            _: crate::DownloadSubmissionIdentity,
+            _: Option<crate::PersistedSeedGoals>,
+        ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+            self.record_submission(submission).await?;
+            Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
         }
 
         async fn find_by_client_item_id(
@@ -1543,7 +1383,10 @@ mod grab_time_release_title_tests {
         }
 
         async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
-            self.rows.lock().await.retain(|row| row.title_id != title_id);
+            self.rows
+                .lock()
+                .await
+                .retain(|row| row.title_id != title_id);
             Ok(())
         }
 
@@ -1579,8 +1422,9 @@ mod grab_time_release_title_tests {
     async fn manual_queue_persists_the_indexer_release_title_on_the_submission_row() {
         let (base_app, user) = crate::lib_tests::bootstrap();
         let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
-        let app = base_app
-            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+        let app = base_app.with_test_overrides(|services| {
+            services.with_download_submissions(submissions.clone())
+        });
         let title = app
             .add_title(&user, movie_request("Paper Lantern"))
             .await
@@ -1625,8 +1469,9 @@ mod grab_time_release_title_tests {
         // import degrades only the parsed name, see ReleaseEvidence).
         let (base_app, user) = crate::lib_tests::bootstrap();
         let submissions = Arc::new(RecordingDownloadSubmissionRepo::default());
-        let app = base_app
-            .with_test_overrides(|services| services.with_download_submissions(submissions.clone()));
+        let app = base_app.with_test_overrides(|services| {
+            services.with_download_submissions(submissions.clone())
+        });
 
         let (title, _job_id) = app
             .add_title_and_queue_download(
@@ -1651,6 +1496,8 @@ mod grab_time_release_title_tests {
         assert_eq!(rows[0].title_id, title.id);
         assert_eq!(rows[0].scope, SubmissionScope::Title);
         assert_eq!(rows[0].source_title, None);
-        assert!(crate::import_parameters::submission_has_scryer_origin(&rows[0]));
+        assert!(crate::import_parameters::submission_has_scryer_origin(
+            &rows[0]
+        ));
     }
 }

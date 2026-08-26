@@ -378,6 +378,10 @@ pub struct SeriesMovieLinkPayload {
     pub movie_form: Option<String>,
     /// Short explanation of the placement signals, or null when unavailable.
     pub signal_summary: Option<String>,
+    /// Explicit operator monitoring choice, or null when title policy manages this link.
+    pub monitoring_override: Option<bool>,
+    /// Whether current metadata still reports this series-movie relationship.
+    pub metadata_active: bool,
     /// Whether acquisition and monitoring are enabled for this link.
     pub monitored: bool,
 }

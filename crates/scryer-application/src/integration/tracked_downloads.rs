@@ -307,6 +307,53 @@ pub(crate) const WARNING_TIMEOUT_TRACKED_STATE_REASON: &str = "warning_timeout";
 pub(crate) const WARNING_TIMEOUT_STATUS_MESSAGE_PREFIX: &str =
     "download client warning persisted for 24h:";
 
+/// Durable reason an import-blocked download requires operator attention.
+///
+/// These values are persisted in `download_identity_states.reason`; parsing is
+/// deliberately restricted to that storage boundary rather than user-facing
+/// status text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportBlockedReason {
+    PreImport,
+    AfterImport,
+    ManualMappingRequired,
+    MissingCompletedHistoryIdentity,
+    AssignedTitleMissing,
+    CompletedTitleIdentityMismatch,
+    UnverifiedAlreadyImported,
+}
+
+impl ImportBlockedReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PreImport => "import_blocked_pre_import",
+            Self::AfterImport => "import_blocked_after_import",
+            Self::ManualMappingRequired => "manual_import_mapping_required",
+            Self::MissingCompletedHistoryIdentity => "missing_completed_history_identity",
+            Self::AssignedTitleMissing => "assigned_title_missing",
+            Self::CompletedTitleIdentityMismatch => "completed_title_identity_mismatch",
+            Self::UnverifiedAlreadyImported => "unverified_already_imported",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "import_blocked_pre_import" => Some(Self::PreImport),
+            "import_blocked_after_import" => Some(Self::AfterImport),
+            "manual_import_mapping_required" => Some(Self::ManualMappingRequired),
+            "missing_completed_history_identity" => Some(Self::MissingCompletedHistoryIdentity),
+            "assigned_title_missing" => Some(Self::AssignedTitleMissing),
+            "completed_title_identity_mismatch" => Some(Self::CompletedTitleIdentityMismatch),
+            "unverified_already_imported" => Some(Self::UnverifiedAlreadyImported),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn reopens_for_verification(self) -> bool {
+        matches!(self, Self::UnverifiedAlreadyImported)
+    }
+}
+
 /// In-memory cache of tracked downloads with title resolution and state management.
 ///
 /// Warning timers are intentionally runtime-only: a restart gives a still-warned
@@ -1141,43 +1188,6 @@ impl TrackedDownloadService {
                 if state == TrackedDownloadState::ImportBlocked {
                     set_import_blocked_status(td, None);
                 }
-                return;
-            }
-        }
-
-        // Fall back to the latest import record for restart recovery if the
-        // tracked state was not persisted before shutdown. This is only safe
-        // after the current DownloadId resolves to a Scryer submission.
-        if let Some(submission) = download_id_submission {
-            let submission_identity = ClientJobLocator::from_submission(&submission);
-            let download_identity = app
-                .services
-                .workflow
-                .download_submissions
-                .get_submission_identity(&submission_identity)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let imported = !download_submission_identity_is_empty(&download_identity)
-                && app
-                    .services
-                    .workflow
-                    .imports
-                    .is_already_imported_by_download_id(&submission_identity, &download_identity)
-                    .await
-                    .unwrap_or(false);
-            if imported {
-                td.state = TrackedDownloadState::Imported;
-                let _ = app
-                    .services
-                    .workflow
-                    .download_submissions
-                    .update_tracked_state(
-                        &submission_identity,
-                        TrackedDownloadState::Imported.as_str(),
-                    )
-                    .await;
             }
         }
 
@@ -1421,11 +1431,10 @@ pub(crate) async fn assign_title_to_tracked_download(
     // the same explicit manual-import decision point as episodic downloads.
     if was_blocked {
         set_import_blocked_status(td, None);
-        persist_tracked_download_state_marker(
+        persist_import_blocked_state_marker(
             app,
             td,
-            TrackedDownloadState::ImportBlocked,
-            Some("manual_import_mapping_required"),
+            ImportBlockedReason::ManualMappingRequired,
             td.status_messages.first().map(String::as_str),
         )
         .await;
@@ -1898,6 +1907,22 @@ impl TrackedDownloadHandle {
 /// marker records that an operator decision is pending, so restarts don't
 /// erase the fact and reconciliation sweeps don't re-offer the item; a later
 /// successful import overwrites it with the terminal state.
+pub(crate) async fn persist_import_blocked_state_marker(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    reason: ImportBlockedReason,
+    detail: Option<&str>,
+) -> bool {
+    persist_tracked_download_state_marker(
+        app,
+        td,
+        TrackedDownloadState::ImportBlocked,
+        Some(reason.as_str()),
+        detail,
+    )
+    .await
+}
+
 pub(crate) async fn persist_tracked_download_state_marker(
     app: &AppUseCase,
     td: &TrackedDownload,
@@ -1919,23 +1944,6 @@ pub(crate) async fn persist_tracked_download_state_marker(
             &td.client_item.download_client_item_id,
         ),
     };
-    if let Err(e) = app
-        .services
-        .workflow
-        .download_submissions
-        .update_tracked_state(&state_identity, state.as_str())
-        .await
-    {
-        tracing::warn!(
-            error = %e,
-            id = %td.id,
-            tracked_state_client_item_id = state_identity.item_id.as_str(),
-            state = state.as_str(),
-            "failed to persist tracked download state"
-        );
-        return false;
-    }
-
     // The durable row is keyed by the canonical download, not by the legacy
     // wire token, so an item that carries no token still has somewhere to
     // record its outcome. Gating this on a non-empty observed identity meant
@@ -1974,7 +1982,49 @@ pub(crate) async fn persist_tracked_download_state_marker(
         return false;
     }
 
+    // Write the canonical state and its typed reason before updating the
+    // legacy submission projection. If the second write fails, restart
+    // reconstruction still sees the safe canonical reason instead of a stale
+    // migrated `unverified_already_imported` marker.
+    if let Err(e) = app
+        .services
+        .workflow
+        .download_submissions
+        .update_tracked_state(&state_identity, state.as_str())
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            id = %td.id,
+            tracked_state_client_item_id = state_identity.item_id.as_str(),
+            state = state.as_str(),
+            "failed to persist tracked download submission state"
+        );
+        return false;
+    }
+
     true
+}
+
+pub(crate) async fn import_blocked_reason_for_tracked(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+) -> Option<ImportBlockedReason> {
+    let observed_identity = observed_queue_item_identity(&td.client_item);
+    let source_identity = queue_item_source_identity(&td.client_item);
+    app.services
+        .workflow
+        .download_submissions
+        .get_identity_tracked_state_reason_for_download(
+            td.canonical_download_id(),
+            &observed_identity,
+            Some(&source_identity),
+        )
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(ImportBlockedReason::parse)
 }
 
 pub(crate) fn tracked_client_type_is_excluded(
@@ -2302,6 +2352,16 @@ mod tests {
             submission: crate::DownloadSubmission,
         ) -> AppResult<()> {
             self.record_submission(submission).await
+        }
+
+        async fn record_submission_with_identity(
+            &self,
+            submission: crate::DownloadSubmission,
+            _: crate::DownloadSubmissionIdentity,
+            _: Option<crate::PersistedSeedGoals>,
+        ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+            self.record_submission(submission).await?;
+            Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
         }
 
         async fn find_by_client_item_id(
@@ -2836,38 +2896,6 @@ mod tests {
                     })
                 })
                 .collect())
-        }
-
-        async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool> {
-            Ok(self.stored_imports().iter().any(|record| {
-                record.source_client_id.as_deref().unwrap_or("") == identity.client_id_or_empty()
-                    && record.source_system == identity.client_type
-                    && record.source_ref == identity.item_id
-                    && matches!(
-                        record.status,
-                        ImportStatus::Completed | ImportStatus::Skipped
-                    )
-            }))
-        }
-
-        async fn is_already_imported_by_download_id(
-            &self,
-            source_identity: &ClientJobLocator,
-            identity: &crate::DownloadSubmissionIdentity,
-        ) -> AppResult<bool> {
-            let Some(download_id) = identity.download_id.as_deref() else {
-                return Ok(false);
-            };
-            Ok(self.stored_imports().iter().any(|record| {
-                record.source_client_id.as_deref().unwrap_or("")
-                    == source_identity.client_id_or_empty()
-                    && record.source_system == source_identity.client_type
-                    && record.download_id.as_deref() == Some(download_id)
-                    && matches!(
-                        record.status,
-                        ImportStatus::Completed | ImportStatus::Skipped
-                    )
-            }))
         }
 
         async fn list_imports(&self, _: usize) -> AppResult<Vec<ImportRecord>> {
@@ -4398,7 +4426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconstruct_state_recovers_imported_from_completed_import_record() {
+    async fn reconstruct_state_does_not_trust_status_only_import_record() {
         let download_id = "scryer-download:restart-recovery";
         let download_submissions = Arc::new(TestDownloadSubmissionRepo {
             submission: Some(crate::DownloadSubmission {
@@ -4442,9 +4470,9 @@ mod tests {
                 source_system: "nzbget".to_string(),
                 source_ref: "dl-1".to_string(),
                 import_type: ImportType::SeriesDownload,
-                status: ImportStatus::Completed,
+                status: ImportStatus::Skipped,
                 payload_json: "{}".to_string(),
-                result_json: None,
+                result_json: Some(r#"{"skip_reason":"already_imported"}"#.to_string()),
                 download_id: Some(download_id.to_string()),
                 import_transfer_phase: None,
                 import_transfer_bytes: None,
@@ -4467,14 +4495,13 @@ mod tests {
         tracker.track(&app, item).await;
 
         let tracked = tracker.find(&tracked_id).expect("tracked download");
-        assert_eq!(tracked.state, TrackedDownloadState::Imported);
-        assert_eq!(
+        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert!(
             download_submissions
                 .tracked_state_updates
                 .lock()
                 .await
-                .as_slice(),
-            ["imported"]
+                .is_empty()
         );
     }
 
@@ -4605,6 +4632,15 @@ mod tests {
                 _: crate::DownloadSubmission,
             ) -> AppResult<()> {
                 Ok(())
+            }
+
+            async fn record_submission_with_identity(
+                &self,
+                _: crate::DownloadSubmission,
+                _: crate::DownloadSubmissionIdentity,
+                _: Option<crate::PersistedSeedGoals>,
+            ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+                Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
             }
 
             async fn find_by_client_item_id(

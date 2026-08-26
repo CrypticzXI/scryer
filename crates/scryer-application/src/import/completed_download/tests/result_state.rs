@@ -121,6 +121,34 @@ async fn apply_result_marks_verified_already_present_skip_imported() {
 }
 
 #[tokio::test]
+async fn apply_result_terminalizes_verified_all_ignored_skip_as_successful_no_op() {
+    let title = build_title("title-1", "Show", MediaFacet::Series);
+    let collection = build_collection("season-1", "title-1", "1");
+    let mut episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+    episode.monitored = false;
+    let app = build_app(
+        vec![title],
+        vec![collection],
+        vec![episode],
+        vec![build_artifact_with_result(
+            "dl-1",
+            Some("ep-1"),
+            "Show.S01E01.mkv",
+            "ignored",
+        )],
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut result = failed_execution_result("all source videos were intentionally ignored");
+    result.decision = ImportDecision::Skipped;
+    result.skip_reason = None;
+
+    assert!(apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+    assert_eq!(td.status, TrackedDownloadStatus::Ok);
+    assert!(td.status_messages.is_empty());
+}
+
+#[tokio::test]
 async fn unavailable_artifact_evidence_keeps_already_present_import_retryable() {
     let app = build_app_with_import_artifact_repository(
         vec![build_title("title-1", "Show", MediaFacet::Series)],

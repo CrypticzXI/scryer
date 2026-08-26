@@ -365,59 +365,18 @@ pub(crate) fn compute_search_fingerprint(
     crate::sha256_hex(canonical)
 }
 
-fn search_relevant_caps(raw: Option<&str>) -> serde_json::Value {
-    let Some(object) = raw
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|value| value.as_object().cloned())
-    else {
-        return serde_json::Value::Null;
-    };
-    let mut projected = serde_json::Map::new();
-    for key in [
-        "search",
-        "tv_search",
-        "movie_search",
-        "categories",
-        "limits",
-    ] {
-        if let Some(value) = object.get(key) {
-            projected.insert(key.to_string(), value.clone());
-        }
-    }
-    serde_json::Value::Object(projected)
-}
-
 fn indexer_coverage_fingerprint(
     scope_fingerprint: &str,
     config: &IndexerConfig,
     search_semantics_version: Option<u32>,
 ) -> String {
-    let config_json = config
-        .config_json
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .unwrap_or(serde_json::Value::Null);
-    let managed_metadata = config
-        .managed_metadata_json
-        .as_deref()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .unwrap_or(serde_json::Value::Null);
-    let secret_fingerprint = config
-        .api_key_encrypted
-        .as_deref()
-        .map(|secret| crate::sha256_hex(format!("indexer-secret-v1:{secret}")));
-    let identity = serde_json::json!({
-        "version": 2,
-        "scope": scope_fingerprint,
-        "provider": config.provider_type.trim().to_ascii_lowercase(),
-        "endpoint": config.base_url.trim().trim_end_matches('/'),
-        "config": config_json,
-        "secret_fingerprint": secret_fingerprint,
-        "proxy": config.indexer_proxy_config_id,
-        "routing": managed_metadata,
-        "caps": search_relevant_caps(config.caps_snapshot_json.as_deref()),
-        "search_semantics": search_semantics_version,
-    });
+    let mut identity = crate::indexer_search_identity(config, search_semantics_version);
+    if let Some(identity) = identity.as_object_mut() {
+        identity.insert(
+            "scope".to_string(),
+            serde_json::Value::String(scope_fingerprint.to_string()),
+        );
+    }
     crate::sha256_hex(canonical_json_string(&identity))
 }
 
@@ -493,7 +452,9 @@ impl AppUseCase {
                         && row.fingerprint == expected
                         && stale_before.is_none_or(|cutoff| {
                             chrono::DateTime::parse_from_rfc3339(&row.searched_at)
-                                .map(|searched_at| searched_at.with_timezone(&chrono::Utc) >= cutoff)
+                                .map(|searched_at| {
+                                    searched_at.with_timezone(&chrono::Utc) >= cutoff
+                                })
                                 .unwrap_or(false)
                         })
                 })

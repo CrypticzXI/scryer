@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use scryer_application::NullIndexerErrorRecorder;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerErrorOperation,
-    IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchResponse,
-    IndexerSearchCompletion, IndexerSearchIncompleteReason as HostIncompleteReason,
+    IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchCompletion,
+    IndexerSearchIncompleteReason as HostIncompleteReason, IndexerSearchResponse,
     IndexerSearchResult, SearchMode, is_valid_magnet_uri, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
@@ -557,13 +557,11 @@ fn decode_search_result(
         }),
         PluginResult::Err(PluginError {
             details:
-                Some(PluginErrorDetails::IndexerSearch(
-                    IndexerSearchPluginError::PartialResults {
-                        response,
-                        reason,
-                        retry_after_seconds,
-                    },
-                )),
+                Some(PluginErrorDetails::IndexerSearch(IndexerSearchPluginError::PartialResults {
+                    response,
+                    reason,
+                    retry_after_seconds,
+                })),
             ..
         }) => Ok(PluginSearchCallResponse {
             response: *response,

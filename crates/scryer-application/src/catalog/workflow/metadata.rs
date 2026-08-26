@@ -1,5 +1,6 @@
-const REMATCH_REPLACED_EXTERNAL_ID_SOURCES: &[&str] =
-    &["smg", "tvdb", "imdb", "tmdb", "mal", "anilist", "anidb", "kitsu"];
+const REMATCH_REPLACED_EXTERNAL_ID_SOURCES: &[&str] = &[
+    "smg", "tvdb", "imdb", "tmdb", "mal", "anilist", "anidb", "kitsu",
+];
 const REMATCH_DERIVED_TAG_PREFIXES: &[&str] = &[
     "scryer:mal-score:",
     "scryer:anime-media-type:",
@@ -200,10 +201,7 @@ impl AppUseCase {
         Ok(self.resolve_metadata_language_for_title(&title).await)
     }
 
-    pub async fn effective_use_season_folders_for_title(
-        &self,
-        title_id: &str,
-    ) -> AppResult<bool> {
+    pub async fn effective_use_season_folders_for_title(&self, title_id: &str) -> AppResult<bool> {
         let title = self
             .services
             .catalog
@@ -234,14 +232,15 @@ impl AppUseCase {
             .map(str::to_owned);
         Ok(Some(match policy {
             Some(policy) => policy,
-            None => self
-                .resolve_library_string_setting(
+            None => {
+                self.resolve_library_string_setting(
                     "anime.filler_policy",
                     Some(&title.library_id),
                     Some(title.facet.as_str()),
                     "download_all",
                 )
-                .await?,
+                .await?
+            }
         }))
     }
 
@@ -265,14 +264,15 @@ impl AppUseCase {
             .map(str::to_owned);
         Ok(Some(match policy {
             Some(policy) => policy,
-            None => self
-                .resolve_library_string_setting(
+            None => {
+                self.resolve_library_string_setting(
                     "anime.recap_policy",
                     Some(&title.library_id),
                     Some(title.facet.as_str()),
                     "download_all",
                 )
-                .await?,
+                .await?
+            }
         }))
     }
 
@@ -571,6 +571,9 @@ impl AppUseCase {
             .update_metadata(id, name, facet, tags, resolved_root_folder_id)
             .await?;
 
+        self.reconcile_series_movie_link_monitoring_for_title(&title)
+            .await?;
+
         self.emit_title_updated_activity(actor, &title).await;
         Ok(title)
     }
@@ -746,7 +749,9 @@ impl AppUseCase {
                         Some(requested_ref),
                     )
                 } else {
-                    let language = self.resolve_metadata_language_for_title(&existing_title).await;
+                    let language = self
+                        .resolve_metadata_language_for_title(&existing_title)
+                        .await;
                     let movie = match self
                         .services
                         .library
@@ -754,13 +759,9 @@ impl AppUseCase {
                         .get_movie_titles(std::slice::from_ref(&requested_ref), &language)
                         .await
                     {
-                        Ok(result) => result
-                            .by_ref_index
-                            .get(&0)
-                            .cloned()
-                            .ok_or_else(|| {
-                                AppError::NotFound("movie metadata response missing title".into())
-                            })?,
+                        Ok(result) => result.by_ref_index.get(&0).cloned().ok_or_else(|| {
+                            AppError::NotFound("movie metadata response missing title".into())
+                        })?,
                         Err(error) if movie_title_queries_not_supported(&error) => {
                             let tvdb_id = requested_ref.tvdb_id.ok_or_else(|| {
                                 AppError::Repository(
@@ -1023,9 +1024,7 @@ pub(crate) fn select_title_credits(
     let allowed = kinds.filter(|kinds| !kinds.is_empty());
     let mut selected = credits
         .into_iter()
-        .filter(|credit| {
-            allowed.is_none_or(|kinds| kinds.iter().any(|kind| kind == &credit.kind))
-        })
+        .filter(|credit| allowed.is_none_or(|kinds| kinds.iter().any(|kind| kind == &credit.kind)))
         .collect::<Vec<_>>();
     selected.sort_by_key(|credit| credit.billing_order);
     selected.truncate(limit);

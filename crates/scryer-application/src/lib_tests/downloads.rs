@@ -2926,6 +2926,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
                 scope: SubmissionScope::Title,
             },
             submission_identity,
+            None,
         )
         .await
         .expect("seed owned download submission identity");
@@ -4999,6 +5000,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
             DownloadSubmissionIdentity {
                 download_id: Some("scryer-download:fresh".to_string()),
             },
+            None,
         )
         .await
         .expect("record fresh identity");
@@ -5516,7 +5518,7 @@ async fn automatic_episode_upgrade_rejection_is_not_burned() {
 }
 
 #[tokio::test]
-async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
+async fn automatic_multi_file_import_prefers_rejection_over_another_import() {
     let (
         FailClosedPackFixture {
             app,
@@ -5580,7 +5582,7 @@ async fn automatic_multi_file_import_clears_burn_after_another_file_imports() {
 
     assert_eq!(
         result.decision,
-        scryer_domain::ImportDecision::Imported,
+        scryer_domain::ImportDecision::Rejected,
         "{result:?}"
     );
     assert!(!result.release_burned, "{result:?}");
@@ -6144,7 +6146,7 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
     let evidence = crate::import_workflow::ReleaseEvidence::ScryerSubmission {
         title_id: title.id.clone(),
         facet: "series".to_string(),
-        source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
+        source_title: Some("Fail.Closed.Pack.S01E03.1080p.WEB-DL.DDP5.1.H.264-GRP".to_string()),
         observed_release_name: None,
         release_size_bytes: None,
         purpose: DownloadSubmissionPurpose::Standard,
@@ -6197,8 +6199,8 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
 // concrete episodes; season-pack members and files with siblings identify
 // themselves, and an obfuscated one is parked for manual import.
 
-const PACK_IDENTITY_EPISODE_RELEASE: &str = "Fail.Closed.Pack.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb";
-const PACK_IDENTITY_SEASON_RELEASE: &str = "Fail.Closed.Pack.S01.720p.WEB-DL.AV1.AAC2.0-NTb";
+const PACK_IDENTITY_EPISODE_RELEASE: &str = "Fail.Closed.Pack.S01E01.720p.WEB-DL.AV1.AAC2.0-GRP";
+const PACK_IDENTITY_SEASON_RELEASE: &str = "Fail.Closed.Pack.S01.720p.WEB-DL.AV1.AAC2.0-GRP";
 
 /// Record the durable Scryer grab behind `item_id` (release title + scope) so
 /// the completed download imports as a `ReleaseEvidence::ScryerSubmission`.
@@ -6255,6 +6257,66 @@ async fn create_second_pack_episode(
     .expect("create second episode")
 }
 
+async fn create_absolute_pack_episode(
+    app: &AppUseCase,
+    template: &Episode,
+    episode_number: u32,
+) -> Episode {
+    let mut episode = template.clone();
+    episode.id = Id::new().0;
+    episode.episode_number = Some(episode_number.to_string());
+    episode.episode_label = Some(format!("S01E{episode_number:02}"));
+    episode.title = Some(format!("Episode {episode_number}"));
+    episode.absolute_number = Some(episode_number.to_string());
+    app.services
+        .catalog
+        .shows
+        .create_episode(episode.clone())
+        .await
+        .expect("create absolute-numbered episode");
+    episode
+}
+
+async fn create_pack_episode_in_season(
+    app: &AppUseCase,
+    user: &User,
+    title_id: &str,
+    season_number: u32,
+    episode_number: u32,
+    absolute_number: Option<u32>,
+    episode_type: &str,
+) -> Episode {
+    let collection = app
+        .create_collection(
+            user,
+            title_id.to_string(),
+            "season".into(),
+            season_number.to_string(),
+            Some(format!("Season {season_number}")),
+            None,
+            Some(season_number.to_string()),
+            Some(season_number.to_string()),
+        )
+        .await
+        .expect("create pack season collection");
+    app.create_episode(
+        user,
+        title_id.to_string(),
+        Some(collection.id),
+        episode_type.into(),
+        Some(episode_number.to_string()),
+        Some(season_number.to_string()),
+        Some(format!("S{season_number:02}E{episode_number:02}")),
+        Some(format!("Season {season_number} Episode {episode_number}")),
+        absolute_number.map(|number| number.to_string()),
+        Some(1_500),
+        false,
+        false,
+    )
+    .await
+    .expect("create pack episode")
+}
+
 fn media_file_episode_ids(files: &[crate::TitleMediaFile]) -> std::collections::BTreeSet<String> {
     files
         .iter()
@@ -6299,11 +6361,11 @@ async fn automatic_season_pack_import_identifies_each_member_by_its_own_name() {
     std::fs::create_dir_all(&season_dir).expect("create season dir");
     let first_member = write_pack_video(
         &season_dir,
-        "Fail.Closed.Pack.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb.mkv",
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL.AV1.AAC2.0-GRP.mkv",
     );
     let second_member = write_pack_video(
         &season_dir,
-        "Fail.Closed.Pack.S01E02.720p.WEB-DL.AV1.AAC2.0-NTb.mkv",
+        "Fail.Closed.Pack.S01E02.720p.WEB-DL.AV1.AAC2.0-GRP.mkv",
     );
     let completed = series_pack_completed_download(
         item_id,
@@ -6312,6 +6374,7 @@ async fn automatic_season_pack_import_identifies_each_member_by_its_own_name() {
         source_dir.path(),
     );
 
+    let _probe = probe_sequence_agrees_with_the_names([(1280, 720), (1280, 720)]);
     let result = crate::import::import::import_completed_download(&app, &user, &completed)
         .await
         .expect("completed season pack import should run");
@@ -6332,86 +6395,675 @@ async fn automatic_season_pack_import_identifies_each_member_by_its_own_name() {
         "member judged against a season-long runtime: {result:?}"
     );
 
-    // Synthetic pack members cannot be probed, so with `runtime-media-analysis`
-    // enabled both are rejected by the sample gate for an unrelated reason and
-    // only the identity assertions above apply.
-    if cfg!(not(feature = "runtime-media-analysis")) {
-        assert_eq!(
-            result.decision,
-            scryer_domain::ImportDecision::Imported,
-            "unexpected import result: {result:?}"
-        );
-        assert_eq!(
-            result.error_message, None,
-            "every member should import cleanly: {result:?}"
-        );
-        assert_eq!(
-            result
-                .episode_ids
-                .iter()
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>(),
-            std::collections::BTreeSet::from([episode.id.clone(), second_episode.id.clone()])
-        );
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "unexpected import result: {result:?}"
+    );
+    assert_eq!(
+        result.error_message, None,
+        "every member should import cleanly: {result:?}"
+    );
+    assert_eq!(
+        result
+            .episode_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([episode.id.clone(), second_episode.id.clone()])
+    );
 
-        let media_files = app
-            .services
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_files.len(),
+        2,
+        "one library file per member: {media_files:?}"
+    );
+    assert_eq!(
+        media_file_episode_ids(&media_files),
+        std::collections::BTreeSet::from([episode.id.clone(), second_episode.id.clone()]),
+        "each member links to exactly its own episode: {media_files:?}"
+    );
+    let library_files = library_video_file_names(library_dir.path());
+    assert_eq!(
+        library_files.len(),
+        2,
+        "unexpected library files: {library_files:?}"
+    );
+    assert!(
+        library_files.iter().any(|name| name.contains("S01E01"))
+            && library_files.iter().any(|name| name.contains("S01E02")),
+        "unexpected library files: {library_files:?}"
+    );
+
+    for (file_name, expected_episode_id) in [
+        (
+            "fail.closed.pack.s01e01.720p.web-dl.av1.aac2.0-grp.mkv",
+            episode.id.as_str(),
+        ),
+        (
+            "fail.closed.pack.s01e02.720p.web-dl.av1.aac2.0-grp.mkv",
+            second_episode.id.as_str(),
+        ),
+    ] {
+        let artifacts = import_artifacts.artifacts_for_file(file_name).await;
+        assert_eq!(artifacts.len(), 1, "unexpected artifacts: {artifacts:?}");
+        assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
+        assert_eq!(
+            artifacts[0].episode_id.as_deref(),
+            Some(expected_episode_id)
+        );
+    }
+    let statuses: Vec<ImportStatus> = import_repo
+        .records
+        .lock()
+        .await
+        .iter()
+        .map(|record| record.status)
+        .collect();
+    assert_eq!(statuses, vec![ImportStatus::Completed]);
+    assert!(first_member.exists());
+    assert!(second_member.exists());
+}
+
+#[tokio::test]
+async fn automatic_multi_season_pack_imports_explicit_members_from_each_declared_season() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: first_episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let second_episode =
+        create_pack_episode_in_season(&app, &user, &title.id, 2, 1, Some(2), "standard").await;
+    let item_id = "multi-season-explicit-members";
+    let release_name = "Fail.Closed.Pack.S01-S02.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: first_episode
+                .collection_id
+                .clone()
+                .expect("season one collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let season_one_dir = source_dir.path().join("Season 01");
+    let season_two_dir = source_dir.path().join("Season 02");
+    std::fs::create_dir_all(&season_one_dir).expect("create first season directory");
+    std::fs::create_dir_all(&season_two_dir).expect("create second season directory");
+    write_pack_video(&season_one_dir, "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv");
+    write_pack_video(&season_two_dir, "Fail.Closed.Pack.S02E01.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+
+    let result = {
+        let _probe = probe_sequence_agrees_with_the_names([(1280, 720), (1280, 720)]);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("multi-season pack import should run")
+    };
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert_eq!(
+        media_file_episode_ids(
+            &app.services
+                .library
+                .media_files
+                .list_media_files_for_title(&title.id)
+                .await
+                .expect("list imported media files")
+        ),
+        std::collections::BTreeSet::from([first_episode.id.clone(), second_episode.id.clone()])
+    );
+    assert_eq!(library_video_file_names(library_dir.path()).len(), 2);
+    for (file_name, episode_id) in [
+        ("fail.closed.pack.s01e01.720p.web-dl.mkv", &first_episode.id),
+        (
+            "fail.closed.pack.s02e01.720p.web-dl.mkv",
+            &second_episode.id,
+        ),
+    ] {
+        let artifacts = import_artifacts.artifacts_for_file(file_name).await;
+        assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+        assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
+        assert_eq!(
+            artifacts[0].episode_id.as_deref(),
+            Some(episode_id.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn automatic_pack_records_unmonitored_catalog_members_as_ignored() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: monitored_episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let unmonitored_episode = create_second_pack_episode(
+        &app,
+        &user,
+        &title.id,
+        monitored_episode.collection_id.clone(),
+    )
+    .await;
+    app.set_episode_monitored(&user, &unmonitored_episode.id, false)
+        .await
+        .expect("unmonitor second pack episode");
+    let item_id = "unmonitored-pack-member";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: monitored_episode
+                .collection_id
+                .clone()
+                .expect("season collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let monitored_file =
+        write_pack_video(source_dir.path(), "Fail.Closed.Pack.S01E01.720p.WEB-DL.mkv");
+    let unmonitored_file =
+        write_pack_video(source_dir.path(), "Fail.Closed.Pack.S01E02.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("pack import should run")
+    };
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert_eq!(library_video_file_names(library_dir.path()).len(), 1);
+    assert!(monitored_file.exists() && unmonitored_file.exists());
+    let ignored = import_artifacts
+        .artifacts_for_file("fail.closed.pack.s01e02.720p.web-dl.mkv")
+        .await;
+    assert_eq!(ignored.len(), 1, "{ignored:?}");
+    assert_eq!(ignored[0].result, "ignored", "{ignored:?}");
+    assert_eq!(
+        ignored[0].reason_code.as_deref(),
+        Some("unmonitored_pack_episode")
+    );
+    assert_eq!(
+        ignored[0].episode_id.as_deref(),
+        Some(unmonitored_episode.id.as_str())
+    );
+    assert_eq!(
+        media_file_episode_ids(
+            &app.services
+                .library
+                .media_files
+                .list_media_files_for_title(&title.id)
+                .await
+                .expect("list imported media files")
+        ),
+        std::collections::BTreeSet::from([monitored_episode.id.clone()])
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_ignores_recognized_large_ncop_video_without_creating_media() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let item_id = "auxiliary-pack-member";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: episode.collection_id.clone().expect("season collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let auxiliary_file =
+        write_pack_video(source_dir.path(), "Fail.Closed.Pack.NCOP.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("auxiliary-only pack import should run");
+
+    assert!(auxiliary_file.exists(), "ignored source must stay in place");
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    assert!(
+        app.services
             .library
             .media_files
             .list_media_files_for_title(&title.id)
             .await
-            .expect("list media files");
-        assert_eq!(
-            media_files.len(),
-            2,
-            "one library file per member: {media_files:?}"
-        );
-        assert_eq!(
-            media_file_episode_ids(&media_files),
-            std::collections::BTreeSet::from([episode.id.clone(), second_episode.id.clone()]),
-            "each member links to exactly its own episode: {media_files:?}"
-        );
-        let library_files = library_video_file_names(library_dir.path());
-        assert_eq!(
-            library_files.len(),
-            2,
-            "unexpected library files: {library_files:?}"
-        );
-        assert!(
-            library_files.iter().any(|name| name.contains("S01E01"))
-                && library_files.iter().any(|name| name.contains("S01E02")),
-            "unexpected library files: {library_files:?}"
-        );
+            .expect("list imported media files")
+            .is_empty()
+    );
+    let ignored = import_artifacts
+        .artifacts_for_file("fail.closed.pack.ncop.720p.web-dl.mkv")
+        .await;
+    assert_eq!(ignored.len(), 1, "{ignored:?}");
+    assert_eq!(ignored[0].result, "ignored", "{ignored:?}");
+    assert_eq!(ignored[0].reason_code.as_deref(), Some("auxiliary_video"));
+}
 
-        for (file_name, expected_episode_id) in [
-            (
-                "fail.closed.pack.s01e01.720p.web-dl.av1.aac2.0-ntb.mkv",
-                episode.id.as_str(),
-            ),
-            (
-                "fail.closed.pack.s01e02.720p.web-dl.av1.aac2.0-ntb.mkv",
-                second_episode.id.as_str(),
-            ),
-        ] {
-            let artifacts = import_artifacts.artifacts_for_file(file_name).await;
-            assert_eq!(artifacts.len(), 1, "unexpected artifacts: {artifacts:?}");
-            assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
-            assert_eq!(
-                artifacts[0].episode_id.as_deref(),
-                Some(expected_episode_id)
-            );
-        }
-        let statuses: Vec<ImportStatus> = import_repo
-            .records
-            .lock()
+#[tokio::test]
+async fn automatic_verified_pack_imports_monitored_special_omitted_from_episode_set() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: first_standard,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let second_standard =
+        create_second_pack_episode(&app, &user, &title.id, first_standard.collection_id.clone())
+            .await;
+    let special =
+        create_pack_episode_in_season(&app, &user, &title.id, 0, 1, None, "special").await;
+    let item_id = "monitored-special-outside-episode-set";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::EpisodeSet {
+            episode_ids: vec![first_standard.id.clone(), second_standard.id.clone()],
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    write_pack_video(source_dir.path(), "Fail.Closed.Pack.S00E01.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &completed)
             .await
-            .iter()
-            .map(|record| record.status)
-            .collect();
-        assert_eq!(statuses, vec![ImportStatus::Completed]);
+            .expect("special pack member import should run")
+    };
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "{result:?}"
+    );
+    assert_eq!(library_video_file_names(library_dir.path()).len(), 1);
+    let artifacts = import_artifacts
+        .artifacts_for_file("fail.closed.pack.s00e01.720p.web-dl.mkv")
+        .await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "imported", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].episode_id.as_deref(),
+        Some(special.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_holds_nested_different_title_numeric_member() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: first_episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    create_pack_episode_in_season(&app, &user, &title.id, 2, 1, Some(2), "standard").await;
+    let item_id = "nested-different-title-member";
+    let release_name = "Fail.Closed.Pack.S01-S02.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: first_episode
+                .collection_id
+                .clone()
+                .expect("season one collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let member_dir = source_dir.path().join("Different Title").join("Season 02");
+    std::fs::create_dir_all(&member_dir).expect("create nested title directory");
+    let source_file = write_pack_video(&member_dir, "01.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("mixed-title pack import should run");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(source_file.exists());
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    let artifacts = import_artifacts
+        .artifacts_for_file("01.720p.web-dl.mkv")
+        .await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "rejected", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].reason_code.as_deref(),
+        Some("member_title_mismatch")
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_holds_bdmv_stream_payload() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let item_id = "bdmv-stream-payload";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: episode.collection_id.clone().expect("season collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let stream_dir = source_dir.path().join("BDMV").join("STREAM");
+    std::fs::create_dir_all(&stream_dir).expect("create BDMV stream directory");
+    let source_file = write_pack_video(&stream_dir, "00001.m2ts");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("BDMV pack import should run");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(source_file.exists());
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    let artifacts = import_artifacts.artifacts_for_file("00001.m2ts").await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "rejected", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].reason_code.as_deref(),
+        Some("disc_layout_member")
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_holds_unmonitored_standard_outside_declared_season() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: first_episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let outside_episode =
+        create_pack_episode_in_season(&app, &user, &title.id, 2, 1, Some(2), "standard").await;
+    app.set_episode_monitored(&user, &outside_episode.id, false)
+        .await
+        .expect("unmonitor out-of-range catalog episode");
+    let item_id = "unmonitored-outside-declared-season";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: first_episode
+                .collection_id
+                .clone()
+                .expect("season one collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file =
+        write_pack_video(source_dir.path(), "Fail.Closed.Pack.S02E01.720p.WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("out-of-range pack import should run");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(source_file.exists());
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    let artifacts = import_artifacts
+        .artifacts_for_file("fail.closed.pack.s02e01.720p.web-dl.mkv")
+        .await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "rejected", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].reason_code.as_deref(),
+        Some("episode_outside_declared_pack_seasons")
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_holds_ambiguous_season_local_and_absolute_numbering() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: _first_episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let season_two_first =
+        create_pack_episode_in_season(&app, &user, &title.id, 2, 1, Some(2), "standard").await;
+    let mut season_two_second = season_two_first.clone();
+    season_two_second.id = Id::new().0;
+    season_two_second.episode_number = Some("2".to_string());
+    season_two_second.episode_label = Some("S02E02".to_string());
+    season_two_second.title = Some("Season 2 Episode 2".to_string());
+    season_two_second.absolute_number = Some("1".to_string());
+    app.services
+        .catalog
+        .shows
+        .create_episode(season_two_second)
+        .await
+        .expect("create alternate absolute-numbered episode");
+    let item_id = "ambiguous-season-numbering";
+    let release_name = "Fail.Closed.Pack.S02.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: season_two_first
+                .collection_id
+                .clone()
+                .expect("season two collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let season_dir = source_dir.path().join("Season 02");
+    std::fs::create_dir_all(&season_dir).expect("create season directory");
+    let source_file = write_pack_video(&season_dir, "Fail.Closed.Pack - 01 720p WEB-DL.mkv");
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("ambiguous pack import should run");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(source_file.exists());
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    let artifacts = import_artifacts
+        .artifacts_for_file("fail.closed.pack - 01 720p web-dl.mkv")
+        .await;
+    assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+    assert_eq!(artifacts[0].result, "rejected", "{artifacts:?}");
+    assert_eq!(
+        artifacts[0].reason_code.as_deref(),
+        Some("ambiguous_pack_numbering")
+    );
+}
+
+#[tokio::test]
+async fn automatic_pack_holds_every_member_with_duplicate_catalog_mapping() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            library_dir,
+            import_artifacts,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let item_id = "duplicate-pack-episode-mapping";
+    let release_name = "Fail.Closed.Pack.S01.720p.WEB-DL";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_name,
+        SubmissionScope::Collection {
+            collection_id: episode.collection_id.clone().expect("season collection"),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let first_file = write_pack_video(
+        source_dir.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL-A.mkv",
+    );
+    let second_file = write_pack_video(
+        source_dir.path(),
+        "Fail.Closed.Pack.S01E01.720p.WEB-DL-B.mkv",
+    );
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_name, source_dir.path());
+    let result = crate::import::import::import_completed_download(&app, &user, &completed)
+        .await
+        .expect("duplicate pack import should run");
+
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Rejected,
+        "{result:?}"
+    );
+    assert!(first_file.exists() && second_file.exists());
+    assert!(library_video_file_names(library_dir.path()).is_empty());
+    for file_name in [
+        "fail.closed.pack.s01e01.720p.web-dl-a.mkv",
+        "fail.closed.pack.s01e01.720p.web-dl-b.mkv",
+    ] {
+        let artifacts = import_artifacts.artifacts_for_file(file_name).await;
+        assert_eq!(artifacts.len(), 1, "{artifacts:?}");
+        assert_eq!(artifacts[0].result, "rejected", "{artifacts:?}");
+        assert_eq!(
+            artifacts[0].reason_code.as_deref(),
+            Some("duplicate_pack_episode_mapping")
+        );
     }
-    assert!(first_member.exists());
-    assert!(second_member.exists());
 }
 
 #[tokio::test]
@@ -6578,9 +7230,12 @@ async fn automatic_import_applies_single_episode_release_to_its_sole_obfuscated_
         source_dir.path(),
     );
 
-    let result = crate::import::import::import_completed_download(&app, &user, &completed)
-        .await
-        .expect("completed single-file import should run");
+    let result = {
+        let _probe = probe_agrees_with_the_name(1280, 720);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("completed single-file import should run")
+    };
 
     // Identity resolved to the grabbed episode whatever the gate did with the
     // synthetic file afterwards.
@@ -6595,50 +7250,253 @@ async fn automatic_import_applies_single_episode_release_to_its_sole_obfuscated_
         "unexpected import result: {result:?}"
     );
 
-    if cfg!(not(feature = "runtime-media-analysis")) {
-        assert_eq!(
-            result.decision,
-            scryer_domain::ImportDecision::Imported,
-            "unexpected import result: {result:?}"
-        );
-        let media_files = app
-            .services
-            .library
-            .media_files
-            .list_media_files_for_title(&title.id)
+    assert_eq!(
+        result.decision,
+        scryer_domain::ImportDecision::Imported,
+        "unexpected import result: {result:?}"
+    );
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_files.len(),
+        1,
+        "unexpected media files: {media_files:?}"
+    );
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
+    assert_eq!(media_files[0].quality_label.as_deref(), Some("720p"));
+    let library_files = library_video_file_names(library_dir.path());
+    assert_eq!(
+        library_files.len(),
+        1,
+        "unexpected library files: {library_files:?}"
+    );
+    assert!(
+        library_files[0].contains("S01E01"),
+        "unexpected library file: {library_files:?}"
+    );
+    let artifacts = import_artifacts
+        .artifacts_for_file("4f8e2c7a91b6d3e0.mkv")
+        .await;
+    assert_eq!(artifacts.len(), 1, "unexpected artifacts: {artifacts:?}");
+    assert_eq!(artifacts[0].result, "imported");
+    assert_eq!(
+        artifacts[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
+    assert!(source_file.exists());
+}
+
+#[tokio::test]
+async fn automatic_import_uses_grabbed_episode_for_absolute_numbered_release() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: first_episode,
+            library_dir,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let episode = create_absolute_pack_episode(&app, &first_episode, 19).await;
+    let release_title = "Fail Closed Pack - 19 (WEB 1080p x264 10-bit AAC) [A1B2C3D4]";
+    let item_id = "absolute-numbered-release-19";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Episode {
+            episode_id: episode.id.clone(),
+        },
+    )
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = write_pack_video(source_dir.path(), &format!("{release_title}.mkv"));
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+    let result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &completed)
             .await
-            .expect("list media files");
+            .expect("absolute-numbered completed import should run")
+    };
+
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Imported);
+    assert_eq!(result.episode_ids, vec![episode.id.clone()]);
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list imported absolute-numbered file");
+    assert_eq!(media_files.len(), 1, "{media_files:?}");
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(episode.id.as_str())
+    );
+    assert_eq!(media_files[0].quality_label.as_deref(), Some("1080p"));
+    let library_files = library_video_file_names(library_dir.path());
+    assert_eq!(library_files.len(), 1, "{library_files:?}");
+    assert!(
+        library_files[0].contains("S01E19"),
+        "catalog season/episode numbering must drive the destination: {library_files:?}"
+    );
+    assert!(source_file.exists());
+}
+
+#[tokio::test]
+async fn conflicting_sole_scene_file_is_rejected_against_grabbed_episode() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: grabbed_episode,
+            library_dir,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let file_episode = create_second_pack_episode(
+        &app,
+        &user,
+        &title.id,
+        grabbed_episode.collection_id.clone(),
+    )
+    .await;
+
+    let release_title = "Fail.Closed.Pack.S01E01.1080p.WEB-DL.x264";
+    let item_id = "single-file-conflicting-scene-name";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Episode {
+            episode_id: grabbed_episode.id.clone(),
+        },
+    )
+    .await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = write_pack_video(
+        source_dir.path(),
+        "Fail.Closed.Pack.S01E02.1080p.WEB-DL.x264.mkv",
+    );
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+    let result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("conflicting scene-name import should run")
+    };
+
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Rejected);
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::PolicyMismatch));
+    assert_eq!(result.episode_ids, vec![file_episode.id.clone()]);
+    assert!(
+        result
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("outside the grabbed release")),
+        "unexpected rejection: {result:?}"
+    );
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list imported file");
+    assert!(media_files.is_empty(), "{media_files:?}");
+    assert!(
+        library_video_file_names(library_dir.path()).is_empty(),
+        "a contradictory file must remain outside the library"
+    );
+    assert!(
+        source_file.exists(),
+        "the blocked source must remain in place"
+    );
+}
+
+#[tokio::test]
+async fn invalid_exact_submission_episode_falls_back_to_artifact_parsing() {
+    for wrong_title in [false, true] {
+        let (
+            FailClosedPackFixture {
+                app,
+                user,
+                title,
+                episode,
+                ..
+            },
+            download_submissions,
+        ) = fail_closed_pack_fixture_with_submissions().await;
+        let scoped_episode_id = if wrong_title {
+            let mut other_title_episode = episode.clone();
+            other_title_episode.id = Id::new().0;
+            other_title_episode.title_id = "other-title".to_string();
+            app.services
+                .catalog
+                .shows
+                .create_episode(other_title_episode.clone())
+                .await
+                .expect("create wrong-title episode");
+            other_title_episode.id
+        } else {
+            "missing-episode".to_string()
+        };
+
+        let release_title = "Fail.Closed.Pack.S01E01.1080p.WEB-DL.x264";
+        let item_id = if wrong_title {
+            "wrong-title-submission-episode"
+        } else {
+            "missing-submission-episode"
+        };
+        record_pack_identity_submission(
+            &download_submissions,
+            &title.id,
+            item_id,
+            release_title,
+            SubmissionScope::Episode {
+                episode_id: scoped_episode_id,
+            },
+        )
+        .await;
+        let source_dir = tempfile::tempdir().expect("source tempdir");
+        write_pack_video(source_dir.path(), &format!("{release_title}.mkv"));
+        let completed =
+            series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+        let result = crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("invalid acquisition episode import should reach a decision");
+
         assert_eq!(
-            media_files.len(),
-            1,
-            "unexpected media files: {media_files:?}"
+            result.skip_reason,
+            Some(ImportSkipReason::PolicyMismatch),
+            "the parsed episode remains subject to the grabbed-scope gate: {result:?}"
         );
         assert_eq!(
-            media_files[0].episode_id.as_deref(),
-            Some(episode.id.as_str())
-        );
-        assert_eq!(media_files[0].quality_label.as_deref(), Some("720p"));
-        let library_files = library_video_file_names(library_dir.path());
-        assert_eq!(
-            library_files.len(),
-            1,
-            "unexpected library files: {library_files:?}"
-        );
-        assert!(
-            library_files[0].contains("S01E01"),
-            "unexpected library file: {library_files:?}"
-        );
-        let artifacts = import_artifacts
-            .artifacts_for_file("4f8e2c7a91b6d3e0.mkv")
-            .await;
-        assert_eq!(artifacts.len(), 1, "unexpected artifacts: {artifacts:?}");
-        assert_eq!(artifacts[0].result, "imported");
-        assert_eq!(
-            artifacts[0].episode_id.as_deref(),
-            Some(episode.id.as_str())
+            result.episode_ids,
+            vec![episode.id.clone()],
+            "artifact parsing must still resolve the file: {result:?}"
         );
     }
-    assert!(source_file.exists());
 }
 
 /// Option c, persisted: a file that landed inside the overhead band of its
@@ -8331,6 +9189,7 @@ async fn ignore_tracked_download_uses_durable_fallback_idempotently() {
             DownloadSubmissionIdentity {
                 download_id: Some("scryer-download:evicted-job-1".to_string()),
             },
+            None,
         )
         .await
         .expect("record submission identity");
@@ -8427,6 +9286,7 @@ async fn finalize_ignore_preserves_an_imported_outcome() {
                 scope: SubmissionScope::Title,
             },
             identity.clone(),
+            None,
         )
         .await
         .expect("record submission identity");

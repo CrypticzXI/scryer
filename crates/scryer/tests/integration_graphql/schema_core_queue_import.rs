@@ -3038,6 +3038,7 @@ async fn graphql_introspection_exposes_import_enums() {
     assert!(import_skip_reason_names.contains(&"ARCHIVE_EXTRACTION_TIMED_OUT"));
     assert!(import_skip_reason_names.contains(&"POST_DOWNLOAD_RULE_BLOCKED"));
     assert!(import_skip_reason_names.contains(&"UNPARSEABLE_EPISODE"));
+    assert!(import_skip_reason_names.contains(&"DOWNLOAD_IN_PROGRESS"));
 }
 
 #[tokio::test]

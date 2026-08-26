@@ -479,6 +479,7 @@ fn map_add_response_to_grab_result(
         client_id: None,
         client_type: client_type.to_string(),
         info_hash,
+        seed_goals: None,
     }
 }
 

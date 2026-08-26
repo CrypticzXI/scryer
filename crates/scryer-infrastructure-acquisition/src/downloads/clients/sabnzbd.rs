@@ -805,6 +805,7 @@ impl DownloadClient for SabnzbdDownloadClient {
                         client_id: None,
                         client_type: "sabnzbd".to_string(),
                         info_hash: None,
+                        seed_goals: None,
                     })
                 }
                 SabAddfileOutcome::Rejected(detail) => {
@@ -1395,6 +1396,7 @@ impl SabnzbdDownloadClient {
                 client_id: None,
                 client_type: "sabnzbd".to_string(),
                 info_hash: None,
+                seed_goals: None,
             }),
             None => Err(ambiguous_error),
         }

@@ -7,6 +7,44 @@ use super::*;
 #[derive(Clone, Default)]
 pub struct DownloadSubmissionGuardTable {
     locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+    uncertain_titles: Arc<std::sync::Mutex<HashMap<String, UncertainDownloadSubmissionClaim>>>,
+}
+
+#[derive(Clone)]
+pub(crate) enum UncertainDownloadSubmissionClaim {
+    Accepted {
+        submission: DownloadSubmission,
+        accepted_identity: DownloadSubmissionIdentity,
+        seed_goals: Option<PersistedSeedGoals>,
+    },
+    Ambiguous {
+        download_id: scryer_domain::download_identity::DownloadId,
+        submission: Option<DownloadSubmission>,
+    },
+}
+
+impl UncertainDownloadSubmissionClaim {
+    pub(crate) fn accepted(
+        submission: DownloadSubmission,
+        accepted_identity: DownloadSubmissionIdentity,
+        seed_goals: Option<PersistedSeedGoals>,
+    ) -> Self {
+        Self::Accepted {
+            submission,
+            accepted_identity,
+            seed_goals,
+        }
+    }
+
+    pub(crate) fn ambiguous(
+        download_id: scryer_domain::download_identity::DownloadId,
+        submission: Option<DownloadSubmission>,
+    ) -> Self {
+        Self::Ambiguous {
+            download_id,
+            submission,
+        }
+    }
 }
 
 impl DownloadSubmissionGuardTable {
@@ -26,22 +64,33 @@ impl DownloadSubmissionGuardTable {
         lock.lock_owned().await
     }
 
-    pub async fn acquire(
-        &self,
-        title_id: &str,
-        request_signature: Option<&str>,
-    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        let signature = request_signature?;
-        let key = format!("{title_id}:{signature}");
-        Some(self.acquire_key(key).await)
+    pub async fn acquire_title(&self, title_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        self.acquire_key(title_id.to_string()).await
     }
 
-    pub async fn acquire_scope(
+    pub(crate) fn mark_uncertain(&self, title_id: &str, claim: UncertainDownloadSubmissionClaim) {
+        self.uncertain_titles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(title_id.to_string(), claim);
+    }
+
+    pub(crate) fn clear_uncertain(&self, title_id: &str) {
+        self.uncertain_titles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(title_id);
+    }
+
+    pub(crate) fn uncertain_claim(
         &self,
         title_id: &str,
-        _scope: &SubmissionScope,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        self.acquire_key(format!("{title_id}:scope")).await
+    ) -> Option<UncertainDownloadSubmissionClaim> {
+        self.uncertain_titles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(title_id)
+            .cloned()
     }
 }
 

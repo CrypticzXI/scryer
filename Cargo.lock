@@ -5872,6 +5872,7 @@ dependencies = [
  "scryer-infrastructure-library",
  "scryer-infrastructure-library-search",
  "scryer-infrastructure-sql",
+ "scryer-rules",
  "security-framework",
  "security-framework-sys",
  "serde",
@@ -6309,7 +6310,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-plugin-sdk"
-version = "3.8.0"
+version = "3.9.0"
 dependencies = [
  "base64 0.23.1",
  "extism-pdk",

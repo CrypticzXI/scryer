@@ -225,6 +225,7 @@ async fn sync_series_movie_links(
                 narrative_order,
                 *after_season,
                 linked_episode_id,
+                title_policy_monitors_series_movie(title, movie.continuity_status.as_str(), true),
             );
 
             match app
@@ -257,8 +258,44 @@ async fn sync_series_movie_links(
         warn!(
             title_id = %title.id,
             error = %err,
-            "failed to prune stale series movie links"
+            "failed to deactivate stale series movie links"
         );
+    }
+
+    match app
+        .services
+        .catalog
+        .shows
+        .list_series_movie_links_for_title(&title.id)
+        .await
+    {
+        Ok(links) => {
+            for link in links.into_iter().filter(|link| {
+                link.source.as_deref() == Some("anibridge")
+                    && !link.metadata_active
+                    && link.monitoring_override != Some(true)
+            }) {
+                if let Err(err) = app
+                    .services
+                    .workflow
+                    .acquisition_scope_states
+                    .delete_acquisition_scope_states_for_series_movie_link(&link.id)
+                    .await
+                {
+                    warn!(
+                        title_id = %title.id,
+                        series_movie_link_id = %link.id,
+                        error = %err,
+                        "failed to clear acquisition state for inactive series movie link"
+                    );
+                }
+            }
+        }
+        Err(err) => warn!(
+            title_id = %title.id,
+            error = %err,
+            "failed to load inactive series movie links after metadata sync"
+        ),
     }
 }
 

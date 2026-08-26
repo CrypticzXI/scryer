@@ -8,6 +8,9 @@ use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
 use tracing::{info, warn};
 
 use crate::acquisition::seed_goals::ReleaseSeedMinimums;
+use crate::acquisition::submission::{
+    CanonicalDownloadSubmissionIntent, CanonicalDownloadSubmissionOutcome,
+};
 use crate::delay_profile::DelayProfile;
 use crate::types::{
     PendingRelease, PendingReleaseObservation, PendingReleaseRole, PendingReleaseStatus,
@@ -1322,46 +1325,59 @@ impl AppUseCase {
         .episode
         .is_some_and(|episode| episode.full_season);
 
-        let grab_result = self
-            .services
-            .integrations
-            .download_client
-            .submit_download(&DownloadClientAddRequest {
-                title: title.clone(),
-                search_facet: (wanted.media_type == "series_movie")
-                    .then_some(scryer_domain::MediaFacet::Movie),
-                purpose: crate::DownloadSubmissionPurpose::Standard,
-                download_id: Some(download_id),
-                source_hint: source_hint.clone(),
-                staged_nzb: None,
-                resolved_download_artifact: None,
-                source_kind,
-                source_title: source_title.clone(),
-                source_password: source_password.clone(),
-                category: Some(download_cat),
-                queue_priority: None,
-                download_directory: None,
-                release_title: Some(pr.release_title.clone()),
-                indexer_name: pr.indexer_source.clone(),
-                indexer_id: pr.indexer_id.clone(),
-                info_hash_hint: pr.info_hash.clone(),
-                seed_goal_ratio: None,
-                seed_goal_seconds: None,
-                // Captured off the release `extra` map when the row was parked
-                // (migration 0165), so a delayed grab gets the same tracker
-                // clamp as an immediate one. Rows parked before that migration
-                // carry `None` and simply fall back to the profile's own goals.
-                tracker_min_seed_ratio: pr.seed_minimums.min_seed_ratio,
-                tracker_min_seed_time_minutes: pr.seed_minimums.min_seed_time_minutes,
-                season_pack_seed_ratio: pr.seed_minimums.season_pack_seed_ratio,
-                season_pack_seed_time_minutes: pr.seed_minimums.season_pack_seed_time_minutes,
-                is_recent,
-                season_pack: is_season_pack.then_some(true),
+        let canonical_result = self
+            .submit_canonical_download(CanonicalDownloadSubmissionIntent {
+                request: DownloadClientAddRequest {
+                    title: title.clone(),
+                    search_facet: (wanted.media_type == "series_movie")
+                        .then_some(scryer_domain::MediaFacet::Movie),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                    download_id: Some(download_id),
+                    source_hint: source_hint.clone(),
+                    staged_nzb: None,
+                    resolved_download_artifact: None,
+                    source_kind,
+                    source_title: source_title.clone(),
+                    source_password: source_password.clone(),
+                    category: Some(download_cat),
+                    queue_priority: None,
+                    download_directory: None,
+                    release_title: Some(pr.release_title.clone()),
+                    indexer_name: pr.indexer_source.clone(),
+                    indexer_id: pr.indexer_id.clone(),
+                    info_hash_hint: pr.info_hash.clone(),
+                    seed_goal_ratio: None,
+                    seed_goal_seconds: None,
+                    // Captured off the release `extra` map when the row was parked
+                    // (migration 0165), so a delayed grab gets the same tracker
+                    // clamp as an immediate one. Rows parked before that migration
+                    // carry `None` and simply fall back to the profile's own goals.
+                    tracker_min_seed_ratio: pr.seed_minimums.min_seed_ratio,
+                    tracker_min_seed_time_minutes: pr.seed_minimums.min_seed_time_minutes,
+                    season_pack_seed_ratio: pr.seed_minimums.season_pack_seed_ratio,
+                    season_pack_seed_time_minutes: pr.seed_minimums.season_pack_seed_time_minutes,
+                    is_recent,
+                    season_pack: is_season_pack.then_some(true),
+                },
+                scope: pending_scope.clone(),
+                conflict_policy: SubmissionConflictPolicy::Skip,
+                request_signature: request_signature.clone(),
+                source_provider_name: pr.indexer_source.clone(),
+                release_size_bytes: pr.release_size_bytes,
             })
             .await;
 
-        match grab_result {
-            Ok(grab) => {
+        let canonical_submission = match canonical_result {
+            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => Ok(submission),
+            Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => {
+                return Ok(PendingGrabOutcome::Deferred);
+            }
+            Err(error) => Err(error),
+        };
+
+        match canonical_submission {
+            Ok(canonical_submission) => {
+                let grab = canonical_submission.grab;
                 {
                     let facet_label = serde_json::to_string(&title.facet)
                         .unwrap_or_else(|_| "\"other\"".to_string())
@@ -1375,23 +1391,6 @@ impl AppUseCase {
                     metrics::counter!("scryer_grabs_total", "indexer" => indexer_label, "facet" => facet_label).increment(1);
                 }
                 self.record_indexer_grab(pr.indexer_id.as_deref(), pr.indexer_source.as_deref());
-
-                let submission_download_id = grab.download_id.unwrap_or(download_id);
-                let submission_identity = DownloadSubmissionIdentity {
-                    download_id: Some(submission_download_id.to_wire()),
-                };
-                let accepted_identity =
-                    crate::download_identity::accepted_download_submission_identity(
-                        crate::download_identity::AcceptedDownloadIdentityInput {
-                            initial_download_id: submission_identity.download_id.as_deref(),
-                            source_kind,
-                            source_hint: source_hint.as_deref(),
-                            info_hash_hint: pr.info_hash.as_deref(),
-                            client_type: Some(grab.client_type.as_str()),
-                            client_item_id: Some(grab.job_id.as_str()),
-                            accepted_info_hash: grab.info_hash.as_deref(),
-                        },
-                    );
 
                 let _ = self
                     .services
@@ -1407,8 +1406,6 @@ impl AppUseCase {
                     )
                     .await;
 
-                let facet_str =
-                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 // **The scope that was gated is the scope that is submitted**
                 // (MA3). This block used to resolve coverage a second time,
                 // against a different parse context, and could land on a
@@ -1439,29 +1436,10 @@ impl AppUseCase {
                         covered_wanted_item_ids,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
-                        download_submission: DownloadSubmission {
-                            download_id: submission_download_id,
-                            title_id: title.id.clone(),
-                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                            facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id.clone(),
-                            download_client_type: grab.client_type.clone(),
-                            download_client_item_id: grab.job_id.clone(),
-                            source_hint: None,
-                            source_provider_id: pr.indexer_id.clone(),
-                            source_provider_name: pr.indexer_source.clone(),
-                            source_kind: None,
-                            source_title: source_title.clone(),
-                            release_size_bytes: pr.release_size_bytes,
-                            request_signature: request_signature.clone(),
-                            scope: submission_scope,
-                        },
-                        download_submission_identity: Some(accepted_identity),
                         grabbed_pending_release_id: Some(pr.id.clone()),
                         grabbed_at: Some(now.to_rfc3339()),
                     })
                     .await?;
-
                 let _ = self
                     .append_domain_event(new_title_domain_event(
                         None,
@@ -1514,41 +1492,6 @@ impl AppUseCase {
                         source_password.clone(),
                     )
                     .await;
-
-                if err.is_download_submit_ambiguous()
-                    && let Some((client_id, client_type)) =
-                        err.ambiguous_download_submission_client()
-                {
-                    let facet = serde_json::to_string(&title.facet)
-                        .unwrap_or_else(|_| "\"other\"".to_string())
-                        .trim_matches('"')
-                        .to_string();
-                    if let Err(error) = self
-                        .services
-                        .workflow
-                        .download_submissions
-                        .record_ambiguous_submission(DownloadSubmission {
-                            download_id,
-                            title_id: title.id.clone(),
-                            facet,
-                            download_client_id: client_id.map(str::to_string),
-                            download_client_type: client_type.to_string(),
-                            download_client_item_id: String::new(),
-                            source_hint: None,
-                            source_provider_id: pr.indexer_id.clone(),
-                            source_provider_name: pr.indexer_source.clone(),
-                            source_kind: None,
-                            source_title: source_title.clone(),
-                            release_size_bytes: pr.release_size_bytes,
-                            request_signature: request_signature.clone(),
-                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                            scope: pending_scope.clone(),
-                        })
-                        .await
-                    {
-                        warn!(error = %error, "ambiguous download submission persistence failed");
-                    }
-                }
 
                 if source_gone {
                     info!(

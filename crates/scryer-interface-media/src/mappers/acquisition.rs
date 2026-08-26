@@ -203,10 +203,18 @@ pub fn from_active_import_stream(
 ) -> ActiveImportStreamPayload {
     let phase = match stream.phase {
         scryer_application::ActiveImportStreamPhase::Queued => ActiveImportStreamPhaseValue::Queued,
-        scryer_application::ActiveImportStreamPhase::Extracting => ActiveImportStreamPhaseValue::Extracting,
-        scryer_application::ActiveImportStreamPhase::Placing => ActiveImportStreamPhaseValue::Placing,
-        scryer_application::ActiveImportStreamPhase::Copying => ActiveImportStreamPhaseValue::Copying,
-        scryer_application::ActiveImportStreamPhase::Finalizing => ActiveImportStreamPhaseValue::Finalizing,
+        scryer_application::ActiveImportStreamPhase::Extracting => {
+            ActiveImportStreamPhaseValue::Extracting
+        }
+        scryer_application::ActiveImportStreamPhase::Placing => {
+            ActiveImportStreamPhaseValue::Placing
+        }
+        scryer_application::ActiveImportStreamPhase::Copying => {
+            ActiveImportStreamPhaseValue::Copying
+        }
+        scryer_application::ActiveImportStreamPhase::Finalizing => {
+            ActiveImportStreamPhaseValue::Finalizing
+        }
     };
     let cancellable = stream.cancellable();
     ActiveImportStreamPayload {

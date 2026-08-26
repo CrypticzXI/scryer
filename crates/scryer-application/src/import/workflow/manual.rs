@@ -26,8 +26,7 @@ pub async fn start_background_manual_import_poller(
     ));
     // Completed manual-import records already reconciled against their
     // tracked download in this process; each record is decided once.
-    let mut manual_import_recovery_memo: HashMap<String, ManualImportRecoveryMemo> =
-        HashMap::new();
+    let mut manual_import_recovery_memo: HashMap<String, ManualImportRecoveryMemo> = HashMap::new();
     let mut in_flight: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
     match app
@@ -117,7 +116,13 @@ pub async fn start_background_manual_import_poller(
 }
 
 async fn mark_manual_import_reconciliation(app: &AppUseCase, import_id: &str, message: &str) {
-    let record = match app.services.workflow.imports.get_import_by_id(import_id).await {
+    let record = match app
+        .services
+        .workflow
+        .imports
+        .get_import_by_id(import_id)
+        .await
+    {
         Ok(Some(record)) if record.status == ImportStatus::Processing => record,
         Ok(_) => return,
         Err(error) => {
@@ -220,7 +225,8 @@ async fn process_pending_manual_import(app: AppUseCase, record: scryer_domain::I
         .map(|result| result.file_results.clone())
         .unwrap_or_default();
 
-    let outcome = match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
+    let outcome = match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await
+    {
         Ok(result) => result,
         Err(AppError::ManualReconciliationRequired(message)) => QueuedManualImportOutcome {
             status: ImportStatus::Pending,
@@ -243,8 +249,7 @@ async fn process_pending_manual_import(app: AppUseCase, record: scryer_domain::I
             let retry_attempts = previous_result
                 .as_ref()
                 .map_or(1, |result| result.retry_attempts.saturating_add(1));
-            let next_retry_at =
-                Utc::now() + manual_import_recovery_retry_delay(retry_attempts);
+            let next_retry_at = Utc::now() + manual_import_recovery_retry_delay(retry_attempts);
             QueuedManualImportOutcome {
                 status: ImportStatus::Pending,
                 result_json: manual_import_pending_result_json(
@@ -1018,21 +1023,15 @@ async fn preview_manual_import(
         video_files.retain(|candidate| !is_sample_named_file(&candidate.source_entry_path));
     }
     let grabbed_episode_ids = match release_evidence.scope() {
-        Some(SubmissionScope::Episode { episode_id }) => {
-            HashSet::from([episode_id.clone()])
-        }
-        Some(SubmissionScope::EpisodeSet { episode_ids }) => {
-            episode_ids.iter().cloned().collect()
-        }
+        Some(SubmissionScope::Episode { episode_id }) => HashSet::from([episode_id.clone()]),
+        Some(SubmissionScope::EpisodeSet { episode_ids }) => episode_ids.iter().cloned().collect(),
         Some(SubmissionScope::Collection { collection_id }) => available_episodes
             .iter()
             .filter(|episode| episode.collection_id.as_deref() == Some(collection_id))
             .map(|episode| episode.id.clone())
             .collect(),
         Some(
-            SubmissionScope::Title
-            | SubmissionScope::SeriesMovie { .. }
-            | SubmissionScope::Orphan,
+            SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan,
         )
         | None => HashSet::new(),
     };
@@ -1092,18 +1091,27 @@ async fn preview_manual_import(
                     .find_episode_by_title_and_numbers(title_id, &season_str, &ep_str)
                     .await
                 {
-                    let label = format!(
-                        "S{:02}E{:02}{}",
-                        ep_meta.season.unwrap_or(1),
-                        ep_num,
-                        episode
-                            .title
-                            .as_ref()
-                            .map(|t| format!(" - {}", t))
-                            .unwrap_or_default()
-                    );
                     suggested_episode_id = Some(episode.id.clone());
-                    suggested_episode_label = Some(label);
+                    suggested_episode_label = Some(
+                        if episode
+                            .absolute_number
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty())
+                        {
+                            manual_import_episode_label(&episode)
+                        } else {
+                            format!(
+                                "S{:02}E{:02}{}",
+                                ep_meta.season.unwrap_or(1),
+                                ep_num,
+                                episode
+                                    .title
+                                    .as_ref()
+                                    .map(|title| format!(" - {title}"))
+                                    .unwrap_or_default()
+                            )
+                        },
+                    );
                 }
             }
 
@@ -1119,17 +1127,8 @@ async fn preview_manual_import(
                     .find_episode_by_title_and_absolute_number(title_id, &abs_str)
                     .await
                 {
-                    let label = format!(
-                        "#{}{}",
-                        abs,
-                        episode
-                            .title
-                            .as_ref()
-                            .map(|t| format!(" - {}", t))
-                            .unwrap_or_default()
-                    );
                     suggested_episode_id = Some(episode.id.clone());
-                    suggested_episode_label = Some(label);
+                    suggested_episode_label = Some(manual_import_episode_label(&episode));
                 }
             }
         }
@@ -1165,13 +1164,11 @@ async fn preview_manual_import(
             parsed_episodes,
             suggested_episode_id,
             suggested_episode_label,
-            suggested_series_movie_link_id: grabbed_series_movie_link_id
-                .clone()
-                .filter(|_| {
-                    grabbed_fallback_path
-                        .as_ref()
-                        .is_some_and(|fallback| fallback == path)
-                }),
+            suggested_series_movie_link_id: grabbed_series_movie_link_id.clone().filter(|_| {
+                grabbed_fallback_path
+                    .as_ref()
+                    .is_some_and(|fallback| fallback == path)
+            }),
         });
     }
 
@@ -1221,6 +1218,36 @@ fn manual_episode_suggestion_for_grabbed_scope(
 }
 
 fn manual_import_episode_label(episode: &scryer_domain::Episode) -> String {
+    if let Some(absolute) = episode
+        .absolute_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let normalized_number = |value: Option<&str>| {
+            let digits = value
+                .unwrap_or_default()
+                .chars()
+                .filter(char::is_ascii_digit)
+                .collect::<String>();
+            if digits.is_empty() {
+                "??".to_string()
+            } else {
+                digits
+            }
+        };
+        let season = normalized_number(episode.season_number.as_deref());
+        let number = normalized_number(episode.episode_number.as_deref());
+        let title = episode
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!(" — {value}"))
+            .unwrap_or_default();
+        return format!("S{season:0>2}E{number:0>2} · Absolute {absolute}{title}");
+    }
+
     episode.episode_label.clone().unwrap_or_else(|| {
         let season = episode.season_number.as_deref().unwrap_or("1");
         let number = episode.episode_number.as_deref().unwrap_or("?");
@@ -1261,15 +1288,9 @@ pub async fn begin_manual_import_selection(
     let client_id = client_id.trim();
     let client_type = client_type.trim().to_ascii_lowercase();
     let source_ref = download_client_item_id.trim();
-    let authorized = authorize_manual_import_source(
-        app,
-        actor,
-        client_id,
-        &client_type,
-        source_ref,
-        title_id,
-    )
-    .await?;
+    let authorized =
+        authorize_manual_import_source(app, actor, client_id, &client_type, source_ref, title_id)
+            .await?;
     let completed = resolve_authorized_manual_import_source(app, &authorized.identity).await?;
     let canonical_download_id = match crate::download_identity::resolve_observed_client_job(
         app,
@@ -1338,12 +1359,8 @@ pub async fn begin_manual_import_selection(
         crate::archive_extractor::archive_extraction_would_be_needed(&preview_root)?;
 
     if archive_extraction_needed && extract_archives {
-        let destination = archive_extraction_destination_for_title(
-            app,
-            &selection_id,
-            &authorized.title,
-        )
-        .await?;
+        let destination =
+            archive_extraction_destination_for_title(app, &selection_id, &authorized.title).await?;
         let extracted_root = {
             let _archive_extraction_permit = app
                 .runtime
@@ -1390,17 +1407,20 @@ pub async fn begin_manual_import_selection(
         app.services
             .workflow
             .imports
-            .replace_manual_import_selection_for_download(crate::ManualImportSelection {
-                id: selection_id.clone(),
-                actor_user_id: actor.id.clone(),
-                title_id: title_id.to_string(),
-                source_identity,
-                canonical_download_id: None,
-                release_evidence_json: Some(release_evidence_json),
-                trusted_source_root: path_to_stored_string(&trusted_root),
-                archive_workspace_root: None,
-                candidates: Vec::new(),
-            }, canonical_download_id.as_ref())
+            .replace_manual_import_selection_for_download(
+                crate::ManualImportSelection {
+                    id: selection_id.clone(),
+                    actor_user_id: actor.id.clone(),
+                    title_id: title_id.to_string(),
+                    source_identity,
+                    canonical_download_id: None,
+                    release_evidence_json: Some(release_evidence_json),
+                    trusted_source_root: path_to_stored_string(&trusted_root),
+                    archive_workspace_root: None,
+                    candidates: Vec::new(),
+                },
+                canonical_download_id.as_ref(),
+            )
             .await?;
         return Ok(ManualImportSelectionPreview {
             selection_id,
@@ -1448,17 +1468,20 @@ pub async fn begin_manual_import_selection(
     app.services
         .workflow
         .imports
-        .replace_manual_import_selection_for_download(crate::ManualImportSelection {
-            id: selection_id.clone(),
-            actor_user_id: actor.id.clone(),
-            title_id: title_id.to_string(),
-            source_identity,
-            canonical_download_id: None,
-            release_evidence_json: Some(release_evidence_json),
-            trusted_source_root: path_to_stored_string(&trusted_root),
-            archive_workspace_root: archive_workspace_root.clone(),
-            candidates,
-        }, canonical_download_id.as_ref())
+        .replace_manual_import_selection_for_download(
+            crate::ManualImportSelection {
+                id: selection_id.clone(),
+                actor_user_id: actor.id.clone(),
+                title_id: title_id.to_string(),
+                source_identity,
+                canonical_download_id: None,
+                release_evidence_json: Some(release_evidence_json),
+                trusted_source_root: path_to_stored_string(&trusted_root),
+                archive_workspace_root: archive_workspace_root.clone(),
+                candidates,
+            },
+            canonical_download_id.as_ref(),
+        )
         .await?;
 
     if let Some(previous_workspace) = prior_selection
@@ -1466,9 +1489,9 @@ pub async fn begin_manual_import_selection(
         .and_then(|selection| selection.archive_workspace_root.as_deref())
         .filter(|workspace| Some(*workspace) != archive_workspace_root.as_deref())
     {
-        crate::archive_extractor::cleanup_extracted_dir(
-            &stored_path_to_path_buf(previous_workspace),
-        )
+        crate::archive_extractor::cleanup_extracted_dir(&stored_path_to_path_buf(
+            previous_workspace,
+        ))
         .await;
     }
 
@@ -2145,11 +2168,16 @@ async fn execute_manual_series_movie_import(
         completed,
     )
     .await?;
+    let destination_ownership = ImportDestinationOwnership::series_movie(
+        series_movie_link_id,
+        link.linked_episode_id.as_deref(),
+    );
     let file_result = match import_file_with_record_progress(
         app,
         import_id,
         &title.library_id,
         &title.facet,
+        &destination_ownership,
         source,
         &dest_path,
         import_mode,
@@ -2173,36 +2201,36 @@ async fn execute_manual_series_movie_import(
     };
     let quality_label = parsed.quality.clone();
     let started_at = Utc::now();
-    let imported_media_file_id = match app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&crate::InsertMediaFileInput {
-            title_id: title.id.clone(),
-            file_path: path_to_stored_string(&dest_path),
-            size_bytes: file_result.size_bytes as i64,
-            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
-                file_result.size_bytes as i64,
-                release_evidence.announced_size_bytes(),
-            ),
-            role: crate::MediaFileRole::Primary,
-            quality_label: quality_label.clone(),
-            scene_name: Some(parsed.raw_title.clone()),
-            release_group: parsed.release_group.clone(),
-            source_type: crate::release_parser::parsed_release_source_type(&parsed),
-            resolution: quality_label,
-            video_codec_parsed: parsed.video_codec,
-            audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
-            audio_channels_parsed: parsed.audio_channels.clone(),
-            original_file_path: Some(path_to_stored_string(source)),
-            grabbed_release_title: release_evidence.release_title(Some(source)),
-            grabbed_at: Some(started_at.to_rfc3339()),
-            edition: parsed.edition.clone(),
-            ..Default::default()
-        })
+    let imported_media_file_id = match file_result
+        .insert_or_reuse_media_file(
+            app,
+            &crate::InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: path_to_stored_string(&dest_path),
+                size_bytes: file_result.size_bytes as i64,
+                announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                    file_result.size_bytes as i64,
+                    release_evidence.announced_size_bytes(),
+                ),
+                role: crate::MediaFileRole::Primary,
+                quality_label: quality_label.clone(),
+                scene_name: Some(parsed.raw_title.clone()),
+                release_group: parsed.release_group.clone(),
+                source_type: crate::release_parser::parsed_release_source_type(&parsed),
+                resolution: quality_label,
+                video_codec_parsed: parsed.video_codec,
+                audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
+                audio_channels_parsed: parsed.audio_channels.clone(),
+                original_file_path: Some(path_to_stored_string(source)),
+                grabbed_release_title: release_evidence.release_title(Some(source)),
+                grabbed_at: Some(started_at.to_rfc3339()),
+                edition: parsed.edition.clone(),
+                ..Default::default()
+            },
+        )
         .await
     {
-        Ok(file_id) => file_id,
+        Ok(persistence) => persistence.media_file_id,
         Err(error) => {
             let message = error.to_string();
             return Ok(manual_import_file_result(
@@ -2215,17 +2243,7 @@ async fn execute_manual_series_movie_import(
         }
     };
 
-    app.services
-        .library
-        .media_files
-        .link_file_to_series_movie(&imported_media_file_id, series_movie_link_id)
-        .await?;
     if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
-        app.services
-            .library
-            .media_files
-            .link_file_to_episode(&imported_media_file_id, linked_episode_id)
-            .await?;
         app.services
             .library
             .media_files
@@ -2481,34 +2499,34 @@ async fn execute_manual_import_with_release_evidence_locked(
 
     for (mapping_index, mapping) in files.iter().enumerate() {
         let source = stored_path_to_path_buf(&mapping.file_path);
-        let qualified = match qualify_manual_import_video_candidate(&source, &trusted_source_root).await
-        {
-            Ok(Some(qualified)) => qualified,
-            Ok(None) => {
-                results.push(manual_import_file_result(
-                    mapping,
-                    false,
-                    None,
-                    Some(ImportErrorCode::PolicyMismatch),
-                    Some("manual import candidate is no longer a valid video".to_string()),
-                ));
-                continue;
-            }
-            Err(err) => {
-                results.push(manual_import_file_result(
-                    mapping,
-                    false,
-                    None,
-                    Some(if !source.exists() {
-                        ImportErrorCode::FileNotFound
-                    } else {
-                        classify_manual_import_error_message(&err.to_string())
-                    }),
-                    Some(err.to_string()),
-                ));
-                continue;
-            }
-        };
+        let qualified =
+            match qualify_manual_import_video_candidate(&source, &trusted_source_root).await {
+                Ok(Some(qualified)) => qualified,
+                Ok(None) => {
+                    results.push(manual_import_file_result(
+                        mapping,
+                        false,
+                        None,
+                        Some(ImportErrorCode::PolicyMismatch),
+                        Some("manual import candidate is no longer a valid video".to_string()),
+                    ));
+                    continue;
+                }
+                Err(err) => {
+                    results.push(manual_import_file_result(
+                        mapping,
+                        false,
+                        None,
+                        Some(if !source.exists() {
+                            ImportErrorCode::FileNotFound
+                        } else {
+                            classify_manual_import_error_message(&err.to_string())
+                        }),
+                        Some(err.to_string()),
+                    ));
+                    continue;
+                }
+            };
         let source = qualified.canonical_path;
 
         let target = match manual_import_mapping_target(mapping, &title.facet) {
@@ -2733,6 +2751,7 @@ async fn execute_manual_import_with_release_evidence_locked(
                 reason_code,
                 size_bytes,
                 source_cleanup,
+                destination_permit: _destination_permit,
                 ..
             }) => {
                 if let Some(completed) = completed {
@@ -2775,8 +2794,7 @@ async fn execute_manual_import_with_release_evidence_locked(
                 skip_reason,
                 ..
             }) => {
-                if episode_skip_is_already_present(reason_code.as_deref(), skip_reason.as_ref())
-                {
+                if episode_skip_is_already_present(skip_reason.as_ref()) {
                     // The identical file already sits at the destination (an
                     // earlier import landed it): the operator's mapping is
                     // satisfied, not failed. Record it like the automatic path
@@ -2806,6 +2824,19 @@ async fn execute_manual_import_with_release_evidence_locked(
                     false,
                     None,
                     Some(manual_import_error_from_skip_reason(skip_reason.clone())),
+                    Some(message),
+                ));
+            }
+            Ok(EpisodeImportOutcome::Ignored { message, .. }) => {
+                // Automatic pack planning is never active for an operator's
+                // explicit manual mapping. Keep this arm non-successful if a
+                // future caller reaches it rather than turning it into a
+                // manual ignore action.
+                results.push(manual_import_file_result(
+                    mapping,
+                    false,
+                    None,
+                    Some(manual_import_error_from_skip_reason(None)),
                     Some(message),
                 ));
             }
@@ -3405,8 +3436,64 @@ mod manual_archive_workspace_tests {
 mod manual_preview_suggestion_tests {
     use super::*;
 
+    fn episode_for_label(absolute_number: Option<&str>) -> scryer_domain::Episode {
+        scryer_domain::Episode {
+            id: "episode-19".to_string(),
+            title_id: "title-1".to_string(),
+            collection_id: Some("season-1".to_string()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("19".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("provider label is not the import target".to_string()),
+            title: Some("Episode Title".to_string()),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: absolute_number.map(str::to_string),
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        }
+    }
+
     fn file_episode(stem: &str) -> Option<crate::ParsedEpisodeMetadata> {
         parse_release_metadata(stem).episode
+    }
+
+    #[test]
+    fn manual_episode_label_names_the_absolute_number() {
+        assert_eq!(
+            manual_import_episode_label(&episode_for_label(Some("19"))),
+            "S01E19 · Absolute 19 — Episode Title"
+        );
+
+        let mut decorated = episode_for_label(Some("19"));
+        decorated.season_number = Some("Season 1".to_string());
+        decorated.episode_number = Some("Episode 19".to_string());
+        assert_eq!(
+            manual_import_episode_label(&decorated),
+            "S01E19 · Absolute 19 — Episode Title"
+        );
+
+        decorated.season_number = None;
+        decorated.episode_number = None;
+        assert_eq!(
+            manual_import_episode_label(&decorated),
+            "S??E?? · Absolute 19 — Episode Title"
+        );
+    }
+
+    #[test]
+    fn manual_episode_label_without_absolute_number_preserves_catalog_label() {
+        assert_eq!(
+            manual_import_episode_label(&episode_for_label(None)),
+            "provider label is not the import target"
+        );
     }
 
     fn suggestion(
@@ -3469,7 +3556,13 @@ mod manual_preview_suggestion_tests {
         let grabbed = HashSet::from(["episode-3".to_string(), "episode-4".to_string()]);
 
         assert_eq!(
-            suggestion(Some("episode-4"), &grabbed, false, "Show.S01E04.720p.WEB-DL").as_deref(),
+            suggestion(
+                Some("episode-4"),
+                &grabbed,
+                false,
+                "Show.S01E04.720p.WEB-DL"
+            )
+            .as_deref(),
             Some("episode-4")
         );
         assert_eq!(
@@ -3554,9 +3647,8 @@ mod manual_import_recovery_tests {
         )
         .expect("parse result JSON");
         result.status = ImportStatus::Pending;
-        result.error_message = Some(
-            "Manual reconciliation required: filesystem worker was terminated".to_string(),
-        );
+        result.error_message =
+            Some("Manual reconciliation required: filesystem worker was terminated".to_string());
         record.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
 
         assert!(manual_import_record_requires_reconciliation(&record));
@@ -3642,8 +3734,12 @@ mod manual_import_recovery_tests {
             record.result_json.as_deref().expect("result JSON"),
         )
         .expect("parse result JSON");
-        result.file_results.push(skipped_movie_extra("/downloads/sample.mkv"));
-        result.file_results.push(skipped_movie_extra("/downloads/featurette.mkv"));
+        result
+            .file_results
+            .push(skipped_movie_extra("/downloads/sample.mkv"));
+        result
+            .file_results
+            .push(skipped_movie_extra("/downloads/featurette.mkv"));
         record.result_json = Some(serde_json::to_string(&result).expect("result JSON"));
 
         assert!(
@@ -3750,7 +3846,11 @@ mod manual_movie_primary_selection_tests {
         let root = std::fs::canonicalize(dir.path()).expect("canonical root");
         // Deliberately not the largest: a movie sample can be big, and a
         // trailer bigger than the film is a data error, not the primary.
-        let sample = write_video(&root, "Movie.2024.1080p-sample.mkv", PAST_SAMPLE_THRESHOLD + 2);
+        let sample = write_video(
+            &root,
+            "Movie.2024.1080p-sample.mkv",
+            PAST_SAMPLE_THRESHOLD + 2,
+        );
         let movie = write_video(&root, "Movie.2024.1080p.mkv", PAST_SAMPLE_THRESHOLD + 1);
         let featurette = write_video(&root, "Making.Of.mkv", 1024);
         let files = vec![sample, movie, featurette];

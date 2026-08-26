@@ -280,6 +280,58 @@ fn dedupe_structured_dispatch_queries(
     deduped
 }
 
+#[derive(Clone, Copy, Debug)]
+struct QueryCoverageAggregate {
+    completed_queries: usize,
+    all_complete: bool,
+}
+
+fn record_query_coverage_outcomes(
+    aggregate: &mut HashMap<String, QueryCoverageAggregate>,
+    outcomes: &[IndexerQueryOutcome],
+) {
+    // A provider may contribute more than one internal outcome for a query.
+    // Collapse those first so duplicate rows cannot masquerade as completing
+    // multiple effective title/alias queries.
+    let mut per_query = HashMap::<String, bool>::new();
+    for outcome in outcomes {
+        per_query
+            .entry(outcome.indexer_id.clone())
+            .and_modify(|complete| *complete &= outcome.outcome.coverage_eligible())
+            .or_insert_with(|| outcome.outcome.coverage_eligible());
+    }
+    for (indexer_id, query_complete) in per_query {
+        aggregate
+            .entry(indexer_id)
+            .and_modify(|state| {
+                state.completed_queries = state.completed_queries.saturating_add(1);
+                state.all_complete &= query_complete;
+            })
+            .or_insert(QueryCoverageAggregate {
+                completed_queries: 1,
+                all_complete: query_complete,
+            });
+    }
+}
+
+fn completely_covered_indexers(
+    aggregate: HashMap<String, QueryCoverageAggregate>,
+    required_query_count: usize,
+) -> Vec<String> {
+    if required_query_count == 0 {
+        return Vec::new();
+    }
+    let mut covered = aggregate
+        .into_iter()
+        .filter_map(|(indexer_id, state)| {
+            (state.completed_queries == required_query_count && state.all_complete)
+                .then_some(indexer_id)
+        })
+        .collect::<Vec<_>>();
+    covered.sort();
+    covered
+}
+
 fn dedupe_text_safe_structured_dispatch_queries(
     queries: Vec<String>,
     season: Option<u32>,
@@ -1023,6 +1075,7 @@ impl AppUseCase {
         } else {
             effective_queries
         };
+        let required_query_count = effective_queries.len();
 
         let mut set = JoinSet::new();
         let mut ids = HashMap::new();
@@ -1100,11 +1153,10 @@ impl AppUseCase {
         let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
-        // Indexers that fired a query and returned a response (empty
-        // included) across any query. Aggregated here so the coverage write-hook
-        // records exactly the fired subset, never the routed set.
-        let mut fired_indexers: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        // Coverage is an intersection across every effective title/alias
+        // query. Candidates from incomplete queries remain usable, but one
+        // partial, missing, or failed query withholds coverage for that indexer.
+        let mut coverage_by_indexer = HashMap::new();
 
         loop {
             let result = tokio::select! {
@@ -1123,11 +1175,10 @@ impl AppUseCase {
             match result {
                 Ok(Ok(mut response)) => {
                     successful_searches += 1;
-                    for outcome in &response.indexer_outcomes {
-                        if outcome.outcome.coverage_eligible() {
-                            fired_indexers.insert(outcome.indexer_id.clone());
-                        }
-                    }
+                    record_query_coverage_outcomes(
+                        &mut coverage_by_indexer,
+                        &response.indexer_outcomes,
+                    );
                     for result in &mut response.results {
                         let provenance =
                             result.provenance.get_or_insert(ReleaseCandidateProvenance {
@@ -1184,7 +1235,10 @@ impl AppUseCase {
                 absolute_episode,
             )
             .await?;
-        Ok((scored, fired_indexers.into_iter().collect()))
+        Ok((
+            scored,
+            completely_covered_indexers(coverage_by_indexer, required_query_count),
+        ))
     }
 
     pub(crate) async fn search_and_evaluate_subject(
@@ -2157,6 +2211,13 @@ impl AppUseCase {
 mod structured_dispatch_query_tests {
     use super::*;
 
+    fn outcome(indexer_id: &str, outcome: IndexerSearchOutcome) -> IndexerQueryOutcome {
+        IndexerQueryOutcome {
+            indexer_id: indexer_id.to_string(),
+            outcome,
+        }
+    }
+
     #[test]
     fn text_safe_dedupe_preserves_distinct_episode_season_absolute_and_title_queries() {
         let queries = vec![
@@ -2188,6 +2249,80 @@ mod structured_dispatch_query_tests {
         let deduped = dedupe_structured_dispatch_queries(queries, Some(2), Some(5), Some(33));
 
         assert_eq!(deduped, vec!["Silver Horizon 033".to_string()]);
+    }
+
+    #[test]
+    fn coverage_requires_every_effective_query_to_complete() {
+        let mut aggregate = HashMap::new();
+        record_query_coverage_outcomes(
+            &mut aggregate,
+            &[
+                outcome("complete", IndexerSearchOutcome::Complete { empty: false }),
+                outcome("partial", IndexerSearchOutcome::Complete { empty: false }),
+                outcome("missing", IndexerSearchOutcome::Complete { empty: true }),
+            ],
+        );
+        record_query_coverage_outcomes(
+            &mut aggregate,
+            &[
+                outcome("complete", IndexerSearchOutcome::Complete { empty: true }),
+                outcome(
+                    "partial",
+                    IndexerSearchOutcome::Partial {
+                        empty: false,
+                        reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                        retry_after: None,
+                    },
+                ),
+            ],
+        );
+
+        assert_eq!(
+            completely_covered_indexers(aggregate, 2),
+            vec!["complete".to_string()]
+        );
+    }
+
+    #[test]
+    fn duplicate_outcomes_cannot_satisfy_multiple_queries() {
+        let mut aggregate = HashMap::new();
+        record_query_coverage_outcomes(
+            &mut aggregate,
+            &[
+                outcome("duplicate", IndexerSearchOutcome::Complete { empty: false }),
+                outcome("duplicate", IndexerSearchOutcome::Complete { empty: true }),
+            ],
+        );
+
+        assert!(completely_covered_indexers(aggregate, 2).is_empty());
+    }
+
+    #[test]
+    fn every_incomplete_outcome_withholds_multi_query_coverage() {
+        let incomplete = [
+            IndexerSearchOutcome::Partial {
+                empty: false,
+                reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                retry_after: None,
+            },
+            IndexerSearchOutcome::Deferred { retry_after: None },
+            IndexerSearchOutcome::Skipped { retry_after: None },
+            IndexerSearchOutcome::Errored,
+        ];
+
+        for incomplete in incomplete {
+            let mut aggregate = HashMap::new();
+            record_query_coverage_outcomes(
+                &mut aggregate,
+                &[outcome(
+                    "idx",
+                    IndexerSearchOutcome::Complete { empty: false },
+                )],
+            );
+            record_query_coverage_outcomes(&mut aggregate, &[outcome("idx", incomplete)]);
+
+            assert!(completely_covered_indexers(aggregate, 2).is_empty());
+        }
     }
 }
 

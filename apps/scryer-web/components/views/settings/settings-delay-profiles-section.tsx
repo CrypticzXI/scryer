@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Edit, Plus, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
+import { InfoHelp } from "@/components/common/info-help";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
@@ -68,6 +69,27 @@ const DELAY_TABLE_HEADER_CELL_CLASS =
 
 function protocolModeLabelKey(mode: DelayProfileProtocolMode) {
   return `settings.delayProfileProtocolMode.${mode}`;
+}
+
+type DelayProfileHelpLabelProps = {
+  htmlFor?: string;
+  label: string;
+  help: string;
+};
+
+function DelayProfileHelpLabel({
+  htmlFor,
+  label,
+  help,
+}: DelayProfileHelpLabelProps) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label className="text-[var(--scry-ink2)]" htmlFor={htmlFor}>
+        {label}
+      </Label>
+      <InfoHelp text={help} ariaLabel={help} />
+    </div>
+  );
 }
 
 export function SettingsDelayProfilesSection({
@@ -244,37 +266,52 @@ export function SettingsDelayProfilesSection({
             <div className="grid gap-4 sm:grid-cols-2">
               {draft.enable_usenet ? (
                 <div className="space-y-1.5">
-                <Label className="text-[var(--scry-ink2)]" htmlFor="dp-usenet-delay">{t("settings.delayProfileUsenetDelay")}</Label>
-                <Input
-                  id="dp-usenet-delay"
-                  {...integerInputProps}
-                  value={draft.usenet_delay_minutes}
-                  onChange={(e) => updateField("usenet_delay_minutes", parseIntegerInput(e.target.value))}
-                />
-                <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                  {t("settings.delayProfileUsenetDelayHelp")}
-                </p>
+                  <DelayProfileHelpLabel
+                    htmlFor="dp-usenet-delay"
+                    label={t("settings.delayProfileUsenetDelay")}
+                    help={t("settings.delayProfileUsenetDelayHelp")}
+                  />
+                  <Input
+                    id="dp-usenet-delay"
+                    {...integerInputProps}
+                    value={draft.usenet_delay_minutes}
+                    onChange={(e) =>
+                      updateField(
+                        "usenet_delay_minutes",
+                        parseIntegerInput(e.target.value),
+                      )
+                    }
+                  />
                 </div>
               ) : null}
               {draft.enable_torrent ? (
                 <div className="space-y-1.5">
-                <Label className="text-[var(--scry-ink2)]" htmlFor="dp-torrent-delay">{t("settings.delayProfileTorrentDelay")}</Label>
-                <Input
-                  id="dp-torrent-delay"
-                  {...integerInputProps}
-                  value={draft.torrent_delay_minutes}
-                  onChange={(e) => updateField("torrent_delay_minutes", parseIntegerInput(e.target.value))}
-                />
-                <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                  {t("settings.delayProfileTorrentDelayHelp")}
-                </p>
+                  <DelayProfileHelpLabel
+                    htmlFor="dp-torrent-delay"
+                    label={t("settings.delayProfileTorrentDelay")}
+                    help={t("settings.delayProfileTorrentDelayHelp")}
+                  />
+                  <Input
+                    id="dp-torrent-delay"
+                    {...integerInputProps}
+                    value={draft.torrent_delay_minutes}
+                    onChange={(e) =>
+                      updateField(
+                        "torrent_delay_minutes",
+                        parseIntegerInput(e.target.value),
+                      )
+                    }
+                  />
                 </div>
               ) : null}
             </div>
 
             {/* Protocol mode */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfileProtocolModeLabel")}</Label>
+              <DelayProfileHelpLabel
+                label={t("settings.delayProfileProtocolModeLabel")}
+                help={t("settings.delayProfileProtocolModeHelp")}
+              />
               <RadioGroup
                 className="flex flex-wrap gap-4"
                 value={delayProfileProtocolMode(draft)}
@@ -297,23 +334,21 @@ export function SettingsDelayProfilesSection({
                   </label>
                 ))}
               </RadioGroup>
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfileProtocolModeHelp")}
-              </p>
             </div>
 
             {/* Minimum age (usenet) */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-min-age">{t("settings.delayProfileMinAge")}</Label>
+              <DelayProfileHelpLabel
+                htmlFor="dp-min-age"
+                label={t("settings.delayProfileMinAge")}
+                help={t("settings.delayProfileMinAgeHelp")}
+              />
               <Input
                 id="dp-min-age"
                 {...integerInputProps}
                 value={draft.min_age_minutes}
                 onChange={(e) => updateField("min_age_minutes", parseIntegerInput(e.target.value))}
               />
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfileMinAgeHelp")}
-              </p>
             </div>
 
             <CheckboxField
@@ -323,14 +358,23 @@ export function SettingsDelayProfilesSection({
                 updateField("bypass_if_highest_quality", checked === true)
               }
               label={t("settings.delayProfileBypassHighestQualityLabel")}
-              description={t("settings.delayProfileBypassHighestQualityHelp")}
+              labelAccessory={
+                <InfoHelp
+                  text={t("settings.delayProfileBypassHighestQualityHelp")}
+                  ariaLabel={t("settings.delayProfileBypassHighestQualityHelp")}
+                />
+              }
               className="items-start text-[var(--scry-ink2)]"
               checkboxClassName="mt-0.5"
             />
 
             {/* Bypass score threshold */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-bypass">{t("settings.delayProfileBypassLabel")}</Label>
+              <DelayProfileHelpLabel
+                htmlFor="dp-bypass"
+                label={t("settings.delayProfileBypassLabel")}
+                help={t("settings.delayProfileBypassHelp")}
+              />
               <Input
                 id="dp-bypass"
                 {...integerInputProps}
@@ -344,14 +388,14 @@ export function SettingsDelayProfilesSection({
                 }}
                 placeholder={t("settings.delayProfileBypassPlaceholder")}
               />
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfileBypassHelp")}
-              </p>
             </div>
 
             {/* Applies to facets */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfileFacetsLabel")}</Label>
+              <DelayProfileHelpLabel
+                label={t("settings.delayProfileFacetsLabel")}
+                help={t("settings.delayProfileFacetsHelp")}
+              />
               <div className="flex flex-wrap gap-4">
                 {FACET_OPTIONS.map((facet) => (
                   <label key={facet} className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]">
@@ -364,14 +408,15 @@ export function SettingsDelayProfilesSection({
                   </label>
                 ))}
               </div>
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfileFacetsHelp")}
-              </p>
             </div>
 
             {/* Tags */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-tags">{t("settings.delayProfileTagsLabel")}</Label>
+              <DelayProfileHelpLabel
+                htmlFor="dp-tags"
+                label={t("settings.delayProfileTagsLabel")}
+                help={t("settings.delayProfileTagsHelp")}
+              />
               <Input
                 id="dp-tags"
                 value={draft.tags.join(", ")}
@@ -386,23 +431,21 @@ export function SettingsDelayProfilesSection({
                 }
                 placeholder={t("settings.delayProfileTagsPlaceholder")}
               />
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfileTagsHelp")}
-              </p>
             </div>
 
             {/* Priority */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]" htmlFor="dp-priority">{t("settings.delayProfilePriorityLabel")}</Label>
+              <DelayProfileHelpLabel
+                htmlFor="dp-priority"
+                label={t("settings.delayProfilePriorityLabel")}
+                help={t("settings.delayProfilePriorityHelp")}
+              />
               <Input
                 id="dp-priority"
                 {...integerInputProps}
                 value={draft.priority}
                 onChange={(e) => updateField("priority", parseIntegerInput(e.target.value))}
               />
-              <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfilePriorityHelp")}
-              </p>
             </div>
 
             {/* Enabled */}

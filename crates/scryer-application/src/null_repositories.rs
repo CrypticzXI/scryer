@@ -631,9 +631,6 @@ impl ImportRepository for NullImportRepository {
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
-    async fn is_already_imported(&self, _: &ClientJobLocator) -> AppResult<bool> {
-        Ok(false)
-    }
     async fn list_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
         Ok(vec![])
     }
@@ -794,6 +791,16 @@ pub struct NullMediaFileRepository;
 #[async_trait]
 impl MediaFileRepository for NullMediaFileRepository {
     async fn insert_media_file(&self, _input: &InsertMediaFileInput) -> AppResult<String> {
+        Err(AppError::Repository(
+            "media file repository is not configured".to_string(),
+        ))
+    }
+
+    async fn claim_import_destination(
+        &self,
+        _input: &InsertMediaFileInput,
+        _associations: &crate::MediaFileAssociations,
+    ) -> AppResult<crate::ClaimedMediaFile> {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),
         ))
@@ -1911,6 +1918,14 @@ impl DownloadSubmissionRepository for NullDownloadSubmissionRepository {
     }
     async fn record_ambiguous_submission(&self, _: DownloadSubmission) -> AppResult<()> {
         Ok(())
+    }
+    async fn record_submission_with_identity(
+        &self,
+        _: DownloadSubmission,
+        _: crate::DownloadSubmissionIdentity,
+        _: Option<crate::PersistedSeedGoals>,
+    ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+        Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
     }
     async fn find_by_client_item_id(
         &self,

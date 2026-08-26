@@ -3,9 +3,10 @@ use super::*;
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, ClientJobLocator, DownloadSubmission, DownloadSubmissionActorSnapshot,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, IdentityTrackedStateTarget,
-    PersistedSeedGoals, SeedGoalGrabRecord, SeedGoalResolutionSource,
+    AppError, AppResult, CanonicalDownloadIdentityDisposition, ClientJobLocator,
+    DownloadSubmission, DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity,
+    DownloadSubmissionRepository, IdentityTrackedStateTarget, PersistedSeedGoals,
+    SeedGoalResolutionSource,
 };
 use scryer_domain::{Id, TrackedDownloadState, download_identity::DownloadId};
 
@@ -347,21 +348,77 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
-    ) -> AppResult<()> {
+        seed_goals: Option<PersistedSeedGoals>,
+    ) -> AppResult<CanonicalDownloadIdentityDisposition> {
+        let requested_download_id = submission.download_id;
+        let locator = ClientJobLocator::from_submission(&submission);
         run_in_transaction_retrying_unique_violation(
             &self.datastore,
-            "record_download_submission_with_identity",
+            "record_download_submission_with_identity_disposition",
             move |tx| {
                 let submission = submission.clone();
                 let submission_identity = submission_identity.clone();
+                let seed_goals = seed_goals.clone();
+                let locator = locator.clone();
                 Box::pin(async move {
-                    record_download_submission_with_identity_tx(
+                    if let Some(download_id) =
+                        active_binding_download_id(SqlExec::Tx(tx), &locator).await?
+                        && download_id != requested_download_id
+                        && !bound_download_is_terminal_tx(tx, &download_id).await?
+                    {
+                        return Ok(CanonicalDownloadIdentityDisposition::AdoptedExisting {
+                            download_id,
+                        });
+                    }
+                    let effective_download_id = record_download_submission_with_identity_tx(
                         tx,
                         &submission,
                         &submission_identity,
                     )
-                    .await?;
-                    Ok(())
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Repository(format!(
+                            "canonical submission {requested_download_id} was not persisted"
+                        ))
+                    })?;
+                    if effective_download_id == requested_download_id
+                        && let Some(goals) = seed_goals.as_ref()
+                    {
+                        SqlRuntime::execute(
+                            SqlExec::Tx(tx),
+                            "UPDATE download_submissions
+                             SET seeding_profile_id = {}, seed_goal_ratio = {},
+                                 seed_goal_seconds = {}, seed_never_remove = {},
+                                 seed_goal_met_action = {}, seed_post_import_tracking = {},
+                                 seed_goal_source = {}, seed_info_hash = {}
+                             WHERE id = {}",
+                            &[
+                                SqlArg::OptText(goals.seeding_profile_id.clone()),
+                                SqlArg::OptF64(goals.seed_goal_ratio),
+                                SqlArg::OptI64(goals.seed_goal_seconds),
+                                SqlArg::OptBool(Some(goals.never_remove)),
+                                SqlArg::OptText(
+                                    goals
+                                        .goal_met_action
+                                        .map(|action| action.as_str().to_string()),
+                                ),
+                                SqlArg::OptText(Some(
+                                    goals.post_import_tracking.as_str().to_string(),
+                                )),
+                                SqlArg::OptText(Some(goals.resolution_source.as_str().to_string())),
+                                SqlArg::OptText(normalized_info_hash(goals.info_hash.as_deref())),
+                                SqlArg::Text(effective_download_id.to_string()),
+                            ],
+                        )
+                        .await?;
+                    }
+                    Ok(if effective_download_id == requested_download_id {
+                        CanonicalDownloadIdentityDisposition::Requested
+                    } else {
+                        CanonicalDownloadIdentityDisposition::AdoptedExisting {
+                            download_id: effective_download_id,
+                        }
+                    })
                 })
             },
         )
@@ -500,6 +557,13 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         };
         self.find_by_canonical_download_id(&canonical_download_id)
             .await
+    }
+
+    async fn find_by_canonical_download_id(
+        &self,
+        download_id: &DownloadId,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        DownloadSubmissionStore::find_by_canonical_download_id(self, download_id).await
     }
 
     async fn list_by_download_id(
@@ -1051,6 +1115,31 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         .await
     }
 
+    async fn list_active_unbound_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let sql = download_submission_select_sql(
+            &self.datastore,
+            "WHERE title_id = {}
+               AND download_client_item_id IS NULL
+               AND EXISTS (
+                   SELECT 1
+                     FROM download_client_bindings binding
+                    WHERE binding.download_id = download_submissions.id
+                      AND binding.native_item_id IS NULL
+                      AND binding.ended_at IS NULL
+               )
+             ORDER BY submitted_at, id",
+        );
+        fetch_download_submissions(
+            self.datastore.read_exec(),
+            &sql,
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await
+    }
+
     async fn find_by_title_and_request_signature(
         &self,
         title_id: &str,
@@ -1123,6 +1212,11 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
             move |tx| {
                 let identity = identity.clone();
                 Box::pin(async move {
+                    if let Some(download_id) =
+                        active_binding_download_id(SqlExec::Tx(tx), &identity).await?
+                    {
+                        end_binding_tx(tx, &download_id).await?;
+                    }
                     let normalized_client_id =
                         normalize_download_client_id(identity.client_id.as_deref());
                     let args = [
@@ -1217,84 +1311,6 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.opt_text("tracked_state"))
             .transpose()
             .map(Option::flatten)
-    }
-
-    /// Upsert, not update: the download-client choke point resolves and records
-    /// the goals as soon as the client accepts the torrent, which happens
-    /// before the acquisition layer records the submission itself. The insert
-    /// carries the title/facet/purpose the router already knows, so the row is
-    /// never a bare orphan stub, and `record_download_submission_tx` later
-    /// conflict-updates the remaining columns without touching the seed ones.
-    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
-        run_in_transaction_retrying_unique_violation(
-            &self.datastore,
-            "record_download_submission_seed_goals",
-            move |tx| {
-                let record = record.clone();
-                Box::pin(async move {
-                    let locator = ClientJobLocator::new(
-                        record.client_id.as_deref(),
-                        &record.client_type,
-                        &record.client_item_id,
-                    );
-                    let effective_download_id = claim_or_create_binding_download_id_tx(
-                        tx,
-                        &locator,
-                        Some(record.download_id),
-                    )
-                    .await?;
-                    SqlRuntime::execute(
-                        SqlExec::Tx(tx),
-                        "INSERT INTO download_submissions
-                         (id, title_id, facet, download_client_id, download_client_type,
-                          download_client_item_id, purpose, seeding_profile_id, seed_goal_ratio,
-                          seed_goal_seconds, seed_never_remove, seed_goal_met_action,
-                          seed_post_import_tracking, seed_goal_source, seed_info_hash)
-                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
-                        ON CONFLICT(id) DO UPDATE
-                         SET seeding_profile_id = excluded.seeding_profile_id,
-                             seed_goal_ratio = excluded.seed_goal_ratio,
-                             seed_goal_seconds = excluded.seed_goal_seconds,
-                             seed_never_remove = excluded.seed_never_remove,
-                             seed_goal_met_action = excluded.seed_goal_met_action,
-                             seed_post_import_tracking = excluded.seed_post_import_tracking,
-                             seed_goal_source = excluded.seed_goal_source,
-                             seed_info_hash = excluded.seed_info_hash",
-                        &[
-                            SqlArg::Text(effective_download_id.to_string()),
-                            SqlArg::Text(record.title_id.clone()),
-                            SqlArg::Text(record.facet.clone()),
-                            SqlArg::Text(normalize_download_client_id(record.client_id.as_deref())),
-                            SqlArg::Text(record.client_type.clone()),
-                            SqlArg::Text(record.client_item_id.clone()),
-                            SqlArg::Text(record.purpose.as_str().to_string()),
-                            SqlArg::OptText(record.goals.seeding_profile_id.clone()),
-                            SqlArg::OptF64(record.goals.seed_goal_ratio),
-                            SqlArg::OptI64(record.goals.seed_goal_seconds),
-                            SqlArg::OptBool(Some(record.goals.never_remove)),
-                            SqlArg::OptText(
-                                record
-                                    .goals
-                                    .goal_met_action
-                                    .map(|action| action.as_str().to_string()),
-                            ),
-                            SqlArg::OptText(Some(
-                                record.goals.post_import_tracking.as_str().to_string(),
-                            )),
-                            SqlArg::OptText(Some(
-                                record.goals.resolution_source.as_str().to_string(),
-                            )),
-                            SqlArg::OptText(normalized_info_hash(
-                                record.goals.info_hash.as_deref(),
-                            )),
-                        ],
-                    )
-                    .await?;
-                    Ok(effective_download_id)
-                })
-            },
-        )
-        .await
     }
 
     async fn get_seed_goals(
@@ -1611,43 +1627,66 @@ mod seed_goal_tests {
         ClientJobLocator::new(Some("primary"), "qbittorrent", "job-1")
     }
 
-    fn record() -> SeedGoalGrabRecord {
-        SeedGoalGrabRecord {
-            download_id: scryer_domain::download_identity::DownloadId::new(),
-            client_id: Some("primary".to_string()),
-            client_type: "qbittorrent".to_string(),
-            client_item_id: "job-1".to_string(),
-            title_id: "title-1".to_string(),
+    fn submission(download_id: DownloadId, item_id: &str, title_id: &str) -> DownloadSubmission {
+        DownloadSubmission {
+            download_id,
+            title_id: title_id.to_string(),
             facet: "series".to_string(),
+            download_client_id: Some("primary".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: Some(format!("https://indexer.invalid/{item_id}.torrent")),
+            source_provider_id: Some("indexer-1".to_string()),
+            source_provider_name: Some("Indexer".to_string()),
+            source_kind: Some(scryer_application::DownloadSourceKind::TorrentFile),
+            source_title: Some(format!("Release {item_id}")),
+            release_size_bytes: Some(123),
+            request_signature: Some(format!("signature-{item_id}")),
+            scope: SubmissionScope::Title,
             purpose: DownloadSubmissionPurpose::Standard,
-            goals: PersistedSeedGoals {
-                seeding_profile_id: Some("profile-1".to_string()),
-                seed_goal_ratio: Some(2.5),
-                seed_goal_seconds: Some(7200),
-                never_remove: true,
-                goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
-                post_import_tracking: scryer_domain::PostImportTracking::HandOff,
-                resolution_source: SeedGoalResolutionSource::Indexer,
-                info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
-            },
+        }
+    }
+
+    fn submission_identity(download_id: DownloadId) -> DownloadSubmissionIdentity {
+        DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_wire()),
+        }
+    }
+
+    fn goals(ratio: f64, info_hash: Option<&str>) -> PersistedSeedGoals {
+        PersistedSeedGoals {
+            seeding_profile_id: Some("profile-1".to_string()),
+            seed_goal_ratio: Some(ratio),
+            seed_goal_seconds: Some(7200),
+            never_remove: true,
+            goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+            post_import_tracking: scryer_domain::PostImportTracking::HandOff,
+            resolution_source: SeedGoalResolutionSource::Indexer,
+            info_hash: info_hash.map(str::to_string),
         }
     }
 
     #[tokio::test]
     async fn seed_goals_load_in_one_batch_for_the_queue_projection() {
         let store = store().await;
+        let first_id = DownloadId::new();
         store
-            .record_seed_goals(record())
+            .record_submission_with_identity(
+                submission(first_id, "job-1", "title-1"),
+                submission_identity(first_id),
+                Some(goals(2.5, Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01"))),
+            )
             .await
-            .expect("seed goals should persist");
-        let mut second = record();
-        second.client_item_id = "job-2".to_string();
-        second.goals.seed_goal_ratio = Some(1.25);
-        second.goals.info_hash = None;
+            .expect("submission and seed goals should persist");
+        let second_id = DownloadId::new();
         store
-            .record_seed_goals(second)
+            .record_submission_with_identity(
+                submission(second_id, "job-2", "title-1"),
+                submission_identity(second_id),
+                Some(goals(1.25, None)),
+            )
             .await
-            .expect("seed goals should persist");
+            .expect("submission and seed goals should persist");
 
         let loaded = store
             .list_seed_goals_for_client_items(&[
@@ -1674,29 +1713,38 @@ mod seed_goal_tests {
     }
 
     #[tokio::test]
-    async fn active_locator_reuses_the_first_canonical_submission_for_seed_goal_updates() {
+    async fn active_locator_adopts_the_first_submission_without_replacing_frozen_seed_goals() {
         let store = store().await;
         let first_id = DownloadId::parse("00000000-0000-4000-8000-000000000001")
             .expect("first fixed download id should parse");
         let second_id = DownloadId::parse("00000000-0000-4000-8000-000000000002")
             .expect("second fixed download id should parse");
-        let mut first = record();
-        first.download_id = first_id;
-        first.goals.seed_goal_ratio = Some(1.0);
-        let mut second = record();
-        second.download_id = second_id;
-        second.goals.seed_goal_ratio = Some(2.0);
-
         let first_effective_download_id = store
-            .record_seed_goals(first)
+            .record_submission_with_identity(
+                submission(first_id, "job-1", "title-1"),
+                submission_identity(first_id),
+                Some(goals(1.0, None)),
+            )
             .await
             .expect("first submission should persist");
         let second_effective_download_id = store
-            .record_seed_goals(second)
+            .record_submission_with_identity(
+                submission(second_id, "job-1", "title-2"),
+                submission_identity(second_id),
+                Some(goals(2.0, None)),
+            )
             .await
             .expect("second submission should reuse the active binding");
-        assert_eq!(first_effective_download_id, first_id);
-        assert_eq!(second_effective_download_id, first_id);
+        assert_eq!(
+            first_effective_download_id,
+            CanonicalDownloadIdentityDisposition::Requested
+        );
+        assert_eq!(
+            second_effective_download_id,
+            CanonicalDownloadIdentityDisposition::AdoptedExisting {
+                download_id: first_id,
+            }
+        );
 
         store
             .record_identity_tracked_state_for_download(
@@ -1725,7 +1773,7 @@ mod seed_goal_tests {
             .expect("seed-goal projection should load");
         assert_eq!(seed_goals.len(), 1);
         assert_eq!(seed_goals[0].0, identity());
-        assert_eq!(seed_goals[0].1.seed_goal_ratio, Some(2.0));
+        assert_eq!(seed_goals[0].1.seed_goal_ratio, Some(1.0));
 
         let states = store
             .list_identity_tracked_states_for_client_items(&[identity()])
@@ -1735,16 +1783,63 @@ mod seed_goal_tests {
     }
 
     #[tokio::test]
+    async fn deleting_a_submission_releases_its_locator_for_a_fresh_identity() {
+        let store = store().await;
+        let first_id = DownloadId::new();
+        store
+            .record_submission_with_identity(
+                submission(first_id, "job-1", "title-1"),
+                submission_identity(first_id),
+                None,
+            )
+            .await
+            .expect("first submission should persist");
+
+        store
+            .delete_by_client_item_id(&identity())
+            .await
+            .expect("authoritative absence should release the old locator");
+
+        let second_id = DownloadId::new();
+        let disposition = store
+            .record_submission_with_identity(
+                submission(second_id, "job-1", "title-1"),
+                submission_identity(second_id),
+                None,
+            )
+            .await
+            .expect("fresh submission should claim the released locator");
+
+        assert_eq!(disposition, CanonicalDownloadIdentityDisposition::Requested);
+        assert_eq!(
+            active_binding_download_id(store.datastore.read_exec(), &identity())
+                .await
+                .expect("active binding should load"),
+            Some(second_id)
+        );
+        assert!(
+            store
+                .find_by_canonical_download_id(&first_id)
+                .await
+                .expect("old submission lookup should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn seed_goals_read_by_canonical_download_id() {
         let store = store().await;
-        let record = record();
-        let canonical_download_id = record.download_id;
-        let mut expected = record.goals.clone();
+        let canonical_download_id = DownloadId::new();
+        let mut expected = goals(2.5, Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01"));
         expected.info_hash = expected.info_hash.map(|hash| hash.to_ascii_lowercase());
         store
-            .record_seed_goals(record)
+            .record_submission_with_identity(
+                submission(canonical_download_id, "job-1", "title-1"),
+                submission_identity(canonical_download_id),
+                Some(expected.clone()),
+            )
             .await
-            .expect("seed goals should persist");
+            .expect("submission and seed goals should persist");
 
         let loaded = store
             .get_seed_goals_for_download(Some(&canonical_download_id), &identity())
@@ -1778,6 +1873,65 @@ mod seed_goal_tests {
     }
 
     #[tokio::test]
+    async fn canonical_persistence_reports_adoption_without_overwriting_the_owner() {
+        let store = store().await;
+        let first_id = DownloadId::parse("00000000-0000-4000-8000-000000000001")
+            .expect("first fixed download id should parse");
+        let second_id = DownloadId::parse("00000000-0000-4000-8000-000000000002")
+            .expect("second fixed download id should parse");
+        let submission_identity = DownloadSubmissionIdentity {
+            download_id: Some(first_id.to_wire()),
+        };
+        let mut first = ambiguous_submission(first_id);
+        first.download_client_item_id = "existing-job".to_string();
+        store
+            .record_submission_with_identity(
+                first.clone(),
+                submission_identity.clone(),
+                Some(goals(1.0, None)),
+            )
+            .await
+            .expect("first submission should persist");
+        let mut second = first;
+        second.download_id = second_id;
+        second.title_id = "different-title".to_string();
+
+        let disposition = store
+            .record_submission_with_identity(second, submission_identity, Some(goals(2.0, None)))
+            .await
+            .expect("canonical persistence should report the existing owner");
+
+        assert_eq!(
+            disposition,
+            CanonicalDownloadIdentityDisposition::AdoptedExisting {
+                download_id: first_id,
+            }
+        );
+        let existing = store
+            .find_by_canonical_download_id(&first_id)
+            .await
+            .expect("existing submission should load")
+            .expect("existing submission should remain");
+        assert_eq!(existing.title_id, "title-ambiguous");
+        assert_eq!(
+            store
+                .get_seed_goals_by_canonical_download_id(&first_id)
+                .await
+                .expect("existing seed goals should load")
+                .expect("existing seed goals should remain")
+                .seed_goal_ratio,
+            Some(1.0)
+        );
+        assert!(
+            store
+                .find_by_canonical_download_id(&second_id)
+                .await
+                .expect("requested identity lookup should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn ambiguous_submissions_are_unbound_durable_rows_and_hidden_from_legacy_readers() {
         let store = store().await;
         SqlRuntime::execute(
@@ -1803,6 +1957,10 @@ mod seed_goal_tests {
             .record_ambiguous_submission(ambiguous_submission(first))
             .await
             .expect("first ambiguous mutation should persist");
+        store
+            .record_ambiguous_submission(ambiguous_submission(first))
+            .await
+            .expect("retrying the same ambiguous mutation should be idempotent");
         store
             .record_ambiguous_submission(ambiguous_submission(second))
             .await
@@ -1872,6 +2030,13 @@ mod seed_goal_tests {
                 .expect("legacy title reader should succeed")
                 .is_empty()
         );
+        let unresolved = store
+            .list_active_unbound_for_title("title-ambiguous")
+            .await
+            .expect("canonical ambiguity reader should succeed");
+        assert_eq!(unresolved.len(), 2);
+        assert_eq!(unresolved[0].download_id, first);
+        assert_eq!(unresolved[1].download_id, second);
         assert!(
             store
                 .find_by_title_and_request_signature(
@@ -1901,6 +2066,7 @@ mod seed_goal_tests {
                 DownloadSubmissionIdentity {
                     download_id: Some("SABnzbd_nzo_1".to_string()),
                 },
+                None,
             )
             .await
             .expect("accepted SAB-style submission should persist");

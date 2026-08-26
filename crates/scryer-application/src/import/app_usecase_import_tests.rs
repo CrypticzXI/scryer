@@ -437,6 +437,74 @@ fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
 }
 
 #[test]
+fn exact_submission_episode_fallback_requires_one_episode_and_one_video() {
+    let evidence = |scope| ReleaseEvidence::ScryerSubmission {
+        title_id: "title-1".to_string(),
+        facet: "series".to_string(),
+        source_title: Some("Test.Series.S01E01.1080p.WEB-DL.x264".to_string()),
+        observed_release_name: None,
+        release_size_bytes: None,
+        purpose: crate::DownloadSubmissionPurpose::Standard,
+        scope,
+    };
+    let episode = evidence(SubmissionScope::Episode {
+        episode_id: "ep-1".to_string(),
+    });
+    assert_eq!(sole_submission_episode_id(&episode, false), Some("ep-1"));
+    assert_eq!(sole_submission_episode_id(&episode, true), None);
+
+    let singleton_set = evidence(SubmissionScope::EpisodeSet {
+        episode_ids: vec!["ep-1".to_string()],
+    });
+    assert_eq!(
+        sole_submission_episode_id(&singleton_set, false),
+        Some("ep-1")
+    );
+
+    let ambiguous_set = evidence(SubmissionScope::EpisodeSet {
+        episode_ids: vec!["ep-1".to_string(), "ep-2".to_string()],
+    });
+    assert_eq!(sole_submission_episode_id(&ambiguous_set, false), None);
+    let collection = evidence(SubmissionScope::Collection {
+        collection_id: "season-1".to_string(),
+    });
+    assert_eq!(sole_submission_episode_id(&collection, false), None);
+    let title = evidence(SubmissionScope::Title);
+    assert_eq!(sole_submission_episode_id(&title, false), None);
+    assert_eq!(
+        sole_submission_episode_id(
+            &ReleaseEvidence::DownloaderObservation {
+                release_name: Some("Test.Series.S01E01.1080p.WEB-DL.x264".to_string()),
+            },
+            false,
+        ),
+        None
+    );
+}
+
+#[test]
+fn unresolved_absolute_episode_message_names_the_detected_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let release_title = "Test Series - 19 (WEB 1080p x264 10-bit AAC) [A1B2C3D4]";
+    let file_path = dir.path().join(format!("{release_title}.mkv"));
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let evidence = ReleaseEvidence::DownloaderObservation {
+        release_name: Some(release_title.to_string()),
+    };
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &evidence,
+        &titled(MediaFacet::Series, "Test Series", Some(2020)),
+        false,
+    );
+
+    assert_eq!(
+        unresolved_episode_import_message(&parsed, &file_path, &evidence, 1),
+        "Automatic import found absolute episode 19, but could not map it to a season and episode for this title. Open Manual Import and assign the correct episode."
+    );
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_does_not_use_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
@@ -1555,6 +1623,28 @@ fn find_video_files_finds_mkv_in_dir() {
 }
 
 #[test]
+fn find_video_files_accepts_direct_video_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let video = dir.path().join("movie.mkv");
+    std::fs::write(&video, b"data").expect("write");
+
+    assert_eq!(find_video_files(&video, false).expect("find"), vec![video]);
+}
+
+#[test]
+fn find_video_files_rejects_direct_non_video_without_reading_it_as_a_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = dir.path().join("payload.bin");
+    std::fs::write(&payload, b"data").expect("write");
+
+    assert!(
+        find_video_files(&payload, false)
+            .expect("classify")
+            .is_empty()
+    );
+}
+
+#[test]
 fn find_video_files_includes_trailing_sanitized_video_extension() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sanitized_path = dir.path().join("Fixture.Payload.mkv_");
@@ -1619,7 +1709,43 @@ fn find_video_files_keeps_small_strm_when_filtering_samples() {
 #[test]
 fn find_video_files_returns_error_for_missing_dir() {
     let result = find_video_files(std::path::Path::new("/nonexistent/dir/abc"), false);
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(AppError::ImportSourceInspection { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn find_video_files_reports_an_unreadable_root_as_source_inspection() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let original_permissions = std::fs::metadata(dir.path())
+        .expect("metadata")
+        .permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000))
+        .expect("remove permissions");
+    let result = find_video_files(dir.path(), false);
+    std::fs::set_permissions(dir.path(), original_permissions).expect("restore permissions");
+
+    assert!(matches!(
+        result,
+        Err(AppError::ImportSourceInspection { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn find_video_files_rejects_special_filesystem_objects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("download.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+
+    assert!(matches!(
+        find_video_files(&socket_path, false),
+        Err(AppError::UnsupportedImportSource { .. })
+    ));
 }
 
 #[test]
@@ -2554,10 +2680,6 @@ impl crate::ImportRepository for RecoveryImportRepo {
         Ok(self.records.clone())
     }
 
-    async fn is_already_imported(&self, _: &crate::ClientJobLocator) -> AppResult<bool> {
-        Ok(false)
-    }
-
     async fn delete_manual_import_selections_for_source(
         &self,
         source_identity: &crate::ClientJobLocator,
@@ -2665,14 +2787,11 @@ fn scripted_tracked_download_runtime(
             else {
                 continue;
             };
-            asked_task
-                .lock()
-                .await
-                .push((
-                    source_identity.item_id.clone(),
-                    record_completed_at,
-                    canonical_download_id,
-                ));
+            asked_task.lock().await.push((
+                source_identity.item_id.clone(),
+                record_completed_at,
+                canonical_download_id,
+            ));
             let outcome = script
                 .iter_mut()
                 .find(|(item_id, _)| *item_id == source_identity.item_id)

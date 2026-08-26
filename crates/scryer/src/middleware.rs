@@ -1703,7 +1703,7 @@ fn graphql_post_execution_timeout() -> Duration {
     // remain above both the longest valid indexer operation and an operator's
     // configured download-client feedback window, otherwise it silently wins.
     graphql_post_execution_timeout_for(
-        scryer_infrastructure_acquisition::downloads::clients::download_client_feedback_timeout()
+        scryer_infrastructure_acquisition::downloads::clients::download_client_feedback_timeout(),
     )
 }
 
@@ -2701,6 +2701,25 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
             .into_response(),
         AppError::ManualReconciliationRequired(message) => {
             (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
+        }
+        error @ (AppError::ImportSourceInspection { .. }
+        | AppError::UnsupportedImportSource { .. }
+        | AppError::ImportSourceChanged { .. }) => {
+            let error_id = Id::new().0;
+            tracing::error!(
+                error_id = %error_id,
+                error_kind = "ImportSource",
+                error = %error,
+                "masked internal import source error"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::with_error_id(
+                    INTERNAL_SERVER_ERROR_MESSAGE.to_string(),
+                    error_id,
+                )),
+            )
+                .into_response()
         }
         AppError::ImportEvidenceUnavailable(message) | AppError::Repository(message) => {
             let error_id = Id::new().0;

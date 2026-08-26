@@ -3417,6 +3417,10 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         Ok(0)
     }
 
+    async fn prune_indexer(&self, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn set_suppressed(
         &self,
         key: &IndexerSearchLearningKey,
@@ -3548,12 +3552,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
-    ) -> AppResult<()> {
-        let identity = ClientJobLocator::from_submission(&submission);
-        self.record_submission(submission).await?;
-        self.record_submission_identity(&identity, &submission_identity)
-            .await
-    }
+        seed_goals: Option<PersistedSeedGoals>,
+    ) -> AppResult<CanonicalDownloadIdentityDisposition>;
 
     async fn record_submission_actor_snapshot(
         &self,
@@ -3561,17 +3561,6 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         _actor: DownloadSubmissionActorSnapshot,
     ) -> AppResult<()> {
         Ok(())
-    }
-
-    /// Freeze the seeding goals a torrent grab resolved to onto its submission
-    /// row. Called from the download-client choke point the moment the client
-    /// accepts the torrent, which is before the acquisition layer records the
-    /// submission itself, so implementations must upsert rather than update.
-    /// Returns the effective canonical id after claiming the client locator.
-    /// A prior foreign observation of a reused locator is adopted rather than
-    /// creating a second registry row.
-    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
-        Ok(record.download_id)
     }
 
     /// Read the goals a torrent was grabbed under, by download-client identity.
@@ -3639,6 +3628,13 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         self.find_by_client_item_id(identity).await
+    }
+
+    async fn find_by_canonical_download_id(
+        &self,
+        _download_id: &DownloadId,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(None)
     }
 
     async fn find_by_download_id(
@@ -3857,6 +3853,16 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     ) -> AppResult<Vec<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
+
+    /// List Scryer submissions for a title whose canonical client binding is
+    /// still active but has not acquired a native client item identifier.
+    async fn list_active_unbound_for_title(
+        &self,
+        _title_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(Vec::new())
+    }
+
     async fn find_by_title_and_request_signature(
         &self,
         title_id: &str,
@@ -4129,38 +4135,6 @@ pub trait ImportRepository: Send + Sync {
         _limit: usize,
     ) -> AppResult<Vec<ImportRecord>> {
         Ok(Vec::new())
-    }
-
-    async fn is_already_imported(&self, identity: &ClientJobLocator) -> AppResult<bool>;
-
-    /// Read by canonical download id when it is available, then retain the
-    /// legacy source-tuple lookup on a miss.
-    async fn is_already_imported_for_download(
-        &self,
-        _canonical_download_id: Option<&DownloadId>,
-        identity: &ClientJobLocator,
-    ) -> AppResult<bool> {
-        self.is_already_imported(identity).await
-    }
-
-    async fn is_already_imported_by_download_id(
-        &self,
-        _source_identity: &ClientJobLocator,
-        _identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        Ok(false)
-    }
-
-    /// Canonical-aware counterpart of the legacy source-plus-download-id
-    /// ownership lookup.
-    async fn is_already_imported_by_download_id_for_download(
-        &self,
-        _canonical_download_id: Option<&DownloadId>,
-        source_identity: &ClientJobLocator,
-        identity: &DownloadSubmissionIdentity,
-    ) -> AppResult<bool> {
-        self.is_already_imported_by_download_id(source_identity, identity)
-            .await
     }
 
     /// Replaces the caller's previous unconsumed selection for the same source and title.
@@ -4635,6 +4609,12 @@ pub trait MediaAnalyzer: Send + Sync {
 #[async_trait]
 pub trait MediaFileRepository: Send + Sync {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String>;
+
+    async fn claim_import_destination(
+        &self,
+        input: &InsertMediaFileInput,
+        associations: &MediaFileAssociations,
+    ) -> AppResult<ClaimedMediaFile>;
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()>;
 
@@ -5349,6 +5329,10 @@ pub trait IndexerClient: Send + Sync {
         learning_context: Option<IndexerSearchLearningContext>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse>;
+
+    async fn prune_search_learning(&self, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 pub trait IndexerPluginProvider: Send + Sync {
