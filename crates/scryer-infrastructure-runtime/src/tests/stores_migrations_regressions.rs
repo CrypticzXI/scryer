@@ -27,6 +27,7 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
         indexer_id: None,
         release_guid: Some("guid-minimums".to_string()),
         added_at: now.clone(),
+        last_observed_at: now.clone(),
         delay_until: now.clone(),
         status: scryer_application::PendingReleaseStatus::Waiting,
         grabbed_at: None,
@@ -35,6 +36,11 @@ async fn pending_release_tracker_minimums_round_trip_and_legacy_rows_read_back_a
         info_hash: None,
         seed_minimums: Default::default(),
         seeders: Some(37),
+        release_identity: "guid:private-tracker:guid-minimums".to_string(),
+        coverage_identity: "scope:wanted-minimums".to_string(),
+        role: scryer_application::PendingReleaseRole::Primary,
+        last_decision_code: None,
+        release_age_unknown: false,
     };
     parked.seed_minimums = scryer_application::ReleaseSeedMinimums {
         min_seed_ratio: Some(1.5),

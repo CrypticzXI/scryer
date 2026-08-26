@@ -430,13 +430,13 @@ pub(crate) fn dedupe_cross_indexer_release_results(
                 .copied()
                 .unwrap_or(i64::MAX);
 
-            let new_wins = if new_prio != existing_prio {
-                new_prio < existing_prio
+            let existing_preferred =
+                source_kind_matches_preference(existing, preferred_source_kind);
+            let new_preferred = source_kind_matches_preference(result, preferred_source_kind);
+            let new_wins = if existing_preferred != new_preferred {
+                new_preferred
             } else {
-                let existing_preferred =
-                    source_kind_matches_preference(existing, preferred_source_kind);
-                let new_preferred = source_kind_matches_preference(result, preferred_source_kind);
-                new_preferred && !existing_preferred
+                new_prio < existing_prio
             };
 
             if new_wins {
@@ -570,7 +570,7 @@ impl AppUseCase {
             source_titles: blocklisted_source_titles,
         } = self.load_title_release_blocklist_signatures(title_id).await;
 
-        let (has_usenet_client, has_torrent_client, preferred_source_kind) =
+        let (has_usenet_client, has_torrent_client, client_preferred_source_kind) =
             self.download_source_capabilities().await;
 
         raw_results.retain(|result| match result.source_kind {
@@ -597,6 +597,18 @@ impl AppUseCase {
                 "title {title_id} for release scoring"
             )));
         };
+        let delay_profiles = self.load_delay_profiles().await;
+        let delay_profile = crate::delay_profile::resolve_delay_profile(
+            &delay_profiles,
+            &scored_title.tags,
+            &scored_title.facet,
+        );
+        let preferred_source_kind = delay_profile
+            .map(|profile| match profile.preferred_protocol {
+                crate::delay_profile::PreferredProtocol::Usenet => "nzb",
+                crate::delay_profile::PreferredProtocol::Torrent => "torrent",
+            })
+            .unwrap_or(client_preferred_source_kind.as_str());
         let canonical_context = self
             .resolve_canonical_scoring_context(&scored_title, quality_profile)
             .await;
@@ -759,24 +771,30 @@ impl AppUseCase {
             // in hand, and dropped when the search ends. It is keyed by release
             // rather than carried on the result so it cannot leak into anything
             // that gets stored or compared later.
+            let protocol_enabled = delay_profile.is_none_or(|profile| match result.source_kind {
+                Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => {
+                    profile.enable_usenet
+                }
+                Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri) => {
+                    profile.enable_torrent
+                }
+                None => true,
+            });
             rank_by_key.insert(
                 release_search_key(&result),
                 crate::acquisition::scoring::SearchRank {
                     head: crate::acquisition::scoring::RankHead {
-                        blocked: !decision.allowed || pack_below_missing_threshold,
+                        blocked: !decision.allowed
+                            || pack_below_missing_threshold
+                            || !protocol_enabled,
                         tier_index: decision.tier_index.unwrap_or(usize::MAX),
                         negated_revision: -(i32::from(scored_release_metadata.is_proper_upload)
                             + i32::from(scored_release_metadata.is_repack)),
                         negated_score: decision.preference_score.saturating_neg(),
                     },
-                    indexer_priority: indexer_priority_by_name
-                        .get(&result.source)
-                        .copied()
-                        .unwrap_or(i64::MAX),
-                    negated_seeders: crate::acquisition::scoring::listing_negated_seeders(&result),
-                    age_hours: crate::acquisition::scoring::listing_age_hours(
-                        result.published_at.as_deref(),
-                        now,
+                    non_preferred_protocol: !source_kind_matches_preference(
+                        &result,
+                        preferred_source_kind,
                     ),
                     coverage_distance: release_coverage.coverage_distance(requested_episode),
                     episode_number: scored_release_metadata
@@ -784,6 +802,23 @@ impl AppUseCase {
                         .as_ref()
                         .and_then(|episode| episode.episode_numbers.iter().min().copied())
                         .unwrap_or(0),
+                    indexer_priority: indexer_priority_by_name
+                        .get(&result.source)
+                        .copied()
+                        .unwrap_or(i64::MAX),
+                    negated_seeders: crate::acquisition::scoring::listing_negated_seeders(&result),
+                    usenet_age_hours: if matches!(
+                        result.source_kind,
+                        Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl)
+                    ) {
+                        crate::acquisition::scoring::listing_age_hours(
+                            result.published_at.as_deref(),
+                            now,
+                        )
+                    } else {
+                        0
+                    },
+                    negated_size_bytes: result.size_bytes.unwrap_or_default().saturating_neg(),
                 },
             );
 
@@ -815,7 +850,7 @@ impl AppUseCase {
         let mut scored = dedupe_cross_indexer_release_results(
             scored,
             &indexer_priority_by_name,
-            preferred_source_kind.as_str(),
+            preferred_source_kind,
         );
 
         scored.sort_by(|left, right| {
@@ -1202,7 +1237,12 @@ impl AppUseCase {
             )
             .await?;
         Ok(self
-            .evaluate_search_results_for_subject(title, subject, results)
+            .evaluate_search_results_for_subject(
+                title,
+                subject,
+                results,
+                matches!(mode, SearchMode::Interactive),
+            )
             .await)
     }
 

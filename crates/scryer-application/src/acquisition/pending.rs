@@ -9,7 +9,9 @@ use tracing::{info, warn};
 
 use crate::acquisition::seed_goals::ReleaseSeedMinimums;
 use crate::delay_profile::DelayProfile;
-use crate::types::{PendingRelease, PendingReleaseStatus};
+use crate::types::{
+    PendingRelease, PendingReleaseObservation, PendingReleaseRole, PendingReleaseStatus,
+};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +60,7 @@ impl AppUseCase {
         clippy::too_many_arguments,
         reason = "pending-release orchestration persists the full delayed grab context explicitly"
     )]
+    #[cfg(test)]
     pub(crate) async fn insert_pending_release(
         &self,
         wanted: &AcquisitionScopeState,
@@ -95,6 +98,7 @@ impl AppUseCase {
             indexer_id: indexer_id.map(str::to_string),
             release_guid: release_guid.map(str::to_string),
             added_at: now.to_rfc3339(),
+            last_observed_at: now.to_rfc3339(),
             delay_until: delay_until.to_rfc3339(),
             status: PendingReleaseStatus::Waiting,
             grabbed_at: None,
@@ -103,28 +107,12 @@ impl AppUseCase {
             info_hash: info_hash.map(str::to_string),
             seed_minimums,
             seeders,
+            release_identity: String::new(),
+            coverage_identity: String::new(),
+            role: PendingReleaseRole::Primary,
+            last_decision_code: None,
+            release_age_unknown: false,
         };
-
-        // Supersede any existing waiting releases for this wanted item with a lower score
-        let existing = self
-            .services
-            .workflow
-            .pending_releases
-            .list_pending_releases_for_wanted_item(&wanted.id)
-            .await
-            .unwrap_or_default();
-
-        let dominated = existing.iter().all(|e| e.release_score <= release_score);
-
-        if !dominated {
-            info!(
-                title = title.name.as_str(),
-                release = release_title,
-                score = release_score,
-                "pending release: skipping, higher-scored release already pending"
-            );
-            return;
-        }
 
         match self
             .services
@@ -134,14 +122,6 @@ impl AppUseCase {
             .await
         {
             Ok(_) => {
-                // Mark older, lower-scored releases as superseded
-                let _ = self
-                    .services
-                    .workflow
-                    .pending_releases
-                    .supersede_pending_releases_for_acquisition_scope_state(&wanted.id, &pending.id)
-                    .await;
-
                 info!(
                     title = title.name.as_str(),
                     release = release_title,
@@ -159,6 +139,20 @@ impl AppUseCase {
                 );
             }
         }
+    }
+
+    /// Persist an explicitly derived indexer observation. This path preserves
+    /// the caller's eligibility instant and identity facts verbatim.
+    pub(crate) async fn insert_pending_release_observation(
+        &self,
+        pending: &PendingRelease,
+        observation: &PendingReleaseObservation,
+    ) -> AppResult<String> {
+        self.services
+            .workflow
+            .pending_releases
+            .insert_pending_release_observation(pending, observation)
+            .await
     }
 
     /// Order one scope's expired pending releases best-first, on facts derived
@@ -289,6 +283,7 @@ impl AppUseCase {
             indexer_id: candidate.indexer_id.clone(),
             release_guid: candidate.guid.clone(),
             added_at: now.to_rfc3339(),
+            last_observed_at: now.to_rfc3339(),
             // No timer applies; the column is NOT NULL, so the parked row simply
             // records when review was requested.
             delay_until: now.to_rfc3339(),
@@ -305,6 +300,11 @@ impl AppUseCase {
             // Same map the admission gate read when the candidate was offered,
             // so promotion can re-judge the swarm against the current threshold.
             seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+            release_identity: String::new(),
+            coverage_identity: String::new(),
+            role: PendingReleaseRole::Primary,
+            last_decision_code: None,
+            release_age_unknown: false,
         };
 
         match self
@@ -372,7 +372,7 @@ impl AppUseCase {
                         .services
                         .workflow
                         .pending_releases
-                        .update_pending_release_status(&pr.id, PendingReleaseStatus::Expired, None)
+                        .expire_pending_release(&pr.id, "wanted_item_missing")
                         .await;
                 }
                 continue;
@@ -382,18 +382,9 @@ impl AppUseCase {
             if wanted.status == AcquisitionScopeStatus::Grabbed
                 || wanted.status == AcquisitionScopeStatus::Completed
             {
-                for pr in &releases {
-                    let _ = self
-                        .services
-                        .workflow
-                        .pending_releases
-                        .update_pending_release_status(
-                            &pr.id,
-                            PendingReleaseStatus::Superseded,
-                            None,
-                        )
-                        .await;
-                }
+                // A successful grab retires only freshly judged lower-or-equal
+                // overlaps. Keep unresolved candidates here; a higher-quality
+                // fallback remains eligible for a later upgrade.
                 continue;
             }
 
@@ -430,16 +421,6 @@ impl AppUseCase {
                                 Some(&now.to_rfc3339()),
                             )
                             .await;
-                        // Mark siblings as superseded
-                        let _ = self
-                            .services
-                            .workflow
-                            .pending_releases
-                            .supersede_pending_releases_for_acquisition_scope_state(
-                                &wanted_item_id,
-                                &pr.id,
-                            )
-                            .await;
                         grabbed = true;
                         grabbed_count += 1;
                         break;
@@ -450,11 +431,7 @@ impl AppUseCase {
                             .services
                             .workflow
                             .pending_releases
-                            .update_pending_release_status(
-                                &pr.id,
-                                PendingReleaseStatus::Expired,
-                                None,
-                            )
+                            .expire_pending_release(&pr.id, "pending_release_rejected")
                             .await;
                     }
                     Ok(PendingGrabOutcome::Deferred) => {
@@ -488,11 +465,7 @@ impl AppUseCase {
                             .services
                             .workflow
                             .pending_releases
-                            .update_pending_release_status(
-                                &pr.id,
-                                PendingReleaseStatus::Expired,
-                                None,
-                            )
+                            .expire_pending_release(&pr.id, "pending_release_processing_error")
                             .await;
                     }
                 }

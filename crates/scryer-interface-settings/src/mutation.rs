@@ -361,11 +361,14 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
         name: profile.name,
         usenet_delay_minutes: profile.usenet_delay_minutes as i32,
         torrent_delay_minutes: profile.torrent_delay_minutes as i32,
+        enable_usenet: profile.enable_usenet,
+        enable_torrent: profile.enable_torrent,
         preferred_protocol: DelayProfilePreferredProtocolValue::from_application(
             profile.preferred_protocol,
         ),
         min_age_minutes: profile.min_age_minutes as i32,
         bypass_score_threshold: profile.bypass_score_threshold,
+        bypass_if_highest_quality: profile.bypass_if_highest_quality,
         applies_to_facets: profile
             .applies_to_facets
             .into_iter()
@@ -1358,9 +1361,12 @@ impl SettingsMutations {
                     name: input.name,
                     usenet_delay_minutes: input.usenet_delay_minutes as i64,
                     torrent_delay_minutes: input.torrent_delay_minutes as i64,
+                    enable_usenet: input.enable_usenet.unwrap_or(true),
+                    enable_torrent: input.enable_torrent.unwrap_or(true),
                     preferred_protocol: input.preferred_protocol.into_application(),
                     min_age_minutes: input.min_age_minutes as i64,
                     bypass_score_threshold: input.bypass_score_threshold,
+                    bypass_if_highest_quality: input.bypass_if_highest_quality.unwrap_or(false),
                     applies_to_facets: input
                         .applies_to_facets
                         .into_iter()

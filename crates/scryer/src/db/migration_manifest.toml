@@ -1310,6 +1310,23 @@ file = "postgres/migrations/0183_manual_import_selection_durable_identity.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 184
+description = "pending release identity and arbitration history"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0184_pending_release_identity_arbitration.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0184_pending_release_identity_arbitration.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

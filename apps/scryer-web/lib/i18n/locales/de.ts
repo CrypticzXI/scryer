@@ -387,6 +387,13 @@ const de: LocaleDictionary = {
   "settings.delayProfilePreferred": "Bevorzugtes Protokoll",
   "settings.delayProfilePreferredHelp":
     "Score-basiertes Umgehen gilt nur für Releases des bevorzugten Protokolls.",
+  "settings.delayProfileProtocolModeLabel": "Protokollmodus",
+  "settings.delayProfileProtocolModeHelp":
+    "Verzögerungen werden ab dem Veröffentlichungszeitpunkt des Indexers gemessen. Das bevorzugte Protokoll entscheidet bei sonst gleichwertigen Releases und steuert die Bypass-Berechtigung.",
+  "settings.delayProfileProtocolMode.preferUsenet": "Usenet bevorzugen",
+  "settings.delayProfileProtocolMode.preferTorrent": "Torrent bevorzugen",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Nur Usenet",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Nur Torrent",
   "settings.delayProfileMinAge": "Mindestalter (Minuten)",
   "settings.delayProfileMinAgeHelp":
     "Nur Usenet. Harte Sperre — Releases, die jünger sind, werden unabhängig vom Score zurückgehalten. Verhindert das Abrufen unvollständiger NZBs. 0 = deaktiviert.",
@@ -394,6 +401,9 @@ const de: LocaleDictionary = {
   "settings.delayProfileBypassPlaceholder": "Leer lassen, um nie zu umgehen",
   "settings.delayProfileBypassHelp":
     "Wenn ein Release des bevorzugten Protokolls diesen Score erreicht oder überschreitet, wird es sofort abgerufen, unabhängig von der Verzögerung.",
+  "settings.delayProfileBypassHighestQualityLabel": "Verzögerung für höchste Qualität umgehen",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "Das qualitativ beste berechtigte Release sofort abrufen, wenn es das bevorzugte Protokoll verwendet.",
   "settings.delayProfileFacetsLabel": "Gilt für",
   "settings.delayProfileFacetsHelp":
     "Für welche Inhaltstypen dieses Profil gilt. Alles deaktiviert lassen für alle Typen.",
@@ -1507,6 +1517,10 @@ const de: LocaleDictionary = {
   "pending.colIndexer": "Indexer",
   "pending.colAddedAt": "Hinzugefügt",
   "pending.colDelayUntil": "Verfügbar",
+  "pending.colReason": "Grund",
+  "pending.colRole": "Rolle",
+  "pending.role.primary": "Primär",
+  "pending.role.fallback": "Alternative",
   "pending.forceGrab": "Jetzt abrufen",
   "pending.dismiss": "Verwerfen",
   "pending.grabbed": "Release abgerufen.",

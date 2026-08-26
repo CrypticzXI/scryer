@@ -539,11 +539,14 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
         name: profile.name,
         usenet_delay_minutes: profile.usenet_delay_minutes as i32,
         torrent_delay_minutes: profile.torrent_delay_minutes as i32,
+        enable_usenet: profile.enable_usenet,
+        enable_torrent: profile.enable_torrent,
         preferred_protocol: DelayProfilePreferredProtocolValue::from_application(
             profile.preferred_protocol,
         ),
         min_age_minutes: profile.min_age_minutes as i32,
         bypass_score_threshold: profile.bypass_score_threshold,
+        bypass_if_highest_quality: profile.bypass_if_highest_quality,
         applies_to_facets: profile
             .applies_to_facets
             .into_iter()

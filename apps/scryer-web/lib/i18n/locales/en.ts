@@ -561,6 +561,13 @@ const en: LocaleDictionary = {
   "settings.delayProfilePreferred": "Preferred protocol",
   "settings.delayProfilePreferredHelp":
     "Score-based bypass only applies to releases on the preferred protocol.",
+  "settings.delayProfileProtocolModeLabel": "Protocol mode",
+  "settings.delayProfileProtocolModeHelp":
+    "Delays are measured from the time your indexer published the release. Preferred protocol selects between otherwise equivalent releases and controls bypass eligibility.",
+  "settings.delayProfileProtocolMode.preferUsenet": "Prefer Usenet",
+  "settings.delayProfileProtocolMode.preferTorrent": "Prefer Torrent",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Only Usenet",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Only Torrent",
   "settings.delayProfileMinAge": "Minimum age (minutes)",
   "settings.delayProfileMinAgeHelp":
     "Usenet only. Hard gate — releases younger than this are held regardless of score. Prevents grabbing incomplete NZBs. 0 = disabled.",
@@ -568,6 +575,9 @@ const en: LocaleDictionary = {
   "settings.delayProfileBypassPlaceholder": "Leave empty to never bypass",
   "settings.delayProfileBypassHelp":
     "If a release on the preferred protocol scores at or above this threshold, grab it immediately regardless of the delay.",
+  "settings.delayProfileBypassHighestQualityLabel": "Bypass delay for highest quality",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "Grab the highest-quality eligible release immediately when it is on the preferred protocol.",
   "settings.delayProfileFacetsLabel": "Applies to",
   "settings.delayProfileFacetsHelp":
     "Which content types this profile applies to. Leave all unchecked for all types.",
@@ -2727,6 +2737,10 @@ const en: LocaleDictionary = {
   "pending.colIndexer": "Indexer",
   "pending.colAddedAt": "Added",
   "pending.colDelayUntil": "Available",
+  "pending.colReason": "Reason",
+  "pending.colRole": "Role",
+  "pending.role.primary": "Primary",
+  "pending.role.fallback": "Fallback",
   "pending.status.needsReview": "Needs review",
   "pending.phase.needsReview": "Review",
   "pending.forceGrab": "Grab now",

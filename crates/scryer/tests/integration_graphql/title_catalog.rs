@@ -3543,6 +3543,7 @@ async fn graphql_wanted_items_reports_standby_count_for_the_scope_anchor() {
                 indexer_id: None,
                 release_guid: Some(format!("guid-{score}")),
                 added_at: now.to_rfc3339(),
+                last_observed_at: now.to_rfc3339(),
                 delay_until: now.to_rfc3339(),
                 status: scryer_application::PendingReleaseStatus::Standby,
                 grabbed_at: None,
@@ -3551,6 +3552,11 @@ async fn graphql_wanted_items_reports_standby_count_for_the_scope_anchor() {
                 info_hash: None,
                 seed_minimums: Default::default(),
                 seeders: None,
+                release_identity: format!("guid:test-indexer:guid-{score}"),
+                coverage_identity: format!("scope:{wanted_item_id}"),
+                role: scryer_application::PendingReleaseRole::Fallback,
+                last_decision_code: None,
+                release_age_unknown: false,
             })
             .await
             .expect("seed standby release");
@@ -3646,6 +3652,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         indexer_id: None,
         release_guid: Some("guid-delete".to_string()),
         added_at: "2026-03-12T00:00:00Z".to_string(),
+        last_observed_at: "2026-03-12T00:00:00Z".to_string(),
         delay_until: "2026-03-13T00:00:00Z".to_string(),
         status: scryer_application::PendingReleaseStatus::Waiting,
         grabbed_at: None,
@@ -3654,6 +3661,11 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         info_hash: None,
         seed_minimums: Default::default(),
         seeders: None,
+        release_identity: "guid:test-indexer:guid-delete".to_string(),
+        coverage_identity: "scope:wanted-delete".to_string(),
+        role: scryer_application::PendingReleaseRole::Primary,
+        last_decision_code: None,
+        release_age_unknown: false,
     })
     .await
     .expect("seed pending release");

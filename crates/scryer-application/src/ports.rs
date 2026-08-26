@@ -5,7 +5,8 @@ use crate::contracts::{
 };
 use crate::types::{
     ApiKeyRecord, EpisodeMediaAvailability, LoginVerificationChallengeRecord,
-    OAuthClientRegistrationRecord, TitleCatalogFilterCounts,
+    OAuthClientRegistrationRecord, PendingReleaseObservation, PendingReleaseRole,
+    TitleCatalogFilterCounts,
 };
 use async_trait::async_trait;
 use scryer_domain::download_identity::DownloadId;
@@ -4960,8 +4961,24 @@ pub(crate) async fn find_existing_acquisition_scope_state<
 #[async_trait]
 pub trait PendingReleaseRepository: Send + Sync {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String>;
+    /// Record another observation without refreshing its original delay clock.
+    async fn insert_pending_release_with_role(
+        &self,
+        release: &PendingRelease,
+        role: PendingReleaseRole,
+    ) -> AppResult<String>;
+    async fn insert_pending_release_observation(
+        &self,
+        release: &PendingRelease,
+        observation: &PendingReleaseObservation,
+    ) -> AppResult<String>;
     async fn list_expired_pending_releases(&self, now: &str) -> AppResult<Vec<PendingRelease>>;
     async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>>;
+    /// Active rows whose indexer observation did not include a publish time.
+    /// Callers use `added_at` plus the current policy to decide review timing.
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<PendingRelease>>;
     async fn get_pending_release(&self, id: &str) -> AppResult<Option<PendingRelease>>;
     async fn list_pending_releases_for_wanted_item(
         &self,
@@ -4983,6 +5000,13 @@ pub trait PendingReleaseRepository: Send + Sync {
         id: &str,
         status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
+    ) -> AppResult<()>;
+    /// Terminal policy rejection is retained as audit history, not deleted.
+    async fn expire_pending_release(&self, id: &str, decision_code: &str) -> AppResult<()>;
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        id: &str,
+        decision_code: &str,
     ) -> AppResult<()>;
     async fn update_pending_release_delay_until(
         &self,
@@ -5017,10 +5041,11 @@ pub trait PendingReleaseRepository: Send + Sync {
         next_status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<bool>;
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    /// Retire the caller's freshly judged lower-or-equal pending candidates.
+    /// The caller computes overlap and excludes a pending winner, if any.
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        wanted_item_id: &str,
-        except_id: &str,
+        lower_or_equal_ids: &[String],
     ) -> AppResult<()>;
     async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()>;
 }

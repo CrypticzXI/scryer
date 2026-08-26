@@ -170,6 +170,9 @@ pub(crate) enum ReleaseAutoDecisionCode {
     QueuedBetterOrEqual,
     DbBlocklisted,
     PendingDelay,
+    MinimumAge,
+    ReleaseAgeUnknown,
+    ProtocolDisabled,
     DownloadClientUnavailable,
     RepackGroupMismatch,
     MinimumSeeders,
@@ -198,6 +201,9 @@ impl ReleaseAutoDecisionCode {
             "queued_better_or_equal" => Some(Self::QueuedBetterOrEqual),
             "db_blocklisted" => Some(Self::DbBlocklisted),
             "pending_delay" => Some(Self::PendingDelay),
+            "minimum_age" => Some(Self::MinimumAge),
+            "release_age_unknown" => Some(Self::ReleaseAgeUnknown),
+            "protocol_disabled" => Some(Self::ProtocolDisabled),
             "download_client_unavailable" => Some(Self::DownloadClientUnavailable),
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
             "minimum_seeders" => Some(Self::MinimumSeeders),
@@ -225,6 +231,9 @@ impl ReleaseAutoDecisionCode {
             Self::QueuedBetterOrEqual => "queued_better_or_equal",
             Self::DbBlocklisted => "db_blocklisted",
             Self::PendingDelay => "pending_delay",
+            Self::MinimumAge => "minimum_age",
+            Self::ReleaseAgeUnknown => "release_age_unknown",
+            Self::ProtocolDisabled => "protocol_disabled",
             Self::DownloadClientUnavailable => "download_client_unavailable",
             Self::RepackGroupMismatch => "repack_group_mismatch",
             Self::MinimumSeeders => "minimum_seeders",
@@ -265,6 +274,9 @@ impl ReleaseAutoDecisionCode {
             }
             Self::DbBlocklisted => "release is blocklisted from prior failures",
             Self::PendingDelay => "release is eligible but held by a delay profile",
+            Self::MinimumAge => "release has not reached the configured usenet minimum age",
+            Self::ReleaseAgeUnknown => "release age is unavailable for an active age gate",
+            Self::ProtocolDisabled => "release protocol is disabled by the delay profile",
             Self::DownloadClientUnavailable => "matching download clients are unavailable",
             Self::RepackGroupMismatch => "repack group does not match the existing file",
             Self::MinimumSeeders => "too few seeders for this indexer's seeding profile",
@@ -301,6 +313,12 @@ pub(crate) struct AutoCandidateEvaluationContext<'a> {
     /// (`if (information.SearchCriteria != null) return Accept()`). The old-file
     /// guard binds only here.
     pub(crate) is_rss_lane: bool,
+    /// Interactive searches bypass protocol delay while retaining hard minimum
+    /// age and permanent diagnostics.
+    pub(crate) user_invoked: bool,
+    /// Publication timestamp of the oldest active pending release overlapping
+    /// this scope. Populated only by the RSS merge lane.
+    pub(crate) oldest_overlapping_pending_published_at: Option<DateTime<Utc>>,
     pub(crate) now: &'a DateTime<Utc>,
     pub(crate) dl_snapshot: Option<&'a crate::acquisition_workflow::DownloadClientSnapshot>,
     pub(crate) db_blocklist: &'a HashSet<String>,
@@ -1240,6 +1258,79 @@ fn candidate_meets_minimum_seeders(
     )
 }
 
+/// Evaluate only the delay-profile portion of the automatic decision using the
+/// same current candidate and incumbent facts as the full evaluator. RSS uses
+/// the returned exact deadline when persisting a temporary decision.
+pub(crate) fn auto_candidate_delay_decision(
+    candidate: &IndexerSearchResult,
+    context: &AutoCandidateEvaluationContext<'_>,
+) -> Option<crate::delay_profile::DelayDecision> {
+    automatic_candidate_delay_decision(
+        candidate,
+        context.title,
+        context.admission,
+        context.profile,
+        context.delay_profiles,
+        context.user_invoked,
+        context.oldest_overlapping_pending_published_at,
+        context.now,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the search lane must reuse the exact delay inputs used by automatic evaluation"
+)]
+pub(crate) fn automatic_candidate_delay_decision(
+    candidate: &IndexerSearchResult,
+    title: &Title,
+    admission: &crate::admission::AdmissionSubject,
+    profile: &QualityProfile,
+    delay_profiles: &[DelayProfile],
+    user_invoked: bool,
+    oldest_overlapping_pending_published_at: Option<DateTime<Utc>>,
+    now: &DateTime<Utc>,
+) -> Option<crate::delay_profile::DelayDecision> {
+    let candidate_score = candidate
+        .quality_profile_decision
+        .as_ref()
+        .map(|decision| decision.preference_score)
+        .unwrap_or(0);
+    let candidate_facts = crate::admission::CandidateFacts::new(
+        crate::quality_profile::quality_tier_index(
+            &profile.criteria,
+            candidate
+                .parsed_release_metadata
+                .as_ref()
+                .and_then(|parsed| parsed.quality.as_deref()),
+        ),
+        candidate_revision(candidate),
+        candidate_score,
+    );
+    let delay_context = crate::delay_profile::DelayPolicyContext {
+        user_invoked,
+        candidate_score,
+        preferred_protocol_same_tier_revision: admission.incumbents().iter().any(|incumbent| {
+            incumbent.tier_index == candidate_facts.tier_index
+                && candidate_facts.revision > incumbent.revision
+        }),
+        preferred_protocol_highest_quality: candidate_facts.tier_index == Some(0),
+        oldest_overlapping_pending_published_at,
+    };
+    crate::delay_profile::grab_time_delay_decision_with_context(
+        delay_profiles,
+        &title.tags,
+        &title.facet,
+        candidate.source_kind,
+        candidate
+            .published_at
+            .as_deref()
+            .and_then(crate::quality_profile::parse_published_at),
+        &delay_context,
+        now,
+    )
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
@@ -1485,24 +1576,41 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::RepackGroupMismatch;
     }
 
-    if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
-        context.delay_profiles,
-        &context.title.tags,
-        &context.title.facet,
-        candidate.source_kind,
-        candidate
-            .published_at
-            .as_deref()
-            .and_then(crate::quality_profile::parse_published_at),
-        candidate_score,
-        None,
-        context.now,
-    ) && delay_decision.should_hold()
+    if let Some(delay_decision) = auto_candidate_delay_decision(candidate, context)
+        && delay_decision.blocks_grab()
     {
-        return ReleaseAutoDecisionCode::PendingDelay;
+        return match delay_decision.reason {
+            crate::delay_profile::DelayDecisionReason::Eligible => {
+                ReleaseAutoDecisionCode::Eligible
+            }
+            crate::delay_profile::DelayDecisionReason::PendingDelay => {
+                ReleaseAutoDecisionCode::PendingDelay
+            }
+            crate::delay_profile::DelayDecisionReason::MinimumAge => {
+                ReleaseAutoDecisionCode::MinimumAge
+            }
+            crate::delay_profile::DelayDecisionReason::ReleaseAgeUnknown => {
+                ReleaseAutoDecisionCode::ReleaseAgeUnknown
+            }
+            crate::delay_profile::DelayDecisionReason::ProtocolDisabled => {
+                ReleaseAutoDecisionCode::ProtocolDisabled
+            }
+        };
     }
 
     ReleaseAutoDecisionCode::Eligible
+}
+
+fn active_pending_release_delay_code(
+    code: ReleaseAutoDecisionCode,
+    user_invoked: bool,
+    has_active_pending_overlap: bool,
+) -> ReleaseAutoDecisionCode {
+    if !user_invoked && has_active_pending_overlap && code == ReleaseAutoDecisionCode::Eligible {
+        ReleaseAutoDecisionCode::PendingDelay
+    } else {
+        code
+    }
 }
 
 fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Option<String> {
@@ -1628,6 +1736,7 @@ impl AppUseCase {
         title: &Title,
         subject: &ResolvedReleaseSearchSubject,
         mut results: Vec<IndexerSearchResult>,
+        user_invoked: bool,
     ) -> Vec<IndexerSearchResult> {
         // `DbBlocklisted` reads the per-title blocklist (the single, removable
         // exclusion source), never the failed-attempt history.
@@ -1768,6 +1877,37 @@ impl AppUseCase {
                 admission = admission.with_queued(queued);
             }
         }
+        let has_active_pending_overlap = if user_invoked {
+            false
+        } else {
+            let covered_wanted_item_ids = self
+                .covered_wanted_item_ids_for_submission_scope(
+                    &title.id,
+                    &subject.submission_scope,
+                    "",
+                )
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<HashSet<_>>();
+            !covered_wanted_item_ids.is_empty()
+                && self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .list_pending_releases_for_title(&title.id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|release| {
+                        matches!(
+                            release.status,
+                            crate::types::PendingReleaseStatus::Waiting
+                                | crate::types::PendingReleaseStatus::Standby
+                                | crate::types::PendingReleaseStatus::Processing
+                        ) && covered_wanted_item_ids.contains(&release.wanted_item_id)
+                    })
+        };
         let evaluation_context = AutoCandidateEvaluationContext {
             title,
             subject,
@@ -1783,6 +1923,8 @@ impl AppUseCase {
             // Convergence and interactive both land here, and neither is a feed
             // pass: the old-file guard is Sonarr's RSS-only rule.
             is_rss_lane: false,
+            user_invoked,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: Some(&dl_snapshot),
             db_blocklist: &db_blocklist,
@@ -1799,7 +1941,11 @@ impl AppUseCase {
             {
                 continue;
             }
-            let code = evaluate_auto_candidate(candidate, &evaluation_context);
+            let code = active_pending_release_delay_code(
+                evaluate_auto_candidate(candidate, &evaluation_context),
+                user_invoked,
+                has_active_pending_overlap,
+            );
             annotate_auto_decision(candidate, code);
         }
 
@@ -2211,6 +2357,32 @@ mod tests {
     use super::*;
     use scryer_domain::{MediaFacet, TaggedAlias, Title};
 
+    #[test]
+    fn active_pending_overlap_temporarily_delays_an_automatic_search() {
+        assert_eq!(
+            active_pending_release_delay_code(ReleaseAutoDecisionCode::Eligible, false, true),
+            ReleaseAutoDecisionCode::PendingDelay
+        );
+    }
+
+    #[test]
+    fn interactive_search_skips_the_active_pending_delay_gate() {
+        assert_eq!(
+            active_pending_release_delay_code(ReleaseAutoDecisionCode::Eligible, true, true),
+            ReleaseAutoDecisionCode::Eligible
+        );
+    }
+
+    #[test]
+    fn active_pending_delay_does_not_hide_minimum_age_or_permanent_diagnostics() {
+        for code in [
+            ReleaseAutoDecisionCode::MinimumAge,
+            ReleaseAutoDecisionCode::ProtocolDisabled,
+        ] {
+            assert_eq!(active_pending_release_delay_code(code, false, true), code);
+        }
+    }
+
     fn make_title() -> Title {
         Title {
             id: "title-1".to_string(),
@@ -2565,6 +2737,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2643,6 +2817,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2748,6 +2924,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2786,6 +2964,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2827,6 +3007,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2933,6 +3115,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3154,6 +3338,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3561,6 +3747,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3710,6 +3898,8 @@ mod tests {
                     thresholds: &thresholds,
                     incumbent_at_cutoff: incumbent_at_cutoff(true, admission, Some(500)),
                     is_rss_lane: true,
+                    user_invoked: false,
+                    oldest_overlapping_pending_published_at: None,
                     now: &now,
                     dl_snapshot: None,
                     db_blocklist: &db_blocklist,
@@ -3992,6 +4182,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -4050,6 +4242,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,

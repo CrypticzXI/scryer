@@ -378,6 +378,13 @@ const ko: LocaleDictionary = {
   "settings.delayProfilePreferred": "선호 프로토콜",
   "settings.delayProfilePreferredHelp":
     "점수 기반 바이패스는 선호 프로토콜의 릴리스에만 적용됩니다.",
+  "settings.delayProfileProtocolModeLabel": "프로토콜 모드",
+  "settings.delayProfileProtocolModeHelp":
+    "지연은 인덱서가 릴리스를 게시한 시점부터 측정됩니다. 선호 프로토콜은 동등한 릴리스 중에서 선택하며 바이패스 적용 가능 여부를 결정합니다.",
+  "settings.delayProfileProtocolMode.preferUsenet": "Usenet 선호",
+  "settings.delayProfileProtocolMode.preferTorrent": "Torrent 선호",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Usenet만",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Torrent만",
   "settings.delayProfileMinAge": "최소 경과 시간 (분)",
   "settings.delayProfileMinAgeHelp":
     "Usenet 전용. 하드 게이트 — 이보다 새로운 릴리스는 점수에 관계없이 보류됩니다. 불완전한 NZB 가져오기를 방지합니다. 0 = 비활성화.",
@@ -385,6 +392,9 @@ const ko: LocaleDictionary = {
   "settings.delayProfileBypassPlaceholder": "바이패스하지 않으려면 비워두세요",
   "settings.delayProfileBypassHelp":
     "선호 프로토콜의 릴리스 점수가 이 임계값 이상이면 지연에 관계없이 즉시 가져옵니다.",
+  "settings.delayProfileBypassHighestQualityLabel": "최고 품질에 대해 지연 우회",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "선호 프로토콜을 사용하는 최고 품질의 적격 릴리스를 즉시 가져옵니다.",
   "settings.delayProfileFacetsLabel": "적용 대상",
   "settings.delayProfileFacetsHelp":
     "이 프로필이 적용되는 콘텐츠 유형입니다. 모두 선택 해제하면 모든 유형에 적용됩니다.",
@@ -1443,6 +1453,10 @@ const ko: LocaleDictionary = {
   "pending.colIndexer": "인덱서",
   "pending.colAddedAt": "추가됨",
   "pending.colDelayUntil": "사용 가능",
+  "pending.colReason": "사유",
+  "pending.colRole": "역할",
+  "pending.role.primary": "기본",
+  "pending.role.fallback": "대체",
   "pending.forceGrab": "지금 다운로드",
   "pending.dismiss": "닫기",
   "pending.grabbed": "릴리스가 다운로드되었습니다.",

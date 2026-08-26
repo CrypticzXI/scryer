@@ -496,6 +496,8 @@ pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
         seeders: pr.seeders,
         added_at: parse_required_datetime(&pr.added_at, "pending release added_at"),
         delay_until: parse_required_datetime(&pr.delay_until, "pending release delay_until"),
+        last_decision_code: pr.last_decision_code,
+        role: PendingReleaseRoleValue::from_application(pr.role),
         status: PendingReleaseStatusValue::from_application(pr.status),
     }
 }

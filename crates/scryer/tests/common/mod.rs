@@ -286,6 +286,26 @@ impl PendingReleaseRepository for TestLibraryStateStore {
         self.pending_releases.insert_pending_release(release).await
     }
 
+    async fn insert_pending_release_with_role(
+        &self,
+        release: &scryer_application::PendingRelease,
+        role: scryer_application::PendingReleaseRole,
+    ) -> AppResult<String> {
+        self.pending_releases
+            .insert_pending_release_with_role(release, role)
+            .await
+    }
+
+    async fn insert_pending_release_observation(
+        &self,
+        release: &scryer_application::PendingRelease,
+        observation: &scryer_application::PendingReleaseObservation,
+    ) -> AppResult<String> {
+        self.pending_releases
+            .insert_pending_release_observation(release, observation)
+            .await
+    }
+
     async fn list_expired_pending_releases(
         &self,
         now: &str,
@@ -299,6 +319,14 @@ impl PendingReleaseRepository for TestLibraryStateStore {
         &self,
     ) -> AppResult<Vec<scryer_application::PendingRelease>> {
         self.pending_releases.list_waiting_pending_releases().await
+    }
+
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<scryer_application::PendingRelease>> {
+        self.pending_releases
+            .list_active_release_age_unknown_pending_releases()
+            .await
     }
 
     async fn get_pending_release(
@@ -343,6 +371,22 @@ impl PendingReleaseRepository for TestLibraryStateStore {
     ) -> AppResult<()> {
         self.pending_releases
             .update_pending_release_status(id, status, grabbed_at)
+            .await
+    }
+
+    async fn expire_pending_release(&self, id: &str, decision_code: &str) -> AppResult<()> {
+        self.pending_releases
+            .expire_pending_release(id, decision_code)
+            .await
+    }
+
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        id: &str,
+        decision_code: &str,
+    ) -> AppResult<()> {
+        self.pending_releases
+            .mark_release_age_unknown_pending_release_needs_review(id, decision_code)
             .await
     }
 
@@ -412,13 +456,12 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        wanted_item_id: &str,
-        except_id: &str,
+        lower_or_equal_ids: &[String],
     ) -> AppResult<()> {
         self.pending_releases
-            .supersede_pending_releases_for_acquisition_scope_state(wanted_item_id, except_id)
+            .retire_lower_or_equal_overlapping_pending_releases(lower_or_equal_ids)
             .await
     }
 

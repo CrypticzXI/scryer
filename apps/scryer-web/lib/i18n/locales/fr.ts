@@ -392,6 +392,13 @@ const fr: LocaleDictionary = {
   "settings.delayProfilePreferred": "Protocole préféré",
   "settings.delayProfilePreferredHelp":
     "Le contournement basé sur le score ne s'applique qu'aux versions du protocole préféré.",
+  "settings.delayProfileProtocolModeLabel": "Mode de protocole",
+  "settings.delayProfileProtocolModeHelp":
+    "Les délais sont mesurés depuis la publication par votre indexeur. Le protocole préféré départage des versions équivalentes et contrôle l'éligibilité au contournement.",
+  "settings.delayProfileProtocolMode.preferUsenet": "Préférer Usenet",
+  "settings.delayProfileProtocolMode.preferTorrent": "Préférer Torrent",
+  "settings.delayProfileProtocolMode.onlyUsenet": "Usenet uniquement",
+  "settings.delayProfileProtocolMode.onlyTorrent": "Torrent uniquement",
   "settings.delayProfileMinAge": "Âge minimum (minutes)",
   "settings.delayProfileMinAgeHelp":
     "Usenet uniquement. Barrière stricte — les versions plus récentes sont retenues quel que soit le score. Empêche de récupérer des NZB incomplets. 0 = désactivé.",
@@ -400,6 +407,9 @@ const fr: LocaleDictionary = {
     "Laisser vide pour ne jamais contourner",
   "settings.delayProfileBypassHelp":
     "Si une version du protocole préféré atteint ou dépasse ce seuil de score, la récupérer immédiatement quel que soit le délai.",
+  "settings.delayProfileBypassHighestQualityLabel": "Contourner le délai pour la meilleure qualité",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "Récupérer immédiatement la version éligible de la meilleure qualité si elle utilise le protocole préféré.",
   "settings.delayProfileFacetsLabel": "S'applique à",
   "settings.delayProfileFacetsHelp":
     "Types de contenu auxquels ce profil s'applique. Laissez tout décoché pour tous les types.",
@@ -1535,6 +1545,10 @@ const fr: LocaleDictionary = {
   "pending.colIndexer": "Indexeur",
   "pending.colAddedAt": "Ajouté",
   "pending.colDelayUntil": "Disponible",
+  "pending.colReason": "Motif",
+  "pending.colRole": "Rôle",
+  "pending.role.primary": "Principal",
+  "pending.role.fallback": "Alternative",
   "pending.forceGrab": "Récupérer maintenant",
   "pending.dismiss": "Ignorer",
   "pending.grabbed": "Version récupérée.",

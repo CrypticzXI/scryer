@@ -1572,6 +1572,7 @@ async fn graphql_traverses_core_graph_relationships() {
         indexer_id: None,
         release_guid: Some("pending-guid".to_string()),
         added_at: "2026-03-20T00:06:00Z".to_string(),
+        last_observed_at: "2026-03-20T00:06:00Z".to_string(),
         delay_until: "2026-03-20T01:06:00Z".to_string(),
         status: scryer_application::PendingReleaseStatus::Waiting,
         grabbed_at: None,
@@ -1580,6 +1581,11 @@ async fn graphql_traverses_core_graph_relationships() {
         info_hash: None,
         seed_minimums: Default::default(),
         seeders: None,
+        release_identity: "guid:pending-guid".to_string(),
+        coverage_identity: format!("scope:{}", wanted_item.id),
+        role: scryer_application::PendingReleaseRole::Primary,
+        last_decision_code: Some("pending_delay".to_string()),
+        release_age_unknown: false,
     };
     scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
         ctx.db.datastore(),
@@ -1635,6 +1641,9 @@ async fn graphql_traverses_core_graph_relationships() {
                   items {
                     id
                     status
+                    delayUntil
+                    lastDecisionCode
+                    role
                     title { id }
                     wantedItem { id }
                   }
@@ -1665,6 +1674,9 @@ async fn graphql_traverses_core_graph_relationships() {
               items {
                 id
                 status
+                delayUntil
+                lastDecisionCode
+                role
                 title { id }
                 wantedItem { id }
               }
@@ -1740,6 +1752,18 @@ async fn graphql_traverses_core_graph_relationships() {
     assert_eq!(
         title_wanted_item["pendingReleases"]["items"][0]["status"],
         "WAITING"
+    );
+    assert_eq!(
+        title_wanted_item["pendingReleases"]["items"][0]["delayUntil"],
+        "2026-03-20T01:06:00+00:00"
+    );
+    assert_eq!(
+        title_wanted_item["pendingReleases"]["items"][0]["lastDecisionCode"],
+        "pending_delay"
+    );
+    assert_eq!(
+        title_wanted_item["pendingReleases"]["items"][0]["role"],
+        "PRIMARY"
     );
     assert_eq!(
         title_wanted_item["releaseDecisions"]["items"][0]["id"],
