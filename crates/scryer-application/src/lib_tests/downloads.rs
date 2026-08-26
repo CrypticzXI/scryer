@@ -4,6 +4,8 @@ use super::*;
 struct RecordingDownloadRegistry {
     rows: Arc<Mutex<HashMap<ClientJobLocator, scryer_domain::download_identity::DownloadId>>>,
     ended: Arc<Mutex<HashSet<scryer_domain::download_identity::DownloadId>>>,
+    terminal: Arc<Mutex<HashSet<scryer_domain::download_identity::DownloadId>>>,
+    reconcile_candidates: Arc<Mutex<Vec<DownloadClientBindingRecord>>>,
     failing_bindings: Arc<Mutex<HashSet<ClientJobLocator>>>,
 }
 
@@ -23,6 +25,14 @@ impl RecordingDownloadRegistry {
     async fn fail_binding_lookup(&self, locator: ClientJobLocator) {
         self.failing_bindings.lock().await.insert(locator);
     }
+
+    async fn set_reconcile_candidates(&self, candidates: Vec<DownloadClientBindingRecord>) {
+        *self.reconcile_candidates.lock().await = candidates;
+    }
+
+    async fn mark_terminal(&self, download_id: scryer_domain::download_identity::DownloadId) {
+        self.terminal.lock().await.insert(download_id);
+    }
 }
 
 #[async_trait]
@@ -32,7 +42,11 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
         observation: &ObservedClientJob,
     ) -> AppResult<ObservationResolution> {
         let mut rows = self.rows.lock().await;
-        let known = rows.get(&observation.locator).copied();
+        let ended = self.ended.lock().await;
+        let known = rows
+            .get(&observation.locator)
+            .copied()
+            .filter(|download_id| !ended.contains(download_id));
         let token = observation
             .wire_token
             .as_deref()
@@ -53,6 +67,7 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
         &self,
         id: &scryer_domain::download_identity::DownloadId,
     ) -> AppResult<Option<DownloadRecord>> {
+        let is_terminal = self.terminal.lock().await.contains(id);
         Ok(self
             .rows
             .lock()
@@ -65,7 +80,7 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
                 created_at: Utc::now(),
                 first_observed_at: None,
                 last_observed_at: None,
-                terminal_at: None,
+                terminal_at: is_terminal.then(Utc::now),
             }))
     }
 
@@ -120,6 +135,37 @@ impl DownloadRegistryRepository for RecordingDownloadRegistry {
             last_seen_at: None,
             ended_at: None,
         }))
+    }
+
+    async fn list_active_bindings_for_client_before(
+        &self,
+        client_config_id: &str,
+        client_type: &str,
+        observed_before: chrono::DateTime<Utc>,
+        limit: usize,
+    ) -> AppResult<Vec<DownloadClientBindingRecord>> {
+        let ended = self.ended.lock().await;
+        Ok(self
+            .reconcile_candidates
+            .lock()
+            .await
+            .iter()
+            .filter(|binding| {
+                binding.ended_at.is_none()
+                    && binding.client_config_id.as_deref() == Some(client_config_id)
+                    && binding
+                        .client_type_snapshot
+                        .as_deref()
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(client_type))
+                    && binding.created_at <= observed_before
+                    && binding
+                        .last_seen_at
+                        .is_none_or(|last_seen| last_seen <= observed_before)
+                    && !ended.contains(&binding.download_id)
+            })
+            .take(limit)
+            .cloned()
+            .collect())
     }
 
     async fn end_binding(
@@ -206,6 +252,410 @@ async fn push_snapshot_observation_is_recorded_by_the_registry_resolver() {
     poller
         .await
         .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn authoritative_absence_fails_and_ends_an_incomplete_binding_before_reobservation() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    download_client
+        .set_snapshot_authoritative_client_ids([config.id.clone()])
+        .await;
+    let first_download_id = scryer_domain::download_identity::DownloadId::new();
+    let source_identity =
+        ClientJobLocator::new(Some(config.id.as_str()), "nzbget", "removed-incomplete-1");
+    registry
+        .bind(source_identity.clone(), first_download_id)
+        .await;
+    download_submissions
+        .record_submission(DownloadSubmission {
+            download_id: first_download_id,
+            title_id: "title-removed-incomplete".to_string(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "nzbget".to_string(),
+            download_client_item_id: "removed-incomplete-1".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Removed.Incomplete.2026.1080p.WEB-DL".to_string()),
+            release_size_bytes: None,
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("seed download submission");
+
+    let mut item =
+        queue_history_fixture_item("removed-incomplete-1", DownloadQueueState::Downloading, 1);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "nzbget".to_string();
+    item.download_id = Some(first_download_id.to_wire());
+    item.is_scryer_origin = true;
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.track(&app, item).await;
+
+    crate::app_usecase_integration::reconcile_authoritatively_absent_source(
+        &app,
+        &mut tracker,
+        &source_identity,
+    )
+    .await;
+
+    assert!(registry.ended.lock().await.contains(&first_download_id));
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&source_identity)
+            .await
+            .expect("failed state should load"),
+        Some(TrackedDownloadState::Failed.as_str().to_string())
+    );
+    assert!(
+        tracker
+            .get_all()
+            .iter()
+            .any(|tracked| tracked.state == TrackedDownloadState::Failed)
+    );
+
+    let reobserved = registry
+        .resolve_observation(&ObservedClientJob {
+            locator: source_identity,
+            wire_token: None,
+            observed_name: Some("Removed.Incomplete.2026.1080p.WEB-DL".to_string()),
+            observed_at: Utc::now(),
+        })
+        .await
+        .expect("re-observation should resolve after the binding was ended");
+    let ObservationResolution::Resolved {
+        download_id: reobserved_download_id,
+        ..
+    } = reobserved
+    else {
+        panic!("re-observation should resolve to a fresh identity");
+    };
+    assert_ne!(reobserved_download_id, first_download_id);
+}
+
+#[tokio::test]
+async fn authoritative_absence_ends_a_terminal_binding_without_replacing_its_state() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let download_id = scryer_domain::download_identity::DownloadId::new();
+    let source_identity =
+        ClientJobLocator::new(Some(config.id.as_str()), "nzbget", "removed-imported-1");
+    registry.bind(source_identity.clone(), download_id).await;
+    registry.mark_terminal(download_id).await;
+    download_submissions
+        .update_tracked_state(&source_identity, TrackedDownloadState::Imported.as_str())
+        .await
+        .expect("seed imported state");
+
+    crate::app_usecase_integration::reconcile_authoritatively_absent_source(
+        &app,
+        &mut crate::tracked_downloads::TrackedDownloadService::new(),
+        &source_identity,
+    )
+    .await;
+
+    assert!(registry.ended.lock().await.contains(&download_id));
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&source_identity)
+            .await
+            .expect("imported state should load"),
+        Some(TrackedDownloadState::Imported.as_str().to_string())
+    );
+}
+
+#[tokio::test]
+async fn restart_ghost_reconcile_preserves_durable_post_queue_bindings() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+
+    for (item_id, state) in [
+        ("ghost-import-pending", TrackedDownloadState::ImportPending),
+        ("ghost-import-blocked", TrackedDownloadState::ImportBlocked),
+    ] {
+        let download_id = scryer_domain::download_identity::DownloadId::new();
+        let source_identity = ClientJobLocator::new(Some(config.id.as_str()), "nzbget", item_id);
+        registry.bind(source_identity.clone(), download_id).await;
+        download_submissions
+            .record_identity_tracked_state(
+                &DownloadSubmissionIdentity {
+                    download_id: Some(download_id.to_wire()),
+                },
+                Some(&source_identity),
+                state.as_str(),
+                None,
+                None,
+            )
+            .await
+            .expect("seed preserved durable state");
+
+        crate::app_usecase_integration::reconcile_authoritatively_absent_source(
+            &app,
+            &mut crate::tracked_downloads::TrackedDownloadService::new(),
+            &source_identity,
+        )
+        .await;
+
+        assert!(
+            !registry.ended.lock().await.contains(&download_id),
+            "{state:?} restart ghost must remain bound"
+        );
+        assert_eq!(
+            download_submissions
+                .get_identity_tracked_state_for_download(
+                    Some(&download_id),
+                    &DownloadSubmissionIdentity::default(),
+                    Some(&source_identity),
+                )
+                .await
+                .expect("preserved state should load"),
+            Some(state.as_str().to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn full_snapshot_reconciles_a_restart_ghost_binding_but_respects_the_recency_floor() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let app =
+        base_app.with_test_overrides(|services| services.with_download_registry(registry.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let old_download_id = scryer_domain::download_identity::DownloadId::new();
+    download_client
+        .set_snapshot_authoritative_client_ids([config.id.clone()])
+        .await;
+    let old_source = ClientJobLocator::new(Some(config.id.as_str()), "nzbget", "restart-ghost-1");
+    registry.bind(old_source, old_download_id).await;
+    registry
+        .set_reconcile_candidates(vec![DownloadClientBindingRecord {
+            download_id: old_download_id,
+            client_config_id: Some(config.id.clone()),
+            client_type_snapshot: Some("nzbget".to_string()),
+            client_name_snapshot: Some(config.name.clone()),
+            native_item_id: Some("restart-ghost-1".to_string()),
+            created_at: Utc::now() - chrono::Duration::minutes(11),
+            last_seen_at: Some(Utc::now() - chrono::Duration::minutes(11)),
+            ended_at: None,
+        }])
+        .await;
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (_snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(1);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                ..Default::default()
+            },
+        ),
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if registry.ended.lock().await.contains(&old_download_id) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("full snapshot should end an old restart-ghost binding");
+
+    token.cancel();
+    poller.await.expect("poller should stop cleanly");
+
+    let fresh_client = Arc::new(StubDownloadClient::default());
+    let fresh_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let fresh_pending = Arc::new(TrackingPendingReleaseRepo::default());
+    let (fresh_base_app, fresh_user) =
+        bootstrap_with_cleanup_tracking(fresh_client.clone(), fresh_submissions, fresh_pending);
+    let fresh_registry = Arc::new(RecordingDownloadRegistry::default());
+    let fresh_app = fresh_base_app
+        .with_test_overrides(|services| services.with_download_registry(fresh_registry.clone()));
+    let fresh_config =
+        create_enabled_download_client_config(&fresh_app, &fresh_user, "Primary NZBGet", "nzbget")
+            .await;
+    fresh_client
+        .set_snapshot_authoritative_client_ids([fresh_config.id.clone()])
+        .await;
+    let fresh_download_id = scryer_domain::download_identity::DownloadId::new();
+    let fresh_source =
+        ClientJobLocator::new(Some(fresh_config.id.as_str()), "nzbget", "fresh-binding-1");
+    fresh_registry.bind(fresh_source, fresh_download_id).await;
+    fresh_registry
+        .set_reconcile_candidates(vec![DownloadClientBindingRecord {
+            download_id: fresh_download_id,
+            client_config_id: Some(fresh_config.id.clone()),
+            client_type_snapshot: Some("nzbget".to_string()),
+            client_name_snapshot: Some(fresh_config.name.clone()),
+            native_item_id: Some("fresh-binding-1".to_string()),
+            created_at: Utc::now(),
+            last_seen_at: None,
+            ended_at: None,
+        }])
+        .await;
+
+    let (_command_tx, fresh_tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (_snapshot_tx, fresh_snapshot_rx) = tokio::sync::mpsc::channel(1);
+    let fresh_token = tokio_util::sync::CancellationToken::new();
+    let fresh_poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            fresh_app,
+            fresh_token.child_token(),
+            fresh_tracked_download_rx,
+            fresh_snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                ..Default::default()
+            },
+        ),
+    );
+    sleep(Duration::from_millis(250)).await;
+    assert!(
+        !fresh_registry
+            .ended
+            .lock()
+            .await
+            .contains(&fresh_download_id),
+        "a binding younger than the recency floor must not be ended"
+    );
+    fresh_token.cancel();
+    fresh_poller
+        .await
+        .expect("fresh-binding poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn failed_client_poll_does_not_end_bindings_or_clean_manual_import_records() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_queue_error(Some("client unavailable"))
+        .await;
+    download_client
+        .set_recent_activity_error(Some("client unavailable"))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let registry = Arc::new(RecordingDownloadRegistry::default());
+    let imports = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_download_registry(registry.clone())
+            .with_imports(imports.clone())
+    });
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary NZBGet", "nzbget").await;
+    let download_id = scryer_domain::download_identity::DownloadId::new();
+    let source_identity =
+        ClientJobLocator::new(Some(config.id.as_str()), "nzbget", "failed-poll-1");
+    registry.bind(source_identity.clone(), download_id).await;
+    registry
+        .set_reconcile_candidates(vec![DownloadClientBindingRecord {
+            download_id,
+            client_config_id: Some(config.id.clone()),
+            client_type_snapshot: Some("nzbget".to_string()),
+            client_name_snapshot: Some(config.name.clone()),
+            native_item_id: Some("failed-poll-1".to_string()),
+            created_at: Utc::now() - chrono::Duration::minutes(11),
+            last_seen_at: None,
+            ended_at: None,
+        }])
+        .await;
+    let import_id = app
+        .services
+        .workflow
+        .imports
+        .queue_import_request(
+            source_identity,
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue manual import record");
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (_snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(1);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app,
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                ..Default::default()
+            },
+        ),
+    );
+    sleep(Duration::from_millis(250)).await;
+    assert!(!registry.ended.lock().await.contains(&download_id));
+    assert!(
+        imports
+            .records
+            .lock()
+            .await
+            .iter()
+            .any(|record| record.id == import_id && record.status == ImportStatus::Pending),
+        "a failed poll must not clean the manual import record"
+    );
+    token.cancel();
+    poller.await.expect("poller should stop cleanly");
 }
 
 #[tokio::test]
@@ -935,10 +1385,12 @@ async fn count_download_import_items_matches_selected_filter() {
     assert_eq!(all_count, all_page.total_count as i64);
     assert_eq!(attention_count, attention_page.total_count as i64);
     assert_eq!(attention_count, 2);
-    assert!(attention_page
-        .items
-        .iter()
-        .all(|item| item.download_client_item_id != "importing-1"));
+    assert!(
+        attention_page
+            .items
+            .iter()
+            .all(|item| item.download_client_item_id != "importing-1")
+    );
     assert_eq!(pending_count, 1);
     assert_eq!(pending.download_client_item_id, "pending-1");
 }
@@ -7743,11 +8195,7 @@ async fn queued_delete_removes_orphaned_import_blocked_item_locally() {
     let command_id = download_queue_commands
         .seed_pending(Some("client-blocked"), "nzbget", "blocked-job", false)
         .await;
-    let source_identity = ClientJobLocator::new(
-        Some("client-blocked"),
-        "nzbget",
-        "blocked-job",
-    );
+    let source_identity = ClientJobLocator::new(Some("client-blocked"), "nzbget", "blocked-job");
     download_submissions
         .update_tracked_state(
             &source_identity,
@@ -7765,11 +8213,8 @@ async fn queued_delete_removes_orphaned_import_blocked_item_locally() {
             .with_download_submissions(download_submissions.clone())
             .with_tracked_download_handle(tracked_handle)
     });
-    let mut queue_item = queue_history_fixture_item(
-        "blocked-job",
-        DownloadQueueState::ImportPending,
-        1,
-    );
+    let mut queue_item =
+        queue_history_fixture_item("blocked-job", DownloadQueueState::ImportPending, 1);
     queue_item.client_id = "client-blocked".to_string();
     queue_item.client_type = "nzbget".to_string();
     queue_item.tracked_state = Some(scryer_domain::TrackedDownloadState::ImportBlocked);

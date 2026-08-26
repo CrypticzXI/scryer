@@ -7,6 +7,7 @@ pub mod download_submission_store;
 pub mod external_import_monitor_store;
 pub mod external_import_setup_secret_draft_store;
 pub mod import_store;
+mod unique_violation;
 pub mod workflow_operation_store;
 
 pub use acquisition_store::AcquisitionStore;

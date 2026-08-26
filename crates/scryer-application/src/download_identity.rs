@@ -57,11 +57,18 @@ pub fn observed_download_identity(
     DownloadSubmissionIdentity { download_id }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ObservedClientJobResolution {
+    Resolved(DownloadId),
+    Conflict,
+    Unavailable,
+}
+
 /// Resolve an observation to the sole workflow identity.
 pub(crate) async fn resolve_observed_client_job(
     app: &AppUseCase,
     observation: ObservedClientJob,
-) -> Option<DownloadId> {
+) -> ObservedClientJobResolution {
     let valid_token = observation
         .wire_token
         .as_deref()
@@ -102,7 +109,23 @@ pub(crate) async fn resolve_observed_client_job(
                     "ambiguous locator attached"
                 );
             }
-            Some(download_id)
+            ObservedClientJobResolution::Resolved(download_id)
+        }
+        Ok(ObservationResolution::Conflict {
+            token_id,
+            binding_download_id,
+        }) => {
+            tracing::warn!(
+                target: "download_identity_resolver",
+                token,
+                config_id,
+                client_type,
+                native_item_id,
+                token_id = %token_id,
+                binding_download_id = %binding_download_id,
+                "conflicting canonical download identity observation"
+            );
+            ObservedClientJobResolution::Conflict
         }
         Err(error) => {
             tracing::warn!(
@@ -114,7 +137,7 @@ pub(crate) async fn resolve_observed_client_job(
                 error = %error,
                 "failed to resolve client observation"
             );
-            None
+            ObservedClientJobResolution::Unavailable
         }
     }
 }

@@ -3495,6 +3495,19 @@ pub trait DownloadRegistryRepository: Send + Sync {
         locator: &ClientJobLocator,
     ) -> AppResult<Option<DownloadClientBindingRecord>>;
 
+    /// List old active bindings for one configured client/type so an
+    /// authoritative snapshot can reconcile jobs that disappeared while the
+    /// tracker was not running. Implementations must bound the result.
+    async fn list_active_bindings_for_client_before(
+        &self,
+        _client_config_id: &str,
+        _client_type: &str,
+        _observed_before: DateTime<Utc>,
+        _limit: usize,
+    ) -> AppResult<Vec<DownloadClientBindingRecord>> {
+        Ok(Vec::new())
+    }
+
     /// End an active binding; ending an already-ended or absent binding is a no-op.
     async fn end_binding(&self, id: &DownloadId) -> AppResult<()>;
 }
@@ -6034,6 +6047,15 @@ pub struct DownloadClientFeedbackScope {
     pub categories: Vec<String>,
 }
 
+/// A lenient queue/activity snapshot with the subset of clients for which
+/// absence is authoritative.
+#[derive(Clone, Debug, Default)]
+pub struct DownloadClientSnapshotOutcome {
+    pub items: Vec<DownloadQueueItem>,
+    pub authoritative_client_ids: std::collections::HashSet<String>,
+    pub any_client_read_succeeded: bool,
+}
+
 #[async_trait]
 pub trait DownloadClient: Send + Sync {
     async fn submit_download(
@@ -6170,6 +6192,44 @@ pub trait DownloadClient: Send + Sync {
                 .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
         });
         Ok(items)
+    }
+
+    /// Read queue and recent activity leniently, identifying clients whose
+    /// complete snapshot is safe to use for absence reconciliation.
+    ///
+    /// Implementations without per-client feedback can retain tracking
+    /// liveness through the default while conservatively authorizing no prune.
+    async fn list_snapshot_outcome_excluding_client_types(
+        &self,
+        recent_activity_limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<DownloadClientSnapshotOutcome> {
+        let queue = self
+            .list_queue_excluding_client_types(excluded_client_types)
+            .await;
+        let activity = self
+            .list_recent_activity_excluding_client_types(
+                recent_activity_limit,
+                excluded_client_types,
+            )
+            .await;
+
+        match (queue, activity) {
+            (Ok(mut queue_items), Ok(activity_items)) => {
+                queue_items.extend(activity_items);
+                Ok(DownloadClientSnapshotOutcome {
+                    items: queue_items,
+                    any_client_read_succeeded: true,
+                    ..Default::default()
+                })
+            }
+            (Ok(items), Err(_)) | (Err(_), Ok(items)) => Ok(DownloadClientSnapshotOutcome {
+                items,
+                any_client_read_succeeded: true,
+                ..Default::default()
+            }),
+            (Err(error), Err(_)) => Err(error),
+        }
     }
 
     async fn list_recent_activity_for_title(

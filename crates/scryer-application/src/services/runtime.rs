@@ -1281,10 +1281,7 @@ impl ActiveImportStreamTracker {
         self.sync_tx.subscribe()
     }
 
-    pub async fn request_cancel(
-        &self,
-        id: &str,
-    ) -> Option<ImportCancellation> {
+    pub async fn request_cancel(&self, id: &str) -> Option<ImportCancellation> {
         let mut state = self.state.lock().await;
         let entry = state.streams.get_mut(id)?;
         if !entry.stream.cancellable() {
