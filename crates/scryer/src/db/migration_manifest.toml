@@ -1395,6 +1395,17 @@ file = "postgres/migrations/0188_unverified_already_imported_blocks.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 189
+description = "disable user rules incompatible with eval rule runtime wrappers"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "disable_invalid_user_rule_runtime_wrappers"
+engine = "all"
+scope = "upgrade_only"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

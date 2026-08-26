@@ -4,6 +4,7 @@ pub mod hook_ids;
 pub mod known_bad;
 pub mod notification_targets;
 pub mod post_0_16_6_prerelease;
+pub mod rule_set_runtime_wrapper;
 pub mod title_catalog_sort_keys;
 pub mod title_folder_ownership;
 pub mod title_folder_ownership_safe;
@@ -772,6 +773,9 @@ async fn run_rust_hook(
         }
         "backfill_canonical_download_identity" => {
             canonical_download_identity::backfill_canonical_download_identity_sqlite(tx).await
+        }
+        "disable_invalid_user_rule_runtime_wrappers" => {
+            rule_set_runtime_wrapper::disable_invalid_user_rule_runtime_wrappers_sqlite(tx).await
         }
         #[cfg(test)]
         "test_insert_hook_marker" => {
