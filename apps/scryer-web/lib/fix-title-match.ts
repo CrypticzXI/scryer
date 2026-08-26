@@ -1,4 +1,6 @@
 import type { Translate } from "@/components/root/types";
+import { metadataFacetGraphqlValue } from "./facets/registry.ts";
+
 type FixMatchCompletionArgs = {
   warnings: string[];
   refreshTitleDetail: () => Promise<void>;
@@ -6,6 +8,17 @@ type FixMatchCompletionArgs = {
   t: Translate;
   titleName?: string | null;
 };
+
+export function buildFixTitleMatchSearchVariables(
+  query: string,
+  facet: string | null | undefined,
+) {
+  return {
+    query,
+    type: metadataFacetGraphqlValue(facet),
+    limit: 8,
+  };
+}
 
 export async function handleFixTitleMatchComplete({
   warnings,

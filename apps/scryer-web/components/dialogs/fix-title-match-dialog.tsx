@@ -17,7 +17,7 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { fixTitleMatchMutation } from "@/lib/graphql/mutations";
 import { searchMetadataQuery } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
-import { metadataFacetGraphqlValue } from "@/lib/facets/registry";
+import { buildFixTitleMatchSearchVariables } from "@/lib/fix-title-match";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -101,11 +101,11 @@ export function FixTitleMatchDialog({
       setSearching(true);
       setError(null);
       client
-        .query(searchMetadataQuery, {
-          query: trimmed,
-          type: metadataFacetGraphqlValue(title.facet),
-          limit: 8,
-        }, { fetch: abortableFetch })
+        .query(
+          searchMetadataQuery,
+          buildFixTitleMatchSearchVariables(trimmed, title.facet),
+          { fetch: abortableFetch },
+        )
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
