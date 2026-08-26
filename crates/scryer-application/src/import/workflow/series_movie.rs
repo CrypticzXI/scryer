@@ -404,8 +404,7 @@ async fn try_match_titleless_archive_from_inner_video(
             archive_provider.clone(),
         )
         .await?
-    })
-    else {
+    }) else {
         return Ok(None);
     };
 
@@ -1059,11 +1058,21 @@ async fn import_additional_movie_download(
     )
     .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
+    let destination_ownership = series_movie_context.as_ref().map_or_else(
+        ImportDestinationOwnership::title,
+        |context| {
+            ImportDestinationOwnership::series_movie(
+                context.series_movie_link_id,
+                context.linked_episode_id,
+            )
+        },
+    );
     let file_result = import_file_with_record_progress(
         app,
         import_id,
         &title.library_id,
         &title.facet,
+        &destination_ownership,
         source_video,
         &dest_path,
         import_mode,
@@ -1095,44 +1104,10 @@ async fn import_additional_movie_download(
         edition: parsed.edition.clone(),
         ..Default::default()
     };
-    let imported_media_file_id = app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&media_file_input)
-        .await?;
-    if let Some(context) = series_movie_context {
-        if let Err(error) = app
-            .services
-            .library
-            .media_files
-            .link_file_to_series_movie(&imported_media_file_id, context.series_movie_link_id)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                file_id = %imported_media_file_id,
-                series_movie_link_id = %context.series_movie_link_id,
-                "failed to link additional imported file to series movie"
-            );
-        }
-        if let Some(linked_episode_id) = context.linked_episode_id
-            && let Err(error) = app
-                .services
-                .library
-                .media_files
-                .link_file_to_episode(&imported_media_file_id, linked_episode_id)
-                .await
-        {
-            tracing::warn!(
-                error = %error,
-                file_id = %imported_media_file_id,
-                episode_id = %linked_episode_id,
-                series_movie_link_id = %context.series_movie_link_id,
-                "failed to link additional imported series movie file to linked episode"
-            );
-        }
-    }
+    let imported_media_file_id = file_result
+        .insert_or_reuse_media_file(app, &media_file_input)
+        .await?
+        .media_file_id;
     analyze_and_persist_imported_media_file(app, &title.id, &imported_media_file_id, &dest_path)
         .await;
     if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
@@ -1168,14 +1143,8 @@ async fn import_additional_movie_download(
     .await?;
 
     let link_type =
-        finalize_import_source_cleanup(
-            app,
-            import_mode,
-            &file_result,
-            &dest_path,
-            Some(completed),
-        )
-        .await?;
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path, Some(completed))
+            .await?;
 
     let result = ImportResult {
         import_id: import_id.to_string(),
@@ -1716,11 +1685,13 @@ async fn import_movie_download(
     }
 
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
+    let destination_ownership = ImportDestinationOwnership::title();
     let file_result = import_file_with_record_progress(
         app,
         import_id,
         &title.library_id,
         &title.facet,
+        &destination_ownership,
         &source_video,
         &dest_path,
         import_mode,
@@ -1778,14 +1749,12 @@ async fn import_movie_download(
         scoring_log: post_download_score.scoring_log.clone(),
         ..Default::default()
     };
-    let imported_media_file_id = match app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&media_file_input)
+    let imported_media_file_id = match file_result
+        .insert_or_reuse_media_file(app, &media_file_input)
         .await
     {
-        Ok(file_id) => {
+        Ok(persistence) => {
+            let file_id = persistence.media_file_id;
             crate::post_download_gate::persist_media_analysis_result(
                 &app.services.library.media_files,
                 &file_id,
@@ -1839,14 +1808,8 @@ async fn import_movie_download(
     .await?;
 
     let link_type =
-        finalize_import_source_cleanup(
-            app,
-            import_mode,
-            &file_result,
-            &dest_path,
-            Some(completed),
-        )
-        .await?;
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path, Some(completed))
+            .await?;
 
     let collection = Collection {
         id: Id::new().0,
@@ -2237,9 +2200,9 @@ async fn import_series_movie_download(
                 "rejected",
                 rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
                 None,
-            &[],
-        )
-        .await?;
+                &[],
+            )
+            .await?;
             let result = ImportResult {
                 import_id: import_id.to_string(),
                 decision: ImportDecision::Rejected,
@@ -2427,12 +2390,8 @@ async fn import_series_movie_download(
                         &[],
                     )
                     .await?;
-                    crate::upgrade::finalize_upgrade_source_cleanup(
-                        app,
-                        &outcome,
-                        Some(completed),
-                    )
-                    .await?;
+                    crate::upgrade::finalize_upgrade_source_cleanup(app, &outcome, Some(completed))
+                        .await?;
                     tracing::info!(
                         title = %title.name,
                         movie = %movie.title,
@@ -2440,36 +2399,8 @@ async fn import_series_movie_download(
                         new_score = outcome.new_score,
                         "series movie file upgraded"
                     );
-                    if let Err(error) = app
-                        .services
-                        .library
-                        .media_files
-                        .link_file_to_series_movie(&outcome.new_file_id, series_movie_link_id)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            file_id = %outcome.new_file_id,
-                            series_movie_link_id = %series_movie_link_id,
-                            "failed to link upgraded file to series movie"
-                        );
-                    }
-                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
-                        let link_result = app
-                            .services
-                            .library
-                            .media_files
-                            .link_file_to_episode(&outcome.new_file_id, linked_episode_id)
-                            .await;
-                        if let Err(error) = link_result {
-                            tracing::warn!(
-                                error = %error,
-                                file_id = %outcome.new_file_id,
-                                episode_id = %linked_episode_id,
-                                series_movie_link_id = %series_movie_link_id,
-                                "failed to link upgraded series movie file to linked episode"
-                            );
-                        } else if let Err(error) = app
+                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref()
+                        && let Err(error) = app
                             .services
                             .library
                             .media_files
@@ -2480,15 +2411,14 @@ async fn import_series_movie_download(
                                 &[],
                             )
                             .await
-                        {
-                            tracing::warn!(
-                                error = %error,
-                                file_id = %outcome.new_file_id,
-                                episode_id = %linked_episode_id,
-                                series_movie_link_id = %series_movie_link_id,
-                                "failed to promote upgraded series movie file for linked episode"
-                            );
-                        }
+                    {
+                        tracing::warn!(
+                            error = %error,
+                            file_id = %outcome.new_file_id,
+                            episode_id = %linked_episode_id,
+                            series_movie_link_id = %series_movie_link_id,
+                            "failed to promote upgraded series movie file for linked episode"
+                        );
                     }
                     mark_wanted_completed_for_series_movie_link(
                         app,
@@ -2591,11 +2521,16 @@ async fn import_series_movie_download(
     }
 
     // Import file (hardlink or copy)
+    let destination_ownership = ImportDestinationOwnership::series_movie(
+        series_movie_link_id,
+        link.linked_episode_id.as_deref(),
+    );
     let file_result = import_file_with_record_progress(
         app,
         import_id,
         &title.library_id,
         &title.facet,
+        &destination_ownership,
         &source_video,
         &dest_path,
         import_mode,
@@ -2611,42 +2546,43 @@ async fn import_series_movie_download(
         crate::import_decide::rescore_landed_size(&decision_input, file_result.size_bytes as i64);
     let acq_score = post_download_score.score;
 
-    let imported_media_file_id = match app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&crate::InsertMediaFileInput {
-            title_id: title.id.clone(),
-            file_path: path_to_stored_string(&dest_path),
-            size_bytes: file_result.size_bytes as i64,
-            announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
-                file_result.size_bytes as i64,
-                release_evidence.announced_size_bytes(),
-            ),
-            quality_label: post_download_score.parsed.quality.clone(),
-            scene_name: Some(prepared.parsed.raw_title.clone()),
-            release_group: post_download_score.parsed.release_group.clone(),
-            source_type: crate::release_parser::parsed_release_source_type(
-                &post_download_score.parsed,
-            ),
-            resolution: post_download_score.parsed.quality.clone(),
-            video_codec_parsed: post_download_score.parsed.video_codec,
-            audio_codec_parsed: post_download_score
-                .parsed
-                .audio
-                .as_ref()
-                .map(ToString::to_string),
-            audio_channels_parsed: post_download_score.parsed.audio_channels.clone(),
-            original_file_path: Some(path_to_stored_string(&source_video)),
-            grabbed_release_title: source_title.clone(),
-            grabbed_at: Some(started_at.to_rfc3339()),
-            acquisition_score: Some(acq_score),
-            scoring_log: post_download_score.scoring_log.clone(),
-            ..Default::default()
-        })
+    let imported_media_file_id = match file_result
+        .insert_or_reuse_media_file(
+            app,
+            &crate::InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: path_to_stored_string(&dest_path),
+                size_bytes: file_result.size_bytes as i64,
+                announced_size_bytes: crate::canonical_scoring::persisted_announced_size_bytes(
+                    file_result.size_bytes as i64,
+                    release_evidence.announced_size_bytes(),
+                ),
+                quality_label: post_download_score.parsed.quality.clone(),
+                scene_name: Some(prepared.parsed.raw_title.clone()),
+                release_group: post_download_score.parsed.release_group.clone(),
+                source_type: crate::release_parser::parsed_release_source_type(
+                    &post_download_score.parsed,
+                ),
+                resolution: post_download_score.parsed.quality.clone(),
+                video_codec_parsed: post_download_score.parsed.video_codec,
+                audio_codec_parsed: post_download_score
+                    .parsed
+                    .audio
+                    .as_ref()
+                    .map(ToString::to_string),
+                audio_channels_parsed: post_download_score.parsed.audio_channels.clone(),
+                original_file_path: Some(path_to_stored_string(&source_video)),
+                grabbed_release_title: source_title.clone(),
+                grabbed_at: Some(started_at.to_rfc3339()),
+                acquisition_score: Some(acq_score),
+                scoring_log: post_download_score.scoring_log.clone(),
+                ..Default::default()
+            },
+        )
         .await
     {
-        Ok(file_id) => {
+        Ok(persistence) => {
+            let file_id = persistence.media_file_id;
             crate::post_download_gate::persist_media_analysis_result(
                 &app.services.library.media_files,
                 &file_id,
@@ -2700,62 +2636,25 @@ async fn import_series_movie_download(
     .await?;
 
     let link_type =
-        finalize_import_source_cleanup(
-            app,
-            import_mode,
-            &file_result,
-            &dest_path,
-            Some(completed),
-        )
-        .await?;
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path, Some(completed))
+            .await?;
 
     if let Some(file_id) = imported_media_file_id.as_deref()
-        && let Err(err) = app
-            .services
-            .library
-            .media_files
-            .link_file_to_series_movie(file_id, series_movie_link_id)
-            .await
-    {
-        tracing::warn!(
-            error = %err,
-            file_id = %file_id,
-            series_movie_link_id = %series_movie_link_id,
-            "failed to link imported file to series movie"
-        );
-    }
-    if let Some(file_id) = imported_media_file_id.as_deref()
         && let Some(linked_episode_id) = link.linked_episode_id.as_deref()
-    {
-        let link_result = app
-            .services
-            .library
-            .media_files
-            .link_file_to_episode(file_id, linked_episode_id)
-            .await;
-        if let Err(err) = link_result {
-            tracing::warn!(
-                error = %err,
-                file_id = %file_id,
-                episode_id = %linked_episode_id,
-                series_movie_link_id = %series_movie_link_id,
-                "failed to link imported series movie file to linked episode"
-            );
-        } else if let Err(err) = app
+        && let Err(err) = app
             .services
             .library
             .media_files
             .set_media_file_roles_for_episode(&title.id, linked_episode_id, file_id, &[])
             .await
-        {
-            tracing::warn!(
-                error = %err,
-                file_id = %file_id,
-                episode_id = %linked_episode_id,
-                series_movie_link_id = %series_movie_link_id,
-                "failed to promote imported series movie file for linked episode"
-            );
-        }
+    {
+        tracing::warn!(
+            error = %err,
+            file_id = %file_id,
+            episode_id = %linked_episode_id,
+            series_movie_link_id = %series_movie_link_id,
+            "failed to promote imported series movie file for linked episode"
+        );
     }
 
     // Write Jellyfin-compatible NFO with airsbefore_season

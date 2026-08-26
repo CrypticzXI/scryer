@@ -1,5 +1,8 @@
 use super::*;
 use crate::acquisition::convergence::CoverageReopen;
+use crate::acquisition::submission::{
+    CanonicalDownloadSubmissionIntent, CanonicalDownloadSubmissionOutcome,
+};
 use crate::acquisition_decision_helpers::{
     FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, blocklist_entry_data, extract_grabbed_release_title,
     is_download_submit_unavailable_error,

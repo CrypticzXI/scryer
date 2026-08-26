@@ -416,6 +416,16 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.insert_media_file(input).await
     }
 
+    async fn claim_import_destination(
+        &self,
+        input: &InsertMediaFileInput,
+        associations: &scryer_application::MediaFileAssociations,
+    ) -> AppResult<scryer_application::ClaimedMediaFile> {
+        self.inner
+            .claim_import_destination(input, associations)
+            .await
+    }
+
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
         self.inner.link_file_to_episode(file_id, episode_id).await
     }
@@ -692,6 +702,16 @@ struct CountingMediaFileRepo {
 impl MediaFileRepository for CountingMediaFileRepo {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
         self.inner.insert_media_file(input).await
+    }
+
+    async fn claim_import_destination(
+        &self,
+        input: &InsertMediaFileInput,
+        associations: &scryer_application::MediaFileAssociations,
+    ) -> AppResult<scryer_application::ClaimedMediaFile> {
+        self.inner
+            .claim_import_destination(input, associations)
+            .await
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {

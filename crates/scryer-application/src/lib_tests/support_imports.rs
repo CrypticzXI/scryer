@@ -130,6 +130,7 @@ impl FileImporter for CopyingFileImporter {
             source_path: source.to_path_buf(),
             dest_path: dest.to_path_buf(),
             size_bytes,
+            destination_disposition: scryer_domain::ImportDestinationDisposition::Created,
             source_cleanup: None,
         })
     }
@@ -236,64 +237,128 @@ impl MockMediaFileRepo {
     }
 }
 
+fn mock_media_file(id: String, input: &InsertMediaFileInput) -> TitleMediaFile {
+    TitleMediaFile {
+        id,
+        title_id: input.title_id.clone(),
+        episode_id: None,
+        series_movie_link_ids: Vec::new(),
+        role: input.role,
+        file_path: input.file_path.clone(),
+        size_bytes: input.size_bytes,
+        announced_size_bytes: input.announced_size_bytes,
+        source_signature_scheme: input.source_signature_scheme.clone(),
+        source_signature_value: input.source_signature_value.clone(),
+        quality_label: input.quality_label.clone(),
+        scan_status: "pending".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        video_codec: None,
+        video_width: None,
+        video_height: None,
+        video_bitrate_kbps: None,
+        video_bit_depth: None,
+        video_hdr_format: None,
+        dovi_profile: None,
+        dovi_bl_compat_id: None,
+        video_frame_rate: None,
+        video_profile: None,
+        audio_codec: None,
+        audio_profile: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        audio_languages: Vec::new(),
+        audio_streams: Vec::new(),
+        subtitle_languages: Vec::new(),
+        subtitle_codecs: Vec::new(),
+        subtitle_streams: Vec::new(),
+        has_multiaudio: false,
+        duration_seconds: None,
+        num_chapters: None,
+        container_format: None,
+        scene_name: input.scene_name.clone(),
+        release_group: input.release_group.clone(),
+        source_type: input.source_type.clone(),
+        resolution: input.resolution.clone(),
+        video_codec_parsed: input.video_codec_parsed,
+        audio_codec_parsed: input.audio_codec_parsed.clone(),
+        audio_channels_parsed: input.audio_channels_parsed.clone(),
+        acquisition_score: input.acquisition_score,
+        scoring_log: input.scoring_log.clone(),
+        indexer_source: input.indexer_source.clone(),
+        grabbed_release_title: input.grabbed_release_title.clone(),
+        grabbed_at: input.grabbed_at.clone(),
+        edition: input.edition.clone(),
+        original_file_path: input.original_file_path.clone(),
+        release_hash: input.release_hash.clone(),
+    }
+}
+
 #[async_trait]
 impl MediaFileRepository for MockMediaFileRepo {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
         let id = Id::new().0;
-        self.store.lock().await.push(TitleMediaFile {
-            id: id.clone(),
-            title_id: input.title_id.clone(),
-            episode_id: None,
-            series_movie_link_ids: Vec::new(),
-            role: input.role,
-            file_path: input.file_path.clone(),
-            size_bytes: input.size_bytes,
-            announced_size_bytes: input.announced_size_bytes,
-            source_signature_scheme: input.source_signature_scheme.clone(),
-            source_signature_value: input.source_signature_value.clone(),
-            quality_label: input.quality_label.clone(),
-            scan_status: "pending".to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            video_codec: None,
-            video_width: None,
-            video_height: None,
-            video_bitrate_kbps: None,
-            video_bit_depth: None,
-            video_hdr_format: None,
-            dovi_profile: None,
-            dovi_bl_compat_id: None,
-            video_frame_rate: None,
-            video_profile: None,
-            audio_codec: None,
-            audio_profile: None,
-            audio_channels: None,
-            audio_bitrate_kbps: None,
-            audio_languages: Vec::new(),
-            audio_streams: Vec::new(),
-            subtitle_languages: Vec::new(),
-            subtitle_codecs: Vec::new(),
-            subtitle_streams: Vec::new(),
-            has_multiaudio: false,
-            duration_seconds: None,
-            num_chapters: None,
-            container_format: None,
-            scene_name: input.scene_name.clone(),
-            release_group: input.release_group.clone(),
-            source_type: input.source_type.clone(),
-            resolution: input.resolution.clone(),
-            video_codec_parsed: input.video_codec_parsed,
-            audio_codec_parsed: input.audio_codec_parsed.clone(),
-            audio_channels_parsed: input.audio_channels_parsed.clone(),
-            acquisition_score: input.acquisition_score,
-            scoring_log: input.scoring_log.clone(),
-            indexer_source: input.indexer_source.clone(),
-            grabbed_release_title: input.grabbed_release_title.clone(),
-            grabbed_at: input.grabbed_at.clone(),
-            edition: input.edition.clone(),
-            original_file_path: input.original_file_path.clone(),
-            release_hash: input.release_hash.clone(),
-        });
+        self.store
+            .lock()
+            .await
+            .push(mock_media_file(id.clone(), input));
         Ok(id)
+    }
+
+    async fn claim_import_destination(
+        &self,
+        input: &InsertMediaFileInput,
+        associations: &MediaFileAssociations,
+    ) -> AppResult<crate::ClaimedMediaFile> {
+        let mut files = self.store.lock().await;
+        if let Some(existing) = files
+            .iter_mut()
+            .find(|file| file.file_path == input.file_path)
+        {
+            let episode_matches = existing
+                .episode_id
+                .as_ref()
+                .is_none_or(|id| associations.episode_ids.contains(id));
+            let links_match = existing
+                .series_movie_link_ids
+                .iter()
+                .all(|id| associations.series_movie_link_ids.contains(id));
+            let has_associations =
+                existing.episode_id.is_some() || !existing.series_movie_link_ids.is_empty();
+            let provenance_matches =
+                has_associations || existing.original_file_path == input.original_file_path;
+            if existing.title_id != input.title_id
+                || !episode_matches
+                || !links_match
+                || !provenance_matches
+            {
+                return Err(AppError::ManualReconciliationRequired(format!(
+                    "destination {} belongs to another import target",
+                    input.file_path
+                )));
+            }
+            if existing.episode_id.is_none() {
+                existing.episode_id = associations.episode_ids.first().cloned();
+            }
+            for link_id in &associations.series_movie_link_ids {
+                if !existing.series_movie_link_ids.contains(link_id) {
+                    existing.series_movie_link_ids.push(link_id.clone());
+                }
+            }
+            return Ok(crate::ClaimedMediaFile {
+                media_file_id: existing.id.clone(),
+                disposition: crate::MediaFileCatalogDisposition::Reused,
+            });
+        }
+
+        let id = Id::new().0;
+        let mut file = mock_media_file(id.clone(), input);
+        file.episode_id = associations.episode_ids.first().cloned();
+        file.series_movie_link_ids = associations.series_movie_link_ids.clone();
+        files.push(file);
+        Ok(crate::ClaimedMediaFile {
+            media_file_id: id,
+            disposition: crate::MediaFileCatalogDisposition::Created,
+        })
     }
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {

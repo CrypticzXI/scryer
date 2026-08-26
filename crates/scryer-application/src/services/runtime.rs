@@ -878,6 +878,11 @@ pub(crate) struct ImportExecutionCoordinator {
             std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
         >,
     >,
+    destination_permits: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+        >,
+    >,
     preparation_permit: Arc<tokio::sync::Semaphore>,
     finalization_permit: Arc<tokio::sync::Semaphore>,
     archive_extraction_permit: Arc<tokio::sync::Semaphore>,
@@ -887,6 +892,9 @@ impl Default for ImportExecutionCoordinator {
     fn default() -> Self {
         Self {
             title_permits: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            destination_permits: Arc::new(
+                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
             preparation_permit: Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_IMPORT_PREPARATIONS,
             )),
@@ -910,6 +918,27 @@ impl ImportExecutionCoordinator {
             } else {
                 let permit = Arc::new(tokio::sync::Mutex::new(()));
                 permits.insert(title_id.to_string(), Arc::downgrade(&permit));
+                permit
+            }
+        };
+        permit.lock_owned().await
+    }
+
+    pub(crate) async fn acquire_destination(
+        &self,
+        destination: &std::path::Path,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let stored_destination = crate::stored_paths::path_to_stored_string(destination);
+        let key = crate::stored_paths::path_identity_key(&stored_destination)
+            .unwrap_or(stored_destination);
+        let permit = {
+            let mut permits = self.destination_permits.lock().await;
+            permits.retain(|_, permit| permit.strong_count() > 0);
+            if let Some(permit) = permits.get(&key).and_then(std::sync::Weak::upgrade) {
+                permit
+            } else {
+                let permit = Arc::new(tokio::sync::Mutex::new(()));
+                permits.insert(key, Arc::downgrade(&permit));
                 permit
             }
         };
@@ -977,6 +1006,63 @@ mod import_execution_coordinator_tests {
         tokio::time::timeout(Duration::from_secs(1), waiting)
             .await
             .expect("second import should acquire after the first completes")
+            .expect("waiting import task should complete");
+    }
+
+    #[tokio::test]
+    async fn serializes_only_matching_import_destinations() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let first = coordinator
+            .acquire_destination(std::path::Path::new("library/movie.mkv"))
+            .await;
+        let waiting = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                let _second = coordinator
+                    .acquire_destination(std::path::Path::new("library/movie.mkv"))
+                    .await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        let other = tokio::time::timeout(
+            Duration::from_secs(1),
+            coordinator.acquire_destination(std::path::Path::new("library/other.mkv")),
+        )
+        .await
+        .expect("different destination should not wait");
+        drop(other);
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("matching destination should acquire after finalization")
+            .expect("waiting import task should complete");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn serializes_windows_case_and_separator_variants() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let first = coordinator
+            .acquire_destination(std::path::Path::new(r"C:\Media\Show\Episode.mkv"))
+            .await;
+        let waiting = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                let _second = coordinator
+                    .acquire_destination(std::path::Path::new("c:/media/show/episode.mkv"))
+                    .await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("Windows path variants should share one destination permit")
             .expect("waiting import task should complete");
     }
 

@@ -1,5 +1,8 @@
 use super::*;
 use crate::acquisition::acquisition::submission_blocks_wanted_item;
+use crate::acquisition::submission::{
+    CanonicalDownloadSubmissionIntent, CanonicalDownloadSubmissionOutcome,
+};
 use crate::acquisition_decision_helpers::{
     blocklist_entry_data, is_download_submit_unavailable_error,
 };

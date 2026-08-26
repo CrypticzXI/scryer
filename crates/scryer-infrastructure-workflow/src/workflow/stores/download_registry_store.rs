@@ -7,7 +7,7 @@ use scryer_application::{
 use scryer_domain::download_identity::DownloadId;
 
 use super::unique_violation::is_unique_violation;
-use super::{opt_timestamp_string, timestamp_string};
+use super::{normalize_download_client_id, opt_timestamp_string, timestamp_string};
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
 
 #[derive(Clone)]
@@ -510,13 +510,35 @@ async fn attach_unbound_binding_tx(
         ],
     )
     .await?;
-    if rows_affected == 1 {
-        Ok(())
-    } else {
-        Err(AppError::Repository(format!(
+    if rows_affected != 1 {
+        return Err(AppError::Repository(format!(
             "canonical download binding {download_id} was no longer an active unbound binding"
-        )))
+        )));
     }
+
+    // The canonical binding is authoritative, but compatibility readers still
+    // select the locator columns from download_submissions. Fill them in the
+    // same transaction so an ambiguity that later reconciles immediately
+    // participates in normal title/signature conflict checks.
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "UPDATE download_submissions
+            SET download_client_id = {},
+                download_client_type = {},
+                download_client_item_id = {}
+          WHERE id = {}
+            AND download_client_item_id IS NULL",
+        &[
+            SqlArg::Text(normalize_download_client_id(
+                observation.locator.client_id.as_deref(),
+            )),
+            SqlArg::Text(observation.locator.client_type.clone()),
+            SqlArg::Text(observation.locator.item_id.clone()),
+            SqlArg::Text(download_id.to_string()),
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 async fn create_foreign_observation_tx(
@@ -1670,6 +1692,32 @@ mod tests {
                 .native_item_id
                 .as_deref(),
             Some("job-1")
+        );
+        let submission = SqlRuntime::fetch_optional(
+            store.datastore.read_exec(),
+            "SELECT download_client_id, download_client_type, download_client_item_id
+               FROM download_submissions
+              WHERE id = {}",
+            &[SqlArg::Text(FIRST_ID.to_string())],
+        )
+        .await
+        .expect("submission locator should load")
+        .expect("ambiguous submission should remain");
+        assert_eq!(
+            submission.text("download_client_id").expect("client id"),
+            "client-1"
+        );
+        assert_eq!(
+            submission
+                .text("download_client_type")
+                .expect("client type"),
+            "qbittorrent"
+        );
+        assert_eq!(
+            submission
+                .text("download_client_item_id")
+                .expect("client item id"),
+            "job-1"
         );
     }
 

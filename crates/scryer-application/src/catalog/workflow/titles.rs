@@ -21,14 +21,8 @@ fn non_empty_scope(value: &str) -> Option<String> {
 fn record_download_client_feedback_categories(
     client_id: &str,
     categories: impl IntoIterator<Item = String>,
-    admission_by_client: &mut std::collections::HashMap<
-        String,
-        std::collections::HashSet<String>,
-    >,
-    feedback_by_client: &mut std::collections::HashMap<
-        String,
-        std::collections::HashSet<String>,
-    >,
+    admission_by_client: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
+    feedback_by_client: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
 ) {
     for category in categories {
         let category = category.trim().to_string();
@@ -54,14 +48,8 @@ fn record_configured_download_client_category(
     client_id: &str,
     enabled: bool,
     category: Option<String>,
-    admission_by_client: &mut std::collections::HashMap<
-        String,
-        std::collections::HashSet<String>,
-    >,
-    feedback_by_client: &mut std::collections::HashMap<
-        String,
-        std::collections::HashSet<String>,
-    >,
+    admission_by_client: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
+    feedback_by_client: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
 ) {
     let Some(category) = category
         .map(|category| category.trim().to_string())
@@ -511,10 +499,8 @@ impl AppUseCase {
             .titles
             .list_for_libraries(facet, library_ids, None)
             .await?;
-        let monitored: Vec<scryer_domain::Title> = titles
-            .into_iter()
-            .filter(|title| title.monitored)
-            .collect();
+        let monitored: Vec<scryer_domain::Title> =
+            titles.into_iter().filter(|title| title.monitored).collect();
         if monitored.is_empty() {
             return Ok(Vec::new());
         }
@@ -993,32 +979,6 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn lock_download_submission_signature(
-        &self,
-        title_id: &str,
-        request_signature: Option<&str>,
-    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
-        self.runtime
-            .acquisition
-            .download_submission_guards
-            .acquire(title_id, request_signature)
-            .await
-    }
-}
-impl AppUseCase {
-    async fn lock_download_submission_scope(
-        &self,
-        title_id: &str,
-        scope: &SubmissionScope,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        self.runtime
-            .acquisition
-            .download_submission_guards
-            .acquire_scope(title_id, scope)
-            .await
-    }
-}
-impl AppUseCase {
     pub(crate) async fn find_blocking_download_submissions(
         &self,
         title: &Title,
@@ -1034,13 +994,25 @@ impl AppUseCase {
             return Ok(Vec::new());
         }
 
-        let queue = self
+        let snapshot = self
             .services
             .integrations
             .download_client
-            .list_queue()
+            .list_snapshot_outcome_excluding_client_types(100, &[])
             .await?;
-        if queue.is_empty() {
+
+        self.find_blocking_download_submissions_from_snapshot(title, scope, &submissions, &snapshot)
+            .await
+    }
+
+    pub(crate) async fn find_blocking_download_submissions_from_snapshot(
+        &self,
+        title: &Title,
+        scope: &SubmissionScope,
+        submissions: &[DownloadSubmission],
+        snapshot: &DownloadClientSnapshotOutcome,
+    ) -> AppResult<Vec<SubmissionScopeConflict>> {
+        if submissions.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -1057,9 +1029,34 @@ impl AppUseCase {
                 continue;
             }
 
-            let Some(queue_item) = blocking_queue_item_for_submission(&queue, &submission) else {
+            let queue_item = snapshot
+                .items
+                .iter()
+                .find(|item| queue_item_matches_submission(item, submission));
+            let authoritative = submission
+                .download_client_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|client_id| !client_id.is_empty())
+                .is_some_and(|client_id| snapshot.authoritative_client_ids.contains(client_id));
+            let Some(queue_item) = queue_item else {
+                if !authoritative {
+                    return Err(AppError::DownloadSubmitUnavailable(format!(
+                        "download client state is unavailable for submission {} on title {}",
+                        submission.download_id, title.id
+                    )));
+                }
                 continue;
             };
+            if !queue_state_blocks_submission(queue_item.state) {
+                if !authoritative {
+                    return Err(AppError::DownloadSubmitUnavailable(format!(
+                        "download client state is unavailable for terminal submission {} on title {}",
+                        submission.download_id, title.id
+                    )));
+                }
+                continue;
+            }
 
             conflicts.push(SubmissionScopeConflict {
                 title_id: title.id.clone(),
@@ -1069,7 +1066,7 @@ impl AppUseCase {
                 download_client_item_id: submission.download_client_item_id.clone(),
                 source_title: submission.source_title.clone(),
                 source_kind: submission.source_kind,
-                scope: submission.scope,
+                scope: submission.scope.clone(),
                 state: Some(queue_item.state),
                 replaceable: queue_state_is_replaceable(queue_item.state),
             });
@@ -1233,7 +1230,9 @@ impl AppUseCase {
     }
 
     pub async fn refresh_download_client_category_admission(&self) -> AppResult<()> {
-        let snapshot = self.load_download_client_category_admission_snapshot().await?;
+        let snapshot = self
+            .load_download_client_category_admission_snapshot()
+            .await?;
         self.runtime
             .acquisition
             .download_client_category_admission

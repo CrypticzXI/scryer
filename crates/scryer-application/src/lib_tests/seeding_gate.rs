@@ -1278,6 +1278,15 @@ impl DownloadSubmissionRepository for SeedGoalOnlySubmissionRepo {
         Ok(())
     }
 
+    async fn record_submission_with_identity(
+        &self,
+        _: DownloadSubmission,
+        _: crate::DownloadSubmissionIdentity,
+        _: Option<PersistedSeedGoals>,
+    ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+        Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
+    }
+
     async fn find_by_client_item_id(
         &self,
         _: &ClientJobLocator,

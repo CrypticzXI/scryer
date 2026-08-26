@@ -2,7 +2,7 @@ use super::*;
 use scryer_application::{
     ClientJobLocator, DownloadRegistryRepository, DownloadSubmissionIdentity,
     DownloadSubmissionPurpose, DownloadSubmissionRepository, ObservationResolution,
-    ObservedClientJob, PersistedSeedGoals, SeedGoalGrabRecord, SeedGoalResolutionSource,
+    ObservedClientJob, PersistedSeedGoals, SeedGoalResolutionSource,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,163 +37,135 @@ fn submission(item_id: &str, title_id: &str) -> DownloadSubmission {
     }
 }
 
-fn seed_goal_record(
-    download_id: scryer_domain::download_identity::DownloadId,
-    client_type: &str,
-    item_id: &str,
-) -> SeedGoalGrabRecord {
-    SeedGoalGrabRecord {
-        download_id,
-        client_id: Some("client-one".to_string()),
-        client_type: client_type.to_string(),
-        client_item_id: item_id.to_string(),
-        title_id: "title-one".to_string(),
-        facet: "series".to_string(),
-        purpose: DownloadSubmissionPurpose::Standard,
-        goals: PersistedSeedGoals {
-            seeding_profile_id: Some("profile-one".to_string()),
-            seed_goal_ratio: Some(2.0),
-            seed_goal_seconds: Some(7_200),
-            never_remove: true,
-            goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
-            post_import_tracking: scryer_domain::PostImportTracking::Park,
-            resolution_source: SeedGoalResolutionSource::Indexer,
-            info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
-        },
+fn seed_goals() -> PersistedSeedGoals {
+    PersistedSeedGoals {
+        seeding_profile_id: Some("profile-one".to_string()),
+        seed_goal_ratio: Some(2.0),
+        seed_goal_seconds: Some(7_200),
+        never_remove: true,
+        goal_met_action: Some(scryer_domain::SeedGoalMetAction::StopSeeding),
+        post_import_tracking: scryer_domain::PostImportTracking::Park,
+        resolution_source: SeedGoalResolutionSource::Indexer,
+        info_hash: Some("ABCDEF0123456789ABCDEF0123456789ABCDEF01".to_string()),
     }
 }
 
 async fn assert_accepted_grab_lifecycle(client_type: &str, item_id: &str, wire_token: bool) {
-    for seed_goals_first in [true, false] {
-        let db = std::env::temp_dir().join(format!(
-            "scryer_accepted_grab_{client_type}_{seed_goals_first}_{}.db",
-            chrono::Utc::now().timestamp_micros()
-        ));
-        let services = SqliteServices::new(db.to_string_lossy())
-            .await
-            .expect("database should migrate through the canonical binding schema");
-        sqlx::query(
-            "INSERT INTO download_clients (
+    let db = std::env::temp_dir().join(format!(
+        "scryer_accepted_grab_{client_type}_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("database should migrate through the canonical binding schema");
+    sqlx::query(
+        "INSERT INTO download_clients (
                 id, name, client_type, config_json, created_at, updated_at
              ) VALUES ('client-one', 'Primary Client', ?1, '{}', ?2, ?2)",
+    )
+    .bind(client_type)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(services.pool())
+    .await
+    .expect("configured client should insert");
+
+    let submissions = DownloadSubmissionStore::new(services.datastore());
+    let registry = DownloadRegistryStore::new(services.datastore());
+    let requested_download_id = scryer_domain::download_identity::DownloadId::new();
+    let locator = ClientJobLocator::new(Some("client-one"), client_type, item_id);
+    let mut accepted = submission(item_id, "title-one");
+    accepted.download_id = requested_download_id;
+    accepted.download_client_type = client_type.to_string();
+
+    let disposition = submissions
+        .record_submission_with_identity(
+            accepted,
+            DownloadSubmissionIdentity {
+                download_id: Some(requested_download_id.to_wire()),
+            },
+            Some(seed_goals()),
         )
-        .bind(client_type)
-        .bind(chrono::Utc::now().to_rfc3339())
-        .execute(services.pool())
         .await
-        .expect("configured client should insert");
+        .expect("accepted submission and seed goals should persist atomically");
+    assert_eq!(
+        disposition,
+        scryer_application::CanonicalDownloadIdentityDisposition::Requested
+    );
+    let effective_download_id = requested_download_id;
 
-        let submissions = DownloadSubmissionStore::new(services.datastore());
-        let registry = DownloadRegistryStore::new(services.datastore());
-        let requested_download_id = scryer_domain::download_identity::DownloadId::new();
-        let locator = ClientJobLocator::new(Some("client-one"), client_type, item_id);
-        let goals = seed_goal_record(requested_download_id, client_type, item_id);
-        let mut accepted = submission(item_id, "title-one");
-        accepted.download_id = requested_download_id;
-        accepted.download_client_type = client_type.to_string();
-
-        let effective_download_id = if seed_goals_first {
-            let effective_download_id = submissions
-                .record_seed_goals(goals.clone())
-                .await
-                .expect("seed goals should claim the accepted client locator");
-            submissions
-                .record_submission(accepted)
-                .await
-                .expect("accepted submission should reuse the seed-goal binding");
-            effective_download_id
-        } else {
-            submissions
-                .record_submission_with_identity(
-                    accepted,
-                    DownloadSubmissionIdentity {
-                        download_id: Some(requested_download_id.to_wire()),
-                    },
-                )
-                .await
-                .expect("accepted submission should claim its client locator");
-            submissions
-                .record_seed_goals(goals.clone())
-                .await
-                .expect("seed goals should reuse the accepted submission binding")
-        };
-        assert_eq!(effective_download_id, requested_download_id);
-
-        let stored = submissions
-            .find_by_client_item_id(&locator)
-            .await
-            .expect("submission lookup should succeed")
-            .expect("accepted submission should exist");
-        assert_eq!(stored.download_id, effective_download_id);
-
-        let observation = ObservedClientJob {
-            locator: locator.clone(),
-            wire_token: wire_token.then(|| effective_download_id.to_wire()),
-            observed_name: Some("accepted release".to_string()),
-            observed_at: chrono::Utc::now(),
-        };
-        assert_eq!(
-            registry
-                .resolve_observation(&observation)
-                .await
-                .expect("first observation should reuse the accepted binding"),
-            ObservationResolution::Resolved {
-                download_id: effective_download_id,
-                newly_foreign: false,
-                attached: false,
-            }
-        );
-        assert_eq!(
-            registry
-                .load_download(&effective_download_id)
-                .await
-                .expect("accepted parent should load")
-                .expect("accepted parent should exist")
-                .origin,
-            scryer_application::DownloadOrigin::ScryerSubmission
-        );
-        let binding = registry
-            .load_binding(&effective_download_id)
-            .await
-            .expect("accepted binding should load")
-            .expect("accepted binding should exist");
-        assert_eq!(
-            binding.client_name_snapshot.as_deref(),
-            Some("Primary Client")
-        );
-        assert_eq!(binding.native_item_id.as_deref(), Some(item_id));
-        let foreign_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM downloads WHERE origin = 'foreign_observation'",
-        )
-        .fetch_one(services.pool())
+    let stored = submissions
+        .find_by_client_item_id(&locator)
         .await
-        .expect("foreign-row count should load");
-        assert_eq!(foreign_rows, 0);
+        .expect("submission lookup should succeed")
+        .expect("accepted submission should exist");
+    assert_eq!(stored.download_id, effective_download_id);
 
-        let persisted_goals = submissions
-            .get_seed_goals_for_download(Some(&effective_download_id), &locator)
+    let observation = ObservedClientJob {
+        locator: locator.clone(),
+        wire_token: wire_token.then(|| effective_download_id.to_wire()),
+        observed_name: Some("accepted release".to_string()),
+        observed_at: chrono::Utc::now(),
+    };
+    assert_eq!(
+        registry
+            .resolve_observation(&observation)
             .await
-            .expect("goals should load through the tracked entry id")
-            .expect("grab-time goals should remain on the canonical submission");
-        assert_eq!(persisted_goals.seed_goal_ratio, Some(2.0));
-        assert_eq!(persisted_goals.seed_goal_seconds, Some(7_200));
-        assert!(persisted_goals.never_remove);
+            .expect("first observation should reuse the accepted binding"),
+        ObservationResolution::Resolved {
+            download_id: effective_download_id,
+            newly_foreign: false,
+            attached: false,
+        }
+    );
+    assert_eq!(
+        registry
+            .load_download(&effective_download_id)
+            .await
+            .expect("accepted parent should load")
+            .expect("accepted parent should exist")
+            .origin,
+        scryer_application::DownloadOrigin::ScryerSubmission
+    );
+    let binding = registry
+        .load_binding(&effective_download_id)
+        .await
+        .expect("accepted binding should load")
+        .expect("accepted binding should exist");
+    assert_eq!(
+        binding.client_name_snapshot.as_deref(),
+        Some("Primary Client")
+    );
+    assert_eq!(binding.native_item_id.as_deref(), Some(item_id));
+    let foreign_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE origin = 'foreign_observation'")
+            .fetch_one(services.pool())
+            .await
+            .expect("foreign-row count should load");
+    assert_eq!(foreign_rows, 0);
 
+    let persisted_goals = submissions
+        .get_seed_goals_for_download(Some(&effective_download_id), &locator)
+        .await
+        .expect("goals should load through the tracked entry id")
+        .expect("grab-time goals should remain on the canonical submission");
+    assert_eq!(persisted_goals.seed_goal_ratio, Some(2.0));
+    assert_eq!(persisted_goals.seed_goal_seconds, Some(7_200));
+    assert!(persisted_goals.never_remove);
+
+    submissions
+        .update_tracked_state(&locator, "downloading")
+        .await
+        .expect("tracked state should use the accepted binding");
+    assert_eq!(
         submissions
-            .update_tracked_state(&locator, "downloading")
+            .get_tracked_state(&locator)
             .await
-            .expect("tracked state should use the accepted binding");
-        assert_eq!(
-            submissions
-                .get_tracked_state(&locator)
-                .await
-                .expect("tracked state should load"),
-            Some("downloading".to_string())
-        );
+            .expect("tracked state should load"),
+        Some("downloading".to_string())
+    );
 
-        drop(services);
-        let _ = std::fs::remove_file(db);
-    }
+    drop(services);
+    let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
@@ -222,7 +194,7 @@ async fn plugin_accepted_grabs_keep_the_native_id_bound_submission_id() {
 }
 
 #[tokio::test]
-async fn accepted_grab_adopts_a_foreign_binding_and_keeps_its_goals() {
+async fn accepted_grab_reports_foreign_adoption_without_mutating_the_foreign_job() {
     let db = std::env::temp_dir().join(format!(
         "scryer_accepted_grab_adopts_foreign_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -262,35 +234,32 @@ async fn accepted_grab_adopts_a_foreign_binding_and_keeps_its_goals() {
     assert!(newly_foreign);
 
     let requested_download_id = scryer_domain::download_identity::DownloadId::new();
-    assert_eq!(
-        submissions
-            .record_seed_goals(seed_goal_record(
-                requested_download_id,
-                "qbittorrent",
-                "reused-hash",
-            ))
-            .await
-            .expect("seed goals should adopt the foreign binding"),
-        foreign_download_id
-    );
     let mut accepted = submission("reused-hash", "title-one");
     accepted.download_id = requested_download_id;
-    submissions
+    let disposition = submissions
         .record_submission_with_identity(
             accepted,
             DownloadSubmissionIdentity {
                 download_id: Some(requested_download_id.to_wire()),
             },
+            Some(seed_goals()),
         )
         .await
-        .expect("accepted submission should reuse the adopted canonical id");
+        .expect("accepted submission should report the adopted canonical id");
+    assert_eq!(
+        disposition,
+        scryer_application::CanonicalDownloadIdentityDisposition::AdoptedExisting {
+            download_id: foreign_download_id,
+        }
+    );
 
-    let stored = submissions
-        .find_by_client_item_id(&locator)
-        .await
-        .expect("adopted submission lookup should succeed")
-        .expect("adopted submission should exist");
-    assert_eq!(stored.download_id, foreign_download_id);
+    assert!(
+        submissions
+            .find_by_client_item_id(&locator)
+            .await
+            .expect("submission lookup should succeed")
+            .is_none()
+    );
     assert_eq!(
         registry
             .load_download(&foreign_download_id)
@@ -298,14 +267,14 @@ async fn accepted_grab_adopts_a_foreign_binding_and_keeps_its_goals() {
             .expect("adopted parent should load")
             .expect("adopted parent should exist")
             .origin,
-        scryer_application::DownloadOrigin::ScryerSubmission
+        scryer_application::DownloadOrigin::ForeignObservation
     );
     assert!(
         submissions
             .get_seed_goals_for_download(Some(&foreign_download_id), &locator)
             .await
-            .expect("adopted goals should load")
-            .is_some()
+            .expect("seed-goal lookup should succeed")
+            .is_none()
     );
     let binding_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM download_client_bindings

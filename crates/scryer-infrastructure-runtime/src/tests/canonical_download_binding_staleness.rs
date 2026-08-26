@@ -118,6 +118,7 @@ async fn record_accepted_grab(
             DownloadSubmissionIdentity {
                 download_id: Some(download_id.to_wire()),
             },
+            None,
         )
         .await
         .expect("accepted submission should claim its client locator");

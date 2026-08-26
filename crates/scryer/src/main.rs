@@ -1156,10 +1156,7 @@ async fn bootstrap_application(
         .with_download_client_category_snapshot_store(
             download_client_category_snapshot_store.clone(),
         )
-        .with_seed_goal_resolution(
-            datastore.seeding_profiles(),
-            datastore.download_submissions(),
-        ),
+        .with_seed_goal_resolution(datastore.seeding_profiles()),
     );
     let indexer_stats = datastore.indexer_stats_tracker();
     let indexer_learning = datastore.indexer_search_learning_repository();

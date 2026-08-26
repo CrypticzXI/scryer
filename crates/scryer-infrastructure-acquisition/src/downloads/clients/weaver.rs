@@ -1305,6 +1305,7 @@ impl DownloadClient for WeaverDownloadClient {
                         client_id: None,
                         client_type: "weaver".to_string(),
                         info_hash: None,
+                        seed_goals: None,
                     })
                 }
                 Err(error)
@@ -1357,6 +1358,7 @@ impl DownloadClient for WeaverDownloadClient {
                         client_id: None,
                         client_type: "weaver".to_string(),
                         info_hash: None,
+                        seed_goals: None,
                     })
                 }
                 Err(error) => Err(error.into_download_submit_unavailable()),

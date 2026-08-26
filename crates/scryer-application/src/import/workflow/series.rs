@@ -318,6 +318,7 @@ enum EpisodeImportOutcome {
         reason_code: Option<String>,
         link_type: Option<scryer_domain::ImportStrategy>,
         source_cleanup: Option<Box<scryer_domain::ImportSourceCleanupGuard>>,
+        destination_permit: ImportDestinationPermit,
         /// Bytes written for this file, so multi-file imports can report a
         /// total without re-stating the destination paths.
         size_bytes: Option<i64>,
@@ -1501,7 +1502,10 @@ mod episode_number_token_for_import_tests {
             ("episode".to_string(), episode),
         ]);
 
-        assert_eq!(render_rename_template("S{season:2}E{episode:2}", &tokens), "S01E01");
+        assert_eq!(
+            render_rename_template("S{season:2}E{episode:2}", &tokens),
+            "S01E01"
+        );
     }
 }
 /// Resolve media root path and rename template for a title's facet.

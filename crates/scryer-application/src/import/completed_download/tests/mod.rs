@@ -845,12 +845,13 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
-    ) -> AppResult<()> {
+        _seed_goals: Option<crate::PersistedSeedGoals>,
+    ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
         self.rows
             .lock()
             .await
             .push((submission, submission_identity));
-        Ok(())
+        Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
     }
 
     async fn find_by_client_item_id(

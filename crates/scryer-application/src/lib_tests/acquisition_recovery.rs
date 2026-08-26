@@ -1105,6 +1105,9 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     );
 
     // The next cursor pass walks the saved results before any indexer query.
+    download_client
+        .set_snapshot_authoritative_client_ids(["primary".to_string()])
+        .await;
     app.run_convergence_cycle_once().await;
 
     let updated = wanted_items
@@ -4696,6 +4699,9 @@ async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query()
         crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     download_client.queue_items.lock().await.clear();
+    download_client
+        .set_snapshot_authoritative_client_ids(["primary".to_string()])
+        .await;
     indexer_client.searches.lock().await.clear();
 
     app.run_convergence_cycle_once().await;
@@ -6669,11 +6675,12 @@ async fn expired_pending_release_submit_unavailable_stays_waiting_and_retries() 
 }
 
 #[tokio::test]
-async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
+async fn expired_pending_release_ambiguous_error_stays_waiting_without_retry() {
     // An ambiguous submit (the request may have been accepted but the response
     // was lost) must be deferred exactly like an unavailable client: the
     // pending release stays Waiting, records a Pending (not Failed) attempt,
-    // and is never blocklisted — then retried successfully next cycle.
+    // and is never blocklisted. Later cycles must not blindly repeat the
+    // mutation while its acceptance remains uncertain.
     let release_title = "Ambiguous.Deferred.Movie.2024.1080p.WEB-DL-GRP";
     let download_client = Arc::new(StubDownloadClient::default());
     download_client
@@ -6754,7 +6761,7 @@ async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
         .await
         .expect("retry expired pending releases");
 
-    assert_eq!(grabbed, 1);
+    assert_eq!(grabbed, 0);
     assert_eq!(
         pending_releases
             .get_pending_release(&pending_id)
@@ -6762,7 +6769,11 @@ async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
             .expect("load pending release")
             .expect("pending release exists")
             .status,
-        PendingReleaseStatus::Grabbed
+        PendingReleaseStatus::Waiting
+    );
+    assert_eq!(
+        download_client.submitted_release_titles.lock().await.len(),
+        1
     );
 }
 
@@ -9239,7 +9250,6 @@ async fn bootstrap_rss_with_media_files_and_profiles(
     let app = app.with_test_overrides(|services| {
         services
             .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
-                download_submissions,
                 pending_releases,
                 acquisition_scope_states: acquisition_scope_states.clone(),
             }))

@@ -2170,12 +2170,22 @@ pub struct ImportRecord {
     pub updated_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportDestinationDisposition {
+    #[default]
+    Created,
+    AlreadyPresent,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportFileResult {
     pub strategy: ImportStrategy,
     pub source_path: std::path::PathBuf,
     pub dest_path: std::path::PathBuf,
     pub size_bytes: u64,
+    #[serde(default)]
+    pub destination_disposition: ImportDestinationDisposition,
     pub source_cleanup: Option<ImportSourceCleanupGuard>,
 }
 

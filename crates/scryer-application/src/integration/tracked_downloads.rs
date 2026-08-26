@@ -2354,6 +2354,16 @@ mod tests {
             self.record_submission(submission).await
         }
 
+        async fn record_submission_with_identity(
+            &self,
+            submission: crate::DownloadSubmission,
+            _: crate::DownloadSubmissionIdentity,
+            _: Option<crate::PersistedSeedGoals>,
+        ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+            self.record_submission(submission).await?;
+            Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
+        }
+
         async fn find_by_client_item_id(
             &self,
             identity: &ClientJobLocator,
@@ -4622,6 +4632,15 @@ mod tests {
                 _: crate::DownloadSubmission,
             ) -> AppResult<()> {
                 Ok(())
+            }
+
+            async fn record_submission_with_identity(
+                &self,
+                _: crate::DownloadSubmission,
+                _: crate::DownloadSubmissionIdentity,
+                _: Option<crate::PersistedSeedGoals>,
+            ) -> AppResult<crate::CanonicalDownloadIdentityDisposition> {
+                Ok(crate::CanonicalDownloadIdentityDisposition::Requested)
             }
 
             async fn find_by_client_item_id(
