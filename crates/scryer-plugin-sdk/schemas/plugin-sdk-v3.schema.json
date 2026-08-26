@@ -52,7 +52,7 @@
       "$ref": "#/$defs/SubtitleSyncAlignRequest"
     },
     "subtitle_sync_align_result": {
-      "$ref": "#/$defs/PluginResult27"
+      "$ref": "#/$defs/PluginResult28"
     },
     "subtitle_sync_process_request": {
       "$ref": "#/$defs/SubtitleSyncPluginProcessRequest"
@@ -100,7 +100,7 @@
       "$ref": "#/$defs/ArchivePluginProcessRequest"
     },
     "archive_process_result": {
-      "$ref": "#/$defs/PluginResult28"
+      "$ref": "#/$defs/PluginResult29"
     },
     "notification_request": {
       "$ref": "#/$defs/PluginNotificationRequest"
@@ -789,6 +789,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "search_semantics_version": {
+          "description": "Version of the provider's search semantics. Hosts withhold convergence\ncoverage when this is absent so legacy plugins cannot attest that an\nempty or truncated response is complete.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "source_kind": {
           "$ref": "#/$defs/IndexerSourceKind",
@@ -4492,6 +4501,17 @@
             "null"
           ],
           "format": "int64"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginErrorDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -4509,6 +4529,117 @@
         "unsupported",
         "temporary",
         "permanent"
+      ]
+    },
+    "PluginErrorDetails": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "indexer_search"
+            },
+            "value": {
+              "$ref": "#/$defs/IndexerSearchPluginError"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "IndexerSearchPluginError": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "response": {
+              "$ref": "#/$defs/PluginSearchResponse"
+            },
+            "reason": {
+              "$ref": "#/$defs/IndexerSearchIncompleteReason"
+            },
+            "retry_after_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "code": {
+              "type": "string",
+              "const": "partial_results"
+            }
+          },
+          "required": [
+            "code",
+            "response",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/IndexerSearchIncompleteReason"
+            },
+            "retry_after_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "code": {
+              "type": "string",
+              "const": "deferred"
+            }
+          },
+          "required": [
+            "code",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/IndexerSearchInvalidResponseKind"
+            },
+            "code": {
+              "type": "string",
+              "const": "invalid_response"
+            }
+          },
+          "required": [
+            "code",
+            "kind"
+          ]
+        }
+      ]
+    },
+    "IndexerSearchIncompleteReason": {
+      "type": "string",
+      "enum": [
+        "upstream_failure",
+        "rate_limited",
+        "malformed_content",
+        "page_ceiling_reached",
+        "fanout_branch_failed",
+        "saturated_partition",
+        "unattested"
+      ]
+    },
+    "IndexerSearchInvalidResponseKind": {
+      "type": "string",
+      "enum": [
+        "unexpected_content_type",
+        "invalid_root",
+        "malformed_body",
+        "truncated_body"
       ]
     },
     "PluginResult2": {
@@ -6097,6 +6228,18 @@
         {
           "type": "object",
           "properties": {
+            "HttpBatch": {
+              "$ref": "#/$defs/PluginHttpBatchRequest"
+            }
+          },
+          "required": [
+            "HttpBatch"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
             "SocketOpen": {
               "$ref": "#/$defs/SocketOpenRequest"
             }
@@ -6255,6 +6398,44 @@
       },
       "required": [
         "url"
+      ]
+    },
+    "PluginHttpBatchRequest": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginHttpRequest"
+          }
+        },
+        "desired_start_rate": {
+          "$ref": "#/$defs/PluginHttpStartRate"
+        }
+      },
+      "required": [
+        "requests",
+        "desired_start_rate"
+      ]
+    },
+    "PluginHttpStartRate": {
+      "type": "object",
+      "properties": {
+        "starts": {
+          "description": "Number of request starts allowed during `interval_ms`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "interval_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "starts",
+        "interval_ms"
       ]
     },
     "SocketOpenRequest": {
@@ -6487,8 +6668,20 @@
         {
           "type": "object",
           "properties": {
-            "SocketOpen": {
+            "HttpBatch": {
               "$ref": "#/$defs/PluginResult21"
+            }
+          },
+          "required": [
+            "HttpBatch"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "SocketOpen": {
+              "$ref": "#/$defs/PluginResult22"
             }
           },
           "required": [
@@ -6500,7 +6693,7 @@
           "type": "object",
           "properties": {
             "SocketRead": {
-              "$ref": "#/$defs/PluginResult22"
+              "$ref": "#/$defs/PluginResult23"
             }
           },
           "required": [
@@ -6512,7 +6705,7 @@
           "type": "object",
           "properties": {
             "SocketWrite": {
-              "$ref": "#/$defs/PluginResult23"
+              "$ref": "#/$defs/PluginResult24"
             }
           },
           "required": [
@@ -6524,7 +6717,7 @@
           "type": "object",
           "properties": {
             "SocketStartTls": {
-              "$ref": "#/$defs/PluginResult24"
+              "$ref": "#/$defs/PluginResult25"
             }
           },
           "required": [
@@ -6536,7 +6729,7 @@
           "type": "object",
           "properties": {
             "SocketClose": {
-              "$ref": "#/$defs/PluginResult25"
+              "$ref": "#/$defs/PluginResult26"
             }
           },
           "required": [
@@ -6548,7 +6741,7 @@
           "type": "object",
           "properties": {
             "ProcessExec": {
-              "$ref": "#/$defs/PluginResult26"
+              "$ref": "#/$defs/PluginResult27"
             }
           },
           "required": [
@@ -6748,6 +6941,49 @@
           "type": "object",
           "properties": {
             "ok": {
+              "$ref": "#/$defs/PluginHttpBatchResponse"
+            }
+          },
+          "required": [
+            "ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "$ref": "#/$defs/PluginError"
+            }
+          },
+          "required": [
+            "err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginHttpBatchResponse": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "description": "One result for each request, in input order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginResult20"
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "PluginResult22": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
               "$ref": "#/$defs/SocketOpenResponse"
             }
           },
@@ -6783,7 +7019,7 @@
         "handle"
       ]
     },
-    "PluginResult22": {
+    "PluginResult23": {
       "oneOf": [
         {
           "type": "object",
@@ -6826,7 +7062,7 @@
         "eof"
       ]
     },
-    "PluginResult23": {
+    "PluginResult24": {
       "oneOf": [
         {
           "type": "object",
@@ -6867,7 +7103,7 @@
         "bytes_written"
       ]
     },
-    "PluginResult24": {
+    "PluginResult25": {
       "oneOf": [
         {
           "type": "object",
@@ -6908,7 +7144,7 @@
         "handle"
       ]
     },
-    "PluginResult25": {
+    "PluginResult26": {
       "oneOf": [
         {
           "type": "object",
@@ -6947,7 +7183,7 @@
         "closed"
       ]
     },
-    "PluginResult26": {
+    "PluginResult27": {
       "oneOf": [
         {
           "type": "object",
@@ -7230,7 +7466,7 @@
         }
       ]
     },
-    "PluginResult27": {
+    "PluginResult28": {
       "oneOf": [
         {
           "type": "object",
@@ -8224,7 +8460,7 @@
         }
       ]
     },
-    "PluginResult28": {
+    "PluginResult29": {
       "oneOf": [
         {
           "type": "object",

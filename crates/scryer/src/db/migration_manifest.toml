@@ -1312,18 +1312,69 @@ scope = "all"
 
 [[migration]]
 version = 184
-description = "allow movie entities to own hydrated ratings and credits"
+description = "normalized indexer search diagnostics and reusable candidates"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0184_movie_entity_metadata_ownership.sql"
+file = "migrations/0184_indexer_search_diagnostics.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0184_movie_entity_metadata_ownership.sql"
+file = "postgres/migrations/0184_indexer_search_diagnostics.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 185
+description = "pending release identity and arbitration history"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0185_pending_release_identity_arbitration.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0185_pending_release_identity_arbitration.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 186
+description = "canonical download identity states without the legacy wire token"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0186_download_identity_states_token_optional.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0186_download_identity_states_token_optional.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 187
+description = "allow movie entities to own hydrated ratings and credits"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0187_movie_entity_metadata_ownership.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0187_movie_entity_metadata_ownership.sql"
 engine = "postgres"
 scope = "all"
 

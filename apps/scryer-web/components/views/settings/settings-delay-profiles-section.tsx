@@ -22,10 +22,15 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type {
   DelayProfileDraft,
   DelayProfileFacet,
-  DelayProfileProtocol,
   ParsedDelayProfile,
 } from "@/lib/types/delay-profiles";
-import { FACET_OPTIONS } from "@/lib/utils/delay-profiles";
+import {
+  applyDelayProfileProtocolMode,
+  DELAY_PROFILE_PROTOCOL_MODES,
+  delayProfileProtocolMode,
+  FACET_OPTIONS,
+  type DelayProfileProtocolMode,
+} from "@/lib/utils/delay-profiles";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type SettingsDelayProfilesSectionProps = {
@@ -60,6 +65,10 @@ const DELAY_PANEL_BODY_CLASS = "p-4 sm:p-5";
 const DELAY_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
 const DELAY_TABLE_HEADER_CELL_CLASS =
   "text-center font-semibold text-[var(--scry-muted3)]";
+
+function protocolModeLabelKey(mode: DelayProfileProtocolMode) {
+  return `settings.delayProfileProtocolMode.${mode}`;
+}
 
 export function SettingsDelayProfilesSection({
   loading,
@@ -101,6 +110,10 @@ export function SettingsDelayProfilesSection({
     });
   }
 
+  function updateProtocolMode(mode: DelayProfileProtocolMode) {
+    setDraft((prev) => applyDelayProfileProtocolMode(prev, mode));
+  }
+
   return (
     <div id="settings-delay-profiles-section" className="space-y-4 text-sm">
       {parseError && (
@@ -130,7 +143,7 @@ export function SettingsDelayProfilesSection({
                     <TableHead className={`w-[18%] font-semibold ${DELAY_MUTED_TEXT_CLASS}`}>{t("settings.delayProfileNameLabel")}</TableHead>
                     <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileUsenetDelay")}</TableHead>
                     <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileTorrentDelay")}</TableHead>
-                    <TableHead className={`w-28 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfilePreferred")}</TableHead>
+                    <TableHead className={`w-32 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileProtocolModeLabel")}</TableHead>
                     <TableHead className={`w-24 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileMinAge")}</TableHead>
                     <TableHead className={`w-32 ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileBypassLabel")}</TableHead>
                     <TableHead className={`w-[16%] ${DELAY_TABLE_HEADER_CELL_CLASS}`}>{t("settings.delayProfileFacetsLabel")}</TableHead>
@@ -150,7 +163,9 @@ export function SettingsDelayProfilesSection({
                       <TableCell className="truncate font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
                       <TableCell className={`text-center ${DELAY_MUTED_TEXT_CLASS}`}>{profile.usenet_delay_minutes}m</TableCell>
                       <TableCell className={`text-center ${DELAY_MUTED_TEXT_CLASS}`}>{profile.torrent_delay_minutes}m</TableCell>
-                      <TableCell className="text-center capitalize text-[var(--scry-ink2)]">{profile.preferred_protocol}</TableCell>
+                      <TableCell className="text-center text-[var(--scry-ink2)]">
+                        {t(protocolModeLabelKey(delayProfileProtocolMode(profile)))}
+                      </TableCell>
                       <TableCell className="text-center">{profile.min_age_minutes > 0 ? `${profile.min_age_minutes}m` : "—"}</TableCell>
                       <TableCell className="text-center">
                         {profile.bypass_score_threshold != null
@@ -227,7 +242,8 @@ export function SettingsDelayProfilesSection({
 
             {/* Protocol delays */}
             <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
+              {draft.enable_usenet ? (
+                <div className="space-y-1.5">
                 <Label className="text-[var(--scry-ink2)]" htmlFor="dp-usenet-delay">{t("settings.delayProfileUsenetDelay")}</Label>
                 <Input
                   id="dp-usenet-delay"
@@ -238,8 +254,10 @@ export function SettingsDelayProfilesSection({
                 <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                   {t("settings.delayProfileUsenetDelayHelp")}
                 </p>
-              </div>
-              <div className="space-y-1.5">
+                </div>
+              ) : null}
+              {draft.enable_torrent ? (
+                <div className="space-y-1.5">
                 <Label className="text-[var(--scry-ink2)]" htmlFor="dp-torrent-delay">{t("settings.delayProfileTorrentDelay")}</Label>
                 <Input
                   id="dp-torrent-delay"
@@ -250,41 +268,37 @@ export function SettingsDelayProfilesSection({
                 <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
                   {t("settings.delayProfileTorrentDelayHelp")}
                 </p>
-              </div>
+                </div>
+              ) : null}
             </div>
 
-            {/* Preferred protocol */}
+            {/* Protocol mode */}
             <div className="space-y-1.5">
-              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfilePreferred")}</Label>
+              <Label className="text-[var(--scry-ink2)]">{t("settings.delayProfileProtocolModeLabel")}</Label>
               <RadioGroup
                 className="flex flex-wrap gap-4"
-                value={draft.preferred_protocol}
-                onValueChange={(value) =>
-                  updateField(
-                    "preferred_protocol",
-                    value as DelayProfileProtocol,
-                  )
-                }
+                value={delayProfileProtocolMode(draft)}
+                onValueChange={(value) => updateProtocolMode(value as DelayProfileProtocolMode)}
               >
-                {(["USENET", "TORRENT"] as const).map((proto) => (
+                {DELAY_PROFILE_PROTOCOL_MODES.map((mode) => (
                   <label
-                    key={proto}
+                    key={mode}
                     htmlFor={selectorId(
                       "settings-delay-profile-preferred",
-                      proto,
+                      mode,
                     )}
                     className="flex items-center gap-2 text-sm text-[var(--scry-ink2)]"
                   >
                     <RadioGroupItem
-                      id={selectorId("settings-delay-profile-preferred", proto)}
-                      value={proto}
+                      id={selectorId("settings-delay-profile-preferred", mode)}
+                      value={mode}
                     />
-                    {proto === "USENET" ? "Usenet" : "Torrent"}
+                    {t(protocolModeLabelKey(mode))}
                   </label>
                 ))}
               </RadioGroup>
               <p className={`text-xs ${DELAY_MUTED_TEXT_CLASS}`}>
-                {t("settings.delayProfilePreferredHelp")}
+                {t("settings.delayProfileProtocolModeHelp")}
               </p>
             </div>
 
@@ -301,6 +315,18 @@ export function SettingsDelayProfilesSection({
                 {t("settings.delayProfileMinAgeHelp")}
               </p>
             </div>
+
+            <CheckboxField
+              id="settings-delay-profile-bypass-highest-quality"
+              checked={draft.bypass_if_highest_quality}
+              onCheckedChange={(checked) =>
+                updateField("bypass_if_highest_quality", checked === true)
+              }
+              label={t("settings.delayProfileBypassHighestQualityLabel")}
+              description={t("settings.delayProfileBypassHighestQualityHelp")}
+              className="items-start text-[var(--scry-ink2)]"
+              checkboxClassName="mt-0.5"
+            />
 
             {/* Bypass score threshold */}
             <div className="space-y-1.5">

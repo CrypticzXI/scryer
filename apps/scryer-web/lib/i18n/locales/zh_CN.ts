@@ -369,6 +369,13 @@ const zh_CN: LocaleDictionary = {
   "settings.delayProfilePreferred": "首选协议",
   "settings.delayProfilePreferredHelp":
     "基于分数的跳过仅适用于首选协议的版本。",
+  "settings.delayProfileProtocolModeLabel": "协议模式",
+  "settings.delayProfileProtocolModeHelp":
+    "延迟从索引器发布版本的时间开始计算。首选协议会在其他条件相同的版本之间进行选择，并控制跳过延迟的资格。",
+  "settings.delayProfileProtocolMode.preferUsenet": "首选 Usenet",
+  "settings.delayProfileProtocolMode.preferTorrent": "首选 Torrent",
+  "settings.delayProfileProtocolMode.onlyUsenet": "仅 Usenet",
+  "settings.delayProfileProtocolMode.onlyTorrent": "仅 Torrent",
   "settings.delayProfileMinAge": "最小时限（分钟）",
   "settings.delayProfileMinAgeHelp":
     "仅限 Usenet。硬性门槛 — 比此更新的版本无论分数如何都将被保留。防止抓取不完整的 NZB。0 = 禁用。",
@@ -376,6 +383,9 @@ const zh_CN: LocaleDictionary = {
   "settings.delayProfileBypassPlaceholder": "留空表示永不跳过",
   "settings.delayProfileBypassHelp":
     "如果首选协议的版本分数达到或超过此阈值，则无视延迟立即抓取。",
+  "settings.delayProfileBypassHighestQualityLabel": "最高质量时跳过延迟",
+  "settings.delayProfileBypassHighestQualityHelp":
+    "如果使用首选协议，立即抓取符合条件的最高质量版本。",
   "settings.delayProfileFacetsLabel": "适用于",
   "settings.delayProfileFacetsHelp":
     "此配置适用的内容类型。全部取消选中则适用于所有类型。",
@@ -1387,6 +1397,10 @@ const zh_CN: LocaleDictionary = {
   "pending.colIndexer": "索引器",
   "pending.colAddedAt": "添加时间",
   "pending.colDelayUntil": "可用时间",
+  "pending.colReason": "原因",
+  "pending.colRole": "角色",
+  "pending.role.primary": "主要",
+  "pending.role.fallback": "备选",
   "pending.forceGrab": "立即抓取",
   "pending.dismiss": "取消",
   "pending.grabbed": "版本已抓取。",

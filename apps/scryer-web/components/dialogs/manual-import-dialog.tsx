@@ -34,6 +34,7 @@ import {
   queueManualImportMutation,
 } from "@/lib/graphql/mutations";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { compareManualImportSeasonLabels } from "@/lib/utils/manual-import-actions";
 import {
   formatManualImportVideoFacts,
   type ManualImportVideoFacts,
@@ -127,7 +128,11 @@ function groupEpisodesBySeason(episodes: AvailableEpisode[]): Map<string, Availa
       }),
     );
   }
-  return groups;
+  return new Map(
+    Array.from(groups.entries()).sort(([left], [right]) =>
+      compareManualImportSeasonLabels(left, right),
+    ),
+  );
 }
 
 const UNASSIGNED = "__unassigned__";

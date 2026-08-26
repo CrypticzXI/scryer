@@ -346,9 +346,9 @@ fn large_analyzed_swing_is_contradicted_and_clamped() {
     let tags: Vec<String> = Vec::new();
     let context = ctx(&profile, &weights, &tags);
 
-    // 8 GiB announced sits in `size_expected`; 3 GiB actual lands in
-    // `size_very_small` — a swing well past the bound.
-    let evidence = announced(8.0).with_analysis(analyzed(3.0, None));
+    // 8 GiB announced sits in `size_expected`; 1 GiB actual lands in
+    // `size_tiny` — a swing well past the bound.
+    let evidence = announced(8.0).with_analysis(analyzed(1.0, None));
     let scored = score_release(&evidence, &context);
 
     assert!(

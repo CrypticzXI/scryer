@@ -1594,13 +1594,13 @@ impl AppUseCase {
                     }
                 }
             }
-            JobKey::PendingReleaseProcessing => {
-                let count = self.process_expired_pending_releases().await?;
-                Ok(JobExecutionOutcome::new(
-                    Some(format!("Processed {count} pending releases")),
-                    serde_json::to_string(&CountSummary { count }).ok(),
-                ))
-            }
+            JobKey::PendingReleaseProcessing => Ok(JobExecutionOutcome::new(
+                Some(
+                    "Pending releases are re-evaluated with fresh RSS results during RSS sync"
+                        .to_string(),
+                ),
+                serde_json::to_string(&CountSummary { count: 0 }).ok(),
+            )),
             JobKey::StagedNzbPrune => {
                 let count = self
                     .services

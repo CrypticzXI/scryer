@@ -30,6 +30,7 @@ impl IndexerClient for MockIndexerClient {
             tracing::info!(imdb_id = %imdb, category = ?category, "mock nzbgeek search");
         }
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -236,7 +237,7 @@ impl IndexerClient for TrackingIndexerClient {
                 .filter(|(_, entry)| entry.enabled)
                 .map(|(indexer_id, _)| crate::IndexerQueryOutcome {
                     indexer_id,
-                    outcome: crate::IndexerSearchOutcome::Fired { empty: false },
+                    outcome: crate::IndexerSearchOutcome::Complete { empty: false },
                 })
                 .collect()
         } else {
@@ -265,6 +266,7 @@ impl IndexerClient for TrackingIndexerClient {
             };
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes,
             results: release_titles
                 .into_iter()
@@ -331,6 +333,7 @@ pub(super) struct FixedReleaseIndexerClient {
     /// Deliberately independent of the release's source kind: the capture path
     /// under test reads the map, not the protocol.
     pub(super) seeders: Option<i64>,
+    pub(super) published_at: String,
 }
 
 impl FixedReleaseIndexerClient {
@@ -342,11 +345,17 @@ impl FixedReleaseIndexerClient {
             requested_indexer_id_sets: Arc::new(Mutex::new(Vec::new())),
             empty_response: false,
             seeders: None,
+            published_at: "1970-01-01T00:00:00Z".to_string(),
         }
     }
 
     pub(super) fn with_seeders(mut self, seeders: i64) -> Self {
         self.seeders = Some(seeders);
+        self
+    }
+
+    pub(super) fn with_published_at(mut self, published_at: impl Into<String>) -> Self {
+        self.published_at = published_at.into();
         self
     }
 
@@ -404,13 +413,14 @@ impl IndexerClient for FixedReleaseIndexerClient {
             .iter()
             .map(|id| crate::IndexerQueryOutcome {
                 indexer_id: id.clone(),
-                outcome: crate::IndexerSearchOutcome::Fired {
+                outcome: crate::IndexerSearchOutcome::Complete {
                     empty: self.empty_response,
                 },
             })
             .collect();
         if self.empty_response {
             return Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
                 indexer_outcomes,
                 results: Vec::new(),
                 api_current: None,
@@ -424,6 +434,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
             extra.insert("seeders".to_string(), serde_json::json!(seeders));
         }
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes,
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -433,7 +444,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 download_url: Some("https://example.invalid/download.nzb".to_string()),
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 size_bytes: None,
-                published_at: Some("1970-01-01T00:00:00Z".into()),
+                published_at: Some(self.published_at.clone()),
                 thumbs_up: None,
                 thumbs_down: None,
                 indexer_languages: self.indexer_languages.clone(),
@@ -510,6 +521,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         };
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -616,6 +628,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -682,6 +695,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: vec![],
             api_current: None,
@@ -733,6 +747,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes: Vec::new(),
             results: self
                 .release_titles

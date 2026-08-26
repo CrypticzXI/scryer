@@ -1664,6 +1664,7 @@ where
             release_guid: candidate.guid.clone(),
             added_at: (*now + chrono::Duration::microseconds(rank as i64))
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            last_observed_at: now.to_rfc3339(),
             delay_until: now.to_rfc3339(),
             status: PendingReleaseStatus::Standby,
             grabbed_at: None,
@@ -1676,6 +1677,11 @@ where
                 .map(str::to_string),
             seed_minimums: crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra),
             seeders: crate::acquisition::seed_goals::seeders_from_extra(&candidate.extra),
+            release_identity: String::new(),
+            coverage_identity: String::new(),
+            role: crate::types::PendingReleaseRole::Fallback,
+            last_decision_code: None,
+            release_age_unknown: false,
         };
 
         if app
@@ -1764,6 +1770,7 @@ mod client_snapshot_tests {
             indexer_id: None,
             release_guid: None,
             added_at: added_at.to_string(),
+            last_observed_at: added_at.to_string(),
             delay_until: added_at.to_string(),
             status: PendingReleaseStatus::Standby,
             grabbed_at: None,
@@ -1772,6 +1779,11 @@ mod client_snapshot_tests {
             info_hash: None,
             seed_minimums: Default::default(),
             seeders: None,
+            release_identity: id.to_string(),
+            coverage_identity: "scope:wanted".to_string(),
+            role: crate::types::PendingReleaseRole::Fallback,
+            last_decision_code: None,
+            release_age_unknown: false,
         }
     }
 

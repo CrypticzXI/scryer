@@ -942,9 +942,15 @@ export function SettingsProfileSection({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="profile-link-jellyfin-password">
-                  {t("profile.linkAccountPassword")}
-                </Label>
+                <div className="flex items-center gap-1.5">
+                  <Label htmlFor="profile-link-jellyfin-password">
+                    {t("profile.linkAccountPassword")}
+                  </Label>
+                  <InfoHelp
+                    ariaLabel={t("profile.linkAccountPassword")}
+                    text={t("profile.linkAccountPasswordlessHint")}
+                  />
+                </div>
                 <Input
                   id="profile-link-jellyfin-password"
                   type="password"
@@ -954,23 +960,7 @@ export function SettingsProfileSection({
                     onLinkAccountPasswordChange(event.target.value)
                   }
                   disabled={linkAccountBusy}
-                  aria-describedby={
-                    linkAccountPassword.length === 0
-                      ? "profile-link-jellyfin-passwordless-hint"
-                      : undefined
-                  }
                 />
-                {/* Shown only while the field is blank, which is also the state
-                    the form opens in: it explains that blank is allowed and
-                    what linking a passwordless account does not buy you. */}
-                {linkAccountPassword.length === 0 ? (
-                  <p
-                    id="profile-link-jellyfin-passwordless-hint"
-                    className={PROFILE_MUTED_TEXT_CLASS}
-                  >
-                    {t("profile.linkAccountPasswordlessHint")}
-                  </p>
-                ) : null}
               </div>
             </div>
             {linkAccountError ? (

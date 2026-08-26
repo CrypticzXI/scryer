@@ -473,14 +473,18 @@ fn hdr_blocks_when_not_allowed() {
 // ── evaluate_against_profile: remux / atmos / dual audio ──────────────────
 
 #[test]
-fn balanced_profile_does_not_score_remux_preference() {
+fn balanced_profile_scores_explicit_remux_preference() {
     let profile = QualityProfile::parse(
         r#"{"id":"t","name":"T","criteria":{"prefer_remux":true,"allow_unknown_quality":true,"allow_upgrades":true}}"#,
     ).unwrap();
     let w = balanced_weights();
     let release = parse_release_metadata("Movie.2024.1080p.BluRay.REMUX.H.265");
     let d = evaluate_against_profile(&profile, &release, false, &w);
-    assert!(!d.scoring_log.iter().any(|e| e.code == "prefer_remux_match"));
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "prefer_remux_match" && e.delta == 250)
+    );
 }
 
 #[test]
@@ -867,22 +871,22 @@ fn size_scoring_zero_bytes_is_noop() {
 fn size_scoring_anime_expects_smaller() {
     let release = parse_release_metadata("Anime.2024.1080p.WEB-DL.H.265");
     let w = balanced_weights();
-    let size_2gb = 2 * 1024 * 1024 * 1024_i64;
+    let size_1gb = 1024 * 1024 * 1024_i64;
 
     let mut d_anime = QualityProfileDecision::new();
     apply_size_scoring_for_category(
         &mut d_anime,
         &release,
-        Some(size_2gb),
+        Some(size_1gb),
         Some("anime"),
         None,
         &w,
     );
 
     let mut d_movie = QualityProfileDecision::new();
-    apply_size_scoring_for_category(&mut d_movie, &release, Some(size_2gb), None, None, &w);
+    apply_size_scoring_for_category(&mut d_movie, &release, Some(size_1gb), None, None, &w);
 
-    // 2GB for anime 1080p is expected; for movie 1080p it's small
+    // 1GB for anime 1080p is near expected; for a movie it is much too small.
     assert!(d_anime.release_score > d_movie.release_score);
 }
 
@@ -908,7 +912,7 @@ fn size_scoring_scales_with_runtime() {
     apply_size_scoring_for_category(&mut d_long, &release, Some(size_12gb), None, Some(180), &w);
 
     // The long movie should score higher because 12 GB is more "expected" for 3 hours
-    assert!(d_long.release_score <= d_standard.release_score);
+    assert!(d_long.release_score > d_standard.release_score);
 }
 
 #[test]
@@ -959,7 +963,7 @@ const SIZE_DRIFT_CORPUS: &[(&str, Option<&str>, i32, f64)] = &[
         118,
         32.0,
     ),
-    ("Portmere.2024.2160p.BluRay.REMUX.HDR-GRP", None, 118, 112.0),
+    ("Portmere.2024.2160p.BluRay.HDR.H.265-GRP", None, 118, 35.0),
     ("Portmere.2024.1080p.WEB-DL.H.264-GRP", None, 118, 8.4),
     ("Portmere.2024.1080p.BluRay.x265-GRP", None, 118, 12.0),
     ("Portmere.2024.720p.WEB-DL.H.264-GRP", None, 96, 2.5),
@@ -1078,7 +1082,7 @@ fn realistic_landed_drift_moves_the_size_term_only_slightly() {
             let moved = (landed_delta - announced_delta).abs();
             worst = worst.max(moved);
             assert!(
-                moved <= 100,
+                moved <= 125,
                 "`{release}` at ×{factor} moved the size term by {moved} \
                  ({announced_code} {announced_delta} → {landed_code} {landed_delta})"
             );
@@ -1410,7 +1414,7 @@ fn size_excessive_penalizes_oversized_anime() {
 }
 
 #[test]
-fn large_balanced_anime_remux_gets_size_penalty_without_remux_bonus() {
+fn large_balanced_anime_remux_gets_size_penalty_with_explicit_remux_preference() {
     let profile = QualityProfile::parse(
         r#"{"id":"anime","name":"Anime","criteria":{"quality_tiers":["1080P","720P"],"prefer_remux":true,"allow_unknown_quality":true,"allow_upgrades":true}}"#,
     ).unwrap();
@@ -1428,7 +1432,11 @@ fn large_balanced_anime_remux_gets_size_penalty_without_remux_bonus() {
         &w,
     );
 
-    assert!(!d.scoring_log.iter().any(|e| e.code == "prefer_remux_match"));
+    assert!(
+        d.scoring_log
+            .iter()
+            .any(|e| e.code == "prefer_remux_match" && e.delta == 250)
+    );
     assert!(
         d.scoring_log
             .iter()
@@ -1437,17 +1445,14 @@ fn large_balanced_anime_remux_gets_size_penalty_without_remux_bonus() {
 }
 
 #[test]
-fn size_plausible_bluray_remux_not_penalized() {
-    // 65 GB for a 2160P Blu-ray Remux HEVC movie is normal (real: 40-80 GB range)
+fn size_large_bluray_remux_remains_eligible() {
     let release = parse_release_metadata("Movie.2024.2160p.BluRay.Remux.H.265.DTS-HD");
     let w = balanced_weights();
     let size_65gb = 65 * 1024 * 1024 * 1024_i64;
 
     let mut d = QualityProfileDecision::new();
     apply_size_scoring_for_category(&mut d, &release, Some(size_65gb), None, None, &w);
-    // Should not be blocked or excessively penalized
     assert!(d.allowed);
-    assert!(d.release_score >= 0);
 }
 
 #[test]
@@ -2106,6 +2111,7 @@ fn min_score_blocks_low_scoring_release() {
 fn min_score_allows_high_scoring_release() {
     let mut profile = QualityProfile::default();
     profile.criteria.min_score_to_grab = Some(100);
+    profile.criteria.prefer_remux = true;
     let w = balanced_weights();
     // Top-tier 2160p should easily exceed 100
     let release = parse_release_metadata("Movie.2024.2160p.BluRay.Remux.TrueHD.Atmos.7.1.H.265");

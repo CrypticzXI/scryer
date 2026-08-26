@@ -662,6 +662,42 @@ mod tests {
     }
 
     #[test]
+    fn season_seventeen_part_two_size_runtime_uses_partial_season_span() {
+        let episodes = (1..=26)
+            .map(|number| {
+                let number = number.to_string();
+                episode(
+                    &format!("ep-{number}"),
+                    "17",
+                    &number,
+                    Some(&number),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut parsed = parsed_with_episode(ParsedEpisodeMetadata {
+            season: Some(17),
+            release_type: ParsedEpisodeReleaseType::SeasonPack,
+            full_season: true,
+            is_partial_season: true,
+            season_part: Some(2),
+            ..Default::default()
+        });
+        parsed.raw_title =
+            "Fixture.Anime.Continuation.S17.Part.2.1080p.WEB-DL-GRP".to_string();
+        let episode = parsed.episode.as_ref().expect("season-pack metadata");
+        assert_eq!(episode.season, Some(17));
+        assert_eq!(episode.season_part, Some(2));
+        assert!(episode.is_partial_season);
+
+        let coverage = resolve_release_coverage(&parsed, &episodes, &[], episodes.first());
+        assert_eq!(coverage, ReleaseCoverage::Collection("season-17".to_string()));
+        assert_eq!(
+            coverage_runtime_minutes(&coverage, &parsed, &episodes, Some(24)),
+            Some(13 * 24)
+        );
+    }
+
+    #[test]
     fn title_only_coverage_does_not_cover_requested_episode() {
         let episode = episode("ep-1", "1", "1", Some("1"));
 

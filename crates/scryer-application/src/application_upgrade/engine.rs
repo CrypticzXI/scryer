@@ -1006,7 +1006,9 @@ fn application_upgrade_http_client() -> AppResult<reqwest::Client> {
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(5))
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
+        // Release artifacts can legitimately take longer than an ordinary API
+        // request on slow links; retain a bounded long-running HTTP budget.
+        .timeout(scryer_outbound_http::LONG_RUNNING_HTTP_OPERATION_TIMEOUT)
         .build()
         .map_err(|error| {
             AppError::Repository(format!("failed to build upgrade HTTP client: {error}"))

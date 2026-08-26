@@ -622,11 +622,18 @@ async fn find_submission_for_queue_item_by_download_id(
         return None;
     }
 
-    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+    let canonical_download_id = match crate::download_identity::resolve_observed_client_job(
         app,
         crate::download_identity::observed_queue_item_job(item),
     )
-    .await;
+    .await
+    {
+        crate::download_identity::ObservedClientJobResolution::Resolved(download_id) => {
+            Some(download_id)
+        }
+        crate::download_identity::ObservedClientJobResolution::Conflict => return None,
+        crate::download_identity::ObservedClientJobResolution::Unavailable => None,
+    };
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
@@ -893,44 +900,67 @@ impl AppUseCase {
         include_recent_history: bool,
         use_tracked_runtime_snapshot: bool,
         excluded_client_types: &[&str],
-    ) -> AppResult<Vec<DownloadQueueItem>> {
+    ) -> AppResult<crate::ports::DownloadClientSnapshotOutcome> {
         let enabled_clients = self.enabled_download_clients_by_priority().await?;
         if enabled_clients.is_empty() {
-            return Ok(Vec::new());
+            return Ok(crate::ports::DownloadClientSnapshotOutcome {
+                any_client_read_succeeded: true,
+                ..Default::default()
+            });
         }
 
-        let queue_items = if include_queue {
+        let snapshot = if include_queue && include_recent_history {
             self.services
                 .integrations
                 .download_client
-                .list_queue_excluding_client_types(excluded_client_types)
-                .await?
-        } else {
-            Vec::new()
-        };
-        let history_items = if include_recent_history {
-            // The queue poller and Activity snapshot only need a recent window of
-            // history. Older completed items can still be recovered through the
-            // explicit history page or manual import flows without forcing an
-            // unbounded history scan every 2 seconds.
-            self.services
-                .integrations
-                .download_client
-                .list_recent_activity_excluding_client_types(
+                .list_snapshot_outcome_excluding_client_types(
                     DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT,
                     excluded_client_types,
                 )
                 .await?
         } else {
-            Vec::new()
+            let queue_items = if include_queue {
+                self.services
+                    .integrations
+                    .download_client
+                    .list_queue_excluding_client_types(excluded_client_types)
+                    .await?
+            } else {
+                Vec::new()
+            };
+            let history_items = if include_recent_history {
+                self.services
+                    .integrations
+                    .download_client
+                    .list_recent_activity_excluding_client_types(
+                        DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT,
+                        excluded_client_types,
+                    )
+                    .await?
+            } else {
+                Vec::new()
+            };
+            let mut items = queue_items;
+            items.extend(history_items);
+            crate::ports::DownloadClientSnapshotOutcome {
+                items,
+                any_client_read_succeeded: true,
+                ..Default::default()
+            }
         };
 
-        let mut items: Vec<DownloadQueueItem> = queue_items;
-        items.extend(history_items);
         let items = self
-            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
+            .enrich_download_queue_items(
+                &enabled_clients,
+                snapshot.items,
+                use_tracked_runtime_snapshot,
+            )
             .await;
-        Ok(self.filter_ineligible_download_queue_items(items).await)
+        Ok(crate::ports::DownloadClientSnapshotOutcome {
+            items: self.filter_ineligible_download_queue_items(items).await,
+            authoritative_client_ids: snapshot.authoritative_client_ids,
+            any_client_read_succeeded: snapshot.any_client_read_succeeded,
+        })
     }
 }
 impl AppUseCase {
@@ -1801,7 +1831,7 @@ mod queue_query_unit_tests {
 
     fn submission(scope: SubmissionScope) -> DownloadSubmission {
         DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+            download_id: scryer_domain::download_identity::DownloadId::new(),
             title_id: "title-1".to_string(),
             purpose: DownloadSubmissionPurpose::Standard,
             facet: "movie".to_string(),

@@ -9,9 +9,10 @@ use scryer_application::{
     JobSection as AppJobSection, JobTriggerSource as AppJobTriggerSource,
     LibraryScanMode as AppLibraryScanMode, LibraryScanStatus as AppLibraryScanStatus,
     PendingImportReasonClass as AppPendingImportReasonClass,
-    PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
-    ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
-    SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
+    PendingImportStatus as AppPendingImportStatus, PendingReleaseRole as AppPendingReleaseRole,
+    PendingReleaseStatus as AppPendingReleaseStatus, ScoringOverrides as AppScoringOverrides,
+    ScoringPersona as AppScoringPersona, SortDirection as AppSortDirection,
+    SubmissionScope as AppSubmissionScope,
 };
 
 pub trait FromApplication<T> {
@@ -319,6 +320,15 @@ impl IntoApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
             Self::Expired => AppPendingReleaseStatus::Expired,
             Self::Dismissed => AppPendingReleaseStatus::Dismissed,
             Self::NeedsReview => AppPendingReleaseStatus::NeedsReview,
+        }
+    }
+}
+
+impl FromApplication<AppPendingReleaseRole> for PendingReleaseRoleValue {
+    fn from_application(value: AppPendingReleaseRole) -> Self {
+        match value {
+            AppPendingReleaseRole::Primary => Self::Primary,
+            AppPendingReleaseRole::Fallback => Self::Fallback,
         }
     }
 }

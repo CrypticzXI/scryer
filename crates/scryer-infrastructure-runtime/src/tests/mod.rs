@@ -31,6 +31,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+mod canonical_download_binding_staleness;
 mod canonical_download_registry;
 mod discovery_pending_context_changes;
 mod emby_media_servers;
@@ -82,6 +83,7 @@ fn test_descriptor_json(
                 config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
+                search_semantics_version: None,
             })
         }
         "usenet_indexer" => {
@@ -94,6 +96,7 @@ fn test_descriptor_json(
                 config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
+                search_semantics_version: None,
             })
         }
         "torrent_indexer" => {
@@ -106,6 +109,7 @@ fn test_descriptor_json(
                 config_fields: indexer_config_fields(),
                 allowed_hosts: Vec::new(),
                 rate_limit_seconds: None,
+                search_semantics_version: None,
             })
         }
         "notification" => scryer_plugin_sdk::ProviderDescriptor::Notification(

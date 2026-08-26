@@ -512,6 +512,11 @@ pub struct IndexerDescriptor {
     pub provider_type: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_aliases: Vec<String>,
+    /// Version of the provider's search semantics. Hosts withhold convergence
+    /// coverage when this is absent so legacy plugins cannot attest that an
+    /// empty or truncated response is complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_semantics_version: Option<u32>,
     #[serde(default)]
     pub source_kind: IndexerSourceKind,
     #[serde(default)]
@@ -969,6 +974,52 @@ pub enum PluginErrorCode {
     Permanent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerSearchIncompleteReason {
+    UpstreamFailure,
+    RateLimited,
+    MalformedContent,
+    PageCeilingReached,
+    FanoutBranchFailed,
+    SaturatedPartition,
+    Unattested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerSearchInvalidResponseKind {
+    UnexpectedContentType,
+    InvalidRoot,
+    MalformedBody,
+    TruncatedBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum IndexerSearchPluginError {
+    PartialResults {
+        response: Box<PluginSearchResponse>,
+        reason: IndexerSearchIncompleteReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_seconds: Option<i64>,
+    },
+    Deferred {
+        reason: IndexerSearchIncompleteReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_seconds: Option<i64>,
+    },
+    InvalidResponse {
+        kind: IndexerSearchInvalidResponseKind,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum PluginErrorDetails {
+    IndexerSearch(IndexerSearchPluginError),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginError {
     pub code: PluginErrorCode,
@@ -977,6 +1028,8 @@ pub struct PluginError {
     pub debug_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_seconds: Option<i64>,
+    #[serde(default)]
+    pub details: Option<PluginErrorDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2762,6 +2815,7 @@ mod tests {
                 config_fields: vec![],
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
         };
 
@@ -3089,6 +3143,7 @@ mod tests {
                 config_fields: vec![],
                 allowed_hosts: vec![],
                 rate_limit_seconds: None,
+                search_semantics_version: Some(1),
             }),
         };
 

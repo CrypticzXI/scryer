@@ -2026,6 +2026,7 @@ pub(super) fn pending_movie_release(
         indexer_id: None,
         release_guid: Some(format!("{release_title}-guid")),
         added_at: (now - chrono::Duration::minutes(5)).to_rfc3339(),
+        last_observed_at: now.to_rfc3339(),
         delay_until: (now - chrono::Duration::minutes(1)).to_rfc3339(),
         status,
         grabbed_at: None,
@@ -2034,6 +2035,14 @@ pub(super) fn pending_movie_release(
         info_hash: None,
         seed_minimums: Default::default(),
         seeders: None,
+        release_identity: format!("{release_title}-guid"),
+        coverage_identity: format!("scope:{wanted_id}"),
+        role: match status {
+            PendingReleaseStatus::Waiting => crate::types::PendingReleaseRole::Primary,
+            _ => crate::types::PendingReleaseRole::Fallback,
+        },
+        last_decision_code: None,
+        release_age_unknown: false,
     }
 }
 
@@ -2055,7 +2064,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
                 monitored: true,
                 year: Some(year),
                 content_status: Some("Released".to_string()),
-                min_availability: Some("released".to_string()),
+                min_availability: Some("announced".to_string()),
                 ..Default::default()
             },
         )

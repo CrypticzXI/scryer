@@ -21,7 +21,8 @@ use crate::ports::{
     DiscoveryHomeSectionCandidatesRecord,
 };
 use crate::types::{
-    ApiKeyRecord, OAuthClientRegistrationRecord, PendingImportStatus, PendingReleaseStatus,
+    ApiKeyRecord, OAuthClientRegistrationRecord, PendingImportStatus, PendingReleaseObservation,
+    PendingReleaseRole, PendingReleaseStatus,
 };
 use crate::{
     AcquisitionScopeStatesQuery, AcquisitionStateRepository, IndexerErrorDetail, IndexerErrorPage,
@@ -2030,10 +2031,29 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     async fn insert_pending_release(&self, _: &PendingRelease) -> AppResult<String> {
         Ok(String::new())
     }
+    async fn insert_pending_release_with_role(
+        &self,
+        _: &PendingRelease,
+        _: PendingReleaseRole,
+    ) -> AppResult<String> {
+        Ok(String::new())
+    }
+    async fn insert_pending_release_observation(
+        &self,
+        _: &PendingRelease,
+        _: &PendingReleaseObservation,
+    ) -> AppResult<String> {
+        Ok(String::new())
+    }
     async fn list_expired_pending_releases(&self, _: &str) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
     }
     async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
+        Ok(vec![])
+    }
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
     }
     async fn get_pending_release(&self, _: &str) -> AppResult<Option<PendingRelease>> {
@@ -2059,6 +2079,16 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
         _: &str,
         _: PendingReleaseStatus,
         _: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn expire_pending_release(&self, _: &str, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        _: &str,
+        _: &str,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -2098,10 +2128,9 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<bool> {
         Ok(false)
     }
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        _: &str,
-        _: &str,
+        _: &[String],
     ) -> AppResult<()> {
         Ok(())
     }
@@ -3415,6 +3444,7 @@ pub mod test_nulls {
             _: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,

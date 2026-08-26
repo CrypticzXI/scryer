@@ -1097,7 +1097,12 @@ impl NabTransportKind {
 pub fn is_nab_provider_type(provider_type: &str) -> bool {
     matches!(
         provider_type.trim().to_ascii_lowercase().as_str(),
-        "newznab" | "nzbgeek" | "torznab"
+        "amenzb"
+            | "animetosho-xyz"
+            | "dognzb"
+            | "newznab"
+            | "nzbgeek"
+            | "torznab"
     )
 }
 
@@ -4907,6 +4912,22 @@ mod tests {
     fn id_round_trip() {
         let id = Id::new();
         assert!(!id.0.is_empty());
+    }
+
+    #[test]
+    fn direct_nab_provider_family_includes_specialized_newznab_indexers() {
+        for provider_type in [
+            "amenzb",
+            "animetosho-xyz",
+            "dognzb",
+            "newznab",
+            "nzbgeek",
+            "torznab",
+        ] {
+            assert!(is_nab_provider_type(provider_type), "{provider_type}");
+        }
+        assert!(!is_nab_provider_type("aninzb"));
+        assert!(!is_nab_provider_type("torrent-rss"));
     }
 
     #[test]

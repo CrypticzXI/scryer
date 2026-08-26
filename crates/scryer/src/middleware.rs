@@ -46,11 +46,6 @@ use crate::rate_limit::{
 };
 
 const X_FORWARDED_PROTO: &str = "x-forwarded-proto";
-// Keep the transport ceiling above the longest supported indexer operation and
-// the default download-client feedback gate. Resolver-specific deadlines still
-// fail faster; this guard only catches work with no narrower bound.
-const GRAPHQL_POST_EXECUTION_TIMEOUT: Duration =
-    scryer_outbound_http::LONG_RUNNING_HTTP_OPERATION_TIMEOUT;
 const GRAPHQL_POST_EXECUTION_TIMEOUT_CODE: &str = "GRAPHQL_EXECUTION_TIMEOUT";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const MFA_STEP_UP_REQUIRED_CODE: &str = "MFA_STEP_UP_REQUIRED";
@@ -1485,8 +1480,9 @@ pub(crate) async fn graphql_handler(
 
     let schema = state.schema.clone();
     let rate_limiter = state.rate_limiter.clone();
+    let execution_timeout = graphql_post_execution_timeout();
     let mut batch_response = match tokio::time::timeout(
-        GRAPHQL_POST_EXECUTION_TIMEOUT,
+        execution_timeout,
         schema.execute_batch(batch).instrument(request_span.clone()),
     )
     .instrument(request_span.clone())
@@ -1496,7 +1492,7 @@ pub(crate) async fn graphql_handler(
         Err(_) => {
             request_span.in_scope(|| {
                 tracing::warn!(
-                    timeout_seconds = GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs(),
+                    timeout_seconds = execution_timeout.as_secs(),
                     "graphql POST execution timed out"
                 );
             });
@@ -1686,19 +1682,34 @@ fn response_has_error_code(response: &GraphQLResponse, code: &str) -> bool {
 }
 
 fn graphql_execution_timeout_response() -> async_graphql::BatchResponse {
+    let execution_timeout = graphql_post_execution_timeout();
     let mut extensions = ErrorExtensionValues::default();
     extensions.set("code", GRAPHQL_POST_EXECUTION_TIMEOUT_CODE);
-    extensions.set("timeoutSeconds", GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs());
+    extensions.set("timeoutSeconds", execution_timeout.as_secs());
 
     let mut error = ServerError::new(
         format!(
             "GraphQL request timed out after {} seconds",
-            GRAPHQL_POST_EXECUTION_TIMEOUT.as_secs()
+            execution_timeout.as_secs()
         ),
         None,
     );
     error.extensions = Some(extensions);
     async_graphql::BatchResponse::Single(GraphQLResponse::from_errors(vec![error]))
+}
+
+fn graphql_post_execution_timeout() -> Duration {
+    // Resolver-specific deadlines still fail faster. This transport guard must
+    // remain above both the longest valid indexer operation and an operator's
+    // configured download-client feedback window, otherwise it silently wins.
+    graphql_post_execution_timeout_for(
+        scryer_infrastructure_acquisition::downloads::clients::download_client_feedback_timeout()
+    )
+}
+
+fn graphql_post_execution_timeout_for(download_feedback_timeout: Duration) -> Duration {
+    scryer_outbound_http::LONG_RUNNING_HTTP_OPERATION_TIMEOUT
+        .max(download_feedback_timeout.saturating_add(Duration::from_secs(5)))
 }
 
 #[derive(Clone)]
@@ -3502,16 +3513,34 @@ mod tests {
     fn graphql_timeout_response_reports_execution_timeout() {
         let response = graphql_execution_timeout_response();
         let body = serde_json::to_value(&response).expect("timeout response serializes");
+        let timeout_seconds = graphql_post_execution_timeout().as_secs();
 
         assert_eq!(
             body["errors"][0]["message"],
-            "GraphQL request timed out after 310 seconds"
+            format!("GraphQL request timed out after {timeout_seconds} seconds")
         );
         assert_eq!(
             body["errors"][0]["extensions"]["code"],
             GRAPHQL_POST_EXECUTION_TIMEOUT_CODE
         );
-        assert_eq!(body["errors"][0]["extensions"]["timeoutSeconds"], 310);
+        assert_eq!(
+            body["errors"][0]["extensions"]["timeoutSeconds"],
+            timeout_seconds
+        );
+    }
+
+    #[test]
+    fn graphql_timeout_covers_default_and_configured_feedback_windows() {
+        assert_eq!(
+            graphql_post_execution_timeout_for(
+                scryer_outbound_http::DEFAULT_DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT,
+            ),
+            Duration::from_secs(310)
+        );
+        assert_eq!(
+            graphql_post_execution_timeout_for(Duration::from_secs(600)),
+            Duration::from_secs(605)
+        );
     }
 
     #[tokio::test]

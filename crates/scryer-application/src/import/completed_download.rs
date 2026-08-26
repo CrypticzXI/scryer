@@ -141,11 +141,18 @@ pub(crate) async fn queue_item_identity_tracked_state(
 ) -> Option<TrackedDownloadState> {
     let identity = lookup::observed_queue_item_identity(item);
     let source_identity = lookup::queue_item_source_identity(item);
-    let canonical_download_id = crate::download_identity::resolve_observed_client_job(
+    let canonical_download_id = match crate::download_identity::resolve_observed_client_job(
         app,
         crate::download_identity::observed_queue_item_job(item),
     )
-    .await;
+    .await
+    {
+        crate::download_identity::ObservedClientJobResolution::Resolved(download_id) => {
+            Some(download_id)
+        }
+        crate::download_identity::ObservedClientJobResolution::Conflict => return None,
+        crate::download_identity::ObservedClientJobResolution::Unavailable => None,
+    };
     lookup::download_id_tracked_state(
         app,
         canonical_download_id.as_ref(),

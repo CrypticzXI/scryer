@@ -78,6 +78,25 @@ pub struct PluginHttpResponse {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginHttpStartRate {
+    /// Number of request starts allowed during `interval_ms`.
+    pub starts: u32,
+    pub interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginHttpBatchRequest {
+    pub requests: Vec<PluginHttpRequest>,
+    pub desired_start_rate: PluginHttpStartRate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PluginHttpBatchResponse {
+    /// One result for each request, in input order.
+    pub results: Vec<PluginResult<PluginHttpResponse>>,
+}
+
 /// A process request evaluated only against the descriptor's process allowlist.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginProcessExecRequest {
@@ -111,6 +130,7 @@ pub enum PluginHostRequest {
     StateSet(PluginStateSetRequest),
     StateDelete(PluginStateDeleteRequest),
     Http(PluginHttpRequest),
+    HttpBatch(PluginHttpBatchRequest),
     SocketOpen(SocketOpenRequest),
     SocketRead(SocketReadRequest),
     SocketWrite(SocketWriteRequest),
@@ -127,6 +147,7 @@ pub enum PluginHostResponse {
     StateSet(PluginResult<PluginStateMutationResponse>),
     StateDelete(PluginResult<PluginStateMutationResponse>),
     Http(PluginResult<PluginHttpResponse>),
+    HttpBatch(PluginResult<PluginHttpBatchResponse>),
     SocketOpen(PluginResult<SocketOpenResponse>),
     SocketRead(PluginResult<SocketReadResponse>),
     SocketWrite(PluginResult<SocketWriteResponse>),

@@ -322,8 +322,9 @@ async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppR
     let provider_name = crate::challenge_solver::solver_provider_name(config.provider_type);
     let base_url = config.base_url.trim_end_matches('/');
     let health_url = format!("{base_url}/health");
-    let request_timeout =
-        std::time::Duration::from_secs(u64::from(config.request_timeout_seconds.saturating_add(5)));
+    let request_timeout = scryer_outbound_http::effective_indexer_proxy_request_timeout(
+        config.request_timeout_seconds,
+    );
     let client = scryer_outbound_http::indexer_proxy_health_reqwest_client(request_timeout)
         .map_err(|_| {
             AppError::Repository(
@@ -422,6 +423,13 @@ mod indexer_proxy_tests {
     use super::*;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn proxy_timeout_validation_uses_indexer_ceiling() {
+        assert_eq!(validate_indexer_proxy_timeout(120).unwrap(), 120);
+        assert!(validate_indexer_proxy_timeout(0).is_err());
+        assert!(validate_indexer_proxy_timeout(121).is_err());
+    }
 
     fn test_config(
         server: &MockServer,

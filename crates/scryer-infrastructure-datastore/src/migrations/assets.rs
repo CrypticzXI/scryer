@@ -902,6 +902,47 @@ mod tests {
     }
 
     #[test]
+    fn migration_0186_drops_the_legacy_token_requirement_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 186"));
+        assert!(manifest.contains("migrations/0186_download_identity_states_token_optional.sql"));
+        assert!(
+            manifest
+                .contains("postgres/migrations/0186_download_identity_states_token_optional.sql")
+        );
+
+        let sqlite_sql = fs::read_to_string(
+            db_root.join("migrations/0186_download_identity_states_token_optional.sql"),
+        )
+        .expect("SQLite 0186 migration should be readable");
+        // The rebuilt table keeps the canonical column mandatory and the legacy
+        // token optional, and picks up the downloads(id) foreign key the other
+        // canonical dependents already carry.
+        assert!(sqlite_sql.contains("canonical_download_id TEXT NOT NULL"));
+        assert!(!sqlite_sql.contains("CHECK (download_id IS NOT NULL)"));
+        assert!(
+            sqlite_sql.contains("FOREIGN KEY (canonical_download_id) REFERENCES downloads(id)")
+        );
+        assert!(sqlite_sql.contains("idx_download_identity_states_canonical_download_id"));
+
+        let postgres_sql = fs::read_to_string(
+            db_root.join("postgres/migrations/0186_download_identity_states_token_optional.sql"),
+        )
+        .expect("PostgreSQL 0186 migration should be readable");
+        assert!(
+            postgres_sql
+                .contains("DROP CONSTRAINT IF EXISTS download_identity_states_download_id_check")
+        );
+        assert!(
+            postgres_sql
+                .contains("ADD CONSTRAINT download_identity_states_canonical_download_id_fkey")
+        );
+        assert!(postgres_sql.contains("idx_download_identity_states_canonical_download_id"));
+    }
+
+    #[test]
     fn source_manifest_defaults_missing_step_engine_to_all() {
         let manifest = r#"
 format_version = 1

@@ -1924,6 +1924,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
                 indexer_id: None,
                 release_guid: Some(format!("guid-{id}")),
                 added_at: now.clone(),
+                last_observed_at: now.clone(),
                 delay_until: now.clone(),
                 status,
                 grabbed_at: None,
@@ -1932,6 +1933,14 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
                 info_hash: None,
                 seed_minimums: Default::default(),
                 seeders: None,
+                release_identity: format!("guid-{id}"),
+                coverage_identity: format!("scope:{wanted_item_id}"),
+                role: match status {
+                    PendingReleaseStatus::Waiting => crate::types::PendingReleaseRole::Primary,
+                    _ => crate::types::PendingReleaseRole::Fallback,
+                },
+                last_decision_code: None,
+                release_age_unknown: false,
             })
             .await
             .expect("seed pending release");
@@ -3705,6 +3714,7 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         indexer_id: Some("indexer-a".to_string()),
         release_guid: Some(format!("guid-{}", suffix.to_lowercase())),
         added_at: Utc::now().to_rfc3339(),
+        last_observed_at: Utc::now().to_rfc3339(),
         delay_until: Utc::now().to_rfc3339(),
         status: PendingReleaseStatus::Standby,
         grabbed_at: None,
@@ -3713,6 +3723,11 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         info_hash: None,
         seed_minimums: Default::default(),
         seeders: None,
+        release_identity: format!("guid-{}", suffix.to_lowercase()),
+        coverage_identity: format!("scope:{}", wanted.id),
+        role: crate::types::PendingReleaseRole::Fallback,
+        last_decision_code: None,
+        release_age_unknown: false,
     };
     pending_releases
         .insert_pending_release(&saved("SECOND", 200))

@@ -2,6 +2,7 @@ export type EpisodeDetailMergeEpisode = {
   id: string;
   overview?: string | null;
   imageUrl?: string | null;
+  playbackLinks?: unknown;
 };
 
 export type EpisodeDetailMergeCollection<
@@ -47,7 +48,7 @@ export function mergeLoadedEpisodeDetailsForCollections<
 ): Record<string, Episode[]> {
   const loadedDetailsByEpisodeId = new Map<
     string,
-    Pick<EpisodeDetailMergeEpisode, "overview" | "imageUrl">
+    Pick<EpisodeDetailMergeEpisode, "overview" | "imageUrl" | "playbackLinks">
   >();
   for (const episodes of Object.values(currentEpisodesByCollection)) {
     for (const episode of episodes) {
@@ -57,6 +58,7 @@ export function mergeLoadedEpisodeDetailsForCollections<
       loadedDetailsByEpisodeId.set(episode.id, {
         overview: episode.overview,
         imageUrl: episode.imageUrl,
+        playbackLinks: episode.playbackLinks,
       });
     }
   }
@@ -71,6 +73,8 @@ export function mergeLoadedEpisodeDetailsForCollections<
               ...episode,
               overview: loadedDetail.overview ?? episode.overview ?? null,
               imageUrl: loadedDetail.imageUrl ?? episode.imageUrl ?? null,
+              playbackLinks: (loadedDetail.playbackLinks ??
+                episode.playbackLinks) as Episode["playbackLinks"],
             }
           : episode;
       }),

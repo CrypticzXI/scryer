@@ -2756,9 +2756,12 @@ export const delayProfilesQuery = `query DelayProfiles {
     name
     usenetDelayMinutes
     torrentDelayMinutes
+    enableUsenet
+    enableTorrent
     preferredProtocol
     minAgeMinutes
     bypassScoreThreshold
+    bypassIfHighestQuality
     appliesToFacets
     tags
     priority
@@ -3599,6 +3602,8 @@ export const pendingReleasesQuery = `query PendingReleases($filter: PendingRelea
       seeders
       addedAt
       delayUntil
+      lastDecisionCode
+      role
       status
     }
     hasMore

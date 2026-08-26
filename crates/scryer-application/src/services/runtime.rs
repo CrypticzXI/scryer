@@ -223,6 +223,52 @@ impl DownloadQueueSnapshotCache {
         self.schedule_commit();
     }
 
+    pub async fn stage_remove(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) {
+        let client = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| client_type.trim())
+            .to_ascii_lowercase();
+        let key = (client, download_client_item_id.to_string());
+        let mut pending = self.pending.lock().await;
+        let initialized = pending.is_none();
+        if initialized {
+            let (items, positions) =
+                index_download_queue_items(self.state.read().await.items.to_vec());
+            *pending = Some(PendingDownloadQueueSnapshot {
+                items,
+                positions,
+                updated_at: Utc::now(),
+                clear_refresh_error: false,
+            });
+        }
+        let snapshot = pending.as_mut().expect("pending snapshot initialized");
+        let previous_len = snapshot.items.len();
+        snapshot
+            .items
+            .retain(|item| download_queue_cache_identity(item) != key);
+        if snapshot.items.len() == previous_len {
+            if initialized {
+                *pending = None;
+            }
+            return;
+        }
+        snapshot.positions = snapshot
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (download_queue_cache_identity(item), index))
+            .collect();
+        snapshot.updated_at = Utc::now();
+        drop(pending);
+        self.schedule_commit();
+    }
+
     pub async fn stage_import_transfer_progress(
         &self,
         client_id: Option<&str>,
@@ -534,6 +580,8 @@ pub struct AppRuntimeAcquisitionState {
     pub(crate) release_candidate_passwords:
         Arc<std::sync::Mutex<HashMap<String, ReleaseCandidatePasswordTicket>>>,
     pub rss_seen_guids: Arc<tokio::sync::RwLock<HashSet<String>>>,
+    pub rss_unknown_age_last_warned_at:
+        Arc<tokio::sync::RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
@@ -1233,10 +1281,7 @@ impl ActiveImportStreamTracker {
         self.sync_tx.subscribe()
     }
 
-    pub async fn request_cancel(
-        &self,
-        id: &str,
-    ) -> Option<ImportCancellation> {
+    pub async fn request_cancel(&self, id: &str) -> Option<ImportCancellation> {
         let mut state = self.state.lock().await;
         let entry = state.streams.get_mut(id)?;
         if !entry.stream.cancellable() {
@@ -1594,6 +1639,7 @@ impl AppRuntimeState {
                 download_failure_guards: DownloadFailureGuardTable::default(),
                 release_candidate_passwords: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+                rss_unknown_age_last_warned_at: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 download_queue_snapshot: DownloadQueueSnapshotCache::default(),

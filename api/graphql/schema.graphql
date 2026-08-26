@@ -104,6 +104,108 @@ type AcquisitionSettingsPayload {
 }
 
 """
+A queued or active import operation. This reports real import work only, never worker capacity.
+"""
+type ActiveImportStreamPayload {
+	"""
+	Opaque runtime identity for this active import stream.
+	"""
+	id: ID!
+	"""
+	Identifier of the persisted import record.
+	"""
+	importId: ID!
+	"""
+	Identifier of the library receiving the import.
+	"""
+	libraryId: ID!
+	"""
+	Media category of the import target.
+	"""
+	facet: MediaFacetValue!
+	"""
+	Filesystem path of the source file or extraction directory.
+	"""
+	sourcePath: String!
+	"""
+	Filesystem path where the import is being placed.
+	"""
+	destinationPath: String!
+	"""
+	Current runtime phase of the import.
+	"""
+	phase: ActiveImportStreamPhaseValue!
+	"""
+	Number of source bytes transferred so far.
+	"""
+	bytes: Long!
+	"""
+	Total source bytes expected for the transfer, or zero when unavailable.
+	"""
+	totalBytes: Long!
+	"""
+	Time the import entered the active worker queue.
+	"""
+	queuedAt: DateTime!
+	"""
+	Time work began, or null while the import remains queued.
+	"""
+	startedAt: DateTime
+	"""
+	Time this stream was last updated.
+	"""
+	updatedAt: DateTime!
+	"""
+	Whether this stream can still be cancelled.
+	"""
+	cancellable: Boolean!
+	"""
+	Whether cancellation has been requested and is being processed.
+	"""
+	cancellationRequested: Boolean!
+}
+
+"""
+Runtime phase for an import operation currently awaiting or using a worker lane.
+"""
+enum ActiveImportStreamPhaseValue {
+	"""
+	The import is waiting for a worker lane.
+	"""
+	QUEUED
+	"""
+	Archive extraction is running for the import.
+	"""
+	EXTRACTING
+	"""
+	A fast filesystem placement is in progress.
+	"""
+	PLACING
+	"""
+	File content is being copied to its destination.
+	"""
+	COPYING
+	"""
+	The destination is being verified and promoted.
+	"""
+	FINALIZING
+}
+
+"""
+Revision metadata for active import stream updates.
+"""
+type ActiveImportStreamSyncPayload {
+	"""
+	Monotonic revision for active import stream changes.
+	"""
+	revision: Long!
+	"""
+	Time active import streams last changed, or null before the first change.
+	"""
+	updatedAt: DateTime
+}
+
+"""
 Delivery channel associated with an activity event.
 """
 enum ActivityChannelValue {
@@ -2225,6 +2327,14 @@ input DelayProfileInput {
 	"""
 	torrentDelayMinutes: Int!
 	"""
+	Whether Usenet releases are eligible. Defaults to enabled for existing clients.
+	"""
+	enableUsenet: Boolean
+	"""
+	Whether torrent releases are eligible. Defaults to enabled for existing clients.
+	"""
+	enableTorrent: Boolean
+	"""
 	Preferred protocol when both delayed sources qualify.
 	"""
 	preferredProtocol: DelayProfilePreferredProtocolValue!
@@ -2236,6 +2346,10 @@ input DelayProfileInput {
 	Optional score threshold that bypasses the delay.
 	"""
 	bypassScoreThreshold: Int
+	"""
+	Whether the highest-quality release bypasses its eligible delay. Defaults to disabled.
+	"""
+	bypassIfHighestQuality: Boolean
 	"""
 	Facets to which the profile applies.
 	"""
@@ -2275,6 +2389,14 @@ type DelayProfilePayload {
 	"""
 	torrentDelayMinutes: Int!
 	"""
+	Whether Usenet releases are eligible for this profile.
+	"""
+	enableUsenet: Boolean!
+	"""
+	Whether torrent releases are eligible for this profile.
+	"""
+	enableTorrent: Boolean!
+	"""
 	Preferred protocol after delay eligibility.
 	"""
 	preferredProtocol: DelayProfilePreferredProtocolValue!
@@ -2286,6 +2408,10 @@ type DelayProfilePayload {
 	Score threshold that bypasses delay, or null when disabled.
 	"""
 	bypassScoreThreshold: Int
+	"""
+	Whether the highest-quality release bypasses its eligible delay.
+	"""
+	bypassIfHighestQuality: Boolean!
 	"""
 	Media facets to which the profile applies.
 	"""
@@ -10276,6 +10402,15 @@ type MutationRoot {
 		input: RetryImportInput!
 	): ImportResultPayload!
 	"""
+	Cancel a queued or copying import operation by its server-issued stream identity.
+	"""
+	cancelActiveImport(
+		"""
+		Opaque identity of the queued or active import stream.
+		"""
+		streamId: ID!
+	): Boolean!
+	"""
 	Mark a tracked download ignored without deleting it from the download client.
 	"""
 	ignoreTrackedDownload(
@@ -12538,6 +12673,14 @@ type PendingReleasePayload {
 	"""
 	delayUntil: DateTime!
 	"""
+	Current machine-readable reason this release is held, or null when none was recorded.
+	"""
+	lastDecisionCode: String
+	"""
+	Arbitration role independent of the release lifecycle state.
+	"""
+	role: PendingReleaseRoleValue!
+	"""
 	Lifecycle state of the pending release.
 	"""
 	status: PendingReleaseStatusValue!
@@ -12601,6 +12744,20 @@ enum PendingReleaseStatusValue {
 	Candidate needs manual review.
 	"""
 	NEEDS_REVIEW
+}
+
+"""
+Arbitration role of an active pending release candidate.
+"""
+enum PendingReleaseRoleValue {
+	"""
+	The highest-ranked active candidate for its overlap group.
+	"""
+	PRIMARY
+	"""
+	A lower-ranked active candidate retained as a fallback.
+	"""
+	FALLBACK
 }
 
 """
@@ -14178,6 +14335,10 @@ type QueryRoot {
 		"""
 		sortDirection: SortDirectionValue! = ASC
 	): DownloadQueuePagePayload!
+	"""
+	Return queued and active filesystem import operations. Idle worker capacity is never included.
+	"""
+	activeImportStreams: [ActiveImportStreamPayload!]!
 	"""
 	Deprecated download activity listing without pagination or queue readiness metadata.
 	"""
@@ -16929,6 +17090,10 @@ type SubscriptionRoot {
 	activityEvents: ActivityEventPayload!
 	domainEventFeed(afterSequence: Long): DomainEventEnvelopePayload!
 	downloadQueueSync: DownloadQueueSyncPayload!
+	"""
+	Notify clients when queued or active import streams change.
+	"""
+	activeImportStreamsSync: ActiveImportStreamSyncPayload!
 	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]! @deprecated(reason: "use downloadQueueSync")
 	libraryScanState: LibraryScanProgressPayload!
 	jobRunEvents: JobRunPayload!

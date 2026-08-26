@@ -814,14 +814,26 @@ async fn completed_lookup_indexes_token_locator_and_legacy_identity_observations
     assert_eq!(
         resolutions,
         vec![
-            Some(canonical_download_id),
-            Some(canonical_download_id),
-            Some(canonical_download_id),
+            crate::download_identity::ObservedClientJobResolution::Resolved(canonical_download_id,),
+            crate::download_identity::ObservedClientJobResolution::Resolved(canonical_download_id,),
+            crate::download_identity::ObservedClientJobResolution::Resolved(canonical_download_id,),
         ]
     );
+    let canonical_download_ids = resolutions
+        .into_iter()
+        .map(|resolution| match resolution {
+            crate::download_identity::ObservedClientJobResolution::Resolved(download_id) => {
+                Some(download_id)
+            }
+            crate::download_identity::ObservedClientJobResolution::Conflict
+            | crate::download_identity::ObservedClientJobResolution::Unavailable => {
+                panic!("canonical observations should resolve")
+            }
+        })
+        .collect();
     let lookup = index_completed_downloads_with_canonical_download_ids(
         completed_downloads,
-        resolutions,
+        canonical_download_ids,
         CompletedDownloadLookupCoverage::Recent,
     );
     assert_eq!(lookup.by_canonical.len(), 1);
@@ -861,10 +873,23 @@ async fn completed_lookup_registry_failure_keeps_that_item_available_to_legacy_m
     let mut completed = build_completed_download("Legacy", "/downloads/legacy", Some("movie"));
     completed.download_client_item_id = "failed-observation".to_string();
     let resolutions = resolve_completed_download_observations(&app, &[completed.clone()]).await;
-    assert_eq!(resolutions, vec![None]);
+    assert_eq!(
+        resolutions,
+        vec![crate::download_identity::ObservedClientJobResolution::Unavailable]
+    );
+    let canonical_download_ids = resolutions
+        .into_iter()
+        .map(|resolution| match resolution {
+            crate::download_identity::ObservedClientJobResolution::Unavailable => None,
+            crate::download_identity::ObservedClientJobResolution::Resolved(_)
+            | crate::download_identity::ObservedClientJobResolution::Conflict => {
+                panic!("registry failure should remain unavailable")
+            }
+        })
+        .collect();
     let lookup = index_completed_downloads_with_canonical_download_ids(
         vec![completed],
-        resolutions,
+        canonical_download_ids,
         CompletedDownloadLookupCoverage::Recent,
     );
     let mut td = build_tracked_download("title-1", "movie", "Legacy");

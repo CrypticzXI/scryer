@@ -5,7 +5,8 @@ use crate::contracts::{
 };
 use crate::types::{
     ApiKeyRecord, EpisodeMediaAvailability, LoginVerificationChallengeRecord,
-    OAuthClientRegistrationRecord, TitleCatalogFilterCounts,
+    OAuthClientRegistrationRecord, PendingReleaseObservation, PendingReleaseRole,
+    TitleCatalogFilterCounts,
 };
 use async_trait::async_trait;
 use scryer_domain::download_identity::DownloadId;
@@ -3061,6 +3062,12 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
     /// that indexer to be searched again on the next convergence pass.
     async fn prune_scope_indexer(&self, scope_key: &str, indexer_id: &str) -> AppResult<()>;
 
+    /// Delete coverage for one indexer across every scope. Used when the
+    /// indexer's search contract or health is no longer trustworthy.
+    async fn prune_indexer(&self, _indexer_id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
     /// All coverage rows for the given scope keys, fetched in one round-trip
     ///. The wanted views group these by scope key and compare
     /// each row's `fingerprint` to the live one in memory, so a full page's
@@ -3292,6 +3299,81 @@ pub struct IndexerSearchLearningContext {
     pub background_value: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IndexerSearchRunWrite {
+    pub id: String,
+    pub indexer_id: String,
+    pub provider_type: String,
+    pub scope_key: String,
+    pub query_signature: String,
+    pub branch: String,
+    pub page: Option<u32>,
+    pub range_min_size: Option<i64>,
+    pub range_max_size: Option<i64>,
+    pub result_count: u32,
+    pub completion_state: String,
+    pub retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub error_summary: Option<String>,
+    pub indexer_fingerprint: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NormalizedIndexerSearchCandidate {
+    pub provider_ref: Option<String>,
+    pub source: String,
+    pub title: String,
+    pub download_url: Option<String>,
+    pub download_url_credential_keys: Vec<String>,
+    pub link_url: Option<String>,
+    pub link_url_credential_keys: Vec<String>,
+    pub size_bytes: Option<i64>,
+    pub published_at: Option<String>,
+    pub source_kind: Option<String>,
+    pub thumbs_up: Option<i32>,
+    pub thumbs_down: Option<i32>,
+    pub grabs: Option<i64>,
+    pub languages: Vec<String>,
+    pub subtitles: Vec<String>,
+    pub response_tvdb_id: Option<String>,
+    pub response_tmdb_id: Option<String>,
+    pub response_imdb_id: Option<String>,
+    pub response_categories: Vec<String>,
+    pub extra_categories: Vec<String>,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+    pub absolute_episode: Option<i64>,
+    pub series_names: Vec<String>,
+    pub release_group: Option<String>,
+    pub provider_source: Option<String>,
+    pub info_hash: Option<String>,
+    pub seeders: Option<i64>,
+    pub peers: Option<i64>,
+    pub download_volume_factor: Option<f64>,
+    pub upload_volume_factor: Option<f64>,
+    pub protected: Option<bool>,
+    pub tags: Vec<String>,
+    pub provider_categories: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexerSearchCandidateWrite {
+    pub id: String,
+    pub run_id: String,
+    pub indexer_id: String,
+    pub scope_key: String,
+    pub query_signature: String,
+    pub normalized: NormalizedIndexerSearchCandidate,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub reusable_until: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReusableIndexerSearchCandidate {
+    pub normalized: NormalizedIndexerSearchCandidate,
+}
+
 #[async_trait]
 pub trait IndexerSearchLearningRepository: Send + Sync {
     async fn list_for_title(
@@ -3306,6 +3388,34 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         key: &IndexerSearchLearningKey,
         usable_hits: u32,
     ) -> AppResult<IndexerSearchLearningRecord>;
+
+    async fn record_search_diagnostics(
+        &self,
+        _run: &IndexerSearchRunWrite,
+        _candidates: &[IndexerSearchCandidateWrite],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_reusable_search_candidates(
+        &self,
+        _indexer_id: &str,
+        _scope_key: &str,
+        _indexer_fingerprint: &str,
+        _now: chrono::DateTime<chrono::Utc>,
+        _limit: u32,
+    ) -> AppResult<Vec<ReusableIndexerSearchCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn cleanup_search_diagnostics(
+        &self,
+        _candidate_cutoff: chrono::DateTime<chrono::Utc>,
+        _run_cutoff: chrono::DateTime<chrono::Utc>,
+        _limit: u32,
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
 
     async fn set_suppressed(
         &self,
@@ -3391,6 +3501,19 @@ pub trait DownloadRegistryRepository: Send + Sync {
         &self,
         locator: &ClientJobLocator,
     ) -> AppResult<Option<DownloadClientBindingRecord>>;
+
+    /// List old active bindings for one configured client/type so an
+    /// authoritative snapshot can reconcile jobs that disappeared while the
+    /// tracker was not running. Implementations must bound the result.
+    async fn list_active_bindings_for_client_before(
+        &self,
+        _client_config_id: &str,
+        _client_type: &str,
+        _observed_before: DateTime<Utc>,
+        _limit: usize,
+    ) -> AppResult<Vec<DownloadClientBindingRecord>> {
+        Ok(Vec::new())
+    }
 
     /// End an active binding; ending an already-ended or absent binding is a no-op.
     async fn end_binding(&self, id: &DownloadId) -> AppResult<()>;
@@ -4967,8 +5090,24 @@ pub(crate) async fn find_existing_acquisition_scope_state<
 #[async_trait]
 pub trait PendingReleaseRepository: Send + Sync {
     async fn insert_pending_release(&self, release: &PendingRelease) -> AppResult<String>;
+    /// Record another observation without refreshing its original delay clock.
+    async fn insert_pending_release_with_role(
+        &self,
+        release: &PendingRelease,
+        role: PendingReleaseRole,
+    ) -> AppResult<String>;
+    async fn insert_pending_release_observation(
+        &self,
+        release: &PendingRelease,
+        observation: &PendingReleaseObservation,
+    ) -> AppResult<String>;
     async fn list_expired_pending_releases(&self, now: &str) -> AppResult<Vec<PendingRelease>>;
     async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>>;
+    /// Active rows whose indexer observation did not include a publish time.
+    /// Callers use `added_at` plus the current policy to decide review timing.
+    async fn list_active_release_age_unknown_pending_releases(
+        &self,
+    ) -> AppResult<Vec<PendingRelease>>;
     async fn get_pending_release(&self, id: &str) -> AppResult<Option<PendingRelease>>;
     async fn list_pending_releases_for_wanted_item(
         &self,
@@ -4990,6 +5129,13 @@ pub trait PendingReleaseRepository: Send + Sync {
         id: &str,
         status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
+    ) -> AppResult<()>;
+    /// Terminal policy rejection is retained as audit history, not deleted.
+    async fn expire_pending_release(&self, id: &str, decision_code: &str) -> AppResult<()>;
+    async fn mark_release_age_unknown_pending_release_needs_review(
+        &self,
+        id: &str,
+        decision_code: &str,
     ) -> AppResult<()>;
     async fn update_pending_release_delay_until(
         &self,
@@ -5024,10 +5170,11 @@ pub trait PendingReleaseRepository: Send + Sync {
         next_status: PendingReleaseStatus,
         grabbed_at: Option<&str>,
     ) -> AppResult<bool>;
-    async fn supersede_pending_releases_for_acquisition_scope_state(
+    /// Retire the caller's freshly judged lower-or-equal pending candidates.
+    /// The caller computes overlap and excludes a pending winner, if any.
+    async fn retire_lower_or_equal_overlapping_pending_releases(
         &self,
-        wanted_item_id: &str,
-        except_id: &str,
+        lower_or_equal_ids: &[String],
     ) -> AppResult<()>;
     async fn delete_pending_releases_for_title(&self, title_id: &str) -> AppResult<()>;
 }
@@ -5224,6 +5371,9 @@ pub trait IndexerPluginProvider: Send + Sync {
         vec![]
     }
     fn plugin_version_for_provider(&self, _provider_type: &str) -> Option<String> {
+        None
+    }
+    fn search_semantics_version_for_provider(&self, _provider_type: &str) -> Option<u32> {
         None
     }
     fn plugin_sdk_version_for_provider(&self, _provider_type: &str) -> Option<String> {
@@ -5904,6 +6054,15 @@ pub struct DownloadClientFeedbackScope {
     pub categories: Vec<String>,
 }
 
+/// A lenient queue/activity snapshot with the subset of clients for which
+/// absence is authoritative.
+#[derive(Clone, Debug, Default)]
+pub struct DownloadClientSnapshotOutcome {
+    pub items: Vec<DownloadQueueItem>,
+    pub authoritative_client_ids: std::collections::HashSet<String>,
+    pub any_client_read_succeeded: bool,
+}
+
 #[async_trait]
 pub trait DownloadClient: Send + Sync {
     async fn submit_download(
@@ -6040,6 +6199,44 @@ pub trait DownloadClient: Send + Sync {
                 .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
         });
         Ok(items)
+    }
+
+    /// Read queue and recent activity leniently, identifying clients whose
+    /// complete snapshot is safe to use for absence reconciliation.
+    ///
+    /// Implementations without per-client feedback can retain tracking
+    /// liveness through the default while conservatively authorizing no prune.
+    async fn list_snapshot_outcome_excluding_client_types(
+        &self,
+        recent_activity_limit: usize,
+        excluded_client_types: &[&str],
+    ) -> AppResult<DownloadClientSnapshotOutcome> {
+        let queue = self
+            .list_queue_excluding_client_types(excluded_client_types)
+            .await;
+        let activity = self
+            .list_recent_activity_excluding_client_types(
+                recent_activity_limit,
+                excluded_client_types,
+            )
+            .await;
+
+        match (queue, activity) {
+            (Ok(mut queue_items), Ok(activity_items)) => {
+                queue_items.extend(activity_items);
+                Ok(DownloadClientSnapshotOutcome {
+                    items: queue_items,
+                    any_client_read_succeeded: true,
+                    ..Default::default()
+                })
+            }
+            (Ok(items), Err(_)) | (Err(_), Ok(items)) => Ok(DownloadClientSnapshotOutcome {
+                items,
+                any_client_read_succeeded: true,
+                ..Default::default()
+            }),
+            (Err(error), Err(_)) => Err(error),
+        }
     }
 
     async fn list_recent_activity_for_title(

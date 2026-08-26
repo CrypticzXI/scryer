@@ -1030,9 +1030,12 @@ export const upsertDelayProfileMutation = `mutation UpsertDelayProfile($input: D
     name
     usenetDelayMinutes
     torrentDelayMinutes
+    enableUsenet
+    enableTorrent
     preferredProtocol
     minAgeMinutes
     bypassScoreThreshold
+    bypassIfHighestQuality
     appliesToFacets
     tags
     priority

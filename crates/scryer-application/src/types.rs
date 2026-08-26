@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use chrono::DateTime;
 use scryer_domain::{
     CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title, download_identity::DownloadId,
 };
@@ -1221,6 +1222,45 @@ pub struct TitleAcquisitionDiagnostics {
     pub latest_wanted_search_at: Option<String>,
 }
 
+/// Arbitration is independent of lifecycle: a fallback can remain active while
+/// a primary waits for its delay to elapse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingReleaseRole {
+    Primary,
+    Fallback,
+}
+
+impl PendingReleaseRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Fallback => "fallback",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "primary" => Some(Self::Primary),
+            "fallback" => Some(Self::Fallback),
+            _ => None,
+        }
+    }
+}
+
+/// Immutable facts from the current indexer observation. They are deliberately
+/// separate from lifecycle fields on `PendingRelease` so rediscovery cannot
+/// restart the original delay clock.
+#[derive(Clone, Debug)]
+pub struct PendingReleaseObservation {
+    pub eligible_at: String,
+    pub last_observed_at: String,
+    pub latest_decision_code: Option<String>,
+    pub release_identity: String,
+    pub coverage_identity: String,
+    pub role: PendingReleaseRole,
+    pub release_age_unknown: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingRelease {
     pub id: String,
@@ -1237,6 +1277,7 @@ pub struct PendingRelease {
     pub indexer_id: Option<String>,
     pub release_guid: Option<String>,
     pub added_at: String,
+    pub last_observed_at: String,
     pub delay_until: String,
     pub status: PendingReleaseStatus,
     pub grabbed_at: Option<String>,
@@ -1261,6 +1302,90 @@ pub struct PendingRelease {
     /// — for a row parked before this column existed, or an indexer that reports
     /// nothing — and unknown always stays eligible.
     pub seeders: Option<i64>,
+    pub release_identity: String,
+    pub coverage_identity: String,
+    pub role: PendingReleaseRole,
+    pub last_decision_code: Option<String>,
+    pub release_age_unknown: bool,
+}
+
+impl PendingReleaseObservation {
+    pub fn derived(release: &PendingRelease, role: PendingReleaseRole) -> Self {
+        let indexer = release
+            .indexer_id
+            .as_deref()
+            .or(release.indexer_source.as_deref())
+            .map(normalize_pending_identity_part)
+            .unwrap_or_else(|| "unknown".to_string());
+        let title = normalize_pending_identity_part(&release.release_title);
+        let coverage_identity = if release.coverage_identity.trim().is_empty() {
+            format!(
+                "scope:{}",
+                normalize_pending_identity_part(&release.wanted_item_id)
+            )
+        } else {
+            release.coverage_identity.clone()
+        };
+        let release_identity = if !release.release_identity.trim().is_empty() {
+            release.release_identity.clone()
+        } else if let Some(guid) = release
+            .release_guid
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            format!("guid:{indexer}:{}", normalize_pending_identity_part(guid))
+        } else if let Some(info_hash) = release
+            .info_hash
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            format!("hash:{}", normalize_pending_identity_part(info_hash))
+        } else if let Some(source) = release
+            .release_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            format!("source:{}", source.trim())
+        } else {
+            let published_at = release
+                .published_at
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(normalize_pending_identity_part)
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("listing:{indexer}:{title}:{published_at}")
+        };
+        Self {
+            eligible_at: release.delay_until.clone(),
+            last_observed_at: if release.last_observed_at.trim().is_empty() {
+                release.added_at.clone()
+            } else {
+                release.last_observed_at.clone()
+            },
+            latest_decision_code: release.last_decision_code.clone(),
+            release_identity,
+            coverage_identity,
+            role,
+            release_age_unknown: release.release_age_unknown
+                || (release
+                    .published_at
+                    .as_deref()
+                    .is_none_or(|value| value.trim().is_empty())
+                    && pending_release_delay_is_active(release)),
+        }
+    }
+}
+
+fn pending_release_delay_is_active(release: &PendingRelease) -> bool {
+    let Ok(added_at) = DateTime::parse_from_rfc3339(&release.added_at) else {
+        return false;
+    };
+    DateTime::parse_from_rfc3339(&release.delay_until)
+        .is_ok_and(|eligible_at| eligible_at > added_at)
+}
+
+fn normalize_pending_identity_part(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1844,29 +1969,56 @@ mod canonical_download_source_tests {
     }
 }
 
-/// Per-indexer outcome of a single search query. Determines
-/// which routed indexers may be recorded as coverage: only an indexer that actually
-/// fired a query and returned a response (empty included) counts — never one the
-/// scheduler deferred/skipped, and never one whose query errored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexerSearchIncompleteReason {
+    UpstreamFailure,
+    RateLimited,
+    MalformedContent,
+    PageCeilingReached,
+    FanoutBranchFailed,
+    SaturatedPartition,
+    Unattested,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IndexerSearchCompletion {
+    #[default]
+    Complete,
+    Partial {
+        reason: Option<IndexerSearchIncompleteReason>,
+        retry_after: Option<std::time::Duration>,
+    },
+}
+
+impl IndexerSearchCompletion {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
+/// Per-indexer outcome of a single search query. Only a validated, complete
+/// response is eligible for convergence coverage. Partial responses may still
+/// contribute candidates, but must be retried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexerSearchOutcome {
-    /// The query executed and returned a response — `empty` distinguishes a
-    /// zero-result response (still coverage) from a populated one.
-    Fired { empty: bool },
-    /// The scheduler declined to query this indexer this cycle. A cooldown
-    /// carries the remaining wait so interactive callers can explain it.
+    Complete { empty: bool },
+    Partial {
+        empty: bool,
+        reason: Option<IndexerSearchIncompleteReason>,
+        retry_after: Option<std::time::Duration>,
+    },
+    Deferred {
+        retry_after: Option<std::time::Duration>,
+    },
     Skipped {
         retry_after: Option<std::time::Duration>,
     },
-    /// The query was attempted but failed (rate-limited / transport / provider).
     Errored,
 }
 
 impl IndexerSearchOutcome {
-    /// Whether this indexer actually executed a query and returned a response.
-    /// Only a fired indexer may be recorded as convergence coverage.
-    pub fn fired(&self) -> bool {
-        matches!(self, Self::Fired { .. })
+    pub fn coverage_eligible(&self) -> bool {
+        matches!(self, Self::Complete { .. })
     }
 }
 
@@ -1882,6 +2034,7 @@ pub struct IndexerQueryOutcome {
 #[derive(Clone, Debug)]
 pub struct IndexerSearchResponse {
     pub results: Vec<IndexerSearchResult>,
+    pub completion: IndexerSearchCompletion,
     pub api_current: Option<u32>,
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,

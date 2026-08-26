@@ -434,12 +434,18 @@ pub struct DelayProfilePayload {
     pub usenet_delay_minutes: i32,
     /// Torrent delay in minutes.
     pub torrent_delay_minutes: i32,
+    /// Whether Usenet releases are eligible for this profile.
+    pub enable_usenet: bool,
+    /// Whether torrent releases are eligible for this profile.
+    pub enable_torrent: bool,
     /// Preferred protocol after delay eligibility.
     pub preferred_protocol: DelayProfilePreferredProtocolValue,
     /// Minimum release age in minutes.
     pub min_age_minutes: i32,
     /// Score threshold that bypasses delay, or null when disabled.
     pub bypass_score_threshold: Option<i32>,
+    /// Whether the highest-quality release bypasses its eligible delay.
+    pub bypass_if_highest_quality: bool,
     /// Media facets to which the profile applies.
     pub applies_to_facets: Vec<MediaFacetValue>,
     /// Tags used to select this profile.
@@ -696,12 +702,18 @@ pub struct DelayProfileInput {
     pub usenet_delay_minutes: i32,
     /// Torrent delay in minutes.
     pub torrent_delay_minutes: i32,
+    /// Whether Usenet releases are eligible. Defaults to enabled for existing clients.
+    pub enable_usenet: Option<bool>,
+    /// Whether torrent releases are eligible. Defaults to enabled for existing clients.
+    pub enable_torrent: Option<bool>,
     /// Preferred protocol when both delayed sources qualify.
     pub preferred_protocol: DelayProfilePreferredProtocolValue,
     /// Minimum release age in minutes.
     pub min_age_minutes: i32,
     /// Optional score threshold that bypasses the delay.
     pub bypass_score_threshold: Option<i32>,
+    /// Whether the highest-quality release bypasses its eligible delay. Defaults to disabled.
+    pub bypass_if_highest_quality: Option<bool>,
     /// Facets to which the profile applies.
     pub applies_to_facets: Vec<MediaFacetValue>,
     /// Tags restricting the profile's scope.

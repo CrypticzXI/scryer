@@ -353,6 +353,10 @@ pub enum ObservationResolution {
         newly_foreign: bool,
         attached: bool,
     },
+    Conflict {
+        token_id: scryer_domain::download_identity::DownloadId,
+        binding_download_id: scryer_domain::download_identity::DownloadId,
+    },
 }
 
 #[derive(Clone, Debug)]

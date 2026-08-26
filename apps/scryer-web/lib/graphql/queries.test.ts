@@ -13,6 +13,7 @@ import {
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
   myApiKeysQuery,
+  pendingReleasesQuery,
   seriesCollectionEpisodesQuery,
   seriesSidePanelOverviewQuery,
   TITLE_CAST_CREDIT_KINDS,
@@ -56,6 +57,12 @@ test("wanted navigation loads every badge total without table rows", () => {
     3,
   );
   assert.equal(wantedNavigationCountsQuery.includes("items {"), false);
+});
+
+test("pending releases query includes current delay diagnostics", () => {
+  for (const field of ["delayUntil", "lastDecisionCode", "role"]) {
+    assert.equal(pendingReleasesQuery.includes(field), true, `${field} is required`);
+  }
 });
 
 test("activity queue uses paged cache reads and revision-only sync", () => {

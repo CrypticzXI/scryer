@@ -6,13 +6,15 @@
 //! policy and configuration rather than command artifacts inheriting ambient
 //! WASI authority.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use scryer_plugin_sdk::host::{
     HOST_ABI_MODULE, PluginConfigGetResponse, PluginHostRequest, PluginHostResponse,
-    PluginHttpResponse, PluginStateGetResponse, PluginStateMutationResponse,
+    PluginHttpBatchResponse, PluginHttpResponse, PluginStateGetResponse,
+    PluginStateMutationResponse,
 };
 use scryer_plugin_sdk::{PluginError, PluginErrorCode, PluginResult};
 use wasmtime::{Caller, Linker, Memory};
@@ -25,6 +27,140 @@ use crate::wasmtime_host::sandbox::HostCtx;
 const MAX_RESPONSE_HANDLES: usize = 32;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STATE_BYTES: usize = 1024 * 1024;
+const MAX_HTTP_BATCH_REQUESTS: usize = 256;
+const HOST_HTTP_START_RATE_CEILING: u64 = 100;
+
+static NEXT_HTTP_BATCH_ID: AtomicU64 = AtomicU64::new(1);
+static HTTP_BATCH_LIMITER: OnceLock<Mutex<HttpBatchLimiter>> = OnceLock::new();
+
+#[derive(Default)]
+struct HttpBatchLimiter {
+    buckets: HashMap<String, HttpBatchLimiterBucket>,
+}
+
+#[derive(Default)]
+struct HttpBatchLimiterBucket {
+    next_start: Option<Instant>,
+    active_spacings: HashMap<u64, Duration>,
+}
+
+struct HttpBatchRegistration {
+    id: u64,
+    keys: Vec<String>,
+}
+
+impl HttpBatchRegistration {
+    fn wait_for_start(&self, key: &str) -> Result<(), String> {
+        let scheduled = {
+            let mut limiter = HTTP_BATCH_LIMITER
+                .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+                .lock()
+                .map_err(|error| format!("plugin HTTP batch limiter lock poisoned: {error}"))?;
+            let bucket = limiter
+                .buckets
+                .get_mut(key)
+                .ok_or_else(|| "plugin HTTP batch limiter registration disappeared".to_string())?;
+            let spacing = bucket
+                .active_spacings
+                .values()
+                .copied()
+                .max()
+                .ok_or_else(|| "plugin HTTP batch limiter has no active rate".to_string())?;
+            let now = Instant::now();
+            let scheduled = bucket.next_start.unwrap_or(now).max(now);
+            bucket.next_start = Some(scheduled + spacing);
+            scheduled
+        };
+        let delay = scheduled.saturating_duration_since(Instant::now());
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HttpBatchRegistration {
+    fn drop(&mut self) {
+        let Ok(mut limiter) = HTTP_BATCH_LIMITER
+            .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+            .lock()
+        else {
+            return;
+        };
+        for key in &self.keys {
+            if let Some(bucket) = limiter.buckets.get_mut(key) {
+                bucket.active_spacings.remove(&self.id);
+                if bucket.active_spacings.is_empty() {
+                    limiter.buckets.remove(key);
+                }
+            }
+        }
+    }
+}
+
+fn register_http_batch(
+    plugin_id: &str,
+    urls: impl IntoIterator<Item = String>,
+    starts: u32,
+    interval_ms: u64,
+) -> Result<HttpBatchRegistration, String> {
+    if starts == 0 || interval_ms == 0 {
+        return Err("plugin HTTP batch start rate must be positive".to_string());
+    }
+    let requested_spacing = Duration::from_millis(
+        interval_ms
+            .saturating_add(u64::from(starts) - 1)
+            .checked_div(u64::from(starts))
+            .unwrap_or(interval_ms),
+    );
+    let host_spacing = Duration::from_millis(1_000 / HOST_HTTP_START_RATE_CEILING);
+    let spacing = requested_spacing.max(host_spacing);
+    let id = NEXT_HTTP_BATCH_ID.fetch_add(1, Ordering::Relaxed);
+    let keys = urls
+        .into_iter()
+        .map(|url| {
+            let parsed = url::Url::parse(&url)
+                .map_err(|error| format!("invalid plugin HTTP batch URL: {error}"))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| "plugin HTTP batch URL is missing a host".to_string())?;
+            let origin = match parsed.port_or_known_default() {
+                Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+                None => format!("{}://{host}", parsed.scheme()),
+            };
+            Ok(format!("{plugin_id}|{origin}"))
+        })
+        .collect::<Result<BTreeSet<_>, String>>()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut limiter = HTTP_BATCH_LIMITER
+        .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+        .lock()
+        .map_err(|error| format!("plugin HTTP batch limiter lock poisoned: {error}"))?;
+    for key in &keys {
+        limiter
+            .buckets
+            .entry(key.clone())
+            .or_default()
+            .active_spacings
+            .insert(id, spacing);
+    }
+    drop(limiter);
+    Ok(HttpBatchRegistration { id, keys })
+}
+
+fn http_batch_limiter_key(plugin_id: &str, url: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(url)
+        .map_err(|error| format!("invalid plugin HTTP batch URL: {error}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "plugin HTTP batch URL is missing a host".to_string())?;
+    let origin = match parsed.port_or_known_default() {
+        Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+        None => format!("{}://{host}", parsed.scheme()),
+    };
+    Ok(format!("{plugin_id}|{origin}"))
+}
 
 #[derive(Clone)]
 pub(crate) struct CommandHost {
@@ -271,6 +407,70 @@ impl CommandHost {
                     });
                 PluginHostResponse::Http(response.map_or_else(service_error, PluginResult::Ok))
             }
+            PluginHostRequest::HttpBatch(batch) => {
+                let response = (|| {
+                    if batch.requests.len() > MAX_HTTP_BATCH_REQUESTS {
+                        return Err(format!(
+                            "plugin HTTP batch contains {} requests; maximum is {MAX_HTTP_BATCH_REQUESTS}",
+                            batch.requests.len()
+                        ));
+                    }
+                    let timeout = self.remaining_http_timeout(services.timeout)?;
+                    let registration = register_http_batch(
+                        &services.plugin_id,
+                        batch.requests.iter().map(|request| request.url.clone()),
+                        batch.desired_start_rate.starts,
+                        batch.desired_start_rate.interval_ms,
+                    )?;
+                    let results = std::thread::scope(|scope| {
+                        let mut handles = Vec::with_capacity(batch.requests.len());
+                        for (index, request) in batch.requests.into_iter().enumerate() {
+                            let key = http_batch_limiter_key(&services.plugin_id, &request.url)?;
+                            registration.wait_for_start(&key)?;
+                            let http = &services.http;
+                            let item_plugin_id =
+                                format!("{}#http-batch-{}-{index}", services.plugin_id, registration.id);
+                            handles.push(scope.spawn(move || {
+                                let result = http
+                                    .request(
+                                        &item_plugin_id,
+                                        PluginHttpRequest {
+                                            url: request.url,
+                                            method: request.method,
+                                            headers: request.headers,
+                                        },
+                                        (!request.body.is_empty()).then_some(request.body),
+                                        timeout,
+                                    )
+                                    .and_then(|body| {
+                                        let (status, headers) =
+                                            http.take_response_metadata(&item_plugin_id)?;
+                                        Ok(PluginHttpResponse {
+                                            status,
+                                            headers,
+                                            body,
+                                        })
+                                    });
+                                result.map_or_else(service_error, PluginResult::Ok)
+                            }));
+                        }
+                        Ok::<_, String>(
+                            handles
+                                .into_iter()
+                                .map(|handle| {
+                                    handle.join().unwrap_or_else(|_| {
+                                        service_error("plugin HTTP batch worker panicked".to_string())
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })?;
+                    Ok(PluginHttpBatchResponse { results })
+                })();
+                PluginHostResponse::HttpBatch(
+                    response.map_or_else(service_error, PluginResult::Ok),
+                )
+            }
             request => unsupported_response(request),
         }
     }
@@ -319,6 +519,7 @@ fn unsupported_error() -> PluginError {
         // during serialization. Keep its optional fields present on this ABI.
         debug_message: Some(String::new()),
         retry_after_seconds: Some(0),
+        details: None,
     }
 }
 
@@ -332,6 +533,7 @@ fn service_error<T>(message: String) -> PluginResult<T> {
         public_message: "command plugin host service failed".to_string(),
         debug_message: Some(message),
         retry_after_seconds: Some(0),
+        details: None,
     })
 }
 
@@ -342,6 +544,7 @@ fn unsupported_response(request: PluginHostRequest) -> PluginHostResponse {
         PluginHostRequest::StateSet(_) => PluginHostResponse::StateSet(unsupported()),
         PluginHostRequest::StateDelete(_) => PluginHostResponse::StateDelete(unsupported()),
         PluginHostRequest::Http(_) => PluginHostResponse::Http(unsupported()),
+        PluginHostRequest::HttpBatch(_) => PluginHostResponse::HttpBatch(unsupported()),
         PluginHostRequest::SocketOpen(_) => PluginHostResponse::SocketOpen(unsupported()),
         PluginHostRequest::SocketRead(_) => PluginHostResponse::SocketRead(unsupported()),
         PluginHostRequest::SocketWrite(_) => PluginHostResponse::SocketWrite(unsupported()),
@@ -506,6 +709,63 @@ mod tests {
                 .remaining_http_timeout(Duration::from_secs(5))
                 .unwrap_err(),
             "command plugin HTTP deadline exhausted"
+        );
+    }
+
+    #[test]
+    fn overlapping_http_batches_share_the_most_restrictive_active_rate() {
+        let url = "https://batch-rate.example.test/search";
+        let key = http_batch_limiter_key("batch-rate-test", url).expect("valid limiter key");
+        let three_per_second = register_http_batch(
+            "batch-rate-test",
+            [url.to_string()],
+            3,
+            1_000,
+        )
+        .expect("first batch should register");
+        let two_per_second = register_http_batch(
+            "batch-rate-test",
+            [url.to_string()],
+            2,
+            1_000,
+        )
+        .expect("overlapping batch should register");
+
+        let effective_spacing = HTTP_BATCH_LIMITER
+            .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+            .lock()
+            .expect("limiter lock")
+            .buckets
+            .get(&key)
+            .expect("shared bucket")
+            .active_spacings
+            .values()
+            .copied()
+            .max();
+        assert_eq!(effective_spacing, Some(Duration::from_millis(500)));
+
+        drop(two_per_second);
+        let effective_spacing = HTTP_BATCH_LIMITER
+            .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+            .lock()
+            .expect("limiter lock")
+            .buckets
+            .get(&key)
+            .expect("remaining bucket")
+            .active_spacings
+            .values()
+            .copied()
+            .max();
+        assert_eq!(effective_spacing, Some(Duration::from_millis(334)));
+
+        drop(three_per_second);
+        assert!(
+            !HTTP_BATCH_LIMITER
+                .get_or_init(|| Mutex::new(HttpBatchLimiter::default()))
+                .lock()
+                .expect("limiter lock")
+                .buckets
+                .contains_key(&key)
         );
     }
 

@@ -47,6 +47,16 @@ impl AppUseCase {
             Some(&normalized_config_json),
         )?;
         let validated_base_url = validate_test_flight_url(&base_url)?;
+        if validated_base_url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("nzbgeek.info")
+                || host.eq_ignore_ascii_case("www.nzbgeek.info"))
+        {
+            return Err(AppError::Validation(
+                "NZBGeek's website host cannot serve Newznab API requests; use https://api.nzbgeek.info"
+                    .to_string(),
+            ));
+        }
         preflight_test_flight_url(&validated_base_url).await?;
 
         let provider = self
@@ -194,9 +204,21 @@ impl AppUseCase {
             .await
             .map_err(map_indexer_connection_test_error)?;
 
-        let _ = self
-            .refresh_caps_snapshot_json_best_effort(&temp_config, None)
-            .await;
+        let caps_refresh_available = self
+            .services
+            .integrations
+            .indexer_caps_refresher
+            .available()
+            .is_some();
+        let caps_snapshot = self
+            .fetch_caps_snapshot_json_for_config(&temp_config)
+            .await
+            .map_err(map_indexer_connection_test_error)?;
+        if caps_refresh_available && temp_config.is_direct_nab() && caps_snapshot.is_none() {
+            return Err(AppError::Validation(
+                "indexer connection test did not return a valid Newznab caps document".to_string(),
+            ));
+        }
 
         if let Some(config) = persisted_config.as_ref() {
             self.services
@@ -746,6 +768,7 @@ mod tests {
             }
 
             Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
                 indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,

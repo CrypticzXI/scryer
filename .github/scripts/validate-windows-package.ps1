@@ -353,10 +353,10 @@ function Assert-MsiDistributionOwner {
     [string]$ExpectedOwner
   )
 
-  $actualOwner = Get-MsiRegistryStringValue `
+  $actualOwner = (Get-MsiRegistryStringValue `
     -MsiPath $MsiPath `
     -Key "Software\Scryer Media\Scryer" `
-    -Name "DistributionOwner"
+    -Name "DistributionOwner").Trim()
   if ($actualOwner -ne $ExpectedOwner) {
     throw "MSI DistributionOwner was '$actualOwner', expected '$ExpectedOwner': $MsiPath"
   }

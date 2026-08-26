@@ -390,8 +390,8 @@ function CalendarEventHoverCard({
         ) : null}
         <WatchInMediaServerMenu
           links={episode.playbackLinks}
-          compact
-          className="mt-2 border border-border/70"
+          showLabel
+          className="mt-2"
         />
         <div className="fc-scryer-hover-card-footer">
           {airDate ? (

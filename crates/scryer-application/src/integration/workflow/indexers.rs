@@ -232,7 +232,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn fetch_caps_snapshot_json_for_config(
+    pub(crate) async fn fetch_caps_snapshot_json_for_config(
         &self,
         config: &IndexerConfig,
     ) -> AppResult<Option<String>> {
@@ -259,9 +259,39 @@ impl AppUseCase {
         fallback: Option<&str>,
     ) -> Option<String> {
         match self.fetch_caps_snapshot_json_for_config(config).await {
-            Ok(Some(snapshot_json)) => Some(snapshot_json),
+            Ok(Some(snapshot_json)) => {
+                if let Err(error) = self
+                    .services
+                    .integrations
+                    .indexer_configs
+                    .clear_last_error(&config.id)
+                    .await
+                {
+                    tracing::warn!(config_id = %config.id, error = %error, "failed to clear recovered indexer caps error");
+                }
+                Some(snapshot_json)
+            }
             Ok(None) => fallback.map(ToOwned::to_owned),
             Err(error) => {
+                let message = format!("caps refresh failed: {error}");
+                if let Err(record_error) = self
+                    .services
+                    .integrations
+                    .indexer_configs
+                    .record_last_error(&config.id, Some(message))
+                    .await
+                {
+                    tracing::warn!(config_id = %config.id, error = %record_error, "failed to persist indexer caps health error");
+                }
+                if let Err(prune_error) = self
+                    .services
+                    .integrations
+                    .scope_indexer_coverage
+                    .prune_indexer(&config.id)
+                    .await
+                {
+                    tracing::warn!(config_id = %config.id, error = %prune_error, "failed to invalidate coverage after caps refresh failure");
+                }
                 tracing::warn!(
                     config_id = %config.id,
                     provider_type = %config.provider_type,

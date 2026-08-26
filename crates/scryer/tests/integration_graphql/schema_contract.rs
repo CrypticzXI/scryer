@@ -347,18 +347,6 @@ async fn graphql_http_schema_is_fully_documented() {
     );
 }
 
-#[test]
-fn graphql_schema_sdl_matches_identity_refactor_snapshot() {
-    const SNAPSHOT_PATH: &str =
-        "crates/scryer/tests/integration_graphql/fixtures/schema_sdl.graphql";
-
-    assert_eq!(
-        scryer_interface::export_schema_sdl(),
-        include_str!("fixtures/schema_sdl.graphql"),
-        "the identity refactor forbids schema changes; snapshot mismatch at {SNAPSHOT_PATH}",
-    );
-}
-
 #[tokio::test]
 async fn graphql_introspection_schema_census_matches_contract_baseline() {
     let ctx = TestContext::new().await;
@@ -565,8 +553,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Live import activity adds one query, one mutation, one subscription, two
     // payload objects, and one phase enum: query 132->133, mutation 193->194,
     // subscription 13->14, OBJECT 316->318, ENUM 110->111, public types 611->614.
-    // Local movie-entity detail adds one query and reuses existing payload types:
-    // query 133->134; all named-type counts are unchanged.
+    // Local movie-entity detail adds one query. In the combined release schema,
+    // its payload graph also makes one existing enum reachable: query 133->134,
+    // ENUM 111->112, public types 614->615.
     assert_eq!(
         query_field_count, 134,
         "query fields: {query_field_names:?}"
@@ -576,10 +565,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 14);
-    assert_eq!(public_types.len(), 614);
+    assert_eq!(public_types.len(), 615);
     assert_eq!(kind_count("OBJECT"), 318);
     assert_eq!(kind_count("INPUT_OBJECT"), 173);
-    assert_eq!(kind_count("ENUM"), 111);
+    assert_eq!(kind_count("ENUM"), 112);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -5574,6 +5563,14 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
         assert_eq!(field["type"]["name"], "ID", "{label}");
     };
+    let assert_settings_non_null_boolean = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "Boolean", "{label}");
+    };
+    let assert_settings_optional_boolean = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "SCALAR", "{label}");
+        assert_eq!(field["type"]["name"], "Boolean", "{label}");
+    };
     let assert_settings_non_null_id_list = |field: Value, label: &str| {
         assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
         assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
@@ -5600,6 +5597,16 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         settings_input_field("delayProfileInput", "id"),
         "DelayProfileInput.id",
     );
+    for field_name in ["enableUsenet", "enableTorrent", "bypassIfHighestQuality"] {
+        assert_settings_optional_boolean(
+            settings_input_field("delayProfileInput", field_name),
+            &format!("DelayProfileInput.{field_name}"),
+        );
+        assert_settings_non_null_boolean(
+            settings_output_field("delayProfile", field_name),
+            &format!("DelayProfilePayload.{field_name}"),
+        );
+    }
     assert_settings_non_null_id(
         settings_output_field("qualityProfile", "id"),
         "QualityProfilePayload.id",

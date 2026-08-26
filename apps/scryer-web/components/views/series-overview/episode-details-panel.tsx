@@ -45,18 +45,19 @@ export function EpisodeDetailsPanel({
   return (
     <div id={selectorId("series-overview-episode-details", episode.id)} className="space-y-3">
       <div className="flex items-start gap-4">
+        <div className="flex w-40 shrink-0 flex-col items-start gap-2 sm:w-48">
           {episodeImageUrl && !imageFailed ? (
             <img
               src={episodeImageUrl}
               alt={episodeImageAlt}
               loading="lazy"
               decoding="async"
-              className="w-40 shrink-0 rounded border border-border/70 bg-muted [image-rendering:smooth] sm:w-48"
+              className="w-full rounded border border-border/70 bg-muted [image-rendering:smooth]"
               onError={() => setImageFailed(true)}
             />
           ) : (
             <ArtworkFallback
-              className="aspect-video w-40 shrink-0 rounded border border-border/70 sm:w-48"
+              className="aspect-video w-full rounded border border-border/70"
               ariaLabel={episodeImageAlt}
               emptyLabel={t("label.noArt")}
               title={episode.title ?? episode.episodeLabel ?? episode.id}
@@ -64,14 +65,19 @@ export function EpisodeDetailsPanel({
               showText={false}
             />
           )}
-          {episode.overview ? (
-            <div className="min-w-0 flex-1">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>
-              <p className="text-sm leading-relaxed text-muted-foreground">{episode.overview}</p>
-            </div>
-          ) : null}
+          <WatchInMediaServerMenu
+            links={episode.playbackLinks}
+            showLabel
+            className="w-full justify-start"
+          />
         </div>
-      <WatchInMediaServerMenu links={episode.playbackLinks} />
+        {episode.overview ? (
+          <div className="min-w-0 flex-1">
+            <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">{episode.overview}</p>
+          </div>
+        ) : null}
+        </div>
       <MediaFilesOnDiskPanel<EpisodeMediaFile>
         emptyMessage={t("title.noFilesTracked")}
         emptyHint={t("title.noFilesTrackedHint")}

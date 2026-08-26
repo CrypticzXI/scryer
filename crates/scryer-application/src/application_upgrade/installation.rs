@@ -192,7 +192,7 @@ fn env_marker_enabled(value: Option<&str>) -> bool {
 }
 
 fn package_is(value: Option<&str>, expected: &str) -> bool {
-    value.is_some_and(|value| value.eq_ignore_ascii_case(expected))
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
 }
 
 fn is_homebrew_layout(evidence: &InstallationEvidence) -> bool {
@@ -362,6 +362,20 @@ mod tests {
             ManagementOwner::Operator,
             false,
             EligibilityReason::UnsupportedLayout,
+        );
+    }
+
+    #[test]
+    fn classifies_whitespace_padded_windows_distribution_owner() {
+        let mut direct_msi = evidence();
+        direct_msi.os = InstallationOs::Windows;
+        direct_msi.windows_distribution_owner = Some("  msi  ".to_string());
+        assert_assessment(
+            direct_msi,
+            InstallationKind::DirectMsi,
+            ManagementOwner::InApp,
+            true,
+            EligibilityReason::Eligible,
         );
     }
 

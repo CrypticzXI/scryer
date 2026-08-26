@@ -130,6 +130,7 @@
     ],
     "provider_type": "torznab",
     "rate_limit_seconds": 2,
+    "search_semantics_version": 1,
     "source_kind": "torrent"
   },
   "sdk_constraint": ">=3.8.0, <4.0.0",

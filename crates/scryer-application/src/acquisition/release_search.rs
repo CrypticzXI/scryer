@@ -93,6 +93,10 @@ pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) canonical_key: String,
     pub(crate) year: Option<i32>,
+    /// Years corroborated by season-scoped metadata. Generic aliases never
+    /// enter this set; only year-bearing aliases and the requested episode's
+    /// air year can relax the root-title year veto.
+    pub(crate) supported_release_years: HashSet<i32>,
     pub(crate) parse_context: crate::ReleaseParseContext,
     /// Library-local collision data. Defaults to "not ambiguous" so every
     /// existing construction site keeps its behavior; the resolution paths
@@ -170,6 +174,9 @@ pub(crate) enum ReleaseAutoDecisionCode {
     QueuedBetterOrEqual,
     DbBlocklisted,
     PendingDelay,
+    MinimumAge,
+    ReleaseAgeUnknown,
+    ProtocolDisabled,
     DownloadClientUnavailable,
     RepackGroupMismatch,
     MinimumSeeders,
@@ -198,6 +205,9 @@ impl ReleaseAutoDecisionCode {
             "queued_better_or_equal" => Some(Self::QueuedBetterOrEqual),
             "db_blocklisted" => Some(Self::DbBlocklisted),
             "pending_delay" => Some(Self::PendingDelay),
+            "minimum_age" => Some(Self::MinimumAge),
+            "release_age_unknown" => Some(Self::ReleaseAgeUnknown),
+            "protocol_disabled" => Some(Self::ProtocolDisabled),
             "download_client_unavailable" => Some(Self::DownloadClientUnavailable),
             "repack_group_mismatch" => Some(Self::RepackGroupMismatch),
             "minimum_seeders" => Some(Self::MinimumSeeders),
@@ -225,6 +235,9 @@ impl ReleaseAutoDecisionCode {
             Self::QueuedBetterOrEqual => "queued_better_or_equal",
             Self::DbBlocklisted => "db_blocklisted",
             Self::PendingDelay => "pending_delay",
+            Self::MinimumAge => "minimum_age",
+            Self::ReleaseAgeUnknown => "release_age_unknown",
+            Self::ProtocolDisabled => "protocol_disabled",
             Self::DownloadClientUnavailable => "download_client_unavailable",
             Self::RepackGroupMismatch => "repack_group_mismatch",
             Self::MinimumSeeders => "minimum_seeders",
@@ -265,6 +278,9 @@ impl ReleaseAutoDecisionCode {
             }
             Self::DbBlocklisted => "release is blocklisted from prior failures",
             Self::PendingDelay => "release is eligible but held by a delay profile",
+            Self::MinimumAge => "release has not reached the configured usenet minimum age",
+            Self::ReleaseAgeUnknown => "release age is unavailable for an active age gate",
+            Self::ProtocolDisabled => "release protocol is disabled by the delay profile",
             Self::DownloadClientUnavailable => "matching download clients are unavailable",
             Self::RepackGroupMismatch => "repack group does not match the existing file",
             Self::MinimumSeeders => "too few seeders for this indexer's seeding profile",
@@ -301,6 +317,12 @@ pub(crate) struct AutoCandidateEvaluationContext<'a> {
     /// (`if (information.SearchCriteria != null) return Accept()`). The old-file
     /// guard binds only here.
     pub(crate) is_rss_lane: bool,
+    /// Interactive searches bypass protocol delay while retaining hard minimum
+    /// age and permanent diagnostics.
+    pub(crate) user_invoked: bool,
+    /// Publication timestamp of the oldest active pending release overlapping
+    /// this scope. Populated only by the RSS merge lane.
+    pub(crate) oldest_overlapping_pending_published_at: Option<DateTime<Utc>>,
     pub(crate) now: &'a DateTime<Utc>,
     pub(crate) dl_snapshot: Option<&'a crate::acquisition_workflow::DownloadClientSnapshot>,
     pub(crate) db_blocklist: &'a HashSet<String>,
@@ -357,6 +379,29 @@ fn canonical_title_evidence_for_episode(
 ) -> CanonicalTitleEvidence {
     let lookup_keys = canonical_title_lookup_keys(title);
     let canonical_key = crate::title_matching::canonical_lookup_key(&title.name);
+    let mut supported_release_years = HashSet::new();
+    for alias in title
+        .aliases
+        .iter()
+        .map(String::as_str)
+        .chain(title.tagged_aliases.iter().map(|alias| alias.name.as_str()))
+    {
+        for token in alias.split(|character: char| !character.is_ascii_digit()) {
+            if token.len() == 4
+                && let Ok(year) = token.parse::<i32>()
+                && (1900..=2099).contains(&year)
+            {
+                supported_release_years.insert(year);
+            }
+        }
+    }
+    if let Some(air_year) = episode
+        .and_then(|episode| episode.air_date.as_deref())
+        .and_then(|air_date| air_date.get(..4))
+        .and_then(|year| year.parse::<i32>().ok())
+    {
+        supported_release_years.insert(air_year);
+    }
     let mut parse_context =
         crate::build_release_parse_context(title, episode, None, Some(title.facet.as_str()));
     if title.year.is_some() {
@@ -381,6 +426,7 @@ fn canonical_title_evidence_for_episode(
         lookup_keys,
         canonical_key,
         year: title.year,
+        supported_release_years,
         parse_context,
         ambiguity,
     }
@@ -708,12 +754,15 @@ pub(crate) fn match_parsed_release_to_title_evidence(
 ) -> Option<TitleEvidenceMatch> {
     if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
+        && !evidence.supported_release_years.contains(&parsed_year)
     {
         return None;
     }
 
-    let year_corroborated =
-        parsed.year.is_some() && evidence.year.is_some() && parsed.year == evidence.year;
+    let year_corroborated = parsed.year.is_some_and(|parsed_year| {
+        evidence.year == Some(parsed_year)
+            || evidence.supported_release_years.contains(&parsed_year)
+    });
     contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
 }
 
@@ -857,51 +906,146 @@ pub(crate) fn candidate_presents_identity_disambiguator(
     external_id_agreement.unwrap_or(false)
 }
 
+const EXTERNAL_ID_CONFLICTS_EXTRA_KEY: &str = "scryer_external_id_conflicts";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ExternalIdComparison {
+    compared: bool,
+    matched: bool,
+    conflicts: Vec<ExternalIdConflict>,
+}
+
+impl ExternalIdComparison {
+    fn agreement(&self) -> Option<bool> {
+        if self.matched {
+            Some(true)
+        } else {
+            self.compared.then_some(false)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExternalIdConflict {
+    kind: &'static str,
+    expected: String,
+    actual: String,
+}
+
 /// Compare the indexer's response ids against ids Scryer already holds.
 ///
-/// `Some(false)` when any comparable id kind disagrees, `Some(true)` when all
-/// comparable kinds agree, and `None` when there was nothing to compare. An
-/// explicit contradiction is stronger evidence than a second id's agreement.
+/// Agreement is positive disambiguating evidence. Conflicts remain advisory:
+/// they are retained separately for diagnostics and never override an
+/// agreement from another id kind.
 pub(crate) fn external_id_agreement(
     response: &IndexerResponseAttributes,
     tvdb_id: Option<&str>,
     tmdb_id: Option<&str>,
     imdb_id: Option<&str>,
 ) -> Option<bool> {
-    let agreements = [
-        numeric_external_id_agreement(response.tvdb_id.as_deref(), tvdb_id),
-        numeric_external_id_agreement(response.tmdb_id.as_deref(), tmdb_id),
-        imdb_external_id_agreement(response.imdb_id.as_deref(), imdb_id),
-    ];
-
-    if agreements.contains(&Some(false)) {
-        return Some(false);
-    }
-    agreements.contains(&Some(true)).then_some(true)
+    external_id_comparison(response, tvdb_id, tmdb_id, imdb_id).agreement()
 }
 
-fn numeric_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+fn numeric_external_id_values(
+    response: Option<&str>,
+    subject: Option<&str>,
+) -> Option<(String, String)> {
     let response = response.map(str::trim).filter(|value| !value.is_empty())?;
     let subject = subject.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(response == subject)
+    Some((response.to_string(), subject.to_string()))
 }
 
-fn imdb_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+fn imdb_external_id_values(
+    response: Option<&str>,
+    subject: Option<&str>,
+) -> Option<(String, String)> {
     let response = crate::normalize::normalize_imdb_id(response?)?;
     let subject = crate::normalize::normalize_imdb_id(subject?)?;
-    Some(response == subject)
+    Some((response, subject))
+}
+
+fn external_id_comparison(
+    response: &IndexerResponseAttributes,
+    tvdb_id: Option<&str>,
+    tmdb_id: Option<&str>,
+    imdb_id: Option<&str>,
+) -> ExternalIdComparison {
+    let mut comparison = ExternalIdComparison::default();
+    for (kind, values) in [
+        (
+            "tvdb",
+            numeric_external_id_values(response.tvdb_id.as_deref(), tvdb_id),
+        ),
+        (
+            "tmdb",
+            numeric_external_id_values(response.tmdb_id.as_deref(), tmdb_id),
+        ),
+        (
+            "imdb",
+            imdb_external_id_values(response.imdb_id.as_deref(), imdb_id),
+        ),
+    ] {
+        let Some((actual, expected)) = values else {
+            continue;
+        };
+        comparison.compared = true;
+        if actual == expected {
+            comparison.matched = true;
+        } else {
+            comparison.conflicts.push(ExternalIdConflict {
+                kind,
+                expected,
+                actual,
+            });
+        }
+    }
+    comparison
+}
+
+fn candidate_external_id_comparison(
+    candidate: &IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) -> ExternalIdComparison {
+    external_id_comparison(
+        &candidate.response_attributes,
+        subject.tvdb_id.as_deref(),
+        subject.tmdb_id.as_deref(),
+        subject.imdb_id.as_deref(),
+    )
 }
 
 fn candidate_external_id_agreement(
     candidate: &IndexerSearchResult,
     subject: &ResolvedReleaseSearchSubject,
 ) -> Option<bool> {
-    external_id_agreement(
-        &candidate.response_attributes,
-        subject.tvdb_id.as_deref(),
-        subject.tmdb_id.as_deref(),
-        subject.imdb_id.as_deref(),
-    )
+    candidate_external_id_comparison(candidate, subject).agreement()
+}
+
+fn annotate_external_id_diagnostics(
+    candidate: &mut IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) {
+    let comparison = candidate_external_id_comparison(candidate, subject);
+    if comparison.conflicts.is_empty() {
+        candidate.extra.remove(EXTERNAL_ID_CONFLICTS_EXTRA_KEY);
+        return;
+    }
+    candidate.extra.insert(
+        EXTERNAL_ID_CONFLICTS_EXTRA_KEY.to_string(),
+        serde_json::Value::Array(
+            comparison
+                .conflicts
+                .into_iter()
+                .map(|conflict| {
+                    serde_json::json!({
+                        "kind": conflict.kind,
+                        "expected": conflict.expected,
+                        "actual": conflict.actual,
+                    })
+                })
+                .collect(),
+        ),
+    );
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1051,6 +1195,7 @@ pub(crate) fn serialize_decision_explanation(candidate: &IndexerSearchResult) ->
             "guid": candidate.guid.as_deref(),
             "download_url_present": candidate.download_url.as_deref().is_some_and(|value| !value.trim().is_empty()),
             "link_present": candidate.link.as_deref().is_some_and(|value| !value.trim().is_empty()),
+            "external_id_conflicts": candidate.extra.get(EXTERNAL_ID_CONFLICTS_EXTRA_KEY),
         },
         "auto_decision": {
             "eligible": candidate.auto_eligible,
@@ -1240,6 +1385,79 @@ fn candidate_meets_minimum_seeders(
     )
 }
 
+/// Evaluate only the delay-profile portion of the automatic decision using the
+/// same current candidate and incumbent facts as the full evaluator. RSS uses
+/// the returned exact deadline when persisting a temporary decision.
+pub(crate) fn auto_candidate_delay_decision(
+    candidate: &IndexerSearchResult,
+    context: &AutoCandidateEvaluationContext<'_>,
+) -> Option<crate::delay_profile::DelayDecision> {
+    automatic_candidate_delay_decision(
+        candidate,
+        context.title,
+        context.admission,
+        context.profile,
+        context.delay_profiles,
+        context.user_invoked,
+        context.oldest_overlapping_pending_published_at,
+        context.now,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the search lane must reuse the exact delay inputs used by automatic evaluation"
+)]
+pub(crate) fn automatic_candidate_delay_decision(
+    candidate: &IndexerSearchResult,
+    title: &Title,
+    admission: &crate::admission::AdmissionSubject,
+    profile: &QualityProfile,
+    delay_profiles: &[DelayProfile],
+    user_invoked: bool,
+    oldest_overlapping_pending_published_at: Option<DateTime<Utc>>,
+    now: &DateTime<Utc>,
+) -> Option<crate::delay_profile::DelayDecision> {
+    let candidate_score = candidate
+        .quality_profile_decision
+        .as_ref()
+        .map(|decision| decision.preference_score)
+        .unwrap_or(0);
+    let candidate_facts = crate::admission::CandidateFacts::new(
+        crate::quality_profile::quality_tier_index(
+            &profile.criteria,
+            candidate
+                .parsed_release_metadata
+                .as_ref()
+                .and_then(|parsed| parsed.quality.as_deref()),
+        ),
+        candidate_revision(candidate),
+        candidate_score,
+    );
+    let delay_context = crate::delay_profile::DelayPolicyContext {
+        user_invoked,
+        candidate_score,
+        preferred_protocol_same_tier_revision: admission.incumbents().iter().any(|incumbent| {
+            incumbent.tier_index == candidate_facts.tier_index
+                && candidate_facts.revision > incumbent.revision
+        }),
+        preferred_protocol_highest_quality: candidate_facts.tier_index == Some(0),
+        oldest_overlapping_pending_published_at,
+    };
+    crate::delay_profile::grab_time_delay_decision_with_context(
+        delay_profiles,
+        &title.tags,
+        &title.facet,
+        candidate.source_kind,
+        candidate
+            .published_at
+            .as_deref()
+            .and_then(crate::quality_profile::parse_published_at),
+        &delay_context,
+        now,
+    )
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
@@ -1322,9 +1540,6 @@ pub(crate) fn evaluate_auto_candidate(
     }
 
     let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
-    if external_id_agreement == Some(false) {
-        return ReleaseAutoDecisionCode::TitleMismatch;
-    }
     if title_match
         .evidence_match
         .as_ref()
@@ -1485,24 +1700,41 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::RepackGroupMismatch;
     }
 
-    if let Some(delay_decision) = crate::delay_profile::grab_time_delay_decision(
-        context.delay_profiles,
-        &context.title.tags,
-        &context.title.facet,
-        candidate.source_kind,
-        candidate
-            .published_at
-            .as_deref()
-            .and_then(crate::quality_profile::parse_published_at),
-        candidate_score,
-        None,
-        context.now,
-    ) && delay_decision.should_hold()
+    if let Some(delay_decision) = auto_candidate_delay_decision(candidate, context)
+        && delay_decision.blocks_grab()
     {
-        return ReleaseAutoDecisionCode::PendingDelay;
+        return match delay_decision.reason {
+            crate::delay_profile::DelayDecisionReason::Eligible => {
+                ReleaseAutoDecisionCode::Eligible
+            }
+            crate::delay_profile::DelayDecisionReason::PendingDelay => {
+                ReleaseAutoDecisionCode::PendingDelay
+            }
+            crate::delay_profile::DelayDecisionReason::MinimumAge => {
+                ReleaseAutoDecisionCode::MinimumAge
+            }
+            crate::delay_profile::DelayDecisionReason::ReleaseAgeUnknown => {
+                ReleaseAutoDecisionCode::ReleaseAgeUnknown
+            }
+            crate::delay_profile::DelayDecisionReason::ProtocolDisabled => {
+                ReleaseAutoDecisionCode::ProtocolDisabled
+            }
+        };
     }
 
     ReleaseAutoDecisionCode::Eligible
+}
+
+fn active_pending_release_delay_code(
+    code: ReleaseAutoDecisionCode,
+    user_invoked: bool,
+    has_active_pending_overlap: bool,
+) -> ReleaseAutoDecisionCode {
+    if !user_invoked && has_active_pending_overlap && code == ReleaseAutoDecisionCode::Eligible {
+        ReleaseAutoDecisionCode::PendingDelay
+    } else {
+        code
+    }
 }
 
 fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Option<String> {
@@ -1628,6 +1860,7 @@ impl AppUseCase {
         title: &Title,
         subject: &ResolvedReleaseSearchSubject,
         mut results: Vec<IndexerSearchResult>,
+        user_invoked: bool,
     ) -> Vec<IndexerSearchResult> {
         // `DbBlocklisted` reads the per-title blocklist (the single, removable
         // exclusion source), never the failed-attempt history.
@@ -1768,6 +2001,37 @@ impl AppUseCase {
                 admission = admission.with_queued(queued);
             }
         }
+        let has_active_pending_overlap = if user_invoked {
+            false
+        } else {
+            let covered_wanted_item_ids = self
+                .covered_wanted_item_ids_for_submission_scope(
+                    &title.id,
+                    &subject.submission_scope,
+                    "",
+                )
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<HashSet<_>>();
+            !covered_wanted_item_ids.is_empty()
+                && self
+                    .services
+                    .workflow
+                    .pending_releases
+                    .list_pending_releases_for_title(&title.id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|release| {
+                        matches!(
+                            release.status,
+                            crate::types::PendingReleaseStatus::Waiting
+                                | crate::types::PendingReleaseStatus::Standby
+                                | crate::types::PendingReleaseStatus::Processing
+                        ) && covered_wanted_item_ids.contains(&release.wanted_item_id)
+                    })
+        };
         let evaluation_context = AutoCandidateEvaluationContext {
             title,
             subject,
@@ -1783,6 +2047,8 @@ impl AppUseCase {
             // Convergence and interactive both land here, and neither is a feed
             // pass: the old-file guard is Sonarr's RSS-only rule.
             is_rss_lane: false,
+            user_invoked,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: Some(&dl_snapshot),
             db_blocklist: &db_blocklist,
@@ -1799,7 +2065,12 @@ impl AppUseCase {
             {
                 continue;
             }
-            let code = evaluate_auto_candidate(candidate, &evaluation_context);
+            let code = active_pending_release_delay_code(
+                evaluate_auto_candidate(candidate, &evaluation_context),
+                user_invoked,
+                has_active_pending_overlap,
+            );
+            annotate_external_id_diagnostics(candidate, evaluation_context.subject);
             annotate_auto_decision(candidate, code);
         }
 
@@ -2211,6 +2482,32 @@ mod tests {
     use super::*;
     use scryer_domain::{MediaFacet, TaggedAlias, Title};
 
+    #[test]
+    fn active_pending_overlap_temporarily_delays_an_automatic_search() {
+        assert_eq!(
+            active_pending_release_delay_code(ReleaseAutoDecisionCode::Eligible, false, true),
+            ReleaseAutoDecisionCode::PendingDelay
+        );
+    }
+
+    #[test]
+    fn interactive_search_skips_the_active_pending_delay_gate() {
+        assert_eq!(
+            active_pending_release_delay_code(ReleaseAutoDecisionCode::Eligible, true, true),
+            ReleaseAutoDecisionCode::Eligible
+        );
+    }
+
+    #[test]
+    fn active_pending_delay_does_not_hide_minimum_age_or_permanent_diagnostics() {
+        for code in [
+            ReleaseAutoDecisionCode::MinimumAge,
+            ReleaseAutoDecisionCode::ProtocolDisabled,
+        ] {
+            assert_eq!(active_pending_release_delay_code(code, false, true), code);
+        }
+    }
+
     fn make_title() -> Title {
         Title {
             id: "title-1".to_string(),
@@ -2565,6 +2862,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2643,6 +2942,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2748,6 +3049,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2786,6 +3089,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2827,6 +3132,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -2863,6 +3170,51 @@ mod tests {
             crate::parse_release_metadata("Pals.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA");
         assert_eq!(legit.year, None);
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
+    }
+
+    #[test]
+    fn generic_alias_does_not_support_a_conflicting_release_year() {
+        let mut title = make_title();
+        title.name = "Fixture Sitcom".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        title.aliases = vec!["Fixture Sitcom US".to_string()];
+        title.tagged_aliases = vec![TaggedAlias {
+            name: "Fixture Sitcom Television Series".to_string(),
+            language: "eng".to_string(),
+        }];
+        let evidence = canonical_title_evidence(&title);
+
+        assert!(evidence.supported_release_years.is_empty());
+        let conflicting = crate::parse_release_metadata(
+            "Fixture.Sitcom.2002.S01E03.1080p.WEB-DL.DDP5.1.H.264-GRP",
+        );
+        assert_eq!(conflicting.year, Some(2002));
+        assert!(!parsed_release_matches_title_evidence(
+            &conflicting,
+            &evidence
+        ));
+    }
+
+    #[test]
+    fn year_bearing_alias_supports_anime_continuation_release_year() {
+        let mut title = make_title();
+        title.name = "Fixture Anime".to_string();
+        title.facet = MediaFacet::Anime;
+        title.year = Some(2004);
+        title.aliases = vec!["Fixture Anime Continuation (2023)".to_string()];
+        title.tagged_aliases.clear();
+        let evidence = canonical_title_evidence(&title);
+
+        assert!(evidence.supported_release_years.contains(&2023));
+        let continuation = crate::parse_release_metadata(
+            "Fixture.Anime.Continuation.2023.S17E03.1080p.WEB-DL-GRP",
+        );
+        assert_eq!(continuation.year, Some(2023));
+        assert!(parsed_release_matches_title_evidence(
+            &continuation,
+            &evidence
+        ));
     }
 
     // ── Identity ambiguity and required disambiguators ──────────────────────
@@ -2933,6 +3285,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3090,7 +3444,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_response_id_is_a_title_mismatch_even_when_another_id_agrees() {
+    fn conflicting_response_id_is_advisory_when_another_id_agrees() {
         let live_action = year_qualified_tide_chart();
         let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
         subject.tvdb_id = Some("392276".to_string());
@@ -3101,7 +3455,61 @@ mod tests {
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
-            ReleaseAutoDecisionCode::TitleMismatch
+            ReleaseAutoDecisionCode::QualityBlocked,
+            "stale advisory metadata must not veto an otherwise valid title match"
+        );
+        assert_eq!(
+            candidate_external_id_agreement(&candidate, &subject),
+            Some(true),
+            "the agreeing TVDB id remains positive disambiguating evidence"
+        );
+
+        annotate_external_id_diagnostics(&mut candidate, &subject);
+        assert_eq!(
+            candidate.extra.get(EXTERNAL_ID_CONFLICTS_EXTRA_KEY),
+            Some(&serde_json::json!([{
+                "kind": "tmdb",
+                "expected": "111110",
+                "actual": "999999",
+            }])),
+            "the advisory conflict remains visible for diagnostics"
+        );
+
+        candidate.response_attributes.tvdb_id = Some("888888".to_string());
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity,
+            "conflicting ids do not veto the title, but also cannot clear its ambiguity gate"
+        );
+        assert_eq!(
+            candidate_external_id_agreement(&candidate, &subject),
+            Some(false),
+            "conflicts alone still do not satisfy an ambiguity gate"
+        );
+    }
+
+    #[test]
+    fn conflicting_response_id_does_not_veto_an_unambiguous_title() {
+        let mut title = make_title();
+        title.external_ids.push(ExternalId {
+            source: "tvdb".to_string(),
+            value: "425348".to_string(),
+        });
+        let mut subject = numbering_scoped_subject(&title, Some(1), Some(2));
+        subject.tvdb_id = Some("425348".to_string());
+        let mut candidate = make_candidate("Nightfall.S01E02.1080p.WEB-DL.x264-GRP", None);
+        candidate.response_attributes.tvdb_id = Some("999999".to_string());
+
+        assert_eq!(
+            decision_for(&title, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked,
+            "advisory indexer metadata must not override a valid unambiguous title match"
+        );
+        annotate_external_id_diagnostics(&mut candidate, &subject);
+        assert!(
+            candidate
+                .extra
+                .contains_key(EXTERNAL_ID_CONFLICTS_EXTRA_KEY)
         );
     }
 
@@ -3154,6 +3562,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3561,6 +3971,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -3710,6 +4122,8 @@ mod tests {
                     thresholds: &thresholds,
                     incumbent_at_cutoff: incumbent_at_cutoff(true, admission, Some(500)),
                     is_rss_lane: true,
+                    user_invoked: false,
+                    oldest_overlapping_pending_published_at: None,
                     now: &now,
                     dl_snapshot: None,
                     db_blocklist: &db_blocklist,
@@ -3992,6 +4406,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
@@ -4050,6 +4466,8 @@ mod tests {
             thresholds: &thresholds,
             incumbent_at_cutoff: false,
             is_rss_lane: false,
+            user_invoked: false,
+            oldest_overlapping_pending_published_at: None,
             now: &now,
             dl_snapshot: None,
             db_blocklist: &db_blocklist,
