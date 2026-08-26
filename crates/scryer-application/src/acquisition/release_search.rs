@@ -2990,6 +2990,51 @@ mod tests {
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
     }
 
+    #[test]
+    fn generic_alias_does_not_support_a_conflicting_release_year() {
+        let mut title = make_title();
+        title.name = "Fixture Sitcom".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        title.aliases = vec!["Fixture Sitcom US".to_string()];
+        title.tagged_aliases = vec![TaggedAlias {
+            name: "Fixture Sitcom Television Series".to_string(),
+            language: "eng".to_string(),
+        }];
+        let evidence = canonical_title_evidence(&title);
+
+        assert!(evidence.supported_release_years.is_empty());
+        let conflicting = crate::parse_release_metadata(
+            "Fixture.Sitcom.2002.S01E03.1080p.WEB-DL.DDP5.1.H.264-GRP",
+        );
+        assert_eq!(conflicting.year, Some(2002));
+        assert!(!parsed_release_matches_title_evidence(
+            &conflicting,
+            &evidence
+        ));
+    }
+
+    #[test]
+    fn year_bearing_alias_supports_anime_continuation_release_year() {
+        let mut title = make_title();
+        title.name = "Fixture Anime".to_string();
+        title.facet = MediaFacet::Anime;
+        title.year = Some(2004);
+        title.aliases = vec!["Fixture Anime Continuation (2023)".to_string()];
+        title.tagged_aliases.clear();
+        let evidence = canonical_title_evidence(&title);
+
+        assert!(evidence.supported_release_years.contains(&2023));
+        let continuation = crate::parse_release_metadata(
+            "Fixture.Anime.Continuation.2023.S17E03.1080p.WEB-DL-GRP",
+        );
+        assert_eq!(continuation.year, Some(2023));
+        assert!(parsed_release_matches_title_evidence(
+            &continuation,
+            &evidence
+        ));
+    }
+
     // ── Identity ambiguity and required disambiguators ──────────────────────
 
     /// The incident pair: a live-action `Tide Chart` (2023, series) and the

@@ -3392,7 +3392,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
 }
 
 #[tokio::test]
-async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_selected() {
+async fn acquisition_cycle_submits_one_hundred_episode_fallbacks_after_empty_pack_pass() {
     struct AutoGrabSeasonPackIndexerClient {
         searches: Arc<Mutex<Vec<RecordedIndexerSearch>>>,
     }
@@ -3422,6 +3422,17 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 season,
                 episode,
             });
+            if episode.is_none() {
+                return Ok(IndexerSearchResponse {
+                    completion: crate::IndexerSearchCompletion::Complete,
+                    indexer_outcomes: Vec::new(),
+                    results: Vec::new(),
+                    api_current: None,
+                    api_max: None,
+                    grab_current: None,
+                    grab_max: None,
+                });
+            }
 
             let release_title = match (season, episode) {
                 (Some(_season), Some(_episode)) => format!("{query}.1080p.WEB-DL"),
@@ -3555,7 +3566,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             ordered_path: None,
             narrative_order: Some("1".to_string()),
             first_episode_number: Some("1".to_string()),
-            last_episode_number: Some("2".to_string()),
+            last_episode_number: Some("100".to_string()),
             monitored: true,
             created_at: Utc::now(),
         })
@@ -3563,7 +3574,9 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
         .expect("create season");
 
     let mut wanted_ids = Vec::new();
-    for (episode_number, label) in [("1", "S01E01"), ("2", "S01E02")] {
+    for episode_number in 1..=100 {
+        let episode_number = episode_number.to_string();
+        let label = format!("S01E{episode_number:0>2}");
         let episode = app
             .services
             .catalog
@@ -3573,10 +3586,10 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 title_id: title.id.clone(),
                 collection_id: Some(season.id.clone()),
                 episode_type: scryer_domain::EpisodeType::Standard,
-                episode_number: Some(episode_number.to_string()),
+                episode_number: Some(episode_number.clone()),
                 season_number: Some("1".to_string()),
-                episode_label: Some(label.to_string()),
-                title: Some(label.to_string()),
+                episode_label: Some(label.clone()),
+                title: Some(label),
                 air_date: Some("2024-01-01".to_string()),
                 duration_seconds: Some(1_440),
                 has_multi_audio: false,
@@ -3609,7 +3622,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 collection_id: Some(season.id.clone()),
                 series_movie_link_id: None,
                 season_number: Some("1".to_string()),
-                episode_number: Some(episode_number.to_string()),
+                episode_number: Some(episode_number),
                 media_type: "episode".to_string(),
                 last_search_at: None,
                 status: AcquisitionScopeStatus::Wanted,
@@ -3624,6 +3637,8 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             .expect("seed due wanted item");
     }
 
+    // One cycle is one default 60-second poll tick, so completing all 100 here
+    // is stronger than the five-simulated-minute throughput requirement.
     app.run_convergence_cycle_once().await;
 
     let searches = recorded_searches.lock().await.clone();
@@ -3632,17 +3647,23 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
             .iter()
             .any(|search| search.season == Some(1) && search.episode.is_none())
     );
+    let submitted_titles = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
     assert_eq!(
-        download_client
-            .submitted_release_titles
-            .lock()
-            .await
-            .clone(),
-        vec![
-            "Emberfall S01E01.1080p.WEB-DL".to_string(),
-            "Emberfall S01E02.1080p.WEB-DL".to_string(),
-        ]
+        submitted_titles.len(),
+        100,
+        "searches: {searches:?}; submitted: {submitted_titles:?}"
     );
+    for episode_number in 1..=100 {
+        let expected_title = format!("Emberfall S01E{episode_number:02}.1080p.WEB-DL");
+        assert!(
+            submitted_titles.contains(&expected_title),
+            "missing episode submission {expected_title}"
+        );
+    }
 
     let submissions = download_submissions.store.lock().await.clone();
     assert!(!submissions.is_empty());
@@ -3661,12 +3682,16 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                 .expect("grabbed release recorded"),
         )
         .expect("grabbed release should parse");
-        let expected_title = match wanted.episode_number.as_deref() {
-            Some("1") => "Emberfall S01E01.1080p.WEB-DL",
-            Some("2") => "Emberfall S01E02.1080p.WEB-DL",
-            other => panic!("unexpected episode number: {other:?}"),
-        };
-        assert_eq!(grabbed_release["title"].as_str(), Some(expected_title));
+        let episode_number = wanted
+            .episode_number
+            .as_deref()
+            .and_then(|value| value.parse::<u32>().ok())
+            .expect("wanted episode number should be numeric");
+        let expected_title = format!("Emberfall S01E{episode_number:02}.1080p.WEB-DL");
+        assert_eq!(
+            grabbed_release["title"].as_str(),
+            Some(expected_title.as_str())
+        );
         assert_ne!(grabbed_release["season_pack"].as_bool(), Some(true));
     }
 }

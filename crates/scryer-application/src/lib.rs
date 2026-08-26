@@ -611,8 +611,9 @@ pub use types::{
     CapturedIndexerHttpHeader, CapturedIndexerHttpResponse, IndexerErrorClassification,
     IndexerErrorDetail, IndexerErrorOperation, IndexerErrorPage, IndexerErrorSummary,
     IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchCompletion,
-    IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, NewIndexerError,
-    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    IndexerSearchIncompleteReason, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, NewIndexerError, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
+    ReleaseStrategyKind,
     extract_magnet_info_hash, is_valid_magnet_uri,
 };
 pub use types::{

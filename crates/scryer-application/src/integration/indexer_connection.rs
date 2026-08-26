@@ -214,10 +214,7 @@ impl AppUseCase {
             .fetch_caps_snapshot_json_for_config(&temp_config)
             .await
             .map_err(map_indexer_connection_test_error)?;
-        if caps_refresh_available
-            && matches!(provider_type, "newznab" | "nzbgeek")
-            && caps_snapshot.is_none()
-        {
+        if caps_refresh_available && temp_config.is_direct_nab() && caps_snapshot.is_none() {
             return Err(AppError::Validation(
                 "indexer connection test did not return a valid Newznab caps document".to_string(),
             ));

@@ -4,8 +4,8 @@ use scryer_application::NullIndexerErrorRecorder;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerErrorOperation,
     IndexerErrorRecorder, IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchResponse,
-    IndexerSearchCompletion, IndexerSearchResult, SearchMode, is_valid_magnet_uri,
-    normalize_release_password,
+    IndexerSearchCompletion, IndexerSearchIncompleteReason as HostIncompleteReason,
+    IndexerSearchResult, SearchMode, is_valid_magnet_uri, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use scryer_plugin_sdk::command::{
@@ -13,7 +13,8 @@ use scryer_plugin_sdk::command::{
     PluginCommandResult, PluginIndexerCommand, PluginIndexerCommandResult,
 };
 use scryer_plugin_sdk::{
-    IndexerSearchPluginError, PluginError, PluginErrorDetails, PluginResult, ProviderDescriptor,
+    IndexerSearchIncompleteReason as PluginIncompleteReason, IndexerSearchPluginError, PluginError,
+    PluginErrorDetails, PluginResult, ProviderDescriptor,
 };
 use std::{
     collections::BTreeMap,
@@ -548,18 +549,30 @@ fn decode_search_result(
             completion: if attested {
                 IndexerSearchCompletion::Complete
             } else {
-                IndexerSearchCompletion::Partial
+                IndexerSearchCompletion::Partial {
+                    reason: Some(HostIncompleteReason::Unattested),
+                    retry_after: None,
+                }
             },
         }),
         PluginResult::Err(PluginError {
             details:
                 Some(PluginErrorDetails::IndexerSearch(
-                    IndexerSearchPluginError::PartialResults { response, .. },
+                    IndexerSearchPluginError::PartialResults {
+                        response,
+                        reason,
+                        retry_after_seconds,
+                    },
                 )),
             ..
         }) => Ok(PluginSearchCallResponse {
             response: *response,
-            completion: IndexerSearchCompletion::Partial,
+            completion: IndexerSearchCompletion::Partial {
+                reason: Some(host_incomplete_reason(reason)),
+                retry_after: retry_after_seconds
+                    .and_then(|seconds| u64::try_from(seconds).ok())
+                    .map(std::time::Duration::from_secs),
+            },
         }),
         PluginResult::Err(PluginError {
             details:
@@ -578,6 +591,18 @@ fn decode_search_result(
             "{context}: plugin error {:?}: {}",
             error.code, error.public_message
         ))),
+    }
+}
+
+fn host_incomplete_reason(reason: PluginIncompleteReason) -> HostIncompleteReason {
+    match reason {
+        PluginIncompleteReason::UpstreamFailure => HostIncompleteReason::UpstreamFailure,
+        PluginIncompleteReason::RateLimited => HostIncompleteReason::RateLimited,
+        PluginIncompleteReason::MalformedContent => HostIncompleteReason::MalformedContent,
+        PluginIncompleteReason::PageCeilingReached => HostIncompleteReason::PageCeilingReached,
+        PluginIncompleteReason::FanoutBranchFailed => HostIncompleteReason::FanoutBranchFailed,
+        PluginIncompleteReason::SaturatedPartition => HostIncompleteReason::SaturatedPartition,
+        PluginIncompleteReason::Unattested => HostIncompleteReason::Unattested,
     }
 }
 
@@ -1435,6 +1460,54 @@ impl IndexerClient for WasmIndexerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_search_preserves_typed_reason_and_retry_delay() {
+        let decoded = decode_search_result(
+            PluginResult::Err(PluginError {
+                code: scryer_plugin_sdk::PluginErrorCode::Temporary,
+                public_message: "partial search".to_string(),
+                debug_message: None,
+                retry_after_seconds: None,
+                details: Some(PluginErrorDetails::IndexerSearch(
+                    IndexerSearchPluginError::PartialResults {
+                        response: Box::new(PluginSearchResponse::default()),
+                        reason: PluginIncompleteReason::PageCeilingReached,
+                        retry_after_seconds: Some(45),
+                    },
+                )),
+            }),
+            true,
+            "test search",
+        )
+        .expect("partial results remain usable");
+
+        assert_eq!(
+            decoded.completion,
+            IndexerSearchCompletion::Partial {
+                reason: Some(HostIncompleteReason::PageCeilingReached),
+                retry_after: Some(std::time::Duration::from_secs(45)),
+            }
+        );
+    }
+
+    #[test]
+    fn unattested_success_is_typed_as_incomplete() {
+        let decoded = decode_search_result(
+            PluginResult::Ok(PluginSearchResponse::default()),
+            false,
+            "test search",
+        )
+        .expect("legacy result remains usable");
+
+        assert_eq!(
+            decoded.completion,
+            IndexerSearchCompletion::Partial {
+                reason: Some(HostIncompleteReason::Unattested),
+                retry_after: None,
+            }
+        );
+    }
 
     #[test]
     fn builds_episode_id_context_for_auto_search() {

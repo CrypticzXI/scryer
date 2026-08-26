@@ -1722,6 +1722,21 @@ mod tests {
     }
 
     #[test]
+    fn builtin_anime_profile_accepts_576p() {
+        let profile = builtin_anime_profile();
+        assert_eq!(
+            profile.criteria.quality_tiers,
+            vec!["1080P".to_string(), "720P".to_string(), "576P".to_string()]
+        );
+
+        let release =
+            parse_release_metadata("Fixture.Anime.S06E01.576p.DVD.Opus.Dual.Audio.AV1-GRP");
+        assert_eq!(normalize_quality_tier(release.quality.as_deref()), Some("576P".to_string()));
+        let result = evaluate_against_profile(&profile, &release, false, &balanced_weights());
+        assert!(result.allowed, "576p anime release was blocked: {result:?}");
+    }
+
+    #[test]
     fn minimum_score_gate_runs_after_rule_scores() {
         let mut profile = QualityProfile::default();
         let release = parse_release_metadata("Movie.2024.1080p.WEB-DL.H.264.DDP5.1-GROUP");

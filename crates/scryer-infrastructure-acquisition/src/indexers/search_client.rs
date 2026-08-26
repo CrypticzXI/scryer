@@ -10,10 +10,11 @@ use scryer_application::{
     IndexerConfigRepository, IndexerErrorClassification, IndexerErrorOperation,
     IndexerErrorRepository,
     IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome, IndexerRoutingPlan,
-    IndexerSearchCandidateWrite, IndexerSearchCompletion, IndexerSearchLearningContext,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,
-    IndexerSearchRunWrite, IndexerStatsTracker, IndexerSystemBackoff,
+    IndexerSearchCandidateWrite, IndexerSearchCompletion, IndexerSearchIncompleteReason,
+    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
+    IndexerSearchLearningRepository, IndexerResponseAttributes, IndexerSearchOutcome,
+    IndexerSearchResponse, IndexerSearchResult, IndexerSearchRunWrite, IndexerStatsTracker,
+    IndexerSystemBackoff,
     NormalizedIndexerSearchCandidate, NewIndexerError, ReusableIndexerSearchCandidate,
     NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
@@ -390,9 +391,12 @@ impl SearchDiagnosticsContext {
     ) {
         let now = Utc::now();
         let run_id = uuid::Uuid::new_v4().to_string();
-        let completion_state = match response.completion {
-            IndexerSearchCompletion::Complete => "complete",
-            IndexerSearchCompletion::Partial => "partial",
+        let (completion_state, incomplete_reason, retry_after) = match response.completion {
+            IndexerSearchCompletion::Complete => ("complete", None, None),
+            IndexerSearchCompletion::Partial {
+                reason,
+                retry_after,
+            } => ("partial", reason, retry_after),
         };
         let candidates = response
             .results
@@ -421,9 +425,15 @@ impl SearchDiagnosticsContext {
             range_max_size: None,
             result_count: response.results.len().min(u32::MAX as usize) as u32,
             completion_state: completion_state.to_string(),
-            retry_at: None,
-            error_summary: (response.completion == IndexerSearchCompletion::Partial)
-                .then(|| "incomplete indexer search response".to_string()),
+            retry_at: retry_after
+                .and_then(|delay| Duration::from_std(delay).ok())
+                .map(|delay| now + delay),
+            error_summary: incomplete_reason
+                .map(|reason| format!("incomplete indexer search: {reason:?}"))
+                .or_else(|| {
+                    (!response.completion.is_complete())
+                        .then(|| "incomplete indexer search response".to_string())
+                }),
             indexer_fingerprint: self.indexer_fingerprint.clone(),
             created_at: now,
         };
@@ -2081,7 +2091,10 @@ impl MultiIndexerSearchClient {
     ) {
         let response = IndexerSearchResponse {
             results: vec![],
-            completion: IndexerSearchCompletion::Partial,
+            completion: IndexerSearchCompletion::Partial {
+                reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
+                retry_after: None,
+            },
             api_current: None,
             api_max: None,
             grab_current: None,
@@ -4258,7 +4271,10 @@ impl IndexerClient for MultiIndexerSearchClient {
                         completion: if all_strategies_complete {
                             IndexerSearchCompletion::Complete
                         } else {
-                            IndexerSearchCompletion::Partial
+                            IndexerSearchCompletion::Partial {
+                                reason: None,
+                                retry_after: None,
+                            }
                         },
                         api_current: quota_observation.api_current,
                         api_max: quota_observation.api_max,
@@ -4346,9 +4362,14 @@ impl IndexerClient for MultiIndexerSearchClient {
                         IndexerSearchCompletion::Complete => {
                             IndexerSearchOutcome::Complete { empty }
                         }
-                        IndexerSearchCompletion::Partial => {
-                            IndexerSearchOutcome::Partial { empty }
-                        }
+                        IndexerSearchCompletion::Partial {
+                            reason,
+                            retry_after,
+                        } => IndexerSearchOutcome::Partial {
+                            empty,
+                            reason,
+                            retry_after,
+                        },
                     };
                     all_results.append(&mut response.results);
                     indexer_outcomes.push(IndexerQueryOutcome {
@@ -4468,7 +4489,10 @@ impl IndexerClient for MultiIndexerSearchClient {
         {
             IndexerSearchCompletion::Complete
         } else {
-            IndexerSearchCompletion::Partial
+            IndexerSearchCompletion::Partial {
+                reason: None,
+                retry_after: None,
+            }
         };
 
         Ok(IndexerSearchResponse {

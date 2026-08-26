@@ -1877,11 +1877,31 @@ mod canonical_download_source_tests {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexerSearchIncompleteReason {
+    UpstreamFailure,
+    RateLimited,
+    MalformedContent,
+    PageCeilingReached,
+    FanoutBranchFailed,
+    SaturatedPartition,
+    Unattested,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IndexerSearchCompletion {
     #[default]
     Complete,
-    Partial,
+    Partial {
+        reason: Option<IndexerSearchIncompleteReason>,
+        retry_after: Option<std::time::Duration>,
+    },
+}
+
+impl IndexerSearchCompletion {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
 }
 
 /// Per-indexer outcome of a single search query. Only a validated, complete
@@ -1890,7 +1910,11 @@ pub enum IndexerSearchCompletion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexerSearchOutcome {
     Complete { empty: bool },
-    Partial { empty: bool },
+    Partial {
+        empty: bool,
+        reason: Option<IndexerSearchIncompleteReason>,
+        retry_after: Option<std::time::Duration>,
+    },
     Deferred {
         retry_after: Option<std::time::Duration>,
     },
