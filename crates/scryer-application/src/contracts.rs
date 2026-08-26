@@ -241,20 +241,12 @@ impl PersistedSeedGoals {
     }
 }
 
-/// One torrent grab's resolution, plus the submission identity and the minimal
-/// row context needed to seed the `download_submissions` row when the goals
-/// land before the acquisition layer records the submission itself.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SeedGoalGrabRecord {
-    /// Canonical identity of the client mutation whose seed goals are frozen.
-    pub download_id: scryer_domain::download_identity::DownloadId,
-    pub client_id: Option<String>,
-    pub client_type: String,
-    pub client_item_id: String,
-    pub title_id: String,
-    pub facet: String,
-    pub purpose: DownloadSubmissionPurpose,
-    pub goals: PersistedSeedGoals,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalDownloadIdentityDisposition {
+    Requested,
+    AdoptedExisting {
+        download_id: scryer_domain::download_identity::DownloadId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -365,8 +357,6 @@ pub struct SuccessfulGrabCommit {
     pub covered_wanted_item_ids: Vec<String>,
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
-    pub download_submission: DownloadSubmission,
-    pub download_submission_identity: Option<DownloadSubmissionIdentity>,
     pub grabbed_pending_release_id: Option<String>,
     pub grabbed_at: Option<String>,
 }
@@ -957,6 +947,18 @@ pub struct InsertMediaFileInput {
     pub edition: Option<String>,
     pub original_file_path: Option<String>,
     pub release_hash: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaFileCatalogDisposition {
+    Created,
+    Reused,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedMediaFile {
+    pub media_file_id: String,
+    pub disposition: MediaFileCatalogDisposition,
 }
 
 #[derive(Clone, Debug, Default)]

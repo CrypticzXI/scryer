@@ -2926,6 +2926,7 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
                 scope: SubmissionScope::Title,
             },
             submission_identity,
+            None,
         )
         .await
         .expect("seed owned download submission identity");
@@ -4999,6 +5000,7 @@ async fn import_completed_download_ignores_stale_item_id_import_when_request_ide
             DownloadSubmissionIdentity {
                 download_id: Some("scryer-download:fresh".to_string()),
             },
+            None,
         )
         .await
         .expect("record fresh identity");
@@ -9187,6 +9189,7 @@ async fn ignore_tracked_download_uses_durable_fallback_idempotently() {
             DownloadSubmissionIdentity {
                 download_id: Some("scryer-download:evicted-job-1".to_string()),
             },
+            None,
         )
         .await
         .expect("record submission identity");
@@ -9283,6 +9286,7 @@ async fn finalize_ignore_preserves_an_imported_outcome() {
                 scope: SubmissionScope::Title,
             },
             identity.clone(),
+            None,
         )
         .await
         .expect("record submission identity");

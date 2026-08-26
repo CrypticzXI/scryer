@@ -642,6 +642,12 @@ pub struct TitleImageBlob {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MediaFileAssociations {
+    pub episode_ids: Vec<String>,
+    pub series_movie_link_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct TitleMediaFile {
     pub id: String,
@@ -1510,6 +1516,9 @@ pub struct DownloadGrabResult {
     pub info_hash: Option<String>,
     /// The pre-allocated identity used for the successful client mutation.
     pub download_id: Option<DownloadId>,
+    /// Torrent seed goals resolved by the selected client route. The canonical
+    /// submission coordinator freezes them with the accepted identity.
+    pub seed_goals: Option<crate::PersistedSeedGoals>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

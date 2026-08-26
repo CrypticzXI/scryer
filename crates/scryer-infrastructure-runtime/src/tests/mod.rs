@@ -294,6 +294,7 @@ async fn assert_download_submission_orphan_precedence(
             DownloadSubmissionIdentity {
                 download_id: Some("download-feedface".to_string()),
             },
+            None,
         )
         .await?;
 

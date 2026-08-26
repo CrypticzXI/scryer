@@ -3545,12 +3545,8 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
-    ) -> AppResult<()> {
-        let identity = ClientJobLocator::from_submission(&submission);
-        self.record_submission(submission).await?;
-        self.record_submission_identity(&identity, &submission_identity)
-            .await
-    }
+        seed_goals: Option<PersistedSeedGoals>,
+    ) -> AppResult<CanonicalDownloadIdentityDisposition>;
 
     async fn record_submission_actor_snapshot(
         &self,
@@ -3558,17 +3554,6 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         _actor: DownloadSubmissionActorSnapshot,
     ) -> AppResult<()> {
         Ok(())
-    }
-
-    /// Freeze the seeding goals a torrent grab resolved to onto its submission
-    /// row. Called from the download-client choke point the moment the client
-    /// accepts the torrent, which is before the acquisition layer records the
-    /// submission itself, so implementations must upsert rather than update.
-    /// Returns the effective canonical id after claiming the client locator.
-    /// A prior foreign observation of a reused locator is adopted rather than
-    /// creating a second registry row.
-    async fn record_seed_goals(&self, record: SeedGoalGrabRecord) -> AppResult<DownloadId> {
-        Ok(record.download_id)
     }
 
     /// Read the goals a torrent was grabbed under, by download-client identity.
@@ -3636,6 +3621,13 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         identity: &ClientJobLocator,
     ) -> AppResult<Option<DownloadSubmission>> {
         self.find_by_client_item_id(identity).await
+    }
+
+    async fn find_by_canonical_download_id(
+        &self,
+        _download_id: &DownloadId,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(None)
     }
 
     async fn find_by_download_id(
@@ -3854,6 +3846,16 @@ pub trait DownloadSubmissionRepository: Send + Sync {
     ) -> AppResult<Vec<DownloadSubmission>>;
 
     async fn list_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadSubmission>>;
+
+    /// List Scryer submissions for a title whose canonical client binding is
+    /// still active but has not acquired a native client item identifier.
+    async fn list_active_unbound_for_title(
+        &self,
+        _title_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        Ok(Vec::new())
+    }
+
     async fn find_by_title_and_request_signature(
         &self,
         title_id: &str,
@@ -4600,6 +4602,12 @@ pub trait MediaAnalyzer: Send + Sync {
 #[async_trait]
 pub trait MediaFileRepository: Send + Sync {
     async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String>;
+
+    async fn claim_import_destination(
+        &self,
+        input: &InsertMediaFileInput,
+        associations: &MediaFileAssociations,
+    ) -> AppResult<ClaimedMediaFile>;
 
     async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()>;
 

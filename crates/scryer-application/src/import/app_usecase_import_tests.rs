@@ -1623,6 +1623,28 @@ fn find_video_files_finds_mkv_in_dir() {
 }
 
 #[test]
+fn find_video_files_accepts_direct_video_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let video = dir.path().join("movie.mkv");
+    std::fs::write(&video, b"data").expect("write");
+
+    assert_eq!(find_video_files(&video, false).expect("find"), vec![video]);
+}
+
+#[test]
+fn find_video_files_rejects_direct_non_video_without_reading_it_as_a_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = dir.path().join("payload.bin");
+    std::fs::write(&payload, b"data").expect("write");
+
+    assert!(
+        find_video_files(&payload, false)
+            .expect("classify")
+            .is_empty()
+    );
+}
+
+#[test]
 fn find_video_files_includes_trailing_sanitized_video_extension() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sanitized_path = dir.path().join("Fixture.Payload.mkv_");
@@ -1687,7 +1709,43 @@ fn find_video_files_keeps_small_strm_when_filtering_samples() {
 #[test]
 fn find_video_files_returns_error_for_missing_dir() {
     let result = find_video_files(std::path::Path::new("/nonexistent/dir/abc"), false);
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(AppError::ImportSourceInspection { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn find_video_files_reports_an_unreadable_root_as_source_inspection() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let original_permissions = std::fs::metadata(dir.path())
+        .expect("metadata")
+        .permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000))
+        .expect("remove permissions");
+    let result = find_video_files(dir.path(), false);
+    std::fs::set_permissions(dir.path(), original_permissions).expect("restore permissions");
+
+    assert!(matches!(
+        result,
+        Err(AppError::ImportSourceInspection { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn find_video_files_rejects_special_filesystem_objects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("download.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+
+    assert!(matches!(
+        find_video_files(&socket_path, false),
+        Err(AppError::UnsupportedImportSource { .. })
+    ));
 }
 
 #[test]
@@ -2729,14 +2787,11 @@ fn scripted_tracked_download_runtime(
             else {
                 continue;
             };
-            asked_task
-                .lock()
-                .await
-                .push((
-                    source_identity.item_id.clone(),
-                    record_completed_at,
-                    canonical_download_id,
-                ));
+            asked_task.lock().await.push((
+                source_identity.item_id.clone(),
+                record_completed_at,
+                canonical_download_id,
+            ));
             let outcome = script
                 .iter_mut()
                 .find(|(item_id, _)| *item_id == source_identity.item_id)

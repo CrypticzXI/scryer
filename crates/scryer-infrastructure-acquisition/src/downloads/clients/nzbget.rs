@@ -1275,6 +1275,7 @@ impl DownloadClient for NzbgetDownloadClient {
                 client_id: None,
                 client_type: "nzbget".to_string(),
                 info_hash: None,
+                seed_goals: None,
             })
         }
         .await;

@@ -328,7 +328,6 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     .with_download_submissions(download_submissions.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
-        download_submissions,
         pending_releases,
         acquisition_scope_states: wanted_items,
     }))
@@ -1222,7 +1221,6 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     let app = app.with_test_overrides(|services| {
         services
             .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
-                download_submissions,
                 pending_releases,
                 acquisition_scope_states: acquisition_scope_states.clone(),
             }))

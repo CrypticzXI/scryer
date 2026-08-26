@@ -1784,49 +1784,64 @@ async fn process_single_target(
                         let seed_minimums =
                             crate::ReleaseSeedMinimums::from_release_extra(&best_pack.extra);
                         let download_id = scryer_domain::download_identity::DownloadId::new();
+                        let submission_scope = collection_download_submission_scope_for_wanted_item(
+                            item,
+                            episode.as_ref(),
+                        );
 
-                        let grab_result = app
-                            .services
-                            .integrations
-                            .download_client
-                            .submit_download(&DownloadClientAddRequest {
-                                title: title.clone(),
-                                search_facet: None,
-                                purpose: crate::DownloadSubmissionPurpose::Standard,
-                                download_id: Some(download_id),
-                                source_hint: pack_url.clone(),
-                                staged_nzb: None,
-                                resolved_download_artifact: None,
-                                source_kind: best_pack.source_kind,
-                                source_title: pack_title.clone(),
-                                source_password: pack_password.clone(),
-                                category: Some(download_cat),
-                                queue_priority: None,
-                                download_directory: None,
-                                release_title: Some(best_pack.title.clone()),
-                                indexer_name: Some(best_pack.source.clone()),
-                                indexer_id: best_pack.indexer_id.clone(),
-                                info_hash_hint: info_hash_hint.clone(),
-                                seed_goal_ratio: None,
-                                seed_goal_seconds: None,
-                                tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
-                                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
-                                season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
-                                season_pack_seed_time_minutes: seed_minimums
-                                    .season_pack_seed_time_minutes,
-                                is_recent,
-                                season_pack: Some(true),
+                        let canonical_result = app
+                            .submit_canonical_download(CanonicalDownloadSubmissionIntent {
+                                request: DownloadClientAddRequest {
+                                    title: title.clone(),
+                                    search_facet: None,
+                                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                                    download_id: Some(download_id),
+                                    source_hint: pack_url.clone(),
+                                    staged_nzb: None,
+                                    resolved_download_artifact: None,
+                                    source_kind: best_pack.source_kind,
+                                    source_title: pack_title.clone(),
+                                    source_password: pack_password.clone(),
+                                    category: Some(download_cat),
+                                    queue_priority: None,
+                                    download_directory: None,
+                                    release_title: Some(best_pack.title.clone()),
+                                    indexer_name: Some(best_pack.source.clone()),
+                                    indexer_id: best_pack.indexer_id.clone(),
+                                    info_hash_hint: info_hash_hint.clone(),
+                                    seed_goal_ratio: None,
+                                    seed_goal_seconds: None,
+                                    tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                                    tracker_min_seed_time_minutes: seed_minimums
+                                        .min_seed_time_minutes,
+                                    season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                                    season_pack_seed_time_minutes: seed_minimums
+                                        .season_pack_seed_time_minutes,
+                                    is_recent,
+                                    season_pack: Some(true),
+                                },
+                                scope: submission_scope.clone(),
+                                conflict_policy: SubmissionConflictPolicy::Skip,
+                                request_signature: request_signature.clone(),
+                                source_provider_name: Some(best_pack.source.clone()),
+                                release_size_bytes: best_pack.size_bytes,
                             })
                             .await;
 
-                        match grab_result {
-                            Ok(grab) => {
+                        let canonical_submission = match canonical_result {
+                                Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => {
+                                    Ok(submission)
+                                }
+                                Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => {
+                                    break 'season_pack_candidates;
+                                }
+                                Err(error) => Err(error),
+                            };
+
+                        match canonical_submission {
+                            Ok(canonical_submission) => {
+                                let grab = canonical_submission.grab;
                                 let download_job_id = grab.job_id.clone();
-                                let submission_download_id =
-                                    grab.download_id.unwrap_or(download_id);
-                                let submission_identity = DownloadSubmissionIdentity {
-                                    download_id: Some(submission_download_id.to_wire()),
-                                };
                                 let facet_label = serde_json::to_string(&title.facet)
                                     .unwrap_or_else(|_| "\"other\"".to_string())
                                     .trim_matches('"')
@@ -1836,20 +1851,6 @@ async fn process_single_target(
                                     best_pack.indexer_id.as_deref(),
                                     Some(best_pack.source.as_str()),
                                 );
-                                let accepted_identity =
-                                    crate::download_identity::accepted_download_submission_identity(
-                                        crate::download_identity::AcceptedDownloadIdentityInput {
-                                            initial_download_id: submission_identity
-                                                .download_id
-                                                .as_deref(),
-                                            source_kind: best_pack.source_kind,
-                                            source_hint: pack_url.as_deref(),
-                                            info_hash_hint: info_hash_hint.as_deref(),
-                                            client_type: Some(grab.client_type.as_str()),
-                                            client_item_id: Some(grab.job_id.as_str()),
-                                            accepted_info_hash: grab.info_hash.as_deref(),
-                                        },
-                                    );
                                 cycle.mark_submitted(&url_str);
                                 cycle.mark_season_pack_grabbed(&season_key);
                                 let _ = app
@@ -1865,13 +1866,6 @@ async fn process_single_target(
                                         pack_password,
                                     )
                                     .await;
-                                let facet_str = serde_json::to_string(&title.facet)
-                                    .unwrap_or_else(|_| "\"other\"".to_string());
-                                let submission_scope =
-                                    collection_download_submission_scope_for_wanted_item(
-                                        item,
-                                        episode.as_ref(),
-                                    );
                                 let mut grabbed_episode_ids = match &submission_scope {
                                     SubmissionScope::Episode { episode_id } => {
                                         vec![episode_id.clone()]
@@ -1922,24 +1916,6 @@ async fn process_single_target(
                                         covered_wanted_item_ids,
                                         grabbed_release: grabbed_json,
                                         last_search_at: Some(now.to_rfc3339()),
-                                        download_submission: DownloadSubmission {
-                                            download_id: submission_download_id,
-                                            title_id: title.id.clone(),
-                                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                                            facet: facet_str.trim_matches('"').to_string(),
-                                            download_client_id: grab.client_id.clone(),
-                                            download_client_type: grab.client_type.clone(),
-                                            download_client_item_id: grab.job_id.clone(),
-                                            source_hint: None,
-                                            source_provider_id: best_pack.indexer_id.clone(),
-                                            release_size_bytes: best_pack.size_bytes,
-                                            source_provider_name: Some(best_pack.source.clone()),
-                                            source_kind: None,
-                                            source_title: Some(best_pack.title.clone()),
-                                            request_signature: request_signature.clone(),
-                                            scope: submission_scope,
-                                        },
-                                        download_submission_identity: Some(accepted_identity),
                                         grabbed_pending_release_id: None,
                                         grabbed_at: Some(now.to_rfc3339()),
                                     })
@@ -2049,41 +2025,6 @@ async fn process_single_target(
                                         pack_password,
                                     )
                                     .await;
-                                if ambiguous
-                                    && let Some((client_id, client_type)) =
-                                        err.ambiguous_download_submission_client()
-                                {
-                                    let pack_scope =
-                                        collection_download_submission_scope_for_wanted_item(
-                                            item,
-                                            episode.as_ref(),
-                                        );
-                                    if let Err(error) = app
-                                        .services
-                                        .workflow
-                                        .download_submissions
-                                        .record_ambiguous_submission(DownloadSubmission {
-                                            download_id,
-                                            title_id: title.id.clone(),
-                                            facet: title.facet.as_str().to_string(),
-                                            download_client_id: client_id.map(str::to_string),
-                                            download_client_type: client_type.to_string(),
-                                            download_client_item_id: String::new(),
-                                            source_hint: None,
-                                            source_provider_id: best_pack.indexer_id.clone(),
-                                            source_provider_name: Some(best_pack.source.clone()),
-                                            source_kind: None,
-                                            source_title: Some(best_pack.title.clone()),
-                                            release_size_bytes: best_pack.size_bytes,
-                                            request_signature: request_signature.clone(),
-                                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                                            scope: pack_scope,
-                                        })
-                                        .await
-                                    {
-                                        warn!(error = %error, "ambiguous download submission persistence failed");
-                                    }
-                                }
                                 if !defer {
                                     let pack_scope =
                                         collection_download_submission_scope_for_wanted_item(
@@ -2701,42 +2642,82 @@ async fn process_single_target(
             .and_then(|parsed| parsed.episode.as_ref())
             .is_some_and(|episode| episode.full_season);
         let download_id = scryer_domain::download_identity::DownloadId::new();
+        let submission_scope = if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
+            let catalog_episodes = app
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let catalog_collections = app
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            crate::acquisition_coverage::resolve_release_coverage(
+                parsed,
+                &catalog_episodes,
+                &catalog_collections,
+                episode.as_ref(),
+            )
+            .submission_scope_or(&direct_download_submission_scope_for_wanted_item(
+                item,
+                episode.as_ref(),
+            ))
+        } else {
+            direct_download_submission_scope_for_wanted_item(item, episode.as_ref())
+        };
 
-        let grab_result = app
-            .services
-            .integrations
-            .download_client
-            .submit_download(&DownloadClientAddRequest {
-                title: title.clone(),
-                search_facet: (target.media_type == "series_movie").then_some(MediaFacet::Movie),
-                purpose: crate::DownloadSubmissionPurpose::Standard,
-                download_id: Some(download_id),
-                source_hint: source_hint.clone(),
-                staged_nzb: None,
-                resolved_download_artifact: None,
-                source_kind: canonical_source_kind,
-                source_title: source_title.clone(),
-                source_password: source_password.clone(),
-                category: Some(download_cat.clone()),
-                queue_priority: None,
-                download_directory: None,
-                release_title: Some(candidate.title.clone()),
-                indexer_name: Some(candidate.source.clone()),
-                indexer_id: candidate.indexer_id.clone(),
-                info_hash_hint: info_hash_hint.clone(),
-                seed_goal_ratio: None,
-                seed_goal_seconds: None,
-                tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
-                tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
-                season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
-                season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
-                is_recent,
-                season_pack: Some(is_season_pack),
+        let canonical_result = app
+            .submit_canonical_download(CanonicalDownloadSubmissionIntent {
+                request: DownloadClientAddRequest {
+                    title: title.clone(),
+                    search_facet: (target.media_type == "series_movie")
+                        .then_some(MediaFacet::Movie),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                    download_id: Some(download_id),
+                    source_hint: source_hint.clone(),
+                    staged_nzb: None,
+                    resolved_download_artifact: None,
+                    source_kind: canonical_source_kind,
+                    source_title: source_title.clone(),
+                    source_password: source_password.clone(),
+                    category: Some(download_cat.clone()),
+                    queue_priority: None,
+                    download_directory: None,
+                    release_title: Some(candidate.title.clone()),
+                    indexer_name: Some(candidate.source.clone()),
+                    indexer_id: candidate.indexer_id.clone(),
+                    info_hash_hint: info_hash_hint.clone(),
+                    seed_goal_ratio: None,
+                    seed_goal_seconds: None,
+                    tracker_min_seed_ratio: seed_minimums.min_seed_ratio,
+                    tracker_min_seed_time_minutes: seed_minimums.min_seed_time_minutes,
+                    season_pack_seed_ratio: seed_minimums.season_pack_seed_ratio,
+                    season_pack_seed_time_minutes: seed_minimums.season_pack_seed_time_minutes,
+                    is_recent,
+                    season_pack: Some(is_season_pack),
+                },
+                scope: submission_scope.clone(),
+                conflict_policy: SubmissionConflictPolicy::Skip,
+                request_signature: request_signature.clone(),
+                source_provider_name: Some(candidate.source.clone()),
+                release_size_bytes: candidate.size_bytes,
             })
             .await;
 
-        match grab_result {
-            Ok(grab) => {
+        let canonical_submission = match canonical_result {
+            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => Ok(submission),
+            Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => return Ok(()),
+            Err(error) => Err(error),
+        };
+
+        match canonical_submission {
+            Ok(canonical_submission) => {
+                let grab = canonical_submission.grab;
                 // ── Success ─────────────────────────────────────────────────
                 if let Some(url) = source_hint.as_deref() {
                     cycle.mark_submitted(url);
@@ -2752,23 +2733,6 @@ async fn process_single_target(
                     candidate.indexer_id.as_deref(),
                     Some(candidate.source.as_str()),
                 );
-                let submission_download_id = grab.download_id.unwrap_or(download_id);
-                let submission_identity = DownloadSubmissionIdentity {
-                    download_id: Some(submission_download_id.to_wire()),
-                };
-                let accepted_identity =
-                    crate::download_identity::accepted_download_submission_identity(
-                        crate::download_identity::AcceptedDownloadIdentityInput {
-                            initial_download_id: submission_identity.download_id.as_deref(),
-                            source_kind: candidate.source_kind,
-                            source_hint: source_hint.as_deref(),
-                            info_hash_hint: info_hash_hint.as_deref(),
-                            client_type: Some(grab.client_type.as_str()),
-                            client_item_id: Some(grab.job_id.as_str()),
-                            accepted_info_hash: grab.info_hash.as_deref(),
-                        },
-                    );
-
                 let _ = app
                     .services
                     .workflow
@@ -2785,8 +2749,6 @@ async fn process_single_target(
 
                 // Record title history: Grabbed
                 // Record download submission for auto-import matching
-                let facet_str =
-                    serde_json::to_string(&title.facet).unwrap_or_else(|_| "\"other\"".to_string());
                 let grabbed_json = serde_json::json!({
                     "title": candidate.title,
                     "score": candidate_score,
@@ -2795,35 +2757,6 @@ async fn process_single_target(
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
-                let submission_scope = if let Some(parsed) =
-                    candidate.parsed_release_metadata.as_ref()
-                {
-                    let catalog_episodes = app
-                        .services
-                        .catalog
-                        .shows
-                        .list_episodes_for_title(&title.id)
-                        .await
-                        .unwrap_or_default();
-                    let catalog_collections = app
-                        .services
-                        .catalog
-                        .shows
-                        .list_collections_for_title(&title.id)
-                        .await
-                        .unwrap_or_default();
-                    crate::acquisition_coverage::resolve_release_coverage(
-                        parsed,
-                        &catalog_episodes,
-                        &catalog_collections,
-                        episode.as_ref(),
-                    )
-                    .submission_scope_or(
-                        &direct_download_submission_scope_for_wanted_item(item, episode.as_ref()),
-                    )
-                } else {
-                    direct_download_submission_scope_for_wanted_item(item, episode.as_ref())
-                };
                 let covered_wanted_item_ids = app
                     .covered_wanted_item_ids_for_submission_scope(
                         &title.id,
@@ -2840,29 +2773,10 @@ async fn process_single_target(
                         covered_wanted_item_ids,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
-                        download_submission: DownloadSubmission {
-                            download_id: submission_download_id,
-                            title_id: title.id.clone(),
-                            purpose: crate::DownloadSubmissionPurpose::Standard,
-                            facet: facet_str.trim_matches('"').to_string(),
-                            download_client_id: grab.client_id.clone(),
-                            download_client_type: grab.client_type.clone(),
-                            download_client_item_id: grab.job_id.clone(),
-                            source_hint: None,
-                            source_provider_id: candidate.indexer_id.clone(),
-                            source_provider_name: Some(candidate.source.clone()),
-                            release_size_bytes: candidate.size_bytes,
-                            source_kind: None,
-                            source_title: source_title.clone(),
-                            request_signature: request_signature.clone(),
-                            scope: submission_scope,
-                        },
-                        download_submission_identity: Some(accepted_identity),
                         grabbed_pending_release_id: None,
                         grabbed_at: Some(now.to_rfc3339()),
                     })
                     .await?;
-
                 persist_standby_candidates(
                     app,
                     item,
@@ -2911,40 +2825,6 @@ async fn process_single_target(
                         candidate.indexer_id.as_deref(),
                     )
                     .await;
-
-                    if let Some((client_id, client_type)) =
-                        err.ambiguous_download_submission_client()
-                    {
-                        let submission_scope = direct_download_submission_scope_for_wanted_item(
-                            item,
-                            episode.as_ref(),
-                        );
-                        if let Err(error) = app
-                            .services
-                            .workflow
-                            .download_submissions
-                            .record_ambiguous_submission(DownloadSubmission {
-                                download_id,
-                                title_id: title.id.clone(),
-                                facet: title.facet.as_str().to_string(),
-                                download_client_id: client_id.map(str::to_string),
-                                download_client_type: client_type.to_string(),
-                                download_client_item_id: String::new(),
-                                source_hint: None,
-                                source_provider_id: candidate.indexer_id.clone(),
-                                source_provider_name: Some(candidate.source.clone()),
-                                source_kind: None,
-                                source_title: source_title.clone(),
-                                release_size_bytes: candidate.size_bytes,
-                                request_signature: request_signature.clone(),
-                                purpose: crate::DownloadSubmissionPurpose::Standard,
-                                scope: submission_scope,
-                            })
-                            .await
-                        {
-                            warn!(error = %error, "ambiguous download submission persistence failed");
-                        }
-                    }
 
                     return Ok(());
                 }

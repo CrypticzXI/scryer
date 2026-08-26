@@ -297,7 +297,6 @@ impl TrackingAcquisitionScopeStateRepo {
 
 #[derive(Clone)]
 pub(super) struct TrackingAcquisitionStateRepo {
-    pub(super) download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pub(super) pending_releases: Arc<TrackingPendingReleaseRepo>,
     pub(super) acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
 }
@@ -582,16 +581,6 @@ impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
 #[async_trait]
 impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
     async fn commit_successful_grab(&self, commit: &SuccessfulGrabCommit) -> AppResult<()> {
-        if let Some(identity) = commit.download_submission_identity.clone() {
-            self.download_submissions
-                .record_submission_with_identity(commit.download_submission.clone(), identity)
-                .await?;
-        } else {
-            self.download_submissions
-                .record_submission(commit.download_submission.clone())
-                .await?;
-        }
-
         let mut covered_wanted_item_ids = commit.covered_wanted_item_ids.clone();
         if !covered_wanted_item_ids
             .iter()
@@ -732,11 +721,28 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         &self,
         submission: DownloadSubmission,
         submission_identity: DownloadSubmissionIdentity,
-    ) -> AppResult<()> {
+        _seed_goals: Option<PersistedSeedGoals>,
+    ) -> AppResult<CanonicalDownloadIdentityDisposition> {
+        let requested_download_id = submission.download_id;
         let identity = ClientJobLocator::from_submission(&submission);
+        if let Some(existing) = self.find_by_client_item_id(&identity).await?
+            && existing.download_id != requested_download_id
+            && !self
+                .tracked_states
+                .lock()
+                .await
+                .get(&download_source_identity_key(&identity))
+                .and_then(|state| scryer_domain::TrackedDownloadState::from_str_opt(state))
+                .is_some_and(scryer_domain::TrackedDownloadState::is_terminal)
+        {
+            return Ok(CanonicalDownloadIdentityDisposition::AdoptedExisting {
+                download_id: existing.download_id,
+            });
+        }
         self.record_submission(submission).await?;
         self.record_submission_identity(&identity, &submission_identity)
-            .await
+            .await?;
+        Ok(CanonicalDownloadIdentityDisposition::Requested)
     }
 
     async fn record_submission_identity(
@@ -766,6 +772,19 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                     && entry.download_client_type == identity.client_type.as_str()
                     && entry.download_client_item_id == identity.item_id.as_str()
             })
+            .cloned())
+    }
+
+    async fn find_by_canonical_download_id(
+        &self,
+        download_id: &scryer_domain::download_identity::DownloadId,
+    ) -> AppResult<Option<DownloadSubmission>> {
+        Ok(self
+            .store
+            .lock()
+            .await
+            .iter()
+            .find(|submission| &submission.download_id == download_id)
             .cloned())
     }
 
@@ -924,6 +943,20 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
         Ok(entries
             .iter()
             .filter(|entry| entry.title_id == title_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_active_unbound_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<DownloadSubmission>> {
+        let entries = self.store.lock().await;
+        Ok(entries
+            .iter()
+            .filter(|entry| {
+                entry.title_id == title_id && entry.download_client_item_id.trim().is_empty()
+            })
             .cloned()
             .collect())
     }
@@ -1636,6 +1669,8 @@ pub(super) struct StubDownloadClient {
     pub(super) snapshot_authoritative_client_ids: Arc<Mutex<HashSet<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
     pub(super) submit_errors: Arc<Mutex<std::collections::VecDeque<StubSubmitError>>>,
+    pub(super) submit_started: Arc<tokio::sync::Notify>,
+    pub(super) submit_gate: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     /// NZB payload the real pre-submission category gate is run against, so a
     /// caller-level test can exercise the production veto instead of a
     /// hand-written error string.
@@ -1643,6 +1678,9 @@ pub(super) struct StubDownloadClient {
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) unique_job_ids: bool,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
+    pub(super) submitted_title_ids: Arc<Mutex<Vec<String>>>,
+    pub(super) submitted_download_ids:
+        Arc<Mutex<Vec<Option<scryer_domain::download_identity::DownloadId>>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
     pub(super) submitted_info_hash_hints: Arc<Mutex<Vec<Option<String>>>>,
     /// Tracker-declared minimums as they reached the client, so a caller-level
@@ -1746,6 +1784,11 @@ impl DownloadClient for StubDownloadClient {
         if let Some(nzb) = self.category_gate_nzb.lock().await.as_deref() {
             crate::enforce_nzb_category_gate(nzb, &request.title.facet)?;
         }
+        let submit_gate = self.submit_gate.lock().await.clone();
+        if let Some(gate) = submit_gate {
+            self.submit_started.notify_one();
+            gate.notified().await;
+        }
         let job_id = if self.unique_job_ids {
             format!(
                 "job-for-{}-{}",
@@ -1764,6 +1807,14 @@ impl DownloadClient for StubDownloadClient {
                 .clone()
                 .unwrap_or_else(|| request.title.name.clone()),
         );
+        self.submitted_title_ids
+            .lock()
+            .await
+            .push(request.title.id.clone());
+        self.submitted_download_ids
+            .lock()
+            .await
+            .push(request.download_id);
         self.submitted_source_passwords
             .lock()
             .await
@@ -1801,9 +1852,10 @@ impl DownloadClient for StubDownloadClient {
         Ok(DownloadGrabResult {
             download_id: None,
             job_id,
-            client_id: None,
+            client_id: Some("primary".to_string()),
             client_type: "nzbget".to_string(),
             info_hash: self.grab_info_hash.lock().await.clone(),
+            seed_goals: None,
         })
     }
 
@@ -1869,13 +1921,14 @@ impl DownloadClient for StubDownloadClient {
         match (queue, activity) {
             (Ok(mut queue_items), Ok(activity_items)) => {
                 queue_items.extend(activity_items);
+                let mut authoritative_client_ids =
+                    self.snapshot_authoritative_client_ids.lock().await.clone();
+                if authoritative_client_ids.is_empty() {
+                    authoritative_client_ids.insert("primary".to_string());
+                }
                 Ok(crate::ports::DownloadClientSnapshotOutcome {
                     items: queue_items,
-                    authoritative_client_ids: self
-                        .snapshot_authoritative_client_ids
-                        .lock()
-                        .await
-                        .clone(),
+                    authoritative_client_ids,
                     any_client_read_succeeded: true,
                 })
             }

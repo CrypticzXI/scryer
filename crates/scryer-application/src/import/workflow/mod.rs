@@ -29,6 +29,7 @@ use scryer_domain::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const IMPORT_TRANSFER_PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -58,6 +59,57 @@ fn should_persist_import_transfer_heartbeat(last_emit: Option<Instant>) -> bool 
     last_emit.is_none_or(|instant| instant.elapsed() >= IMPORT_TRANSFER_HEARTBEAT_INTERVAL)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImportDestinationOwnership {
+    episode_ids: Vec<String>,
+    series_movie_link_ids: Vec<String>,
+}
+
+impl ImportDestinationOwnership {
+    pub(crate) fn title() -> Self {
+        Self {
+            episode_ids: Vec::new(),
+            series_movie_link_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn episodes(episode_ids: &[String]) -> Self {
+        Self {
+            episode_ids: episode_ids.to_vec(),
+            series_movie_link_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn series_movie(
+        series_movie_link_id: &str,
+        linked_episode_id: Option<&str>,
+    ) -> Self {
+        Self {
+            episode_ids: linked_episode_id.map(str::to_string).into_iter().collect(),
+            series_movie_link_ids: vec![series_movie_link_id.to_string()],
+        }
+    }
+
+    pub(crate) fn upgrade(episode_ids: &[String], existing_file: &crate::TitleMediaFile) -> Self {
+        let episode_ids = if episode_ids.is_empty() {
+            existing_file.episode_id.iter().cloned().collect()
+        } else {
+            episode_ids.to_vec()
+        };
+        Self {
+            episode_ids,
+            series_movie_link_ids: existing_file.series_movie_link_ids.clone(),
+        }
+    }
+
+    fn associations(&self) -> crate::MediaFileAssociations {
+        crate::MediaFileAssociations {
+            episode_ids: self.episode_ids.clone(),
+            series_movie_link_ids: self.series_movie_link_ids.clone(),
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "import progress wiring carries source, destination, library, and source validation context"
@@ -67,12 +119,19 @@ pub(crate) async fn import_file_with_record_progress(
     import_id: &str,
     library_id: &str,
     facet: &scryer_domain::MediaFacet,
+    ownership: &ImportDestinationOwnership,
     source: &Path,
     dest: &Path,
     mode: scryer_domain::ImportMode,
     expected_source: Option<&scryer_domain::ImportSourceSnapshot>,
     completed: Option<&scryer_domain::CompletedDownload>,
 ) -> AppResult<CoordinatedImportFileResult> {
+    let destination_permit = app
+        .runtime
+        .imports
+        .execution_coordinator
+        .acquire_destination(dest)
+        .await;
     let permissions = app
         .resolve_import_file_permissions(Some(library_id), facet)
         .await?;
@@ -218,7 +277,9 @@ pub(crate) async fn import_file_with_record_progress(
         .await;
     Ok(CoordinatedImportFileResult {
         result,
+        ownership: ownership.clone(),
         _finalization_permit: finalization_permit,
+        destination_permit: Arc::new(destination_permit),
     })
 }
 
@@ -289,7 +350,49 @@ impl AppUseCase {
 
 pub(crate) struct CoordinatedImportFileResult {
     result: scryer_domain::ImportFileResult,
+    ownership: ImportDestinationOwnership,
     _finalization_permit: tokio::sync::OwnedSemaphorePermit,
+    destination_permit: ImportDestinationPermit,
+}
+
+pub(crate) type ImportDestinationPermit = Arc<tokio::sync::OwnedMutexGuard<()>>;
+
+pub(crate) struct CoordinatedMediaFilePersistence {
+    pub(crate) media_file_id: String,
+    pub(crate) reused_existing: bool,
+    pub(crate) destination_created: bool,
+}
+
+impl CoordinatedImportFileResult {
+    pub(crate) async fn insert_or_reuse_media_file(
+        &self,
+        app: &AppUseCase,
+        input: &crate::InsertMediaFileInput,
+    ) -> AppResult<CoordinatedMediaFilePersistence> {
+        let associations = self.ownership.associations();
+        let destination_created = matches!(
+            self.result.destination_disposition,
+            scryer_domain::ImportDestinationDisposition::Created
+        );
+        let claimed = app
+            .services
+            .library
+            .media_files
+            .claim_import_destination(input, &associations)
+            .await?;
+        Ok(CoordinatedMediaFilePersistence {
+            media_file_id: claimed.media_file_id,
+            reused_existing: matches!(
+                claimed.disposition,
+                crate::MediaFileCatalogDisposition::Reused
+            ),
+            destination_created,
+        })
+    }
+
+    pub(crate) fn destination_permit(&self) -> ImportDestinationPermit {
+        Arc::clone(&self.destination_permit)
+    }
 }
 
 impl std::ops::Deref for CoordinatedImportFileResult {

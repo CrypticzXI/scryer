@@ -5,9 +5,9 @@ use scryer_application::{
     fs_integrity::import_content_proof,
 };
 use scryer_domain::{
-    ImportFileIdentity, ImportFileResult, ImportMode, ImportSourceCleanupGuard,
-    ImportSourceIdentity, ImportSourceIdentityKind, ImportSourceSnapshot, ImportStrategy,
-    ImportTransferPhase,
+    ImportDestinationDisposition, ImportFileIdentity, ImportFileResult, ImportMode,
+    ImportSourceCleanupGuard, ImportSourceIdentity, ImportSourceIdentityKind, ImportSourceSnapshot,
+    ImportStrategy, ImportTransferPhase,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1628,6 +1628,7 @@ fn finish_prepared_import(
         source_path: prepared.source,
         dest_path: prepared.dest,
         size_bytes: prepared.size,
+        destination_disposition: ImportDestinationDisposition::Created,
         source_cleanup,
     })
 }
@@ -1637,6 +1638,16 @@ fn try_fast_import_placement_blocking(
 ) -> AppResult<FastPlacementResult> {
     ensure_same_source(&prepared.source, &prepared.source_fingerprint)?;
     validate_import_destination_parent(&prepared.destination_guard, &prepared.dest)?;
+    if let Some(existing) = reconcile_existing_destination(
+        &prepared.source,
+        &prepared.dest,
+        &prepared.source_fingerprint,
+        prepared.size,
+        &prepared.destination_guard,
+        prepared.source_cleanup_required,
+    )? {
+        return Ok(FastPlacementResult::Finished(existing));
+    }
 
     if let ImportSourceKind::Symlink { .. } = &prepared.source_fingerprint.kind {
         import_symlink_source(
@@ -1716,6 +1727,78 @@ fn try_fast_import_placement_blocking(
     Ok(FastPlacementResult::CopyRequired(prepared))
 }
 
+fn reconcile_existing_destination(
+    source: &Path,
+    dest: &Path,
+    source_fingerprint: &ImportSourceFingerprint,
+    size: u64,
+    destination_guard: &ImportDestinationGuard,
+    source_cleanup_required: bool,
+) -> AppResult<Option<ImportFileResult>> {
+    let metadata = match std::fs::symlink_metadata(dest) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Repository(format!(
+                "failed to inspect existing import destination {}: {error}",
+                dest.display()
+            )));
+        }
+        Ok(metadata) => metadata,
+    };
+    if source == dest {
+        return Err(AppError::ManualReconciliationRequired(format!(
+            "import source and destination are the same path: {}",
+            dest.display()
+        )));
+    }
+    if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+        return Err(AppError::ManualReconciliationRequired(format!(
+            "import destination conflict is not a regular file: {}",
+            dest.display()
+        )));
+    }
+
+    ensure_same_source(source, source_fingerprint)?;
+    validate_import_destination_parent(destination_guard, dest)?;
+    validate_import_destination_file(destination_guard)?;
+    let source_proof = import_content_proof(source).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to prove import source content {}: {error}",
+            source.display()
+        ))
+    })?;
+    let destination_proof = import_content_proof(dest).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to prove import destination content {}: {error}",
+            dest.display()
+        ))
+    })?;
+    if source_proof != destination_proof || source_proof.size_bytes != size {
+        return Err(AppError::ManualReconciliationRequired(format!(
+            "import destination appeared with different content: {}",
+            dest.display()
+        )));
+    }
+
+    let source_cleanup = if source_cleanup_required {
+        Some(cleanup_guard(source, dest, source_fingerprint, size)?)
+    } else {
+        None
+    };
+    Ok(Some(ImportFileResult {
+        strategy: if source_cleanup_required {
+            ImportStrategy::Move
+        } else {
+            ImportStrategy::Copy
+        },
+        source_path: source.to_path_buf(),
+        dest_path: dest.to_path_buf(),
+        size_bytes: size,
+        destination_disposition: ImportDestinationDisposition::AlreadyPresent,
+        source_cleanup,
+    }))
+}
+
 fn copy_prepared_import_blocking(prepared: PreparedImportPlacement) -> AppResult<ImportFileResult> {
     ensure_same_source(&prepared.source, &prepared.source_fingerprint)?;
     validate_import_destination_parent(&prepared.destination_guard, &prepared.dest)?;
@@ -1750,6 +1833,16 @@ fn import_hardlink_or_copy_blocking(
     let (source_fingerprint, size, destination_guard) =
         prepare_import_destination(&source, &dest, &permissions)?;
     ensure_expected_source_snapshot(&source, &source_fingerprint, expected_source.as_ref())?;
+    if let Some(existing) = reconcile_existing_destination(
+        &source,
+        &dest,
+        &source_fingerprint,
+        size,
+        &destination_guard,
+        source_cleanup_required,
+    )? {
+        return Ok(existing);
+    }
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
         import_symlink_source(&source, &dest, &source_fingerprint, size)?;
@@ -1766,6 +1859,7 @@ fn import_hardlink_or_copy_blocking(
             source_path: source,
             dest_path: dest,
             size_bytes: size,
+            destination_disposition: ImportDestinationDisposition::Created,
             source_cleanup,
         });
     }
@@ -1814,6 +1908,7 @@ fn import_hardlink_or_copy_blocking(
                             source_path: source,
                             dest_path: dest,
                             size_bytes: size,
+                            destination_disposition: ImportDestinationDisposition::Created,
                             source_cleanup,
                         });
                     }
@@ -1875,6 +1970,7 @@ fn import_hardlink_or_copy_blocking(
         source_path: source,
         dest_path: dest,
         size_bytes: size,
+        destination_disposition: ImportDestinationDisposition::Created,
         source_cleanup,
     })
 }
@@ -3336,6 +3432,65 @@ mod tests {
         assert!(message.contains("import destination is not a file or symlink"));
         assert!(message.contains("additionally failed to remove placed import destination"));
         assert!(dest.exists());
+    }
+
+    #[test]
+    fn identical_existing_destination_is_reconciled_without_overwrite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+        std::fs::create_dir_all(dest.parent().expect("parent")).expect("create library");
+        std::fs::write(&source, b"same video bytes").expect("write source");
+        std::fs::write(&dest, b"same video bytes").expect("write destination");
+
+        let result = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions::default(),
+            None,
+            None,
+            ImportFilePermissions::default(),
+        )
+        .expect("reconcile identical destination");
+
+        assert_eq!(result.strategy, ImportStrategy::Copy);
+        assert_eq!(std::fs::read(&source).expect("source"), b"same video bytes");
+        assert_eq!(
+            std::fs::read(&dest).expect("destination"),
+            b"same video bytes"
+        );
+    }
+
+    #[test]
+    fn different_existing_destination_requires_reconciliation_and_preserves_both_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+        std::fs::create_dir_all(dest.parent().expect("parent")).expect("create library");
+        std::fs::write(&source, b"source video bytes").expect("write source");
+        std::fs::write(&dest, b"other video bytes!").expect("write destination");
+
+        let error = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions::default(),
+            None,
+            None,
+            ImportFilePermissions::default(),
+        )
+        .expect_err("different destination must conflict");
+
+        assert!(matches!(error, AppError::ManualReconciliationRequired(_)));
+        assert_eq!(
+            std::fs::read(&source).expect("source"),
+            b"source video bytes"
+        );
+        assert_eq!(
+            std::fs::read(&dest).expect("destination"),
+            b"other video bytes!"
+        );
     }
 
     #[tokio::test]

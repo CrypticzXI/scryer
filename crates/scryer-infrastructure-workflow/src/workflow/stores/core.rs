@@ -135,14 +135,6 @@ pub async fn commit_successful_grab_tx(
     tx: &mut SqlTx<'_>,
     commit: &SuccessfulGrabCommit,
 ) -> AppResult<()> {
-    let effective_download_id =
-        record_download_submission_tx(tx, &commit.download_submission).await?;
-    if let Some(effective_download_id) = effective_download_id
-        && let Some(submission_identity) = commit.download_submission_identity.as_ref()
-    {
-        record_download_submission_identity_tx(tx, &effective_download_id, submission_identity)
-            .await?;
-    }
     let mut wanted_item_ids = commit.covered_wanted_item_ids.clone();
     if !wanted_item_ids
         .iter()
@@ -292,7 +284,8 @@ pub async fn record_ambiguous_download_submission_tx(
           source_provider_name, source_kind, source_title, release_size_bytes,
           request_signature, purpose, episode_id, collection_id,
           series_movie_link_id, download_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(id) DO NOTHING",
         &[
             SqlArg::Text(canonical_id.clone()),
             SqlArg::Text(submission.title_id.clone()),
@@ -325,7 +318,8 @@ pub async fn record_ambiguous_download_submission_tx(
         "INSERT INTO download_client_bindings
          (download_id, client_config_id, client_type_snapshot, client_name_snapshot,
           native_item_id, created_at, ended_at)
-         VALUES ({}, {}, {}, {}, {}, {}, {})",
+         VALUES ({}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(download_id) DO NOTHING",
         &[
             SqlArg::Text(canonical_id),
             SqlArg::OptText(client_config_id),

@@ -165,11 +165,13 @@ async fn execute_resolved_episode_import(
         )
         .await?;
         persist_title_folder_path_if_missing(app, title, title_folder_path).await?;
+        let destination_ownership = ImportDestinationOwnership::episodes(&target_episode_ids);
         let file_result = import_file_with_record_progress(
             app,
             import_id,
             &title.library_id,
             &title.facet,
+            &destination_ownership,
             source_video,
             &dest_path,
             import_mode,
@@ -199,12 +201,10 @@ async fn execute_resolved_episode_import(
             edition: effective_parsed.edition.clone(),
             ..Default::default()
         };
-        let media_file_id = app
-            .services
-            .library
-            .media_files
-            .insert_media_file(&media_file_input)
-            .await?;
+        let media_file_id = file_result
+            .insert_or_reuse_media_file(app, &media_file_input)
+            .await?
+            .media_file_id;
         analyze_and_persist_imported_media_file(app, &title.id, &media_file_id, &dest_path).await;
         if let Err(error) = crate::subtitles::reconcile_external_subtitles_for_media_file(
             app,
@@ -225,24 +225,6 @@ async fn execute_resolved_episode_import(
         }
         maybe_trigger_subtitle_search(app, &title.id, &media_file_id);
 
-        for episode in target_episodes {
-            if let Err(err) = app
-                .services
-                .library
-                .media_files
-                .link_file_to_episode(&media_file_id, &episode.id)
-                .await
-            {
-                tracing::warn!(error = %err, episode_id = %episode.id, "failed to link additional file to episode");
-                if import_mode == scryer_domain::ImportMode::Move {
-                    return Err(AppError::Repository(format!(
-                        "move import source cleanup blocked because episode linking failed for {}",
-                        dest_path.display()
-                    )));
-                }
-            }
-        }
-
         let link_type = if import_mode == scryer_domain::ImportMode::Move {
             scryer_domain::ImportStrategy::Move
         } else {
@@ -256,6 +238,7 @@ async fn execute_resolved_episode_import(
             reason_code: Some("additional_file".to_string()),
             link_type: Some(link_type),
             source_cleanup: file_result.source_cleanup.clone().map(Box::new),
+            destination_permit: file_result.destination_permit(),
             size_bytes: Some(file_result.size_bytes as i64),
             // An additional file never reaches the gate, so it never earns one.
             blocklist_after_import: None,
@@ -634,6 +617,7 @@ async fn execute_resolved_episode_import(
                     link_type: (import_mode == scryer_domain::ImportMode::Move)
                         .then_some(scryer_domain::ImportStrategy::Move),
                     source_cleanup: outcome.source_cleanup.clone(),
+                    destination_permit: outcome.destination_permit.clone(),
                     size_bytes: Some(outcome.new_size_bytes),
                     blocklist_after_import,
                 });
@@ -656,11 +640,13 @@ async fn execute_resolved_episode_import(
     }
 
     persist_title_folder_path_if_missing(app, title, title_folder_path).await?;
+    let destination_ownership = ImportDestinationOwnership::episodes(&target_episode_ids);
     let file_result = import_file_with_record_progress(
         app,
         import_id,
         &title.library_id,
         &title.facet,
+        &destination_ownership,
         source_video,
         &dest_path,
         import_mode,
@@ -701,12 +687,10 @@ async fn execute_resolved_episode_import(
         scoring_log: post_download_score.scoring_log.clone(),
         ..Default::default()
     };
-    let media_file_id = app
-        .services
-        .library
-        .media_files
-        .insert_media_file(&media_file_input)
-        .await?;
+    let media_file_id = file_result
+        .insert_or_reuse_media_file(app, &media_file_input)
+        .await?
+        .media_file_id;
     crate::post_download_gate::persist_media_analysis_result(
         &app.services.library.media_files,
         &media_file_id,
@@ -736,19 +720,8 @@ async fn execute_resolved_episode_import(
     }
     maybe_trigger_subtitle_search(app, &title.id, &media_file_id);
 
-    let mut episode_link_failed = false;
+    let mut episode_role_failed = false;
     for episode in target_episodes {
-        let link_result = app
-            .services
-            .library
-            .media_files
-            .link_file_to_episode(&media_file_id, &episode.id)
-            .await;
-        if let Err(err) = link_result {
-            tracing::warn!(error = %err, episode_id = %episode.id, "failed to link file to episode");
-            episode_link_failed = true;
-            continue;
-        }
         if let Err(err) = app
             .services
             .library
@@ -762,12 +735,12 @@ async fn execute_resolved_episode_import(
                 file_id = %media_file_id,
                 "failed to promote imported file for episode"
             );
-            episode_link_failed = true;
+            episode_role_failed = true;
         }
     }
-    if episode_link_failed && import_mode == scryer_domain::ImportMode::Move {
+    if episode_role_failed && import_mode == scryer_domain::ImportMode::Move {
         return Err(AppError::Repository(format!(
-            "move import source cleanup blocked because episode linking failed for {}",
+            "move import source cleanup blocked because episode role assignment failed for {}",
             dest_path.display()
         )));
     }
@@ -789,6 +762,7 @@ async fn execute_resolved_episode_import(
         reason_code: None,
         link_type: Some(link_type),
         source_cleanup: file_result.source_cleanup.clone().map(Box::new),
+        destination_permit: file_result.destination_permit(),
         size_bytes: Some(file_result.size_bytes as i64),
         blocklist_after_import,
     })
