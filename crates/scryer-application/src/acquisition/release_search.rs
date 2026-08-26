@@ -761,8 +761,7 @@ pub(crate) fn match_parsed_release_to_title_evidence(
     evidence: &CanonicalTitleEvidence,
 ) -> Option<TitleEvidenceMatch> {
     let root_or_episode_year = parsed.year.is_some_and(|parsed_year| {
-        evidence.year == Some(parsed_year)
-            || evidence.episode_release_years.contains(&parsed_year)
+        evidence.year == Some(parsed_year) || evidence.episode_release_years.contains(&parsed_year)
     });
     let mut evidence_match =
         contextual_release_matches_title_evidence(parsed, evidence, root_or_episode_year)?;
@@ -774,9 +773,7 @@ pub(crate) fn match_parsed_release_to_title_evidence(
             .alias_release_years
             .get(&evidence_match.matched_key)
             .is_some_and(|year| *year == parsed_year);
-        if !evidence.episode_release_years.contains(&parsed_year)
-            && !matched_alias_supports_year
-        {
+        if !evidence.episode_release_years.contains(&parsed_year) && !matched_alias_supports_year {
             return None;
         }
         if matched_alias_supports_year {
@@ -3254,9 +3251,7 @@ mod tests {
         title.aliases = vec!["Synthetic Continuation (2023)".to_string()];
         title.tagged_aliases.clear();
         let evidence = canonical_title_evidence(&title);
-        let release = crate::parse_release_metadata(
-            "Synthetic.Root.2023.S02E03.1080p.WEB-DL-GRP",
-        );
+        let release = crate::parse_release_metadata("Synthetic.Root.2023.S02E03.1080p.WEB-DL-GRP");
 
         assert!(!parsed_release_matches_title_evidence(&release, &evidence));
     }
@@ -3292,9 +3287,8 @@ mod tests {
             created_at: Utc::now(),
         };
         let evidence = canonical_title_evidence_for_episode(&title, Some(&episode));
-        let release = crate::parse_release_metadata(
-            "Synthetic.Continuation.2023.S02E03.1080p.WEB-DL-GRP",
-        );
+        let release =
+            crate::parse_release_metadata("Synthetic.Continuation.2023.S02E03.1080p.WEB-DL-GRP");
 
         assert!(evidence.episode_release_years.contains(&2023));
         assert!(parsed_release_matches_title_evidence(&release, &evidence));

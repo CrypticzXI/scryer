@@ -233,9 +233,7 @@ fn row_to_proxy_config(row: &SqlRow) -> AppResult<IndexerProxyConfig> {
             AppError::Repository(format!("unknown indexer proxy protocol '{protocol}'"))
         })?,
         base_url: row.text("base_url")?,
-        request_timeout_seconds: clamp_persisted_proxy_timeout(
-            row.i64("request_timeout_seconds")?,
-        ),
+        request_timeout_seconds: clamp_persisted_proxy_timeout(row.i64("request_timeout_seconds")?),
         is_enabled: row.bool("is_enabled")?,
         last_health_status,
         last_error_message: row.opt_text("last_error_message")?,

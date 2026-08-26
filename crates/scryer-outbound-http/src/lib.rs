@@ -911,12 +911,11 @@ pub fn effective_indexer_timeout(_proxy_request_timeout_seconds: Option<u32>) ->
 
 /// Return the bounded request budget for a solver or proxy-health request.
 pub fn effective_indexer_proxy_request_timeout(request_timeout_seconds: u32) -> Duration {
-    Duration::from_secs(u64::from(request_timeout_seconds.clamp(
-        1,
-        MAX_INDEXER_PROXY_TIMEOUT_SECONDS,
-    )))
-        .saturating_add(INDEXER_PROXY_TIMEOUT_GRACE)
-        .min(INDEXER_HTTP_TIMEOUT)
+    Duration::from_secs(u64::from(
+        request_timeout_seconds.clamp(1, MAX_INDEXER_PROXY_TIMEOUT_SECONDS),
+    ))
+    .saturating_add(INDEXER_PROXY_TIMEOUT_GRACE)
+    .min(INDEXER_HTTP_TIMEOUT)
 }
 
 #[derive(Debug, Error)]
@@ -1506,8 +1505,7 @@ pub fn indexer_proxy_health_reqwest_client(timeout: Duration) -> Result<Client, 
 }
 
 pub fn external_arr_reqwest_client() -> Client {
-    let mut builder = reqwest_client_builder()
-        .redirect(reqwest::redirect::Policy::none());
+    let mut builder = reqwest_client_builder().redirect(reqwest::redirect::Policy::none());
     if let Ok(proxy_url) = std::env::var("SCRYER_EXTERNAL_ARR_PROXY_URL")
         && !proxy_url.trim().is_empty()
         && let Ok(proxy) = reqwest::Proxy::all(proxy_url.trim())
@@ -2370,10 +2368,7 @@ mod tests {
     #[test]
     fn indexer_timeout_policy_is_fixed_for_direct_and_proxied_requests() {
         assert_eq!(effective_indexer_timeout(None), Duration::from_secs(120));
-        assert_eq!(
-            effective_indexer_timeout(Some(60)),
-            INDEXER_HTTP_TIMEOUT
-        );
+        assert_eq!(effective_indexer_timeout(Some(60)), INDEXER_HTTP_TIMEOUT);
         assert_eq!(
             effective_indexer_timeout(Some(u32::MAX)),
             INDEXER_HTTP_TIMEOUT

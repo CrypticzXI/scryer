@@ -6,23 +6,22 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
-    AppError, AppResult, DownloadSourceKind, EstimatedCost, ExpectedValueHint, IndexerClient,
-    IndexerConfigRepository, IndexerErrorClassification, IndexerErrorOperation,
-    IndexerErrorRepository,
-    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome, IndexerRoutingPlan,
-    IndexerSearchCandidateWrite, IndexerSearchCompletion, IndexerSearchIncompleteReason,
-    IndexerSearchLearningContext, IndexerSearchLearningKey, IndexerSearchLearningRecord,
-    IndexerSearchLearningRepository, IndexerResponseAttributes, IndexerSearchOutcome,
-    IndexerSearchResponse, IndexerSearchResult, IndexerSearchRunWrite, IndexerStatsTracker,
-    IndexerSystemBackoff,
-    NormalizedIndexerSearchCandidate, NewIndexerError, ReusableIndexerSearchCandidate,
+    AppError, AppResult, DownloadSourceKind, EstimatedCost, ExpectedValueHint,
+    INDEXER_CAPS_REFRESH_ERROR_PREFIX, IndexerClient, IndexerConfigRepository,
+    IndexerErrorClassification, IndexerErrorOperation, IndexerErrorRepository,
+    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome,
+    IndexerResponseAttributes, IndexerRoutingPlan, IndexerSearchCandidateWrite,
+    IndexerSearchCompletion, IndexerSearchIncompleteReason, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult, IndexerSearchRunWrite,
+    IndexerStatsTracker, IndexerSystemBackoff, NewIndexerError, NormalizedIndexerSearchCandidate,
     NullIndexerErrorRepository, NullIndexerProxyConfigRepository,
     NullIndexerSearchLearningRepository, NullUpstreamScheduler, RateLimitCooldownAction,
-    RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, RssFreshnessContext,
-    SchedulerAdmission, SchedulerBatchRequest, SchedulerCandidate, SchedulerCandidateId,
-    SchedulerFeedback, SchedulerFeedbackOutcome, SchedulerIntent, SchedulerLease,
-    SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot, SearchLearningContext, SearchMode,
-    UpstreamScheduler, INDEXER_CAPS_REFRESH_ERROR_PREFIX, indexer_search_identity,
+    RateLimitSignal, ReleaseCandidateProvenance, ReleaseSearchSubjectKind,
+    ReusableIndexerSearchCandidate, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
+    SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
+    SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
+    SearchLearningContext, SearchMode, UpstreamScheduler, indexer_search_identity,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
@@ -336,23 +335,23 @@ impl SearchDiagnosticsContext {
             episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
             absolute_episode.map_or_else(|| "-".to_string(), |value| value.to_string()),
         );
-        let reusable_scope_key = if learning_context.subject_kind == ReleaseSearchSubjectKind::Episode
-        {
-            season.map_or_else(
-                || scope_key.clone(),
-                |season| {
-                    format!(
-                        "{}:{}:{}:{}:-:-",
-                        learning_context.title_id.trim(),
-                        learning_context.facet.trim().to_ascii_lowercase(),
-                        ReleaseSearchSubjectKind::Season.as_str(),
-                        season,
-                    )
-                },
-            )
-        } else {
-            scope_key.clone()
-        };
+        let reusable_scope_key =
+            if learning_context.subject_kind == ReleaseSearchSubjectKind::Episode {
+                season.map_or_else(
+                    || scope_key.clone(),
+                    |season| {
+                        format!(
+                            "{}:{}:{}:{}:-:-",
+                            learning_context.title_id.trim(),
+                            learning_context.facet.trim().to_ascii_lowercase(),
+                            ReleaseSearchSubjectKind::Season.as_str(),
+                            season,
+                        )
+                    },
+                )
+            } else {
+                scope_key.clone()
+            };
         let query_signature = digest_json(&serde_json::json!({
             "query": query,
             "ids": ids,
@@ -363,10 +362,8 @@ impl SearchDiagnosticsContext {
             "episode": episode,
             "absolute_episode": absolute_episode,
         }));
-        let indexer_fingerprint = digest_json(&indexer_search_identity(
-            config,
-            search_semantics_version,
-        ));
+        let indexer_fingerprint =
+            digest_json(&indexer_search_identity(config, search_semantics_version));
 
         Some(Self {
             repository,
@@ -380,11 +377,7 @@ impl SearchDiagnosticsContext {
         })
     }
 
-    async fn record_response(
-        &self,
-        branch: &str,
-        response: &IndexerSearchResponse,
-    ) {
+    async fn record_response(&self, branch: &str, response: &IndexerSearchResponse) {
         let now = Utc::now();
         let run_id = uuid::Uuid::new_v4().to_string();
         let (completion_state, incomplete_reason, retry_after) = match response.completion {
@@ -620,7 +613,9 @@ fn reusable_url_reference(
     if credentials.values().any(|secret| {
         secret.len() >= 4
             && (url.path().contains(secret)
-                || url.fragment().is_some_and(|fragment| fragment.contains(secret)))
+                || url
+                    .fragment()
+                    .is_some_and(|fragment| fragment.contains(secret)))
     }) {
         return None;
     }
@@ -704,7 +699,10 @@ fn candidate_extra_f64(candidate: &IndexerSearchResult, key: &str) -> Option<f64
 }
 
 fn candidate_extra_bool(candidate: &IndexerSearchResult, key: &str) -> Option<bool> {
-    candidate.extra.get(key).and_then(serde_json::Value::as_bool)
+    candidate
+        .extra
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
 }
 
 fn normalized_candidate(
@@ -727,9 +725,7 @@ fn normalized_candidate(
             .unwrap_or_default(),
         size_bytes: candidate.size_bytes,
         published_at: candidate.published_at.clone(),
-        source_kind: candidate
-            .source_kind
-            .map(|kind| kind.as_str().to_string()),
+        source_kind: candidate.source_kind.map(|kind| kind.as_str().to_string()),
         thumbs_up: candidate.thumbs_up,
         thumbs_down: candidate.thumbs_down,
         grabs: candidate.indexer_grabs,
@@ -1382,10 +1378,7 @@ fn learning_strategy_key(label: &str) -> Option<&'static str> {
 }
 
 fn is_learning_id_strategy_key(strategy_key: &str) -> bool {
-    matches!(
-        strategy_key,
-        "v2:ids_abs" | "v2:ids_sxex" | "v2:ids"
-    )
+    matches!(strategy_key, "v2:ids_abs" | "v2:ids_sxex" | "v2:ids")
 }
 
 fn learning_record_updated_at(record: &IndexerSearchLearningRecord) -> Option<DateTime<Utc>> {
@@ -4417,8 +4410,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                         self.record_indexer_scheduler_error(scheduler_lease, &err)
                             .await;
                     }
-                    let retry_after = rate_limit_signal_from_error(&err)
-                        .and_then(|signal| signal.retry_after);
+                    let retry_after =
+                        rate_limit_signal_from_error(&err).and_then(|signal| signal.retry_after);
                     warn!(indexer = name.as_str(), error = %err, "indexer search failed");
                     indexer_outcomes.push(IndexerQueryOutcome {
                         indexer_id: id,
@@ -6054,9 +6047,8 @@ mod tests {
         let credentials = HashMap::from([("apikey".to_string(), "old-secret".to_string())]);
         let mut candidate = search_result("Example.S01E01.1080p");
         candidate.guid = Some("release-1".into());
-        candidate.download_url = Some(
-            "https://api.example.test/api?t=get&id=release-1&apikey=old-secret".into(),
-        );
+        candidate.download_url =
+            Some("https://api.example.test/api?t=get&id=release-1&apikey=old-secret".into());
 
         let normalized = normalized_candidate(&candidate, &credentials);
         assert_eq!(
@@ -9497,7 +9489,10 @@ mod tests {
         .await;
 
         let response = result.expect("partial candidates remain usable by the aggregate search");
-        assert!(matches!(response.completion, IndexerSearchCompletion::Partial { .. }));
+        assert!(matches!(
+            response.completion,
+            IndexerSearchCompletion::Partial { .. }
+        ));
         let records = repo
             .list_for_title("idx-1", "title-1", "movie")
             .await

@@ -3475,9 +3475,9 @@ async fn acquisition_cycle_submits_one_hundred_episode_fallbacks_after_empty_pac
             };
             let release_slug = release_title.replace([' ', '/'], ".");
 
-        Ok(IndexerSearchResponse {
-            completion: crate::IndexerSearchCompletion::Complete,
-            indexer_outcomes: Vec::new(),
+            Ok(IndexerSearchResponse {
+                completion: crate::IndexerSearchCompletion::Complete,
+                indexer_outcomes: Vec::new(),
                 results: vec![IndexerSearchResult {
                     indexer_id: None,
                     source: "nzbgeek".into(),
@@ -5838,12 +5838,15 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
 
     app.run_convergence_cycle_once().await;
 
-    let submitted_titles = download_client.submitted_release_titles.lock().await.clone();
+    let submitted_titles = download_client
+        .submitted_release_titles
+        .lock()
+        .await
+        .clone();
     assert_eq!(submitted_titles.len(), 1);
     assert!(matches!(
         submitted_titles[0].as_str(),
-        "Deferred.Movie.2024.1080p.WEB-DL-GRP"
-            | "Rejected.Movie.2024.1080p.WEB-DL-GRP"
+        "Deferred.Movie.2024.1080p.WEB-DL-GRP" | "Rejected.Movie.2024.1080p.WEB-DL-GRP"
     ));
 
     let submissions = download_submissions.store.lock().await.clone();

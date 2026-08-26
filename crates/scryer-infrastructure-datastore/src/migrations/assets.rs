@@ -686,7 +686,10 @@ mod tests {
             "00000000000000000000000000000001",
         ] {
             assert!(sqlite.contains(seed), "SQLite baseline missing seed {seed}");
-            assert!(postgres.contains(seed), "PostgreSQL baseline missing seed {seed}");
+            assert!(
+                postgres.contains(seed),
+                "PostgreSQL baseline missing seed {seed}"
+            );
         }
     }
 

@@ -47,11 +47,10 @@ impl AppUseCase {
             Some(&normalized_config_json),
         )?;
         let validated_base_url = validate_test_flight_url(&base_url)?;
-        if validated_base_url
-            .host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("nzbgeek.info")
-                || host.eq_ignore_ascii_case("www.nzbgeek.info"))
-        {
+        if validated_base_url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("nzbgeek.info")
+                || host.eq_ignore_ascii_case("www.nzbgeek.info")
+        }) {
             return Err(AppError::Validation(
                 "NZBGeek's website host cannot serve Newznab API requests; use https://api.nzbgeek.info"
                     .to_string(),
@@ -824,11 +823,7 @@ mod tests {
             Ok(())
         }
 
-        async fn prune_scope_indexer(
-            &self,
-            _scope_key: &str,
-            _indexer_id: &str,
-        ) -> AppResult<()> {
+        async fn prune_scope_indexer(&self, _scope_key: &str, _indexer_id: &str) -> AppResult<()> {
             Ok(())
         }
 
