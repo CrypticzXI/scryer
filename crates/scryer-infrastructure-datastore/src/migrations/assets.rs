@@ -945,6 +945,116 @@ mod tests {
         assert!(postgres_sql.contains("idx_download_identity_states_canonical_download_id"));
     }
 
+    #[tokio::test]
+    async fn migration_0188_classifies_only_unreasoned_legacy_import_blocks() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 188"));
+
+        let sqlite_sql = fs::read_to_string(
+            db_root.join("migrations/0188_unverified_already_imported_blocks.sql"),
+        )
+        .expect("SQLite 0188 migration should be readable");
+        let postgres_sql = fs::read_to_string(
+            db_root.join("postgres/migrations/0188_unverified_already_imported_blocks.sql"),
+        )
+        .expect("PostgreSQL 0188 migration should be readable");
+        assert!(postgres_sql.contains("btrim(reason)"));
+        assert!(postgres_sql.contains("unverified_already_imported"));
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open SQLite database");
+        sqlx::raw_sql(
+            "CREATE TABLE download_identity_states (
+                id TEXT PRIMARY KEY,
+                tracked_state TEXT NOT NULL,
+                reason TEXT,
+                detail TEXT
+            );",
+        )
+        .execute(&pool)
+        .await
+        .expect("create download identity states table");
+
+        for (id, state, reason, detail) in [
+            (
+                "legacy-null",
+                "import_blocked",
+                None,
+                Some(" Import blocked: ALREADY_IMPORTED "),
+            ),
+            (
+                "legacy-blank",
+                "import_blocked",
+                Some("   "),
+                Some("Import blocked: already_imported"),
+            ),
+            (
+                "post-import",
+                "import_blocked",
+                Some("import_blocked_after_import"),
+                Some("Import blocked: already_imported"),
+            ),
+            (
+                "other-state",
+                "imported",
+                None,
+                Some("Import blocked: already_imported"),
+            ),
+            (
+                "other-detail",
+                "import_blocked",
+                None,
+                Some("manual review"),
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO download_identity_states (id, tracked_state, reason, detail)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(state)
+            .bind(reason)
+            .bind(detail)
+            .execute(&pool)
+            .await
+            .expect("seed migration row");
+        }
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sqlite_sql))
+            .execute(&pool)
+            .await
+            .expect("run 0188 migration");
+
+        for id in ["legacy-null", "legacy-blank"] {
+            let reason: Option<String> =
+                sqlx::query_scalar("SELECT reason FROM download_identity_states WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read migrated reason");
+            assert_eq!(reason.as_deref(), Some("unverified_already_imported"));
+        }
+
+        for (id, expected_reason) in [
+            ("post-import", Some("import_blocked_after_import")),
+            ("other-state", None),
+            ("other-detail", None),
+        ] {
+            let reason: Option<String> =
+                sqlx::query_scalar("SELECT reason FROM download_identity_states WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read untouched reason");
+            assert_eq!(reason.as_deref(), expected_reason);
+        }
+    }
+
     #[test]
     fn source_manifest_defaults_missing_step_engine_to_all() {
         let manifest = r#"

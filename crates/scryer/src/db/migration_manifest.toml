@@ -1378,6 +1378,23 @@ file = "postgres/migrations/0187_series_movie_monitoring_policy.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 188
+description = "classify unverified already imported download blocks"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0188_unverified_already_imported_blocks.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0188_unverified_already_imported_blocks.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

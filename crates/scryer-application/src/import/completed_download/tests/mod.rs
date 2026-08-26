@@ -791,6 +791,7 @@ struct TestDownloadSubmissionRepo {
     rows: Arc<Mutex<Vec<(DownloadSubmission, DownloadSubmissionIdentity)>>>,
     tracked_states: Arc<Mutex<Vec<(ClientJobLocator, String)>>>,
     identity_tracked_states: Arc<Mutex<Vec<(String, String)>>>,
+    canonical_identity_tracked_state_reasons: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 fn test_tracked_state_key(
@@ -920,6 +921,38 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
         Ok(())
     }
 
+    async fn record_identity_tracked_state_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&ClientJobLocator>,
+        tracked_state: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<()> {
+        self.record_identity_tracked_state(
+            identity,
+            source_identity,
+            tracked_state,
+            reason,
+            detail,
+        )
+        .await?;
+        if let (Some(download_id), Some(reason)) = (canonical_download_id, reason) {
+            let download_id = download_id.to_string();
+            let mut reasons = self.canonical_identity_tracked_state_reasons.lock().await;
+            if let Some((_, stored_reason)) = reasons
+                .iter_mut()
+                .find(|(stored_id, _)| stored_id == &download_id)
+            {
+                *stored_reason = reason.to_string();
+            } else {
+                reasons.push((download_id, reason.to_string()));
+            }
+        }
+        Ok(())
+    }
+
     async fn get_identity_tracked_state(
         &self,
         identity: &DownloadSubmissionIdentity,
@@ -935,6 +968,24 @@ impl DownloadSubmissionRepository for TestDownloadSubmissionRepo {
             .iter()
             .find(|(stored_key, _)| stored_key == &key)
             .map(|(_, state)| state.clone()))
+    }
+
+    async fn get_identity_tracked_state_reason_for_download(
+        &self,
+        canonical_download_id: Option<&scryer_domain::download_identity::DownloadId>,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&ClientJobLocator>,
+    ) -> AppResult<Option<String>> {
+        let Some(canonical_download_id) = canonical_download_id else {
+            return Ok(None);
+        };
+        Ok(self
+            .canonical_identity_tracked_state_reasons
+            .lock()
+            .await
+            .iter()
+            .find(|(stored_id, _)| stored_id == &canonical_download_id.to_string())
+            .map(|(_, reason)| reason.clone()))
     }
 
     async fn list_for_client_items(

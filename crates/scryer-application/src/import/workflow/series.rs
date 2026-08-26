@@ -499,15 +499,11 @@ pub(super) struct PlannedBlocklistWrite<'a> {
 /// (`check_not_already_imported`) is not a rejection: the unit is in place, so
 /// the automatic and manual paths both record it as `already_present` and let
 /// the download finalize as imported instead of retrying forever.
-pub(super) fn episode_skip_is_already_present(
-    reason_code: Option<&str>,
-    skip_reason: Option<&ImportSkipReason>,
-) -> bool {
-    reason_code == Some("duplicate_file")
-        || matches!(
-            skip_reason,
-            Some(ImportSkipReason::AlreadyImported | ImportSkipReason::DuplicateFile)
-        )
+pub(super) fn episode_skip_is_already_present(skip_reason: Option<&ImportSkipReason>) -> bool {
+    matches!(
+        skip_reason,
+        Some(ImportSkipReason::AlreadyImported | ImportSkipReason::DuplicateFile)
+    )
 }
 
 fn append_unique_episode_ids(target: &mut Vec<String>, source: &[String]) {
@@ -1066,12 +1062,11 @@ async fn import_single_episode_file(
             skip_reason,
             ..
         } => {
-            let artifact_result =
-                if episode_skip_is_already_present(reason_code.as_deref(), skip_reason.as_ref()) {
-                    "already_present"
-                } else {
-                    "rejected"
-                };
+            let artifact_result = if episode_skip_is_already_present(skip_reason.as_ref()) {
+                "already_present"
+            } else {
+                "rejected"
+            };
             persist_file_import_artifact(
                 app,
                 import_id,
