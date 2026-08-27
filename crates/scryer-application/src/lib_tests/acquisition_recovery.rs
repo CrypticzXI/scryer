@@ -7673,11 +7673,10 @@ async fn rss_definitive_submit_error_records_failed_signature_and_blocklist_entr
 }
 
 #[tokio::test]
-async fn rss_grab_whose_submission_tracking_fails_burns_the_release() {
+async fn rss_grab_whose_submission_tracking_fails_remains_uncertain() {
     // The client accepted the job but the download submission could not be
-    // persisted: Scryer can no longer track it, so the release is recorded
-    // Failed and blocklisted for this title (visible and removable) instead of
-    // being re-grabbed into an untracked duplicate.
+    // persisted. The canonical coordinator retains the uncertain acceptance,
+    // so RSS neither burns the release nor issues another client mutation.
     let release_title = "Rss.Untracked.Movie.2024.1080p.WEB-DL-GRP";
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -7713,33 +7712,19 @@ async fn rss_grab_whose_submission_tracking_fails_burns_the_release() {
         "the client did accept the job"
     );
     assert!(download_submissions.store.lock().await.is_empty());
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
         .expect("list failed signatures");
-    assert_eq!(failed.len(), 1);
+    assert!(failed.is_empty());
+    assert!(title_blocklist_entries(&app, &title.id).await.is_empty());
+
+    let retry_report = app.run_scheduled_rss_sync().await.expect("retry RSS sync");
+    assert_eq!(retry_report.releases_grabbed, 0);
     assert_eq!(
-        failed[0].source_title.as_deref(),
-        normalized_release_title.as_deref()
-    );
-    let blocklist = title_blocklist_entries(&app, &title.id).await;
-    assert_eq!(
-        blocklist.len(),
+        download_client.submitted_release_titles.lock().await.len(),
         1,
-        "an untracked grab must blocklist the release for this title: {blocklist:?}"
-    );
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        normalized_release_title.as_deref()
-    );
-    assert!(
-        blocklist[0].reason.as_deref().is_some_and(|reason| {
-            reason.starts_with("grab accepted but download tracking could not be persisted:")
-                && reason.contains("download_submissions write failed")
-        }),
-        "the entry must say what happened: {:?}",
-        blocklist[0].reason
+        "an unresolved accepted submission must never be sent twice"
     );
 }
 

@@ -123,7 +123,14 @@ async fn seed_pending_release(
 ) -> scryer_application::PendingRelease {
     let now = Utc::now();
     let delay_until = now + Duration::minutes(delay_minutes);
-    let pr = scryer_application::PendingRelease {
+    let initial_status = match status {
+        PendingReleaseStatus::Grabbed
+        | PendingReleaseStatus::Superseded
+        | PendingReleaseStatus::Expired
+        | PendingReleaseStatus::Dismissed => PendingReleaseStatus::Waiting,
+        active => active,
+    };
+    let mut pr = scryer_application::PendingRelease {
         id: scryer_domain::Id::new().0,
         wanted_item_id: wanted_item_id.to_string(),
         title_id: title_id.to_string(),
@@ -139,7 +146,7 @@ async fn seed_pending_release(
         added_at: now.to_rfc3339(),
         last_observed_at: now.to_rfc3339(),
         delay_until: delay_until.to_rfc3339(),
-        status,
+        status: initial_status,
         grabbed_at: None,
         source_password: None,
         published_at: None,
@@ -152,13 +159,22 @@ async fn seed_pending_release(
         last_decision_code: None,
         release_age_unknown: false,
     };
-    scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
-        ctx.db.datastore(),
-        ctx.db.encryption_key_state(),
-    )
-    .insert_pending_release(&pr)
-    .await
-    .expect("seed pending release");
+    let store =
+        scryer_infrastructure_library::media::libraries::state_store::PendingReleaseStore::new(
+            ctx.db.datastore(),
+            ctx.db.encryption_key_state(),
+        );
+    pr.id = store
+        .insert_pending_release(&pr)
+        .await
+        .expect("seed pending release");
+    if initial_status != status {
+        store
+            .update_pending_release_status(&pr.id, status, None)
+            .await
+            .expect("transition seeded pending release");
+        pr.status = status;
+    }
     pr
 }
 
@@ -686,7 +702,6 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
     })
     .to_string();
     let acquisition_store = AcquisitionStore::new(ctx.db.datastore());
-    let download_submission_store = DownloadSubmissionStore::new(ctx.db.datastore());
 
     acquisition_store
         .commit_successful_grab(&SuccessfulGrabCommit {
@@ -714,17 +729,6 @@ async fn commit_successful_grab_supersedes_waiting_siblings_but_keeps_saved_resu
     assert_eq!(
         wanted.grabbed_release.as_deref(),
         Some(grabbed_release.as_str())
-    );
-
-    let submission = download_submission_store
-        .find_by_client_item_id(&ClientJobLocator::new(None, "nzbget", "job-1"))
-        .await
-        .expect("find submission")
-        .expect("submission exists");
-    assert_eq!(submission.title_id, wi.title_id);
-    assert_eq!(
-        submission.source_title.as_deref(),
-        Some("Best.Release.1080p.WEB-DL")
     );
 
     assert_eq!(
@@ -1263,7 +1267,7 @@ async fn process_expired_marks_expired_when_wanted_item_gone() {
 }
 
 #[tokio::test]
-async fn process_expired_supersedes_when_already_grabbed() {
+async fn process_expired_keeps_upgrade_candidate_when_already_grabbed() {
     let ctx = TestContext::new().await;
     let app = ctx.app.clone();
 
@@ -1290,14 +1294,15 @@ async fn process_expired_supersedes_when_already_grabbed() {
         .expect("process");
     assert_eq!(count, 0);
 
-    // PR should be superseded (wanted item already grabbed)
+    // A successful grab does not retire an unresolved candidate here. It may
+    // still be a higher-quality upgrade after fresh ranking.
     let fetched = ctx
         .library_state
         .get_pending_release(&pr.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(fetched.status, PendingReleaseStatus::Superseded);
+    assert_eq!(fetched.status, PendingReleaseStatus::Waiting);
 }
 
 #[tokio::test]

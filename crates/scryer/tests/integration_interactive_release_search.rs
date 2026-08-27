@@ -492,7 +492,7 @@ async fn mount_rate_limited(server: &MockServer) {
         .and(path("/api"))
         .respond_with(
             ResponseTemplate::new(429)
-                .insert_header("Retry-After", "120")
+                .insert_header("Retry-After", "2")
                 .set_body_string("Request limit reached"),
         )
         .mount(server)
@@ -672,7 +672,7 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
 
     // Warm up the search pipeline so cold WASM compilation (~6s per indexer in
     // debug, worse under a parallel test sweep) does not eat into the job's
-    // 55s server-side deadline. The warmup also arms the 429 indexer's
+    // workflow deadline. The warmup also arms the 429 indexer's short
     // destination cooldown, so the job below additionally exercises the
     // scheduler's interactive cooldown bypass end to end.
     app.search_indexers_for_title(
@@ -688,8 +688,9 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
         .await
         .expect("start job");
 
-    // 90s > the job's own 55s deadline, so the snapshot is guaranteed
-    // terminal here even on a saturated CI host.
+    // The pipeline is warm and the fixture's cooldown is bounded, so this is
+    // ample time on a saturated CI host without making the test sleep through
+    // the production 120-second indexer budget.
     let done = wait_for_snapshot(
         &app,
         &user,
