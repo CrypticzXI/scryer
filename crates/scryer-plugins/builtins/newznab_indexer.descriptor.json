@@ -108,6 +108,15 @@
         "label": "Additional Parameters",
         "required": false,
         "value_source": "user"
+      },
+      {
+        "default_value": "2000",
+        "field_type": "number",
+        "help_text": "Minimum delay between upstream request starts; defaults to 2000 ms.",
+        "key": "request_interval_ms",
+        "label": "Request Interval (ms)",
+        "required": false,
+        "value_source": "user"
       }
     ],
     "kind": "indexer",
@@ -115,7 +124,7 @@
     "search_semantics_version": 1,
     "source_kind": "usenet"
   },
-  "sdk_constraint": ">=3.8.0, <4.0.0",
-  "sdk_version": "3.8.0",
+  "sdk_constraint": ">=3.9.0, <4.0.0",
+  "sdk_version": "3.9.0",
   "version": "2.0.1"
 }
