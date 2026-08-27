@@ -764,6 +764,7 @@ impl AppUseCase {
                 warn!(error = %err, "RSS sync: failed to fetch RSS feed from indexers; evaluating active pending releases");
                 IndexerSearchResponse {
                     results: Vec::new(),
+                    
                     completion: IndexerSearchCompletion::Partial {
                         reason: Some(IndexerSearchIncompleteReason::UpstreamFailure),
                         retry_after: None,

@@ -959,8 +959,8 @@ async fn grabbed_episode_fallback(
 /// Scene releases can carry a collection's local numbering while the catalog
 /// has that content in a different season. A parseable filename normally wins,
 /// but once that filename resolves to no catalog episode, this narrowly admits
-/// the scoped episode when both release titles name the same title and both
-/// episode numbers agree.
+/// the scoped episode when the series title matches exactly, its episode title
+/// is a near match, and both episode numbers agree.
 async fn reconcile_unresolved_scene_episode_from_scoped_release(
     app: &AppUseCase,
     title: &scryer_domain::Title,
@@ -989,7 +989,8 @@ async fn reconcile_unresolved_scene_episode_from_scoped_release(
         return Ok(None);
     };
     if *file_episode_number != scoped_episode_number
-        || !parsed_title_fuzzily_matches_catalog_title(&file_metadata, title)
+        || !parsed_title_matches_catalog_title(&file_metadata, title)
+        || !source_fuzzily_matches_catalog_episode_title(title, source_video, &scoped_episode)
     {
         return Ok(None);
     }
@@ -1020,7 +1021,7 @@ async fn reconcile_unresolved_scene_episode_from_scoped_release(
     Ok(Some(scoped_episode))
 }
 
-fn parsed_title_fuzzily_matches_catalog_title(
+fn parsed_title_matches_catalog_title(
     parsed: &crate::ParsedReleaseMetadata,
     title: &scryer_domain::Title,
 ) -> bool {
@@ -1050,14 +1051,78 @@ fn parsed_title_fuzzily_matches_catalog_title(
     };
     candidates.into_iter().any(|candidate| {
         let normalized = crate::app_usecase_rss::normalize_for_matching(candidate);
-        !normalized.is_empty()
-            && expected
-                .iter()
-                .any(|value| normalized_title_matches_or_is_near_match(&normalized, value))
+        !normalized.is_empty() && expected.iter().any(|value| value == &normalized)
     })
 }
 
-fn normalized_title_matches_or_is_near_match(candidate: &str, expected: &str) -> bool {
+/// Match only a member's episode-title text with typo tolerance. Series title
+/// identity is checked separately and always stays exact (canonical or alias).
+fn source_fuzzily_matches_catalog_episode_title(
+    title: &scryer_domain::Title,
+    source_video: &Path,
+    episode: &scryer_domain::Episode,
+) -> bool {
+    let Some(expected_title) = episode.title.as_deref().filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let Some(stem) = source_video_stem(Some(source_video)) else {
+        return false;
+    };
+    let expected = crate::app_usecase_rss::normalize_for_matching(expected_title);
+    if expected.is_empty() {
+        return false;
+    }
+
+    let context = crate::build_release_parse_context(title, Some(episode), None, None);
+    let analysis = crate::analyze_release_for_target(&stem, &context);
+    let Some(candidate) = analysis.best_candidate() else {
+        return false;
+    };
+    if candidate.context_title_matches.iter().any(|context_match| {
+        context_match.kind == crate::release_parser::ContextTitleMatchKind::EpisodeTitle
+            && !candidate.zones.title_zones.iter().any(|title_zone| {
+                context_match.token_range.start_token < title_zone.end_token
+                    && title_zone.start_token < context_match.token_range.end_token
+            })
+    }) {
+        return true;
+    }
+
+    let unmatched_tokens: Vec<_> = candidate
+        .unconsumed_tokens
+        .iter()
+        .filter_map(|span| stem.get(span.start..span.end))
+        .filter(|token| token.chars().any(|character| character.is_alphanumeric()))
+        .collect();
+    let max_window_tokens = expected_title
+        .split_whitespace()
+        .count()
+        .saturating_add(2)
+        .max(1);
+    for start in 0..unmatched_tokens.len() {
+        let mut phrase = String::new();
+        for token in unmatched_tokens
+            .iter()
+            .skip(start)
+            .take(max_window_tokens)
+        {
+            if !phrase.is_empty() {
+                phrase.push(' ');
+            }
+            phrase.push_str(token);
+            let normalized = crate::app_usecase_rss::normalize_for_matching(&phrase);
+            if !normalized.is_empty()
+                && normalized_episode_title_matches_or_is_near_match(&normalized, &expected)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn normalized_episode_title_matches_or_is_near_match(candidate: &str, expected: &str) -> bool {
     if candidate == expected {
         return true;
     }
@@ -1110,14 +1175,14 @@ mod alternate_scene_numbering_tests {
     use super::*;
 
     #[test]
-    fn title_match_allows_a_small_typo_but_not_an_unrelated_title() {
-        assert!(normalized_title_matches_or_is_near_match(
-            "bleachthousandyearbloodwar",
-            "bleechthousandyearbloodwar",
+    fn episode_title_match_allows_a_small_typo_but_not_an_unrelated_title() {
+        assert!(normalized_episode_title_matches_or_is_near_match(
+            "sonofdarkness",
+            "sonofdarknes",
         ));
-        assert!(!normalized_title_matches_or_is_near_match(
-            "bleachthousandyearbloodwar",
-            "narutoshippuden",
+        assert!(!normalized_episode_title_matches_or_is_near_match(
+            "sonofdarkness",
+            "thenightmareofyou",
         ));
     }
 }

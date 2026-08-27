@@ -908,14 +908,15 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
     canRequestItems: canRequestDiscoveryItems,
     onCatalogChanged: handleMoreLikeThisCatalogChanged,
   });
+  const {
+    canAddItem,
+    canRequestItem,
+    onAction,
+    onOpenResolved,
+  } = moreLikeThisActions.stripProps;
   const moreLikeThisStripProps = React.useMemo(
-    () => moreLikeThisActions.stripProps,
-    [
-      moreLikeThisActions.stripProps.canAddItem,
-      moreLikeThisActions.stripProps.canRequestItem,
-      moreLikeThisActions.stripProps.onAction,
-      moreLikeThisActions.stripProps.onOpenResolved,
-    ],
+    () => ({ canAddItem, canRequestItem, onAction, onOpenResolved }),
+    [canAddItem, canRequestItem, onAction, onOpenResolved],
   );
   const refreshTitleDetailRef = React.useRef(refreshTitleDetail);
   React.useEffect(() => {

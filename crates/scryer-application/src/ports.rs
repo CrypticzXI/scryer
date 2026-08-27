@@ -3290,6 +3290,8 @@ pub struct IndexerSearchLearningContext {
     pub title_id: String,
     pub facet: String,
     pub subject_kind: ReleaseSearchSubjectKind,
+    /// Correlates every persisted candidate page produced by one search pass.
+    pub search_session_id: String,
     /// Background convergence value hint for this scope: the
     /// convergence cursor sets it from the target's recency lane (hot → high,
     /// cold → low). Rides the Auto-only background search path into the
@@ -3304,6 +3306,7 @@ pub struct IndexerSearchRunWrite {
     pub id: String,
     pub indexer_id: String,
     pub provider_type: String,
+    pub search_session_id: String,
     pub scope_key: String,
     pub query_signature: String,
     pub branch: String,
@@ -3360,9 +3363,13 @@ pub struct NormalizedIndexerSearchCandidate {
 pub struct IndexerSearchCandidateWrite {
     pub id: String,
     pub run_id: String,
+    pub search_session_id: String,
     pub indexer_id: String,
     pub scope_key: String,
     pub query_signature: String,
+    /// A one-way digest of the canonical release URL/title used for first-seen
+    /// suppression within one streaming search session.
+    pub session_identity_hash: String,
     pub normalized: NormalizedIndexerSearchCandidate,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub reusable_until: chrono::DateTime<chrono::Utc>,
@@ -3404,6 +3411,13 @@ pub trait IndexerSearchLearningRepository: Send + Sync {
         _indexer_fingerprint: &str,
         _now: chrono::DateTime<chrono::Utc>,
         _limit: u32,
+    ) -> AppResult<Vec<ReusableIndexerSearchCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_search_run_candidates(
+        &self,
+        _run_id: &str,
     ) -> AppResult<Vec<ReusableIndexerSearchCandidate>> {
         Ok(Vec::new())
     }
@@ -5328,7 +5342,97 @@ pub trait IndexerClient: Send + Sync {
         tagged_aliases: Vec<TaggedAlias>,
         learning_context: Option<IndexerSearchLearningContext>,
         cancel_token: tokio_util::sync::CancellationToken,
-    ) -> AppResult<IndexerSearchResponse>;
+    ) -> AppResult<IndexerSearchResponse> {
+        let (page_tx, mut page_rx) = tokio::sync::mpsc::channel(2);
+        let page_sink = crate::IndexerSearchPageSink::new(page_tx, 2);
+        let producer = self.search_stream(
+            query,
+            ids,
+            category,
+            facet,
+            id_search_facet,
+            newznab_categories,
+            indexer_routing,
+            mode,
+            operation,
+            season,
+            episode,
+            absolute_episode,
+            tagged_aliases,
+            learning_context,
+            cancel_token,
+            page_sink,
+        );
+        tokio::pin!(producer);
+
+        let mut results = Vec::new();
+        let mut page_source_open = true;
+        let mut response = loop {
+            tokio::select! {
+                response = &mut producer => break response?,
+                page = page_rx.recv(), if page_source_open => match page {
+                    Some(page) => results.extend(page.results),
+                    None => page_source_open = false,
+                },
+            }
+        };
+        while let Some(page) = page_rx.recv().await {
+            results.extend(page.results);
+        }
+        response.results = results;
+        Ok(response)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the streaming adapter preserves the complete search envelope"
+    )]
+    async fn search_stream(
+        &self,
+        query: String,
+        ids: std::collections::HashMap<String, String>,
+        category: Option<String>,
+        facet: Option<String>,
+        id_search_facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        indexer_routing: Option<IndexerRoutingPlan>,
+        mode: SearchMode,
+        operation: IndexerErrorOperation,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        tagged_aliases: Vec<TaggedAlias>,
+        learning_context: Option<IndexerSearchLearningContext>,
+        cancel_token: tokio_util::sync::CancellationToken,
+        page_sink: crate::IndexerSearchPageSink,
+    ) -> AppResult<IndexerSearchResponse> {
+        let mut response = self
+            .search(
+                query,
+                ids,
+                category,
+                facet,
+                id_search_facet,
+                newznab_categories,
+                indexer_routing,
+                mode,
+                operation,
+                season,
+                episode,
+                absolute_episode,
+                tagged_aliases,
+                learning_context,
+                cancel_token,
+            )
+            .await?;
+        if !response.results.is_empty() {
+            page_sink
+                .send(std::mem::take(&mut response.results))
+                .await
+                .map_err(|_| AppError::canceled("indexer scoring pipeline closed"))?;
+        }
+        Ok(response)
+    }
 
     async fn prune_search_learning(&self, _indexer_id: &str) -> AppResult<()> {
         Ok(())

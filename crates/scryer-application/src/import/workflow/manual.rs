@@ -1047,6 +1047,13 @@ async fn preview_manual_import(
             .map(|candidate| candidate.source_entry_path.clone())
     })
     .flatten();
+    let verified_pack = verified_episode_pack(release_evidence, title);
+    let expected_pack_episode_ids = match (verified_pack.as_ref(), release_evidence.scope()) {
+        (Some(_), Some(scope)) => {
+            expected_episode_ids_from_submission_scope(app, title, scope).await
+        }
+        _ => None,
+    };
 
     // For each file, parse and attempt auto-match
     let mut previews = Vec::new();
@@ -1139,6 +1146,24 @@ async fn preview_manual_import(
                 video_files.len() > 1,
             )
             .await?
+        {
+            suggested_episode_id = Some(episode.id.clone());
+            suggested_episode_label = Some(manual_import_episode_label(&episode));
+        }
+
+        if suggested_episode_id.is_none()
+            && let Some(pack) = verified_pack.as_ref()
+            && let ScopedPackMemberReconciliation::Resolved(episode_id) =
+                reconcile_unresolved_pack_member_from_expected_scope(
+                    title,
+                    pack,
+                    path,
+                    available_episodes,
+                    expected_pack_episode_ids.as_ref(),
+                )
+            && let Some(episode) = available_episodes
+                .iter()
+                .find(|episode| episode.id == episode_id)
         {
             suggested_episode_id = Some(episode.id.clone());
             suggested_episode_label = Some(manual_import_episode_label(&episode));

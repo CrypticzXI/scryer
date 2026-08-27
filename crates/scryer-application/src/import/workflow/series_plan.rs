@@ -119,6 +119,37 @@ async fn build_episode_pack_import_plan(
         } else {
             plan_episode_pack_member(title, source_root, source_path, &catalog_episodes)
         };
+        let draft = if matches!(
+            &draft,
+            PlannedMemberDraft::Hold {
+                reason_code: "episode_not_found_for_title",
+                ..
+            }
+        ) {
+            match reconcile_unresolved_pack_member_from_expected_scope(
+                title,
+                &pack,
+                source_path,
+                &catalog_episodes,
+                expected_episode_ids,
+            ) {
+                ScopedPackMemberReconciliation::Resolved(episode_id) => catalog_episodes
+                    .iter()
+                    .find(|episode| episode.id == episode_id)
+                    .cloned()
+                    .map(|episode| PlannedMemberDraft::Resolved(vec![episode]))
+                    .unwrap_or(draft),
+                ScopedPackMemberReconciliation::Ambiguous => PlannedMemberDraft::Hold {
+                    episodes: Vec::new(),
+                    reason_code: "ambiguous_pack_alternate_numbering",
+                    message: "Automatic import found multiple scoped catalog episodes with this member's alternate episode number. Open Manual Import and assign the correct episode."
+                        .to_string(),
+                },
+                ScopedPackMemberReconciliation::Unresolved => draft,
+            }
+        } else {
+            draft
+        };
         drafts.push(draft);
     }
 
@@ -131,6 +162,75 @@ async fn build_episode_pack_import_plan(
         plan.members.insert(source_path, disposition);
     }
     Ok(Some(plan))
+}
+
+enum ScopedPackMemberReconciliation {
+    Resolved(String),
+    Ambiguous,
+    Unresolved,
+}
+
+/// Reconcile a pack member only when its local scene numbering is corroborated
+/// by one monitored catalog episode in the verified submission scope.
+fn reconcile_unresolved_pack_member_from_expected_scope(
+    title: &scryer_domain::Title,
+    pack: &VerifiedEpisodePack,
+    source_path: &Path,
+    catalog: &[scryer_domain::Episode],
+    expected_episode_ids: Option<&HashSet<String>>,
+) -> ScopedPackMemberReconciliation {
+    let Some(declared_seasons) = pack.declared_seasons.as_ref().filter(|seasons| !seasons.is_empty())
+    else {
+        return ScopedPackMemberReconciliation::Unresolved;
+    };
+    let Some(expected_episode_ids) = expected_episode_ids else {
+        return ScopedPackMemberReconciliation::Unresolved;
+    };
+    if pack.is_extras_release {
+        return ScopedPackMemberReconciliation::Unresolved;
+    }
+
+    let parsed = parsed_release_from_file_stem(source_path);
+    let Some(identity) = parsed.episode.as_ref() else {
+        return ScopedPackMemberReconciliation::Unresolved;
+    };
+    let [episode_number] = identity.episode_numbers.as_slice() else {
+        return ScopedPackMemberReconciliation::Unresolved;
+    };
+    if identity.air_date.is_some()
+        || identity.absolute_episode.is_some()
+        || !identity.absolute_episode_numbers.is_empty()
+        || !identity.special_absolute_episode_numbers.is_empty()
+        || identity.special_kind.is_some()
+        || identity.full_season
+        || identity.is_series_pack
+        || identity.is_multi_season
+        || identity.is_season_extra
+        || identity.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+        || !has_usable_release_title_signal(&parsed)
+        || !parsed_title_matches_catalog_title(&parsed, title)
+    {
+        return ScopedPackMemberReconciliation::Unresolved;
+    }
+
+    let candidates: Vec<_> = catalog
+        .iter()
+        .filter(|episode| {
+            expected_episode_ids.contains(&episode.id)
+                && episode.monitored
+                && episode.episode_type == scryer_domain::EpisodeType::Standard
+                && catalog_episode_number(episode) == Some(*episode_number)
+                && catalog_episode_season(episode)
+                    .is_some_and(|season| declared_seasons.contains(&season))
+                && source_fuzzily_matches_catalog_episode_title(title, source_path, episode)
+        })
+        .cloned()
+        .collect();
+    match candidates.as_slice() {
+        [episode] => ScopedPackMemberReconciliation::Resolved(episode.id.clone()),
+        [] => ScopedPackMemberReconciliation::Unresolved,
+        _ => ScopedPackMemberReconciliation::Ambiguous,
+    }
 }
 
 fn plan_episode_pack_member(
@@ -823,40 +923,6 @@ fn is_disc_layout_directory(name: &str) -> bool {
         name.trim().to_ascii_uppercase().as_str(),
         "BDMV" | "CERTIFICATE" | "HVDVD_TS" | "VIDEO_TS"
     )
-}
-
-fn parsed_title_matches_catalog_title(
-    parsed: &crate::ParsedReleaseMetadata,
-    title: &scryer_domain::Title,
-) -> bool {
-    let mut expected = Vec::with_capacity(1 + title.aliases.len() + title.tagged_aliases.len());
-    expected.push(crate::app_usecase_rss::normalize_for_matching(&title.name));
-    expected.extend(
-        title
-            .aliases
-            .iter()
-            .map(|alias| crate::app_usecase_rss::normalize_for_matching(alias)),
-    );
-    expected.extend(
-        title
-            .tagged_aliases
-            .iter()
-            .map(|alias| crate::app_usecase_rss::normalize_for_matching(&alias.name)),
-    );
-
-    let candidates = if parsed.normalized_title_variants.is_empty() {
-        vec![parsed.normalized_title.as_str()]
-    } else {
-        parsed
-            .normalized_title_variants
-            .iter()
-            .map(String::as_str)
-            .collect()
-    };
-    candidates.into_iter().any(|candidate| {
-        let normalized = crate::app_usecase_rss::normalize_for_matching(candidate);
-        !normalized.is_empty() && expected.iter().any(|value| value == &normalized)
-    })
 }
 
 #[cfg(test)]

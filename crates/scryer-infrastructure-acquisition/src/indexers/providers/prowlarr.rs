@@ -895,7 +895,7 @@ pub struct ProwlarrSearchStub;
 
 #[async_trait]
 impl IndexerClient for ProwlarrSearchStub {
-    async fn search(
+    async fn search_stream(
         &self,
         _query: String,
         _ids: HashMap<String, String>,
@@ -912,6 +912,7 @@ impl IndexerClient for ProwlarrSearchStub {
         _tagged_aliases: Vec<TaggedAlias>,
         _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
         _cancel_token: tokio_util::sync::CancellationToken,
+        _page_sink: scryer_application::IndexerSearchPageSink,
     ) -> AppResult<IndexerSearchResponse> {
         Err(AppError::Validation(
             "Prowlarr parent configs are management-only; search through synced child indexers"

@@ -31,6 +31,7 @@ impl IndexerClient for MockIndexerClient {
         }
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -267,6 +268,7 @@ impl IndexerClient for TrackingIndexerClient {
 
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes,
             results: release_titles
                 .into_iter()
@@ -421,6 +423,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         if self.empty_response {
             return Ok(IndexerSearchResponse {
                 completion: crate::IndexerSearchCompletion::Complete,
+                
                 indexer_outcomes,
                 results: Vec::new(),
                 api_current: None,
@@ -435,6 +438,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
         }
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes,
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -522,6 +526,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
 
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -629,6 +634,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
 
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -696,6 +702,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
 
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: vec![],
             api_current: None,
@@ -748,6 +755,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: self
                 .release_titles

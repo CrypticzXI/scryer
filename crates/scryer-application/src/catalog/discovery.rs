@@ -6,9 +6,26 @@ use scryer_domain::{MediaFacet, TaggedAlias};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+struct PreparedReleaseScoringInputs {
+    blocklist: TitleReleaseBlocklistSignatures,
+    has_usenet_client: bool,
+    has_torrent_client: bool,
+    preferred_source_kind: String,
+    enabled_protocols: Option<(bool, bool)>,
+    title: Title,
+    canonical_context: crate::quality::canonical_context::ResolvedScoringContext,
+    catalog_episodes: Vec<Episode>,
+    catalog_collections: Vec<Collection>,
+    primary_episode_ids: Option<Option<HashSet<String>>>,
+    indexer_priority_by_name: HashMap<String, i64>,
+    now: chrono::DateTime<chrono::Utc>,
+}
 
 fn release_search_tagged_aliases(title: &Title) -> Vec<TaggedAlias> {
     let mut aliases = title.tagged_aliases.clone();
@@ -590,11 +607,39 @@ impl AppUseCase {
             .collect()
     }
 
+    pub(crate) async fn score_release_results(
+        &self,
+        raw_results: Vec<IndexerSearchResult>,
+        quality_profile: &QualityProfile,
+        title_id: &str,
+        indexer_routing: Option<&IndexerRoutingPlan>,
+        runtime_minutes: Option<i32>,
+        parse_context: &ReleaseParseContext,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
+        let mut prepared = None;
+        self.score_release_results_with_prepared(
+            raw_results,
+            quality_profile,
+            title_id,
+            indexer_routing,
+            runtime_minutes,
+            parse_context,
+            season,
+            episode,
+            absolute_episode,
+            &mut prepared,
+        )
+        .await
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "release scoring needs the full search context to produce deterministic ranking decisions"
     )]
-    pub(crate) async fn score_release_results(
+    async fn score_release_results_with_prepared(
         &self,
         mut raw_results: Vec<IndexerSearchResult>,
         quality_profile: &QualityProfile,
@@ -612,82 +657,83 @@ impl AppUseCase {
         season: Option<u32>,
         episode: Option<u32>,
         absolute_episode: Option<u32>,
+        prepared: &mut Option<PreparedReleaseScoringInputs>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        // Search-time exclusion reads the per-title blocklist only: an entry
-        // for one title never hides the same release from another title, and
-        // removing the entry re-allows the release immediately. The
-        // `release_download_attempts` log is history/audit and never gates.
-        let TitleReleaseBlocklistSignatures {
-            source_hints: blocklisted_source_hints,
-            source_titles: blocklisted_source_titles,
-        } = self.load_title_release_blocklist_signatures(title_id).await;
-
-        let (has_usenet_client, has_torrent_client, client_preferred_source_kind) =
-            self.download_source_capabilities().await;
+        if prepared.is_none() {
+            let blocklist = self.load_title_release_blocklist_signatures(title_id).await;
+            let (has_usenet_client, has_torrent_client, client_preferred_source_kind) =
+                self.download_source_capabilities().await;
+            let scored_title = self.services.catalog.titles.get_by_id(title_id).await?;
+            let Some(scored_title) = scored_title else {
+                return Err(AppError::NotFound(format!(
+                    "title {title_id} for release scoring"
+                )));
+            };
+            let delay_profiles = self.load_delay_profiles().await;
+            let delay_profile = crate::delay_profile::resolve_delay_profile(
+                &delay_profiles,
+                &scored_title.tags,
+                &scored_title.facet,
+            );
+            let preferred_source_kind = delay_profile
+                .map(|profile| match profile.preferred_protocol {
+                    crate::delay_profile::PreferredProtocol::Usenet => "nzb",
+                    crate::delay_profile::PreferredProtocol::Torrent => "torrent",
+                })
+                .unwrap_or(client_preferred_source_kind.as_str())
+                .to_string();
+            let enabled_protocols =
+                delay_profile.map(|profile| (profile.enable_usenet, profile.enable_torrent));
+            let canonical_context = self
+                .resolve_canonical_scoring_context(&scored_title, quality_profile)
+                .await;
+            let catalog_episodes = self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(title_id)
+                .await
+                .unwrap_or_default();
+            let catalog_collections = self
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(title_id)
+                .await
+                .unwrap_or_default();
+            let indexer_priority_by_name = self.build_indexer_priority_by_name(indexer_routing).await;
+            *prepared = Some(PreparedReleaseScoringInputs {
+                blocklist,
+                has_usenet_client,
+                has_torrent_client,
+                preferred_source_kind,
+                enabled_protocols,
+                title: scored_title,
+                canonical_context,
+                catalog_episodes,
+                catalog_collections,
+                primary_episode_ids: None,
+                indexer_priority_by_name,
+                now: chrono::Utc::now(),
+            });
+        }
+        let prepared = prepared.as_mut().expect("release scoring inputs initialized");
 
         raw_results.retain(|result| match result.source_kind {
-            Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => has_usenet_client,
+            Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => {
+                prepared.has_usenet_client
+            }
             Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri) => {
-                has_torrent_client
+                prepared.has_torrent_client
             }
             None => true,
         });
-
-        // A failure here is a failure, not an empty search (D12). Swallowing it
-        // returned zero results from a "successful" pass, and the caller then
-        // recorded the fired indexers as convergence coverage — so the scope was
-        // marked searched and skipped until the next cycle, on the strength of a
-        // transient store error. A title that is genuinely missing is not a
-        // normal search outcome either: nothing can be scored for it.
-        let scored_title = self.services.catalog.titles.get_by_id(title_id).await?;
-        // The scoring inputs, resolved exactly once and exactly the way import
-        // resolves them. Sharing this resolver — not just the term pipeline — is
-        // what makes the two sides agree; a persona or language set resolved
-        // differently would reintroduce the split this change set removes.
-        let Some(scored_title) = scored_title else {
-            return Err(AppError::NotFound(format!(
-                "title {title_id} for release scoring"
-            )));
-        };
-        let delay_profiles = self.load_delay_profiles().await;
-        let delay_profile = crate::delay_profile::resolve_delay_profile(
-            &delay_profiles,
-            &scored_title.tags,
-            &scored_title.facet,
-        );
-        let preferred_source_kind = delay_profile
-            .map(|profile| match profile.preferred_protocol {
-                crate::delay_profile::PreferredProtocol::Usenet => "nzb",
-                crate::delay_profile::PreferredProtocol::Torrent => "torrent",
-            })
-            .unwrap_or(client_preferred_source_kind.as_str());
-        let canonical_context = self
-            .resolve_canonical_scoring_context(&scored_title, quality_profile)
-            .await;
-
-        let catalog_episodes = self
-            .services
-            .catalog
-            .shows
-            .list_episodes_for_title(title_id)
-            .await
-            .unwrap_or_default();
-        let catalog_collections = self
-            .services
-            .catalog
-            .shows
-            .list_collections_for_title(title_id)
-            .await
-            .unwrap_or_default();
-        let mut primary_episode_ids = None;
         let requested_episode =
-            resolve_requested_episode(&catalog_episodes, season, episode, absolute_episode);
+            resolve_requested_episode(&prepared.catalog_episodes, season, episode, absolute_episode);
         let mut scored = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut rank_by_key: HashMap<String, crate::acquisition::scoring::SearchRank> =
             HashMap::new();
-        let indexer_priority_by_name = self.build_indexer_priority_by_name(indexer_routing).await;
-        let now = chrono::Utc::now();
 
         for result in raw_results {
             let key = release_search_key(&result);
@@ -697,8 +743,8 @@ impl AppUseCase {
 
             if is_release_blocklisted(
                 &result,
-                &blocklisted_source_hints,
-                &blocklisted_source_titles,
+                &prepared.blocklist.source_hints,
+                &prepared.blocklist.source_titles,
             ) {
                 continue;
             }
@@ -707,9 +753,9 @@ impl AppUseCase {
                 parse_release_metadata_for_target(&result.title, parse_context);
             let scored_release_metadata =
                 crate::quality::canonical_context::announced_metadata_for_title(
-                    &scored_title,
+                    &prepared.title,
                     &parsed_release_metadata,
-                    canonical_context.required_audio_languages(),
+                    prepared.canonical_context.required_audio_languages(),
                     result.indexer_languages.as_deref(),
                 );
 
@@ -718,8 +764,8 @@ impl AppUseCase {
                 .as_ref()
                 .is_some_and(|episode| episode.is_series_pack);
             let pack_below_missing_threshold = if is_series_pack {
-                if primary_episode_ids.is_none() {
-                    primary_episode_ids = Some(
+                if prepared.primary_episode_ids.is_none() {
+                    prepared.primary_episode_ids = Some(
                         match self
                             .services
                             .library
@@ -745,13 +791,13 @@ impl AppUseCase {
                         },
                     );
                 }
-                !primary_episode_ids
+                !prepared.primary_episode_ids
                     .as_ref()
                     .and_then(Option::as_ref)
                     .is_some_and(|primary_episode_ids| {
                         crate::acquisition_coverage::series_pack_missing_ratio_qualifies(
                             &scored_release_metadata,
-                            &catalog_episodes,
+                            &prepared.catalog_episodes,
                             primary_episode_ids,
                         )
                     })
@@ -761,8 +807,8 @@ impl AppUseCase {
 
             let release_coverage = crate::acquisition_coverage::resolve_release_coverage(
                 &scored_release_metadata,
-                &catalog_episodes,
-                &catalog_collections,
+                &prepared.catalog_episodes,
+                &prepared.catalog_collections,
                 requested_episode,
             );
             if let Some(wanted_episode) = requested_episode
@@ -773,7 +819,7 @@ impl AppUseCase {
             let candidate_runtime_minutes = crate::acquisition_coverage::coverage_runtime_minutes(
                 &release_coverage,
                 &scored_release_metadata,
-                &catalog_episodes,
+                &prepared.catalog_episodes,
                 runtime_minutes,
             );
 
@@ -815,7 +861,7 @@ impl AppUseCase {
                     scored_release_metadata.clone(),
                     result.size_bytes,
                 ),
-                &canonical_context.view(candidate_runtime_minutes, false),
+                &prepared.canonical_context.view(candidate_runtime_minutes, false),
             );
             let decision = scored_release.announced_decision;
 
@@ -823,14 +869,14 @@ impl AppUseCase {
             // in hand, and dropped when the search ends. It is keyed by release
             // rather than carried on the result so it cannot leak into anything
             // that gets stored or compared later.
-            let protocol_enabled = delay_profile.is_none_or(|profile| match result.source_kind {
-                Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => {
-                    profile.enable_usenet
+            let protocol_enabled = prepared.enabled_protocols.is_none_or(|(usenet, torrent)| {
+                match result.source_kind {
+                    Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl) => usenet,
+                    Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri) => {
+                        torrent
+                    }
+                    None => true,
                 }
-                Some(DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri) => {
-                    profile.enable_torrent
-                }
-                None => true,
             });
             rank_by_key.insert(
                 release_search_key(&result),
@@ -846,7 +892,7 @@ impl AppUseCase {
                     },
                     non_preferred_protocol: !source_kind_matches_preference(
                         &result,
-                        preferred_source_kind,
+                        &prepared.preferred_source_kind,
                     ),
                     coverage_distance: release_coverage.coverage_distance(requested_episode),
                     episode_number: scored_release_metadata
@@ -854,7 +900,7 @@ impl AppUseCase {
                         .as_ref()
                         .and_then(|episode| episode.episode_numbers.iter().min().copied())
                         .unwrap_or(0),
-                    indexer_priority: indexer_priority_by_name
+                    indexer_priority: prepared.indexer_priority_by_name
                         .get(&result.source)
                         .copied()
                         .unwrap_or(i64::MAX),
@@ -865,7 +911,7 @@ impl AppUseCase {
                     ) {
                         crate::acquisition::scoring::listing_age_hours(
                             result.published_at.as_deref(),
-                            now,
+                            prepared.now,
                         )
                     } else {
                         0
@@ -901,8 +947,8 @@ impl AppUseCase {
 
         let mut scored = dedupe_cross_indexer_release_results(
             scored,
-            &indexer_priority_by_name,
-            preferred_source_kind,
+            &prepared.indexer_priority_by_name,
+            &prepared.preferred_source_kind,
         );
 
         scored.sort_by(|left, right| {
@@ -913,6 +959,7 @@ impl AppUseCase {
                 release_search_key,
             )
         });
+        scored.truncate(200);
 
         Ok(scored)
     }
@@ -1078,6 +1125,8 @@ impl AppUseCase {
         let required_query_count = effective_queries.len();
 
         let mut set = JoinSet::new();
+        let (page_tx, mut page_source) = mpsc::channel(2);
+        let page_sink = crate::IndexerSearchPageSink::new(page_tx, 2);
         let mut ids = HashMap::new();
         if let Some(imdb_id) = imdb_id.clone() {
             ids.insert("imdb_id".to_string(), imdb_id);
@@ -1094,11 +1143,13 @@ impl AppUseCase {
         if let Some(mal_id) = mal_id.clone() {
             ids.insert("mal_id".to_string(), mal_id);
         }
+        let search_session_id = Uuid::new_v4().to_string();
         let learning_context = if mode == SearchMode::Auto && !title_id.trim().is_empty() {
             Some(IndexerSearchLearningContext {
                 title_id: title_id.to_string(),
                 facet: search_facet.as_str().to_string(),
                 subject_kind: search_subject_kind,
+                search_session_id,
                 // The convergence value hint rides the Auto background context so
                 // the scheduler can lane-rank this scope.
                 background_value,
@@ -1125,10 +1176,11 @@ impl AppUseCase {
             let learning_context = learning_context.clone();
             let query = query.clone();
             let query_cancel_token = cancel_token.child_token();
+            let page_sink = page_sink.clone();
 
             set.spawn(async move {
                 indexer_client
-                    .search(
+                    .search_stream(
                         query,
                         ids,
                         category.clone(),
@@ -1144,51 +1196,88 @@ impl AppUseCase {
                         tagged_aliases,
                         learning_context,
                         query_cancel_token,
+                        page_sink,
                     )
                     .await
             });
         }
 
+        drop(page_sink);
+
         let mut query_failures = 0usize;
         let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
-        let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
+        let mut scored_results: Vec<IndexerSearchResult> = Vec::new();
+        let mut scoring_inputs = None;
+        let mut page_source_open = true;
+        let mut search_tasks_open = true;
         // Coverage is an intersection across every effective title/alias
         // query. Candidates from incomplete queries remain usable, but one
         // partial, missing, or failed query withholds coverage for that indexer.
         let mut coverage_by_indexer = HashMap::new();
 
         loop {
+            if !page_source_open && !search_tasks_open {
+                break;
+            }
             let result = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     set.abort_all();
                     while set.join_next().await.is_some() {}
                     return Err(AppError::canceled("indexer search canceled"));
                 }
-                result = set.join_next() => result,
+                page = page_source.recv(), if page_source_open => {
+                    match page {
+                        Some(mut page) => {
+                            for result in &mut page.results {
+                                let provenance = result.provenance.get_or_insert(
+                                    ReleaseCandidateProvenance {
+                                        search_subject_kind,
+                                        strategy_kind: ReleaseStrategyKind::Fallback,
+                                        title_validated_upstream: false,
+                                    },
+                                );
+                                provenance.search_subject_kind = search_subject_kind;
+                            }
+                            let mut retained_and_page = std::mem::take(&mut scored_results);
+                            retained_and_page.append(&mut page.results);
+                            scored_results = self
+                                .score_release_results_with_prepared(
+                                    retained_and_page,
+                                    &quality_profile,
+                                    title_id,
+                                    indexer_routing.as_ref(),
+                                    runtime_minutes,
+                                    parse_context,
+                                    season,
+                                    episode,
+                                    absolute_episode,
+                                    &mut scoring_inputs,
+                                )
+                                .await?;
+                            continue;
+                        }
+                        None => {
+                            page_source_open = false;
+                            continue;
+                        }
+                    }
+                }
+                result = set.join_next(), if search_tasks_open => result,
             };
 
             let Some(result) = result else {
-                break;
+                search_tasks_open = false;
+                continue;
             };
 
             match result {
-                Ok(Ok(mut response)) => {
+                Ok(Ok(response)) => {
                     successful_searches += 1;
                     record_query_coverage_outcomes(
                         &mut coverage_by_indexer,
                         &response.indexer_outcomes,
                     );
-                    for result in &mut response.results {
-                        let provenance =
-                            result.provenance.get_or_insert(ReleaseCandidateProvenance {
-                                search_subject_kind,
-                                strategy_kind: ReleaseStrategyKind::Fallback,
-                                title_validated_upstream: false,
-                            });
-                        provenance.search_subject_kind = search_subject_kind;
-                    }
-                    raw_results.append(&mut response.results);
                 }
                 Ok(Err(error)) => {
                     if error.is_canceled() {
@@ -1216,27 +1305,14 @@ impl AppUseCase {
             }
         }
 
-        if raw_results.is_empty() && successful_searches == 0 && query_failures > 0 {
+        if scored_results.is_empty() && successful_searches == 0 && query_failures > 0 {
             let details =
                 first_failure.unwrap_or_else(|| "all indexer search queries failed".to_string());
             return Err(AppError::Repository(details));
         }
 
-        let scored = self
-            .score_release_results(
-                raw_results,
-                &quality_profile,
-                title_id,
-                indexer_routing.as_ref(),
-                runtime_minutes,
-                parse_context,
-                season,
-                episode,
-                absolute_episode,
-            )
-            .await?;
         Ok((
-            scored,
+            scored_results,
             completely_covered_indexers(coverage_by_indexer, required_query_count),
         ))
     }

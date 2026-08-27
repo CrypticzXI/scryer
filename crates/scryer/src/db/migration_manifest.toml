@@ -1423,6 +1423,23 @@ file = "postgres/migrations/0190_movie_entity_metadata_ownership.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 191
+description = "indexer candidate session identities"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0191_indexer_search_run_offsets.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0191_indexer_search_run_offsets.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"
