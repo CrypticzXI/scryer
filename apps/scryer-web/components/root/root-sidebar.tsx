@@ -83,7 +83,6 @@ import {
   canAccessSystemSection,
 } from "@/lib/utils/routes";
 import { selectorId } from "@/lib/utils/dom-ids";
-import ScryerLogo from "@/components/scryer-logo";
 
 type NavItem = {
   id: ViewId;
@@ -568,7 +567,7 @@ function RootSidebarContent({
   const t = useTranslate();
   const setGlobalStatus = useGlobalStatus();
   const { isMobile, setOpenMobile } = useSidebar();
-  const { theme, setTheme } = useTheme();
+  const { theme, resolvedTheme, setTheme } = useTheme();
   const {
     uiSettings,
     uiSettingsLoaded,
@@ -577,6 +576,10 @@ function RootSidebarContent({
   } = useUiSettings();
   const themeSaveSequenceRef = React.useRef(0);
   const [themeMounted, setThemeMounted] = React.useState(false);
+  const brandLogoUrl =
+    themeMounted && resolvedTheme === "light"
+      ? `${import.meta.env.BASE_URL}temporary-brand-website-on-dark.webp`
+      : `${import.meta.env.BASE_URL}temporary-brand-website-on-light.webp`;
   const [collapsedTopNavGroups, setCollapsedTopNavGroups] = React.useState<
     ReadonlySet<string>
   >(readCollapsedTopNavGroups);
@@ -1029,19 +1032,13 @@ function RootSidebarContent({
         mobileDescription={t("nav.mobileDescription")}
         className="overflow-hidden border-r border-[var(--scry-border3)] bg-[var(--scry-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
-        <SidebarHeader className="px-5 pb-3 pt-5">
-          <div className="flex -translate-y-2 items-center gap-3.5">
-            <ScryerLogo className="h-[55px]! w-[55px]! dark:drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
-            <span
-              data-slot="brand-wordmark"
-              className="text-[24px] font-bold leading-none text-[var(--scry-ink2)]"
-              style={{
-                fontFamily:
-                  "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
-              }}
-            >
-              Scryer
-            </span>
+        <SidebarHeader className="px-4 py-0">
+          <div className="flex w-full items-center justify-center">
+            <img
+              src={brandLogoUrl}
+              alt="Scryer"
+              className="h-auto w-[220px] object-contain dark:drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]"
+            />
           </div>
         </SidebarHeader>
         <SidebarContent className="overflow-y-auto px-3 pb-3 [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content">
