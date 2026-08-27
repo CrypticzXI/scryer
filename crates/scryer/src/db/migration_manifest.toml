@@ -1425,18 +1425,35 @@ scope = "all"
 
 [[migration]]
 version = 191
-description = "retire v1 password hashes and re-key identity digests to blake3"
+description = "indexer candidate session identities"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0191_blake3_identity_migration.sql"
+file = "migrations/0191_indexer_search_run_offsets.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0191_blake3_identity_migration.sql"
+file = "postgres/migrations/0191_indexer_search_run_offsets.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 192
+description = "retire v1 password hashes and re-key identity digests to blake3"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0192_blake3_identity_migration.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0192_blake3_identity_migration.sql"
 engine = "postgres"
 scope = "all"
 
@@ -1447,36 +1464,36 @@ engine = "all"
 scope = "upgrade_only"
 
 [[migration]]
-version = 192
+version = 193
 description = "persist the grab-time infohash on download submissions"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0192_download_submission_info_hash.sql"
+file = "migrations/0193_download_submission_info_hash.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0192_download_submission_info_hash.sql"
+file = "postgres/migrations/0193_download_submission_info_hash.sql"
 engine = "postgres"
 scope = "all"
 
 [[migration]]
-version = 193
+version = 194
 description = "key the blocklist on release name and infohash, one row per block"
 checksum_algo = "blake3"
 
 [[migration.steps]]
 kind = "sql"
-file = "migrations/0193_blocklist_release_identity.sql"
+file = "migrations/0194_blocklist_release_identity.sql"
 engine = "sqlite"
 scope = "all"
 
 [[migration.steps]]
 kind = "sql"
-file = "postgres/migrations/0193_blocklist_release_identity.sql"
+file = "postgres/migrations/0194_blocklist_release_identity.sql"
 engine = "postgres"
 scope = "all"
 

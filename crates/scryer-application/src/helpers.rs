@@ -288,6 +288,8 @@ pub enum HashDomain {
     IndexerQuerySignature,
     /// Search-diagnostics indexer identity fingerprint (reuse validity).
     IndexerSearchIdentity,
+    /// Interactive-search candidate identity within one session.
+    CandidateSessionIdentity,
 }
 
 impl HashDomain {
@@ -308,6 +310,7 @@ impl HashDomain {
             Self::IndexerSecret => "scryer.indexer.secret.v1",
             Self::IndexerQuerySignature => "scryer.indexer.query-signature.v1",
             Self::IndexerSearchIdentity => "scryer.indexer.search-identity.v1",
+            Self::CandidateSessionIdentity => "scryer.indexer.candidate-session.v1",
         }
     }
 }

@@ -1447,11 +1447,63 @@ impl IndexerClient for WasmIndexerClient {
             results,
             indexer_outcomes: Vec::new(),
             completion,
+            
             api_current: response.api_current,
             api_max: response.api_max,
             grab_current: response.grab_current,
             grab_max: response.grab_max,
         })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "plugin search forwards the full caller-controlled search envelope"
+    )]
+    async fn search_stream(
+        &self,
+        query: String,
+        ids: std::collections::HashMap<String, String>,
+        category: Option<String>,
+        facet: Option<String>,
+        id_search_facet: Option<String>,
+        newznab_categories: Option<Vec<String>>,
+        indexer_routing: Option<IndexerRoutingPlan>,
+        mode: SearchMode,
+        operation: IndexerErrorOperation,
+        season: Option<u32>,
+        episode: Option<u32>,
+        absolute_episode: Option<u32>,
+        tagged_aliases: Vec<TaggedAlias>,
+        learning_context: Option<scryer_application::IndexerSearchLearningContext>,
+        cancel_token: CancellationToken,
+        page_sink: scryer_application::IndexerSearchPageSink,
+    ) -> AppResult<IndexerSearchResponse> {
+        let mut response = self
+            .search(
+                query,
+                ids,
+                category,
+                facet,
+                id_search_facet,
+                newznab_categories,
+                indexer_routing,
+                mode,
+                operation,
+                season,
+                episode,
+                absolute_episode,
+                tagged_aliases,
+                learning_context,
+                cancel_token,
+            )
+            .await?;
+        if !response.results.is_empty() {
+            page_sink
+                .send(std::mem::take(&mut response.results))
+                .await
+                .map_err(|_| AppError::canceled("indexer scoring pipeline closed"))?;
+        }
+        Ok(response)
     }
 }
 

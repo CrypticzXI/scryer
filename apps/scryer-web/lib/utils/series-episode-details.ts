@@ -86,6 +86,10 @@ export function pruneEpisodeRecord<Value>(
   current: Record<string, Value>,
   episodeIds: ReadonlySet<string>,
 ): Record<string, Value> {
+  if (Object.keys(current).every((episodeId) => episodeIds.has(episodeId))) {
+    return current;
+  }
+
   return Object.fromEntries(
     Object.entries(current).filter(([episodeId]) => episodeIds.has(episodeId)),
   );
@@ -94,17 +98,26 @@ export function pruneEpisodeRecord<Value>(
 export function pruneSeriesMovieLinkMediaFiles<
   File extends { episodeId: string | null },
 >(
-  current: Record<string, readonly File[]>,
+  current: Record<string, File[]>,
   episodeIds: ReadonlySet<string>,
 ): Record<string, File[]> {
-  return Object.fromEntries(
-    Object.entries(current)
-      .map(([linkId, files]) => [
-        linkId,
-        files.filter(
-          (file) => file.episodeId === null || episodeIds.has(file.episodeId),
-        ),
-      ])
-      .filter(([, files]) => files.length > 0),
-  );
+  let changed = false;
+  const next: Record<string, File[]> = {};
+  for (const [linkId, files] of Object.entries(current)) {
+    const retained = files.filter(
+      (file) => file.episodeId === null || episodeIds.has(file.episodeId),
+    );
+    if (retained.length === 0) {
+      changed = true;
+      continue;
+    }
+    if (retained.length !== files.length) {
+      changed = true;
+      next[linkId] = retained;
+    } else {
+      next[linkId] = files;
+    }
+  }
+
+  return changed ? next : current;
 }

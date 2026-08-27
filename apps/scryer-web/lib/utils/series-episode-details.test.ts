@@ -95,6 +95,11 @@ test("series overview refresh prunes stale loaded episode caches", () => {
       "episode-1": true,
     },
   );
+  const retainedEpisodeCache = { "episode-1": true };
+  assert.equal(
+    pruneEpisodeRecord(retainedEpisodeCache, episodeIds),
+    retainedEpisodeCache,
+  );
   assert.deepEqual(
     pruneSeriesMovieLinkMediaFiles(
       {
@@ -113,5 +118,12 @@ test("series overview refresh prunes stale loaded episode caches", () => {
         { id: "file-3", episodeId: null },
       ],
     },
+  );
+  const retainedSeriesMovieCache = {
+    link: [{ id: "file-1", episodeId: "episode-1" }],
+  };
+  assert.equal(
+    pruneSeriesMovieLinkMediaFiles(retainedSeriesMovieCache, episodeIds),
+    retainedSeriesMovieCache,
   );
 });

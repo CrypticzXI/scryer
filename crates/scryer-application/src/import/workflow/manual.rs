@@ -1047,6 +1047,13 @@ async fn preview_manual_import(
             .map(|candidate| candidate.source_entry_path.clone())
     })
     .flatten();
+    let verified_pack = verified_episode_pack(release_evidence, title);
+    let expected_pack_episode_ids = match (verified_pack.as_ref(), release_evidence.scope()) {
+        (Some(_), Some(scope)) => {
+            expected_episode_ids_from_submission_scope(app, title, scope).await
+        }
+        _ => None,
+    };
 
     // For each file, parse and attempt auto-match
     let mut previews = Vec::new();
@@ -1130,6 +1137,38 @@ async fn preview_manual_import(
             }
         }
 
+        if suggested_episode_id.is_none()
+            && let Some(episode) = reconcile_unresolved_scene_episode_from_scoped_release(
+                app,
+                title,
+                release_evidence,
+                path,
+                video_files.len() > 1,
+            )
+            .await?
+        {
+            suggested_episode_id = Some(episode.id.clone());
+            suggested_episode_label = Some(manual_import_episode_label(&episode));
+        }
+
+        if suggested_episode_id.is_none()
+            && let Some(pack) = verified_pack.as_ref()
+            && let ScopedPackMemberReconciliation::Resolved(episode_id) =
+                reconcile_unresolved_pack_member_from_expected_scope(
+                    title,
+                    pack,
+                    path,
+                    available_episodes,
+                    expected_pack_episode_ids.as_ref(),
+                )
+            && let Some(episode) = available_episodes
+                .iter()
+                .find(|episode| episode.id == episode_id)
+        {
+            suggested_episode_id = Some(episode.id.clone());
+            suggested_episode_label = Some(manual_import_episode_label(&episode));
+        }
+
         let is_grabbed_fallback_path = grabbed_fallback_path
             .as_ref()
             .is_some_and(|fallback| fallback == path);
@@ -1170,6 +1209,28 @@ async fn preview_manual_import(
     }
 
     Ok(ManualImportPreview { files: previews })
+}
+
+#[cfg(test)]
+pub(crate) async fn preview_manual_import_suggested_episode_ids_for_tests(
+    app: &AppUseCase,
+    source_dir: &Path,
+    title: &scryer_domain::Title,
+    release_evidence: &ReleaseEvidence,
+    available_episodes: &[scryer_domain::Episode],
+) -> AppResult<Vec<Option<String>>> {
+    Ok(preview_manual_import(
+        app,
+        source_dir,
+        title,
+        release_evidence,
+        available_episodes,
+    )
+    .await?
+    .files
+    .into_iter()
+    .map(|file| file.suggested_episode_id)
+    .collect())
 }
 
 /// Whether the preview may pre-select the single grabbed episode for a file.
@@ -2401,39 +2462,6 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
     files: Vec<ManualImportFileMapping>,
     trusted_source_root: Option<PathBuf>,
 ) -> AppResult<Vec<ManualImportFileResult>> {
-    let _title_permit = app
-        .runtime
-        .imports
-        .execution_coordinator
-        .acquire_title(title_id)
-        .await;
-    execute_manual_import_with_release_evidence_locked(
-        app,
-        actor,
-        import_id,
-        title_id,
-        completed,
-        release_evidence,
-        files,
-        trusted_source_root,
-    )
-    .await
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
-)]
-async fn execute_manual_import_with_release_evidence_locked(
-    app: &AppUseCase,
-    actor: &User,
-    import_id: &str,
-    title_id: &str,
-    completed: Option<&CompletedDownload>,
-    release_evidence: &ReleaseEvidence,
-    files: Vec<ManualImportFileMapping>,
-    trusted_source_root: Option<PathBuf>,
-) -> AppResult<Vec<ManualImportFileResult>> {
     if let Some(submission_title_id) = release_evidence.title_id()
         && submission_title_id != title_id
     {
@@ -3314,16 +3342,10 @@ async fn execute_queued_manual_import_with_outcome_inner(
     }
 
     drop(preparation_permit);
-    let _title_permit = app
-        .runtime
-        .imports
-        .execution_coordinator
-        .acquire_title(title_id)
-        .await;
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
-    let results = execute_manual_import_with_release_evidence_locked(
+    let results = execute_manual_import_with_release_evidence(
         app,
         &actor,
         import_id,

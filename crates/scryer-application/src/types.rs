@@ -2116,8 +2116,6 @@ pub struct IndexerQueryOutcome {
     pub outcome: IndexerSearchOutcome,
 }
 
-/// Wrapper around search results that also carries API limit metadata
-/// from the indexer response.
 #[derive(Clone, Debug)]
 pub struct IndexerSearchResponse {
     pub results: Vec<IndexerSearchResult>,
@@ -2130,6 +2128,62 @@ pub struct IndexerSearchResponse {
     /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
     /// no-eligible-indexer responses.
     pub indexer_outcomes: Vec<IndexerQueryOutcome>,
+}
+
+/// A persisted page made available to the scoring pipeline.
+#[derive(Debug)]
+pub struct IndexerSearchPage {
+    pub results: Vec<IndexerSearchResult>,
+    _reservation: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+/// The bounded hand-off between indexer retrieval and release scoring.
+#[derive(Clone, Debug)]
+pub struct IndexerSearchPageSink {
+    sender: tokio::sync::mpsc::Sender<IndexerSearchPage>,
+    reservations: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Debug)]
+pub struct IndexerSearchPageReservation {
+    sender: tokio::sync::mpsc::Sender<IndexerSearchPage>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl IndexerSearchPageSink {
+    pub fn new(sender: tokio::sync::mpsc::Sender<IndexerSearchPage>, max_pages: usize) -> Self {
+        Self {
+            sender,
+            reservations: std::sync::Arc::new(tokio::sync::Semaphore::new(max_pages)),
+        }
+    }
+
+    pub async fn reserve(&self) -> Option<IndexerSearchPageReservation> {
+        let permit = self.reservations.clone().acquire_owned().await.ok()?;
+        Some(IndexerSearchPageReservation {
+            sender: self.sender.clone(),
+            permit: Some(permit),
+        })
+    }
+
+    pub async fn send(&self, results: Vec<IndexerSearchResult>) -> Result<(), ()> {
+        let Some(reservation) = self.reserve().await else {
+            return Err(());
+        };
+        reservation.send(results).await
+    }
+}
+
+impl IndexerSearchPageReservation {
+    pub async fn send(mut self, results: Vec<IndexerSearchResult>) -> Result<(), ()> {
+        self.sender
+            .send(IndexerSearchPage {
+                results,
+                _reservation: self.permit.take(),
+            })
+            .await
+            .map_err(|_| ())
+    }
 }
 
 /// Why an indexer HTTP request was issued. This is diagnostic metadata only;

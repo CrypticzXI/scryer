@@ -1,17 +1,17 @@
-//! End-to-end upgrade coverage for migration 0193.
+//! End-to-end upgrade coverage for migration 0194.
 //!
-//! 0193 is deliberately lossy, so what it keeps and what it drops is behaviour
+//! 0194 is deliberately lossy, so what it keeps and what it drops is behaviour
 //! worth pinning: the release names survive (an upgrade must not release a burst
 //! of re-grabs), the URLs do not, duplicates the missing constraint allowed are
 //! collapsed once, and the two unique indexes stop them coming back.
 //!
 //! Each scenario drives the real migration runner over a database built at the
-//! pre-0193 state by the real catalog.
+//! pre-0194 state by the real catalog.
 
 use sqlx::{Row, SqlitePool};
 
-/// Version the catalog is replayed to before 0193 is applied.
-const PRE_UPGRADE_VERSION: i64 = 192;
+/// Version the catalog is replayed to before 0194 is applied.
+const PRE_UPGRADE_VERSION: i64 = 193;
 
 async fn pre_upgrade_pool() -> SqlitePool {
     crate::spellfix::register_spellfix_auto_extension()
@@ -27,20 +27,20 @@ async fn pre_upgrade_pool() -> SqlitePool {
         true,
     )
     .await
-    .expect("pre-0193 migration fixture should apply");
+    .expect("pre-0194 migration fixture should apply");
     pool
 }
 
 async fn apply_upgrade(pool: &SqlitePool) {
     crate::migrations::run_migrations(pool, crate::MigrationMode::Apply)
         .await
-        .expect("0193 upgrade should apply");
+        .expect("0194 upgrade should apply");
     let applied: i64 =
-        sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version = 193")
+        sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version = 194")
             .fetch_one(pool)
             .await
-            .expect("0193 ledger entry should exist");
-    assert_eq!(applied, 1, "0193 must be recorded as successfully applied");
+            .expect("0194 ledger entry should exist");
+    assert_eq!(applied, 1, "0194 must be recorded as successfully applied");
 }
 
 /// The blocklist has a foreign key onto titles, so a row needs a title.
@@ -58,7 +58,7 @@ async fn seed_title(pool: &SqlitePool, id: &str) {
     .expect("title should insert");
 }
 
-/// A pre-0193 blocklist row, in the shape the old writers produced.
+/// A pre-0194 blocklist row, in the shape the old writers produced.
 async fn seed_legacy_entry(
     pool: &SqlitePool,
     id: &str,

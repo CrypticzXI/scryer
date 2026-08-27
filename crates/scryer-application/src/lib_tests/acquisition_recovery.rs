@@ -3440,6 +3440,7 @@ async fn acquisition_cycle_submits_one_hundred_episode_fallbacks_after_empty_pac
             if episode.is_none() {
                 return Ok(IndexerSearchResponse {
                     completion: crate::IndexerSearchCompletion::Complete,
+                    
                     indexer_outcomes: Vec::new(),
                     results: Vec::new(),
                     api_current: None,
@@ -3474,6 +3475,7 @@ async fn acquisition_cycle_submits_one_hundred_episode_fallbacks_after_empty_pac
 
             Ok(IndexerSearchResponse {
                 completion: crate::IndexerSearchCompletion::Complete,
+                
                 indexer_outcomes: Vec::new(),
                 results: vec![IndexerSearchResult {
                     indexer_id: None,
@@ -6448,6 +6450,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
 
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
                 indexer_id: None,
@@ -10100,6 +10103,7 @@ impl IndexerClient for AmbiguousIdentityIndexerClient {
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
             completion: crate::IndexerSearchCompletion::Complete,
+            
             indexer_outcomes: Vec::new(),
             results: self
                 .release_titles

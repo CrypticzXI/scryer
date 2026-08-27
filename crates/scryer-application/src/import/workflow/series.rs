@@ -952,6 +952,240 @@ async fn grabbed_episode_fallback(
     Ok(Some(episode))
 }
 
+/// Reconcile alternate numbering only when the file and the original grab
+/// independently corroborate the one catalog episode Scryer submitted.
+///
+/// Scene releases can carry a collection's local numbering while the catalog
+/// has that content in a different season. A parseable filename normally wins,
+/// but once that filename resolves to no catalog episode, this narrowly admits
+/// the scoped episode when the series title matches exactly, its episode title
+/// is a near match, and both episode numbers agree.
+async fn reconcile_unresolved_scene_episode_from_scoped_release(
+    app: &AppUseCase,
+    title: &scryer_domain::Title,
+    release_evidence: &ReleaseEvidence,
+    source_video: &Path,
+    other_video_files: bool,
+) -> AppResult<Option<scryer_domain::Episode>> {
+    let Some(scoped_episode) =
+        grabbed_episode_fallback(app, title, release_evidence, other_video_files).await?
+    else {
+        return Ok(None);
+    };
+
+    let file_metadata = parsed_release_from_file_stem(source_video);
+    let Some(file_episode) = file_metadata.episode.as_ref() else {
+        return Ok(None);
+    };
+    let [file_episode_number] = file_episode.episode_numbers.as_slice() else {
+        return Ok(None);
+    };
+    let Some(scoped_episode_number) = scoped_episode
+        .episode_number
+        .as_deref()
+        .and_then(|number| number.parse::<u32>().ok())
+    else {
+        return Ok(None);
+    };
+    if *file_episode_number != scoped_episode_number
+        || !parsed_title_matches_catalog_title(&file_metadata, title)
+        || !source_fuzzily_matches_catalog_episode_title(title, source_video, &scoped_episode)
+    {
+        return Ok(None);
+    }
+
+    let Some(release_title) = release_evidence.release_title(None) else {
+        return Ok(None);
+    };
+    let release_metadata = normalize_release_title_signal(parse_import_release_for_title(
+        &release_title,
+        title,
+    ));
+    let Some(release_episode) = release_metadata.episode.as_ref() else {
+        return Ok(None);
+    };
+    let release_season = release_episode.season.unwrap_or(1).to_string();
+    let release_targets =
+        resolve_target_episodes(app, title, release_episode, &release_season).await;
+    if release_targets.len() != 1 || release_targets[0].id != scoped_episode.id {
+        return Ok(None);
+    }
+
+    tracing::debug!(
+        file = %source_video.display(),
+        title_id = %title.id,
+        episode_id = %scoped_episode.id,
+        "import: reconciled alternate scene numbering from scoped release evidence"
+    );
+    Ok(Some(scoped_episode))
+}
+
+fn parsed_title_matches_catalog_title(
+    parsed: &crate::ParsedReleaseMetadata,
+    title: &scryer_domain::Title,
+) -> bool {
+    let mut expected = Vec::with_capacity(1 + title.aliases.len() + title.tagged_aliases.len());
+    expected.push(crate::app_usecase_rss::normalize_for_matching(&title.name));
+    expected.extend(
+        title
+            .aliases
+            .iter()
+            .map(|alias| crate::app_usecase_rss::normalize_for_matching(alias)),
+    );
+    expected.extend(
+        title
+            .tagged_aliases
+            .iter()
+            .map(|alias| crate::app_usecase_rss::normalize_for_matching(&alias.name)),
+    );
+
+    let candidates = if parsed.normalized_title_variants.is_empty() {
+        vec![parsed.normalized_title.as_str()]
+    } else {
+        parsed
+            .normalized_title_variants
+            .iter()
+            .map(String::as_str)
+            .collect()
+    };
+    candidates.into_iter().any(|candidate| {
+        let normalized = crate::app_usecase_rss::normalize_for_matching(candidate);
+        !normalized.is_empty() && expected.iter().any(|value| value == &normalized)
+    })
+}
+
+/// Match only a member's episode-title text with typo tolerance. Series title
+/// identity is checked separately and always stays exact (canonical or alias).
+fn source_fuzzily_matches_catalog_episode_title(
+    title: &scryer_domain::Title,
+    source_video: &Path,
+    episode: &scryer_domain::Episode,
+) -> bool {
+    let Some(expected_title) = episode.title.as_deref().filter(|value| !value.trim().is_empty())
+    else {
+        return false;
+    };
+    let Some(stem) = source_video_stem(Some(source_video)) else {
+        return false;
+    };
+    let expected = crate::app_usecase_rss::normalize_for_matching(expected_title);
+    if expected.is_empty() {
+        return false;
+    }
+
+    let context = crate::build_release_parse_context(title, Some(episode), None, None);
+    let analysis = crate::analyze_release_for_target(&stem, &context);
+    let Some(candidate) = analysis.best_candidate() else {
+        return false;
+    };
+    if candidate.context_title_matches.iter().any(|context_match| {
+        context_match.kind == crate::release_parser::ContextTitleMatchKind::EpisodeTitle
+            && !candidate.zones.title_zones.iter().any(|title_zone| {
+                context_match.token_range.start_token < title_zone.end_token
+                    && title_zone.start_token < context_match.token_range.end_token
+            })
+    }) {
+        return true;
+    }
+
+    let unmatched_tokens: Vec<_> = candidate
+        .unconsumed_tokens
+        .iter()
+        .filter_map(|span| stem.get(span.start..span.end))
+        .filter(|token| token.chars().any(|character| character.is_alphanumeric()))
+        .collect();
+    let max_window_tokens = expected_title
+        .split_whitespace()
+        .count()
+        .saturating_add(2)
+        .max(1);
+    for start in 0..unmatched_tokens.len() {
+        let mut phrase = String::new();
+        for token in unmatched_tokens
+            .iter()
+            .skip(start)
+            .take(max_window_tokens)
+        {
+            if !phrase.is_empty() {
+                phrase.push(' ');
+            }
+            phrase.push_str(token);
+            let normalized = crate::app_usecase_rss::normalize_for_matching(&phrase);
+            if !normalized.is_empty()
+                && normalized_episode_title_matches_or_is_near_match(&normalized, &expected)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn normalized_episode_title_matches_or_is_near_match(candidate: &str, expected: &str) -> bool {
+    if candidate == expected {
+        return true;
+    }
+
+    let candidate_len = candidate.chars().count();
+    let expected_len = expected.chars().count();
+    let max_distance = match candidate_len.max(expected_len) {
+        0..=5 => 0,
+        6..=12 => 1,
+        13..=24 => 2,
+        _ => 3,
+    };
+    bounded_levenshtein_distance(candidate, expected, max_distance).is_some()
+}
+
+fn bounded_levenshtein_distance(left: &str, right: &str, max_distance: usize) -> Option<usize> {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.len().abs_diff(right.len()) > max_distance {
+        return None;
+    }
+
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (left_index, left_char) in left.iter().enumerate() {
+        let mut current = Vec::with_capacity(right.len() + 1);
+        current.push(left_index + 1);
+        let mut row_min = left_index + 1;
+        for (right_index, right_char) in right.iter().enumerate() {
+            let cost = usize::from(left_char != right_char);
+            let distance = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + cost);
+            row_min = row_min.min(distance);
+            current.push(distance);
+        }
+        if row_min > max_distance {
+            return None;
+        }
+        previous = current;
+    }
+
+    previous
+        .last()
+        .copied()
+        .filter(|distance| *distance <= max_distance)
+}
+
+#[cfg(test)]
+mod alternate_scene_numbering_tests {
+    use super::*;
+
+    #[test]
+    fn episode_title_match_allows_a_small_typo_but_not_an_unrelated_title() {
+        assert!(normalized_episode_title_matches_or_is_near_match(
+            "sonofdarkness",
+            "sonofdarknes",
+        ));
+        assert!(!normalized_episode_title_matches_or_is_near_match(
+            "sonofdarkness",
+            "thenightmareofyou",
+        ));
+    }
+}
+
 fn unresolved_episode_import_message(
     parsed: &crate::ParsedReleaseMetadata,
     source_video: &Path,
@@ -1100,10 +1334,21 @@ async fn import_single_episode_file(
         // fallback; it never overwrites contradictory file evidence.
         let season = ep_meta.season.unwrap_or(1);
         let season_str = season.to_string();
-        (
-            resolve_target_episodes(app, title, ep_meta, &season_str).await,
-            false,
-        )
+        let resolved_episodes = resolve_target_episodes(app, title, ep_meta, &season_str).await;
+        if resolved_episodes.is_empty()
+            && let Some(episode) = reconcile_unresolved_scene_episode_from_scoped_release(
+                app,
+                title,
+                release_evidence,
+                source_video,
+                other_video_files,
+            )
+            .await?
+        {
+            (vec![episode], true)
+        } else {
+            (resolved_episodes, false)
+        }
     } else if let Some(episode) =
         grabbed_episode_fallback(app, title, release_evidence, other_video_files).await?
     {

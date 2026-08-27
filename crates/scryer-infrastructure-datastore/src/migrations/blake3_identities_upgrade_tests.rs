@@ -1,7 +1,7 @@
-//! End-to-end upgrade coverage for migration 0191.
+//! End-to-end upgrade coverage for migration 0192.
 //!
 //! The unit tests beside the hook exercise pure planning functions. These drive
-//! the **real migration runner** over a database built at the pre-0191 state by
+//! the **real migration runner** over a database built at the pre-0192 state by
 //! the real catalog, seeded with the kind of legacy rows an upgrading install
 //! actually holds, and assert what survives.
 //!
@@ -11,8 +11,8 @@
 use scryer_application::{HashDomain, blake3_identity_hex};
 use sqlx::{Row, SqlitePool};
 
-/// Version the catalog is replayed to before 0191 is applied.
-const PRE_UPGRADE_VERSION: i64 = 190;
+/// Version the catalog is replayed to before 0192 is applied.
+const PRE_UPGRADE_VERSION: i64 = 191;
 
 /// A plausible legacy SHA-256 digest. Content does not matter — only that it is
 /// 64 hex characters and is not what BLAKE3 would produce.
@@ -32,20 +32,20 @@ async fn pre_upgrade_pool() -> SqlitePool {
         true,
     )
     .await
-    .expect("pre-0191 migration fixture should apply");
+    .expect("pre-0192 migration fixture should apply");
     pool
 }
 
 async fn apply_upgrade(pool: &SqlitePool) {
     crate::migrations::run_migrations(pool, crate::MigrationMode::Apply)
         .await
-        .expect("0191 upgrade should apply");
+        .expect("0192 upgrade should apply");
     let applied: i64 =
-        sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version = 191")
+        sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version = 192")
             .fetch_one(pool)
             .await
-            .expect("0191 ledger entry should exist");
-    assert_eq!(applied, 1, "0191 must be recorded as successfully applied");
+            .expect("0192 ledger entry should exist");
+    assert_eq!(applied, 1, "0192 must be recorded as successfully applied");
 }
 
 async fn seed_user(pool: &SqlitePool, id: &str, username: &str, password_hash: Option<&str>) {
@@ -163,7 +163,7 @@ async fn upgrade_clears_v1_passwords_and_leaves_every_other_account_alone() {
 
 /// Evidence for the open restore hazard, not an endorsement of it.
 ///
-/// 0191 is recorded in the ledger, so a database restored from a pre-upgrade
+/// 0192 is recorded in the ledger, so a database restored from a pre-upgrade
 /// backup after the upgrade brings `v1$` rows back and nothing clears them. The
 /// account cannot authenticate, because v1 verification no longer exists.
 #[tokio::test]
@@ -174,7 +174,7 @@ async fn a_v1_row_restored_after_the_upgrade_is_not_cleared() {
     let restored = format!("v1$abcdef0123456789abcdef0123456789${LEGACY_SHA256}");
     seed_user(&pool, "restored-v1", "restored_v1", Some(&restored)).await;
 
-    // Re-running the runner is a no-op: the ledger already has 191.
+    // Re-running the runner is a no-op: the ledger already has 192.
     crate::migrations::run_migrations(&pool, crate::MigrationMode::Apply)
         .await
         .expect("re-running migrations should succeed");
@@ -367,7 +367,7 @@ async fn the_hook_is_idempotent_when_run_twice_over_the_same_database() {
 }
 
 #[tokio::test]
-async fn a_fresh_install_applies_the_whole_catalog_including_0191() {
+async fn a_fresh_install_applies_the_whole_catalog_including_0192() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix extension should register");
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -400,7 +400,7 @@ async fn an_upgrade_with_nothing_legacy_to_migrate_still_applies_cleanly() {
 
 // ── PostgreSQL ──────────────────────────────────────────────────────────────
 //
-// Same scenarios against the other engine, because 0191 ships a separate
+// Same scenarios against the other engine, because 0192 ships a separate
 // PostgreSQL SQL file (`password_change_required` is BOOLEAN there, not the
 // SQLite INTEGER) and the hook has a separate `$1`-placeholder implementation.
 // Skips when `SCRYER_TEST_POSTGRES_URL` is unset, matching the convention in
@@ -416,7 +416,7 @@ fn postgres_test_url() -> Option<String> {
 #[tokio::test]
 async fn postgres_upgrade_applies_and_migrates_legacy_identity_rows() {
     let Some(url) = postgres_test_url() else {
-        eprintln!("skipping PostgreSQL 0191 upgrade test; SCRYER_TEST_POSTGRES_URL is not set");
+        eprintln!("skipping PostgreSQL 0192 upgrade test; SCRYER_TEST_POSTGRES_URL is not set");
         return;
     };
     let admin = sqlx::PgPool::connect(&url)
@@ -443,7 +443,7 @@ async fn postgres_upgrade_applies_and_migrates_legacy_identity_rows() {
     let outcome = async {
         crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(PRE_UPGRADE_VERSION))
             .await
-            .expect("pre-0191 postgres fixture should apply");
+            .expect("pre-0192 postgres fixture should apply");
 
         let legacy_v1 = format!("v1$abcdef0123456789abcdef0123456789${LEGACY_SHA256}");
         sqlx::query(
@@ -496,7 +496,7 @@ async fn postgres_upgrade_applies_and_migrates_legacy_identity_rows() {
             crate::MigrationMode::Apply,
         )
         .await
-        .expect("0191 postgres upgrade should apply");
+        .expect("0192 postgres upgrade should apply");
         drop(services);
 
         // BOOLEAN column, not the SQLite INTEGER — this is what the separate

@@ -12,6 +12,10 @@ type DownloadQueueModule = {
     current: DownloadQueueItem,
     next: DownloadQueueItem,
   ) => boolean;
+  reconcileDownloadQueueItems: (
+    current: DownloadQueueItem[],
+    next: DownloadQueueItem[],
+  ) => DownloadQueueItem[];
   isManualImportRequiredQueueItem: (item: DownloadQueueItem) => boolean;
   mergeAuthoritativeQueueItems: (
     authoritativeItems: DownloadQueueItem[],
@@ -121,6 +125,26 @@ test("queue item equality ignores regenerated equivalent payload objects", () =>
     ),
     false,
   );
+});
+
+test("queue reconciliation retains unchanged rows and list identity", () => {
+  const first = queueItem();
+  const second = queueItem({ id: "qbittorrent:def", downloadClientItemId: "def" });
+  const current = [first, second];
+
+  const unchanged = downloadQueue.reconcileDownloadQueueItems(current, [
+    { ...first, trackedStatusMessages: [...first.trackedStatusMessages] },
+    { ...second, queueScope: null },
+  ]);
+  assert.equal(unchanged, current);
+
+  const updated = downloadQueue.reconcileDownloadQueueItems(current, [
+    { ...first, progressPercent: 43 },
+    { ...second, queueScope: null },
+  ]);
+  assert.notEqual(updated, current);
+  assert.notEqual(updated[0], first);
+  assert.equal(updated[1], second);
 });
 
 const warnedItem = () =>
