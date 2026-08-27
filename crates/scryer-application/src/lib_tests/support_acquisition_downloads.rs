@@ -1052,6 +1052,7 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: None,
+                info_hash: None,
                 release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Orphan,

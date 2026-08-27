@@ -188,6 +188,15 @@ pub struct DownloadSubmission {
     pub source_provider_name: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
+    /// BitTorrent v1 infohash the indexer announced at grab time.
+    ///
+    /// The blocklist keys a failed torrent on its infohash rather than its
+    /// name, because content identity is the same wherever the torrent came
+    /// from. The failure path resolves that key off the submission, so the hint
+    /// has to be persisted here — `seed_info_hash` only exists when a seeding
+    /// profile applied. `None` for usenet and for rows written before the
+    /// column, which blocklist by release name instead.
+    pub info_hash: Option<String>,
     /// The size the indexer announced for this release, when it announced one.
     ///
     /// D18 scores an in-flight submission as a pseudo-incumbent, and size is a

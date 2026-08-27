@@ -232,6 +232,7 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
                 source_provider_name: None,
                 source_kind: Some(crate::DownloadSourceKind::TorrentFile),
                 source_title: Some(release_title.to_string()),
+                info_hash: None,
                 release_size_bytes: None,
                 request_signature: Some(
                     "torrent_file|http://torrent-indexer/download/paperman.torrent|Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb"

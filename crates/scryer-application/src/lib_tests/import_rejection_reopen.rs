@@ -139,6 +139,7 @@ async fn rejected_import_keeps_coverage_and_reopens_for_the_saved_results_walk()
             source_provider_name: None,
             source_kind: None,
             source_title: Some(completed.name.clone()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Collection {

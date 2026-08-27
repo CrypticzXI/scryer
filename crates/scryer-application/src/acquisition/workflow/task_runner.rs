@@ -3445,6 +3445,7 @@ mod task_runner_tests {
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Episode {

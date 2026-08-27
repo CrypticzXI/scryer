@@ -1850,6 +1850,7 @@ mod queue_query_unit_tests {
             source_provider_name: None,
             source_kind: None,
             source_title: None,
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             scope,

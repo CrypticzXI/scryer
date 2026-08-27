@@ -236,6 +236,7 @@ fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmissi
         source_provider_name: None,
         source_kind: None,
         source_title: Some(source_title.to_string()),
+        info_hash: None,
         release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::Orphan,
@@ -260,6 +261,7 @@ fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
         source_provider_name: None,
         source_kind: Some(scryer_application::DownloadSourceKind::TorrentFile),
         source_title: Some("Managed.Release.S01".to_string()),
+        info_hash: None,
         release_size_bytes: None,
         request_signature: Some("request-signature-1".to_string()),
         scope: SubmissionScope::EpisodeSet {

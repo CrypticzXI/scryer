@@ -3896,6 +3896,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             purpose: scryer_application::DownloadSubmissionPurpose::Standard,

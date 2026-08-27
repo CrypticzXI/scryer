@@ -1446,6 +1446,23 @@ hook_id = "backfill_blake3_identities"
 engine = "all"
 scope = "upgrade_only"
 
+[[migration]]
+version = 192
+description = "persist the grab-time infohash on download submissions"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0192_download_submission_info_hash.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0192_download_submission_info_hash.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

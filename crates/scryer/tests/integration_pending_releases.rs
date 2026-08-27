@@ -843,6 +843,7 @@ async fn download_submission_roundtrips_episode_scope() {
             source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: Some("episode-scope-signature".to_string()),
             purpose: DownloadSubmissionPurpose::Standard,

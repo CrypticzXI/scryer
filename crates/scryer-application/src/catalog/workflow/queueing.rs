@@ -166,6 +166,7 @@ fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubm
         source_provider_name: None,
         source_kind: None,
         source_title: None,
+        info_hash: None,
         request_signature: None,
         purpose: DownloadSubmissionPurpose::Standard,
         scope: scope.clone(),

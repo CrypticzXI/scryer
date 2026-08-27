@@ -380,6 +380,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
         source_provider_name: None,
         source_kind: None,
         source_title: Some("Title-level".to_string()),
+        info_hash: None,
         release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::Title,
@@ -437,6 +438,7 @@ fn episode_set_submission_blocks_each_covered_episode() {
         source_provider_name: None,
         source_kind: None,
         source_title: Some("Range pack".to_string()),
+        info_hash: None,
         release_size_bytes: None,
         request_signature: None,
         scope: SubmissionScope::EpisodeSet {

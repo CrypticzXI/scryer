@@ -403,6 +403,7 @@ async fn list_download_submissions_for_client_items_handles_large_batched_lookup
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some(format!("Release {idx}")),
+                info_hash: None,
                 release_size_bytes: None,
                 request_signature: None,
                 scope: SubmissionScope::Title,
@@ -455,6 +456,7 @@ async fn download_submission_identity_does_not_fall_back_to_legacy_rows() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("Legacy Release".to_string()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::Title,
@@ -507,6 +509,7 @@ async fn record_download_submission_persists_episode_set_scope() {
             source_provider_name: None,
             source_kind: None,
             source_title: Some("RASCAL 01-13".to_string()),
+            info_hash: None,
             release_size_bytes: None,
             request_signature: None,
             scope: SubmissionScope::EpisodeSet {
@@ -562,6 +565,7 @@ async fn download_submission_signature_lookup_matches_scope() {
                 source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Same.Release.S01E01.1080p.WEB-DL".to_string()),
+                info_hash: None,
                 release_size_bytes: None,
                 request_signature: Some("same-signature".to_string()),
                 scope: SubmissionScope::Episode {

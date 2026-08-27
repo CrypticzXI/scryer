@@ -598,6 +598,7 @@ impl AppUseCase {
             source_provider_name: None,
             source_kind: None,
             source_title: None,
+            info_hash: None,
             request_signature: None,
             scope: scope.clone(),
         };

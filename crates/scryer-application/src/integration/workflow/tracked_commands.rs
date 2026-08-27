@@ -733,6 +733,7 @@ impl AppUseCase {
             // Filled from the existing row by the assignment command: the
             // grab-time indexer release name survives a reassignment.
             source_title: None,
+            info_hash: None,
             request_signature: None,
             scope,
         };
