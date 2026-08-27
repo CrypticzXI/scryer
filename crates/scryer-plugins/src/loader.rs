@@ -54,11 +54,26 @@ pub fn schedule_plugin_rehydration(
 ) {
     let mut artifacts = runtime_plugins
         .iter()
-        .map(|plugin| RehydrationArtifact {
-            plugin_id: plugin.descriptor.id.clone(),
-            plugin_version: plugin.descriptor.version.clone(),
-            flavor: module_flavor_for_descriptor(&plugin.descriptor),
-            wasm: plugin.wasm_bytes.clone(),
+        .filter_map(|plugin| {
+            let flavor = match module_flavor_for_artifact(&plugin.descriptor, &plugin.wasm_bytes)
+            {
+                Ok(flavor) => flavor,
+                Err(error) => {
+                    warn!(
+                        plugin_id = plugin.descriptor.id.as_str(),
+                        plugin_version = plugin.descriptor.version.as_str(),
+                        error = %error,
+                        "skipping persisted plugin artifact rehydration"
+                    );
+                    return None;
+                }
+            };
+            Some(RehydrationArtifact {
+                plugin_id: plugin.descriptor.id.clone(),
+                plugin_version: plugin.descriptor.version.clone(),
+                flavor,
+                wasm: plugin.wasm_bytes.clone(),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -81,14 +96,21 @@ pub fn schedule_plugin_rehydration(
         {
             continue;
         }
-        let flavor = module_flavor_for_descriptor(&descriptor);
         match crate::builtins::decode_builtin_wasm(*asset) {
-            Ok(wasm) => artifacts.push(RehydrationArtifact {
-                plugin_id: descriptor.id,
-                plugin_version: descriptor.version,
-                flavor,
-                wasm,
-            }),
+            Ok(wasm) => match module_flavor_for_artifact(&descriptor, &wasm) {
+                Ok(flavor) => artifacts.push(RehydrationArtifact {
+                    plugin_id: descriptor.id,
+                    plugin_version: descriptor.version,
+                    flavor,
+                    wasm,
+                }),
+                Err(error) => warn!(
+                    plugin_id = descriptor.id.as_str(),
+                    plugin_version = descriptor.version.as_str(),
+                    error = %error,
+                    "skipping built-in plugin component rehydration"
+                ),
+            },
             Err(error) => warn!(
                 plugin_id = descriptor.id.as_str(),
                 plugin_version = descriptor.version.as_str(),
@@ -101,13 +123,17 @@ pub fn schedule_plugin_rehydration(
     module_cache::schedule_rehydration(artifacts);
 }
 
-fn module_flavor_for_descriptor(descriptor: &PluginDescriptor) -> ModuleFlavor {
-    match PluginRuntimeBacking::for_descriptor(descriptor) {
+fn module_flavor_for_artifact(
+    descriptor: &PluginDescriptor,
+    wasm: &[u8],
+) -> Result<ModuleFlavor, String> {
+    Ok(match PluginRuntimeBacking::for_artifact(descriptor, wasm)? {
         PluginRuntimeBacking::LegacyReactor => ModuleFlavor::LegacyReactor,
         PluginRuntimeBacking::WasmtimeArchive
         | PluginRuntimeBacking::WasmtimeSubtitleSync
         | PluginRuntimeBacking::WasmtimeCommand => ModuleFlavor::Command,
-    }
+        PluginRuntimeBacking::WasmtimeIndexerComponent => ModuleFlavor::IndexerComponent,
+    })
 }
 
 type IndexerClientCacheKey = (String, String, String, String, String);
@@ -836,24 +862,40 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             }
         };
 
-        let built = if backing == PluginRuntimeBacking::WasmtimeCommand {
-            WasmIndexerClient::new_command_with_indexer_error_recorder(
-                wasm_bytes,
-                loaded.descriptor.clone(),
-                config.name.clone(),
-                config.clone(),
-                indexer_proxy_config.cloned(),
-                Arc::clone(&self.indexer_error_recorder),
-            )
-        } else {
-            WasmIndexerClient::new_with_indexer_error_recorder(
-                wasm_bytes,
-                loaded.descriptor.clone(),
-                config.name.clone(),
-                config.clone(),
-                indexer_proxy_config.cloned(),
-                Arc::clone(&self.indexer_error_recorder),
-            )
+        let built = match backing {
+            PluginRuntimeBacking::WasmtimeIndexerComponent => {
+                WasmIndexerClient::new_component_with_indexer_error_recorder(
+                    wasm_bytes,
+                    loaded.descriptor.clone(),
+                    config.name.clone(),
+                    config.clone(),
+                    indexer_proxy_config.cloned(),
+                    Arc::clone(&self.indexer_error_recorder),
+                )
+            }
+            PluginRuntimeBacking::WasmtimeCommand => {
+                WasmIndexerClient::new_command_with_indexer_error_recorder(
+                    wasm_bytes,
+                    loaded.descriptor.clone(),
+                    config.name.clone(),
+                    config.clone(),
+                    indexer_proxy_config.cloned(),
+                    Arc::clone(&self.indexer_error_recorder),
+                )
+            }
+            PluginRuntimeBacking::LegacyReactor => {
+                WasmIndexerClient::new_with_indexer_error_recorder(
+                    wasm_bytes,
+                    loaded.descriptor.clone(),
+                    config.name.clone(),
+                    config.clone(),
+                    indexer_proxy_config.cloned(),
+                    Arc::clone(&self.indexer_error_recorder),
+                )
+            }
+            other => Err(AppError::Repository(format!(
+                "runtime {other:?} is not valid for an indexer descriptor"
+            ))),
         };
 
         match built {
@@ -886,7 +928,9 @@ fn indexer_runtime_backing(
     let backing = PluginRuntimeBacking::for_artifact(descriptor, wasm)
         .map_err(|error| format!("invalid runtime marker: {error}"))?;
     match backing {
-        PluginRuntimeBacking::WasmtimeCommand | PluginRuntimeBacking::LegacyReactor => Ok(backing),
+        PluginRuntimeBacking::WasmtimeCommand
+        | PluginRuntimeBacking::WasmtimeIndexerComponent
+        | PluginRuntimeBacking::LegacyReactor => Ok(backing),
         other => Err(format!(
             "runtime {other:?} is not valid for an indexer descriptor"
         )),
@@ -3179,6 +3223,9 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
                     embedded.descriptor.plugin_type(),
                 )?;
             }
+            PluginRuntimeBacking::WasmtimeIndexerComponent => {
+                crate::wasmtime_host::validate_indexer_component(&bytes)?;
+            }
         }
         let descriptor = embedded.descriptor;
         debug!(
@@ -3188,6 +3235,12 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
             "loaded plugin descriptor"
         );
         return Ok((descriptor, bytes));
+    }
+
+    if crate::wasmtime_host::component_host::is_indexer_component(&bytes)? {
+        return Err(
+            "WASI Preview 2 indexer components must embed a top-level plugin descriptor".to_string(),
+        );
     }
 
     // Command-model artifacts (wasip1 command: `_start` + `memory`, no

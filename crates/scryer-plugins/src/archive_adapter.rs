@@ -47,7 +47,8 @@ impl ArchiveExtractorClient for WasmArchiveExtractorClient {
             PluginRuntimeBacking::WasmtimeArchive => {}
             PluginRuntimeBacking::LegacyReactor
             | PluginRuntimeBacking::WasmtimeSubtitleSync
-            | PluginRuntimeBacking::WasmtimeCommand => {
+            | PluginRuntimeBacking::WasmtimeCommand
+            | PluginRuntimeBacking::WasmtimeIndexerComponent => {
                 return Err(AppError::Repository(
                     "archive extractor plugin requires the wasmtime runtime backing".to_string(),
                 ));
