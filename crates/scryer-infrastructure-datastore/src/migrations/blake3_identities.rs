@@ -9,7 +9,7 @@
 //! backfills are idempotent — a row already carrying the new value recomputes to
 //! the same value — and each is a no-op once complete.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use scryer_application::{AppError, AppResult, HashDomain, blake3_identity_hex};
 use sqlx::Row;
@@ -41,15 +41,58 @@ fn media_request_fingerprints(rows: &[(String, String, String)]) -> Vec<(String,
 ///
 /// Mirrors `build_library_scan_unmatched_item_id`: the digest covers
 /// `facet:library_id:item_path` and only its first 24 hex characters are used.
-/// A NULL `library_id` interpolates as the empty string, exactly as the
-/// producer's `&str` did for a row written before the column existed.
-fn unmatched_item_id(facet: &str, library_id: Option<&str>, item_path: &str) -> String {
-    let library_id = library_id.unwrap_or_default();
+///
+/// Returns `None` for a NULL `library_id`. The column was added by migration
+/// 0104 without a backfill, so a NULL means the row predates it and the id was
+/// derived from an input this function cannot reconstruct. Those rows are left
+/// alone — see `plan_unmatched_rekey` for why that is safe.
+fn unmatched_item_id(facet: &str, library_id: Option<&str>, item_path: &str) -> Option<String> {
+    let library_id = library_id?;
     let fingerprint = blake3_identity_hex(
         HashDomain::LibraryScanUnmatchedItem,
         format!("{facet}:{library_id}:{item_path}"),
     );
-    format!("library_scan_unmatched:{}", &fingerprint[..24])
+    Some(format!("library_scan_unmatched:{}", &fingerprint[..24]))
+}
+
+/// `(old_id, new_id)` pairs to apply, with every row that could abort the
+/// migration filtered out.
+///
+/// The id is the primary key, so a duplicate target aborts the whole
+/// transaction and fails the upgrade. Two hazards produce one:
+///
+/// 1. The unique index is `(library_id, item_path)`, and both engines treat
+///    NULLs as distinct — so several NULL-`library_id` rows may share an
+///    `item_path`. All of them would recompute to the same id.
+/// 2. Any future shape change that makes two live rows agree on the hashed
+///    triple.
+///
+/// Skipping is free because the table re-keys itself: the scan upsert is
+/// `ON CONFLICT(library_id, item_path) DO UPDATE SET id = excluded.id`, so the
+/// next scan of a path rewrites its id to the current form regardless. This
+/// backfill only makes that state immediate for rows that may never be
+/// re-scanned; a row it declines to touch is stale, not broken.
+fn plan_unmatched_rekey(
+    rows: &[(String, String, Option<String>, String)],
+) -> Vec<(String, String)> {
+    let existing: HashSet<&str> = rows.iter().map(|(id, ..)| id.as_str()).collect();
+    let mut claimed: HashSet<String> = HashSet::new();
+    let mut plan = Vec::new();
+    for (id, facet, library_id, item_path) in rows {
+        let Some(next_id) = unmatched_item_id(facet, library_id.as_deref(), item_path) else {
+            continue;
+        };
+        if &next_id == id {
+            continue;
+        }
+        // Colliding with another row's target, or with a row this pass has not
+        // re-keyed yet, would violate the primary key mid-transaction.
+        if !claimed.insert(next_id.clone()) || existing.contains(next_id.as_str()) {
+            continue;
+        }
+        plan.push((id.clone(), next_id));
+    }
+    plan
 }
 
 fn repo_err(error: sqlx::Error) -> AppError {
@@ -86,29 +129,29 @@ pub async fn backfill_blake3_identities_sqlite(
             .map_err(repo_err)?;
     }
 
-    // Re-key in one pass. Ids are content-derived and the table has no inbound
-    // foreign keys, so a plain UPDATE per row is safe; a collision would mean two
-    // rows already shared a (facet, library_id, item_path), which the producer
-    // cannot emit.
+    // `plan_unmatched_rekey` filters every row that could violate the primary
+    // key, so these updates cannot abort the migration.
     let rows =
         sqlx::query("SELECT id, facet, library_id, item_path FROM library_scan_unmatched_items")
             .fetch_all(&mut **tx)
             .await
             .map_err(repo_err)?;
-    for row in &rows {
-        let id = row.try_get::<String, _>("id").map_err(repo_err)?;
-        let facet = row.try_get::<String, _>("facet").map_err(repo_err)?;
-        let library_id = row
-            .try_get::<Option<String>, _>("library_id")
-            .map_err(repo_err)?;
-        let item_path = row.try_get::<String, _>("item_path").map_err(repo_err)?;
-        let next_id = unmatched_item_id(&facet, library_id.as_deref(), &item_path);
-        if next_id == id {
-            continue;
-        }
+    let unmatched = rows
+        .iter()
+        .map(|row| {
+            Ok((
+                row.try_get::<String, _>("id").map_err(repo_err)?,
+                row.try_get::<String, _>("facet").map_err(repo_err)?,
+                row.try_get::<Option<String>, _>("library_id")
+                    .map_err(repo_err)?,
+                row.try_get::<String, _>("item_path").map_err(repo_err)?,
+            ))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    for (old_id, next_id) in plan_unmatched_rekey(&unmatched) {
         sqlx::query("UPDATE library_scan_unmatched_items SET id = ?1 WHERE id = ?2")
             .bind(&next_id)
-            .bind(&id)
+            .bind(&old_id)
             .execute(&mut **tx)
             .await
             .map_err(repo_err)?;
@@ -152,20 +195,22 @@ pub async fn backfill_blake3_identities_postgres(
             .fetch_all(&mut **tx)
             .await
             .map_err(repo_err)?;
-    for row in &rows {
-        let id = row.try_get::<String, _>("id").map_err(repo_err)?;
-        let facet = row.try_get::<String, _>("facet").map_err(repo_err)?;
-        let library_id = row
-            .try_get::<Option<String>, _>("library_id")
-            .map_err(repo_err)?;
-        let item_path = row.try_get::<String, _>("item_path").map_err(repo_err)?;
-        let next_id = unmatched_item_id(&facet, library_id.as_deref(), &item_path);
-        if next_id == id {
-            continue;
-        }
+    let unmatched = rows
+        .iter()
+        .map(|row| {
+            Ok((
+                row.try_get::<String, _>("id").map_err(repo_err)?,
+                row.try_get::<String, _>("facet").map_err(repo_err)?,
+                row.try_get::<Option<String>, _>("library_id")
+                    .map_err(repo_err)?,
+                row.try_get::<String, _>("item_path").map_err(repo_err)?,
+            ))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    for (old_id, next_id) in plan_unmatched_rekey(&unmatched) {
         sqlx::query("UPDATE library_scan_unmatched_items SET id = $1 WHERE id = $2")
             .bind(&next_id)
-            .bind(&id)
+            .bind(&old_id)
             .execute(&mut **tx)
             .await
             .map_err(repo_err)?;
@@ -196,12 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_item_id_is_stable_and_null_library_reads_as_empty() {
-        let with_empty = unmatched_item_id("movie", Some(""), "/media/a");
-        let with_null = unmatched_item_id("movie", None, "/media/a");
-        assert_eq!(with_empty, with_null);
-        assert!(with_null.starts_with("library_scan_unmatched:"));
-        assert_eq!(with_null.len(), "library_scan_unmatched:".len() + 24);
+    fn unmatched_item_id_shape_matches_the_producer() {
+        let id = unmatched_item_id("movie", Some("lib"), "/media/a").expect("library-backed id");
+        assert!(id.starts_with("library_scan_unmatched:"));
+        assert_eq!(id.len(), "library_scan_unmatched:".len() + 24);
     }
 
     #[test]
@@ -210,5 +253,79 @@ mod tests {
             unmatched_item_id("movie", Some("lib"), "/media/a"),
             unmatched_item_id("series", Some("lib"), "/media/a")
         );
+    }
+
+    #[test]
+    fn a_null_library_id_is_not_re_keyed() {
+        // The id of a pre-0104 row was derived from an input we cannot rebuild,
+        // and several such rows may share an item_path because the unique index
+        // treats NULLs as distinct. Re-keying them would collide on the primary
+        // key and abort the upgrade.
+        assert_eq!(unmatched_item_id("movie", None, "/media/a"), None);
+
+        let rows = vec![
+            (
+                "old-1".to_string(),
+                "movie".to_string(),
+                None,
+                "/media/a".to_string(),
+            ),
+            (
+                "old-2".to_string(),
+                "movie".to_string(),
+                None,
+                "/media/a".to_string(),
+            ),
+        ];
+        assert!(plan_unmatched_rekey(&rows).is_empty());
+    }
+
+    #[test]
+    fn plan_skips_targets_that_would_violate_the_primary_key() {
+        let live = unmatched_item_id("movie", Some("lib"), "/media/a").expect("id");
+
+        // A row whose target id is already held by a different row must be left
+        // alone rather than colliding mid-transaction.
+        let rows = vec![
+            (
+                "stale".to_string(),
+                "movie".to_string(),
+                Some("lib".to_string()),
+                "/media/a".to_string(),
+            ),
+            (
+                live.clone(),
+                "movie".to_string(),
+                Some("lib".to_string()),
+                "/media/b".to_string(),
+            ),
+        ];
+        let plan = plan_unmatched_rekey(&rows);
+        assert!(
+            plan.iter().all(|(_, next)| next != &live),
+            "must not re-key onto an id another row still holds"
+        );
+    }
+
+    #[test]
+    fn plan_re_keys_an_ordinary_row_and_is_idempotent() {
+        let rows = vec![(
+            "library_scan_unmatched:deadbeefdeadbeefdeadbeef".to_string(),
+            "movie".to_string(),
+            Some("lib".to_string()),
+            "/media/a".to_string(),
+        )];
+        let plan = plan_unmatched_rekey(&rows);
+        assert_eq!(plan.len(), 1);
+        let (_, next_id) = &plan[0];
+
+        // Re-running over the already-migrated row plans nothing.
+        let migrated = vec![(
+            next_id.clone(),
+            "movie".to_string(),
+            Some("lib".to_string()),
+            "/media/a".to_string(),
+        )];
+        assert!(plan_unmatched_rekey(&migrated).is_empty());
     }
 }
