@@ -317,6 +317,8 @@ const SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS = `
         tmdbId
         malId
         anidbId
+        ratings {${TITLE_RATING_SUMMARY_FIELDS}
+        }
       }`;
 
 const SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS = `
@@ -1026,6 +1028,19 @@ export const titleMediaFilesQuery = `query TitleMediaFiles($id: ID!) {
   title(id: $id) {
     id
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }
+  }
+}`;
+
+export const movieEntityDetailQuery = `query MovieEntityDetail($titleId: ID!, $movieId: ID!) {
+  title(id: $titleId) {
+    id
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
+    }
+  }
+  movieEntity(titleId: $titleId, id: $movieId) {
+    id
+    credits {${TITLE_CAST_CREDIT_FIELDS}
     }
   }
 }`;

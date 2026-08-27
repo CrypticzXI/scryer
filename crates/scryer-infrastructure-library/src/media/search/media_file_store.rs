@@ -2503,6 +2503,8 @@ mod tests {
                 tmdb_id: None,
                 mal_id: None,
                 anidb_id: None,
+                ratings: None,
+                credits: None,
                 created_at: now,
                 updated_at: now,
             },

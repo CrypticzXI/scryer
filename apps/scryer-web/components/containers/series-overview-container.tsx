@@ -8,9 +8,9 @@ import {
   episodeSidePanelDetailQuery,
   librariesQuery,
   seriesCollectionEpisodesQuery,
+  movieEntityDetailQuery,
   seriesSidePanelOverviewQuery,
   seriesOverviewSettingsInitQuery,
-  titleMediaFilesQuery,
 } from "@/lib/graphql/queries";
 import {
   clearTitleReleaseBlocklistEntryMutation,
@@ -191,6 +191,8 @@ export type MovieEntity = {
   tmdbId: string | null;
   malId: string | null;
   anidbId: string | null;
+  ratings?: TitleRatings | null;
+  credits?: TitleCreditRecord[] | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -889,8 +891,8 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       try {
         const { data, error } = await client
           .query(
-            titleMediaFilesQuery,
-            { id: requestedTitleId },
+            movieEntityDetailQuery,
+            { titleId: requestedTitleId, movieId: link.movie.id },
             { requestPolicy: "network-only" },
           )
           .toPromise();
@@ -906,6 +908,10 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           | null
           | undefined;
         const mediaFiles = (titleDetail?.mediaFiles ?? []) as EpisodeMediaFile[];
+        const movieDetail = data?.movieEntity as
+          | { id: string; credits?: TitleCreditRecord[] | null }
+          | null
+          | undefined;
         const linkFiles = mediaFiles.filter((file) =>
           (file.seriesMovieLinkIds ?? []).includes(link.id),
         );
@@ -918,6 +924,21 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           ...current,
           [link.id]: linkFiles,
         }));
+        if (movieDetail) {
+          setSeriesMovieLinks((current) =>
+            current.map((currentLink) =>
+              currentLink.id === link.id
+                ? {
+                    ...currentLink,
+                    movie: {
+                      ...currentLink.movie,
+                      credits: movieDetail.credits ?? [],
+                    },
+                  }
+                : currentLink,
+            ),
+          );
+        }
         setMediaFilesByEpisode((current) => {
           const next = { ...current };
           for (const [episodeId, files] of Object.entries(mediaFilesByEpisode)) {

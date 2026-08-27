@@ -745,7 +745,39 @@ pub struct Title {
     pub folder_path: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleExternalRating {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleRatingSummary {
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRating>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleCredit {
+    pub kind: String,
+    pub person_id: String,
+    pub person_name: String,
+    pub person_original_name: String,
+    pub person_image_url: String,
+    pub person_source: String,
+    pub person_external_id: String,
+    pub character_name: String,
+    pub language: String,
+    pub billing_order: i32,
+    pub episode_count: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MovieEntity {
     pub id: String,
     pub title: String,
@@ -765,11 +797,15 @@ pub struct MovieEntity {
     pub tmdb_id: Option<String>,
     pub mal_id: Option<String>,
     pub anidb_id: Option<String>,
+    #[serde(default)]
+    pub ratings: Option<TitleRatingSummary>,
+    #[serde(default)]
+    pub credits: Option<Vec<TitleCredit>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SeriesMovieLink {
     pub id: String,
     pub series_title_id: String,

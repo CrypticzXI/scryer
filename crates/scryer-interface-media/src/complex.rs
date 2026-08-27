@@ -43,6 +43,27 @@ fn relation_page_offset(offset: i32) -> i32 {
 }
 
 #[ComplexObject]
+impl MovieEntityPayload {
+    /// Cast and crew cached during the movie's latest metadata hydration.
+    async fn credits(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleCreditPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let movie_entity_id = self.id.to_string();
+        app.movie_entity_credits(&actor, self.permission_title_id.as_ref(), &movie_entity_id)
+            .await
+            .map(|credits| {
+                credits
+                    .into_iter()
+                    .map(|credit| {
+                        crate::mappers::from_movie_entity_credit(&app, &movie_entity_id, credit)
+                    })
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+}
+
+#[ComplexObject]
 impl LibraryPayload {
     /// Effective title quality-profile ID for this library; requires title-management or catalog-settings access.
     async fn quality_profile_id(&self, ctx: &Context<'_>) -> GqlResult<ID> {

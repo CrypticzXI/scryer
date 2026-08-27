@@ -11,6 +11,10 @@ use scryer_domain::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::media::canonical_tags::{
+    load_movie_entity_metadata_ratings, replace_movie_entity_metadata_ratings_tx,
+};
+use crate::media::title_credits::{load_movie_entity_credits, replace_movie_entity_credits_tx};
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTarget, SqlTx, StoreDatastore,
 };
@@ -135,6 +139,18 @@ impl ShowRepository for ShowStore {
         link_id: &str,
     ) -> AppResult<Option<SeriesMovieLink>> {
         get_series_movie_link_by_id_query(self.read_target(), link_id).await
+    }
+
+    async fn list_movie_entity_credits(
+        &self,
+        movie_entity_id: &str,
+    ) -> AppResult<Vec<scryer_application::TitleCredit>> {
+        let mut credits = load_movie_entity_credits(
+            SqlExec::Target(self.read_target()),
+            &[movie_entity_id.to_string()],
+        )
+        .await?;
+        Ok(credits.remove(movie_entity_id).unwrap_or_default())
     }
 
     async fn find_series_movie_link_by_legacy_collection_id(
@@ -515,13 +531,22 @@ async fn list_series_movie_links_for_title_query(
          WHERE sml.series_title_id = {{}}
          ORDER BY COALESCE(sml.narrative_order, ''), sml.created_at ASC, sml.id ASC"
     );
+    let query_target = match &target {
+        SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+        SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+    };
     let rows = SqlRuntime::fetch_all(
-        SqlExec::Target(target),
+        SqlExec::Target(query_target),
         &sql,
         &[SqlArg::Text(title_id.to_string())],
     )
     .await?;
-    rows.iter().map(row_to_series_movie_link).collect()
+    let mut links = rows
+        .iter()
+        .map(row_to_series_movie_link)
+        .collect::<AppResult<Vec<_>>>()?;
+    attach_movie_entity_ratings(SqlExec::Target(target), &mut links).await?;
+    Ok(links)
 }
 
 async fn list_series_movie_links_for_titles_query(
@@ -544,8 +569,17 @@ async fn list_series_movie_links_for_titles_query(
         .cloned()
         .map(SqlArg::Text)
         .collect::<Vec<_>>();
-    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
-    rows.iter().map(row_to_series_movie_link).collect()
+    let query_target = match &target {
+        SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+        SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+    };
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(query_target), &sql, &args).await?;
+    let mut links = rows
+        .iter()
+        .map(row_to_series_movie_link)
+        .collect::<AppResult<Vec<_>>>()?;
+    attach_movie_entity_ratings(SqlExec::Target(target), &mut links).await?;
+    Ok(links)
 }
 
 fn movie_entity_external_id_column(source: &str) -> Option<&'static str> {
@@ -637,13 +671,21 @@ async fn get_series_movie_link_by_id_query(
          WHERE sml.id = {{}}
          LIMIT 1"
     );
+    let query_target = match &target {
+        SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+        SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+    };
     let row = SqlRuntime::fetch_optional(
-        SqlExec::Target(target),
+        SqlExec::Target(query_target),
         &sql,
         &[SqlArg::Text(link_id.to_string())],
     )
     .await?;
-    row.as_ref().map(row_to_series_movie_link).transpose()
+    let mut link = row.as_ref().map(row_to_series_movie_link).transpose()?;
+    if let Some(link) = &mut link {
+        attach_movie_entity_ratings(SqlExec::Target(target), std::slice::from_mut(link)).await?;
+    }
+    Ok(link)
 }
 
 async fn find_series_movie_link_by_legacy_collection_id_query(
@@ -657,13 +699,21 @@ async fn find_series_movie_link_by_legacy_collection_id_query(
          WHERE sml.legacy_collection_id = {{}}
          LIMIT 1"
     );
+    let query_target = match &target {
+        SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+        SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+    };
     let row = SqlRuntime::fetch_optional(
-        SqlExec::Target(target),
+        SqlExec::Target(query_target),
         &sql,
         &[SqlArg::Text(collection_id.to_string())],
     )
     .await?;
-    row.as_ref().map(row_to_series_movie_link).transpose()
+    let mut link = row.as_ref().map(row_to_series_movie_link).transpose()?;
+    if let Some(link) = &mut link {
+        attach_movie_entity_ratings(SqlExec::Target(target), std::slice::from_mut(link)).await?;
+    }
+    Ok(link)
 }
 
 async fn upsert_series_movie_link_tx(
@@ -800,6 +850,12 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
         ],
     )
     .await?;
+    if let Some(ratings) = &movie.ratings {
+        replace_movie_entity_metadata_ratings_tx(tx, &movie.id, ratings).await?;
+    }
+    if let Some(credits) = &movie.credits {
+        replace_movie_entity_credits_tx(tx, &movie.id, credits).await?;
+    }
     Ok(())
 }
 
@@ -876,7 +932,11 @@ async fn load_series_movie_link_tx(
     let row =
         SqlRuntime::fetch_optional(SqlExec::Tx(tx), &sql, &[SqlArg::Text(link_id.to_string())])
             .await?;
-    row.as_ref().map(row_to_series_movie_link).transpose()
+    let mut link = row.as_ref().map(row_to_series_movie_link).transpose()?;
+    if let Some(link) = &mut link {
+        attach_movie_entity_ratings(SqlExec::Tx(tx), std::slice::from_mut(link)).await?;
+    }
+    Ok(link)
 }
 
 async fn delete_stale_series_movie_links_tx(
@@ -1729,6 +1789,23 @@ fn row_to_collection(row: &SqlRow) -> AppResult<Collection> {
     })
 }
 
+async fn attach_movie_entity_ratings(
+    exec: SqlExec<'_, '_>,
+    links: &mut [SeriesMovieLink],
+) -> AppResult<()> {
+    let movie_entity_ids = links
+        .iter()
+        .map(|link| link.movie.id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let ratings = load_movie_entity_metadata_ratings(exec, &movie_entity_ids).await?;
+    for link in links {
+        link.movie.ratings = ratings.get(&link.movie.id).cloned();
+    }
+    Ok(())
+}
+
 fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
     Ok(SeriesMovieLink {
         id: row.text("link_id")?,
@@ -1752,6 +1829,8 @@ fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
             tmdb_id: row.opt_text("movie_tmdb_id")?,
             mal_id: row.opt_text("movie_mal_id")?,
             anidb_id: row.opt_text("movie_anidb_id")?,
+            ratings: None,
+            credits: None,
             created_at: row.timestamp("movie_created_at")?,
             updated_at: row.timestamp("movie_updated_at")?,
         },

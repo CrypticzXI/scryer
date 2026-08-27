@@ -1406,6 +1406,23 @@ hook_id = "disable_invalid_user_rule_runtime_wrappers"
 engine = "all"
 scope = "upgrade_only"
 
+[[migration]]
+version = 190
+description = "allow movie entities to own hydrated ratings and credits"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0190_movie_entity_metadata_ownership.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0190_movie_entity_metadata_ownership.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

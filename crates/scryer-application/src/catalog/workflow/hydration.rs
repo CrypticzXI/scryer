@@ -906,6 +906,24 @@ impl AppUseCase {
                     };
                     match series_result {
                         Ok(series_result) => {
+                            let series_items = series_result.series.values().collect::<Vec<_>>();
+                            let movie_metadata = await_cancellable(
+                                cancel_token,
+                                crate::catalog::facets::handler::hydrate_referenced_movie_metadata(
+                                    self.services.library.metadata_gateway.as_ref(),
+                                    &series_items,
+                                    &language,
+                                ),
+                            )
+                            .await;
+                            let Some(movie_metadata) = movie_metadata else {
+                                break 'languages;
+                            };
+                            let movie_metadata = movie_metadata
+                                .inspect_err(|error| {
+                                    warn!(error = %error, "linked movie metadata hydration failed");
+                                })
+                                .unwrap_or_default();
                             for (target, tvdb_id) in series_targets {
                                 if crate::library::library::library_scan_cancel_requested(cancel_token)
                                 {
@@ -915,8 +933,9 @@ impl AppUseCase {
                                 let title_facet = target.title.facet.clone();
                                 let title_source = target.source;
                                 if let Some(series) = series_result.series.get(&tvdb_id) {
-                                    let result =
+                                    let mut result =
                                         super::series_to_hydration_result(series.clone(), &language);
+                                    result.movie_metadata = movie_metadata.clone();
                                     let hydrated = self
                                         .apply_hydration_result(target.title, result, title_source)
                                         .await;
@@ -1179,12 +1198,13 @@ impl AppUseCase {
         };
 
         if !result.seasons.is_empty() || !result.episodes.is_empty() {
-            self.create_series_seasons_and_episodes(
+            self.create_series_seasons_and_episodes_with_movie_metadata(
                 &title,
                 &result.seasons,
                 &result.episodes,
                 &result.anime_mappings,
                 &result.anime_movies,
+                &result.movie_metadata,
             )
             .await;
         }

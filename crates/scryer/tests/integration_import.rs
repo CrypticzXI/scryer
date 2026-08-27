@@ -618,6 +618,8 @@ async fn seed_series_movie_link(
             tmdb_id: None,
             mal_id: None,
             anidb_id: None,
+            ratings: None,
+            credits: None,
             created_at: now,
             updated_at: now,
         },

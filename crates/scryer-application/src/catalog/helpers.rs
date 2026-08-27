@@ -218,6 +218,8 @@ pub(crate) fn movie_entity_from_anime_movie(movie: &AnimeMovie) -> MovieEntity {
         tmdb_id: movie.movie_tmdb_id.map(|id| id.to_string()),
         mal_id: movie.movie_mal_id.map(|id| id.to_string()),
         anidb_id: movie.movie_anidb_id.map(|id| id.to_string()),
+        ratings: None,
+        credits: None,
         created_at: now,
         updated_at: now,
     }
