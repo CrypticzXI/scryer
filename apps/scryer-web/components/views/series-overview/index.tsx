@@ -167,7 +167,7 @@ type Props = {
   moreLikeThisActions?: TitleMoreLikeThisStripActions;
 };
 
-export function SeriesOverviewView({
+function SeriesOverviewViewImpl({
   canManageTitle,
   loading,
   hydrating,
@@ -448,6 +448,47 @@ export function SeriesOverviewView({
       return next;
     });
   }, []);
+
+  const toggleActionByKey = React.useMemo(
+    () =>
+      new Map(
+        timelineItems.map((item) => [item.key, () => toggleKey(item.key)]),
+      ),
+    [timelineItems, toggleKey],
+  );
+  const seasonSearchActionByKey = React.useMemo(() => {
+    const actions = new Map<string, (() => void) | undefined>();
+    for (const item of timelineItems) {
+      if (item.kind === "seriesMovie") {
+        continue;
+      }
+      const { collection } = item;
+      actions.set(
+        item.key,
+        canManageTitle && onRunSeasonSearch
+          ? () => {
+              if (!hasDownloadClients) {
+                setSearchBlockedByCollection((previous) => ({
+                  ...previous,
+                  [collection.id]: true,
+                }));
+                return;
+              }
+              setSearchBlockedByCollection((previous) => {
+                if (!previous[collection.id]) {
+                  return previous;
+                }
+                const next = { ...previous };
+                delete next[collection.id];
+                return next;
+              });
+              void onRunSeasonSearch(collection);
+            }
+          : undefined,
+      );
+    }
+    return actions;
+  }, [canManageTitle, hasDownloadClients, onRunSeasonSearch, timelineItems]);
 
   const handleRunEpisodeSearch = React.useCallback(
     (episode: CollectionEpisode) => {
@@ -1078,7 +1119,7 @@ export function SeriesOverviewView({
                       key={item.key}
                       link={item.link}
                       expanded={expandedKeys.has(item.key)}
-                      onToggle={() => toggleKey(item.key)}
+                      onToggle={toggleActionByKey.get(item.key)!}
                       mediaFilesByEpisode={mediaFilesByEpisode}
                       mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
                       onLoadSeriesMovieDetail={onLoadSeriesMovieDetail}
@@ -1120,7 +1161,7 @@ export function SeriesOverviewView({
                     episodesReady={collection.id in episodesByCollection}
                     facet={title.facet}
                     expanded={expandedKeys.has(item.key)}
-                    onToggle={() => toggleKey(item.key)}
+                    onToggle={toggleActionByKey.get(item.key)!}
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
               onLoadEpisodeDetail={onLoadEpisodeDetail}
@@ -1151,19 +1192,7 @@ export function SeriesOverviewView({
                     onSetEpisodeMonitored={canManageTitle ? onSetEpisodeMonitored : undefined}
                     seasonSearchResults={seasonSearchResultsByCollection?.[collection.id]}
                     seasonSearchLoading={seasonSearchLoadingByCollection?.[collection.id] === true}
-                    onRunSeasonSearch={canManageTitle && onRunSeasonSearch ? () => {
-                      if (!hasDownloadClients) {
-                        setSearchBlockedByCollection((prev) => ({ ...prev, [collection.id]: true }));
-                        return;
-                      }
-                      setSearchBlockedByCollection((prev) => {
-                        if (!prev[collection.id]) return prev;
-                        const next = { ...prev };
-                        delete next[collection.id];
-                        return next;
-                      });
-                      return onRunSeasonSearch(collection);
-                    } : undefined}
+                    onRunSeasonSearch={seasonSearchActionByKey.get(item.key)}
                     searchBlocked={searchBlockedByCollection[collection.id] === true}
                     onQueueFromSeasonSearch={canManageTitle ? onQueueFromSeasonSearch : undefined}
                     onDeleteFile={canManageTitle ? onDeleteFile : undefined}
@@ -1272,3 +1301,5 @@ export function SeriesOverviewView({
     </>
   );
 }
+
+export const SeriesOverviewView = React.memo(SeriesOverviewViewImpl);

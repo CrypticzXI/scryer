@@ -83,6 +83,34 @@ export function sameDownloadQueueItem(
   );
 }
 
+export function reconcileDownloadQueueItems(
+  current: DownloadQueueItem[],
+  next: readonly DownloadQueueItem[],
+): DownloadQueueItem[] {
+  if (current.length === 0) {
+    return [...next];
+  }
+
+  const currentByIdentity = new Map(
+    current.map((item) => [downloadQueueItemIdentityKey(item), item]),
+  );
+  let changed = current.length !== next.length;
+  const reconciled = next.map((item, index) => {
+    const currentItem = currentByIdentity.get(downloadQueueItemIdentityKey(item));
+    if (currentItem && sameDownloadQueueItem(currentItem, item)) {
+      if (current[index] !== currentItem) {
+        changed = true;
+      }
+      return currentItem;
+    }
+
+    changed = true;
+    return item;
+  });
+
+  return changed ? reconciled : current;
+}
+
 export function downloadQueueItemIdentityKey(
   item: Pick<DownloadQueueItem, "id" | "clientId" | "clientType" | "downloadClientItemId">,
 ): string {
