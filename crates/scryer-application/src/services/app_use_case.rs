@@ -310,6 +310,36 @@ impl AppUseCase {
         }
     }
 
+    pub(crate) async fn refresh_import_record_queue_snapshot(&self, import_id: &str) {
+        let record = match self
+            .services
+            .workflow
+            .imports
+            .get_import_by_id(import_id)
+            .await
+        {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                tracing::warn!(
+                    import_id,
+                    "import record disappeared before queue snapshot refresh"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(import_id, error = %error, "failed to refresh queue snapshot from import record");
+                return;
+            }
+        };
+        let (error_code, error_message) =
+            crate::integration::workflow::import_record_error_overlay(&record);
+        self.runtime
+            .acquisition
+            .download_queue_snapshot
+            .stage_import_record(&record, error_code, error_message)
+            .await;
+    }
+
     pub async fn update_import_status_and_notify(
         &self,
         import_id: &str,
@@ -321,6 +351,7 @@ impl AppUseCase {
             .imports
             .update_import_status(import_id, status, result_json.clone())
             .await?;
+        self.refresh_import_record_queue_snapshot(import_id).await;
         if matches!(status, ImportStatus::Completed | ImportStatus::Failed) {
             let _ = self.runtime.events.import_history_broadcast.send(());
         }

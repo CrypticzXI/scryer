@@ -269,14 +269,11 @@ impl DownloadQueueSnapshotCache {
         self.schedule_commit();
     }
 
-    pub async fn stage_import_transfer_progress(
+    pub async fn stage_import_record(
         &self,
-        client_id: Option<&str>,
-        client_type: &str,
-        download_client_item_id: &str,
-        phase: scryer_domain::ImportTransferPhase,
-        bytes: i64,
-        total_bytes: i64,
+        record: &scryer_domain::ImportRecord,
+        error_code: Option<scryer_domain::ImportErrorCode>,
+        error_message: Option<String>,
     ) {
         let mut pending = self.pending.lock().await;
         if pending.is_none() {
@@ -291,27 +288,33 @@ impl DownloadQueueSnapshotCache {
         }
         let snapshot = pending.as_mut().expect("pending snapshot initialized");
         let Some(item) = snapshot.items.iter_mut().find(|item| {
-            item.download_client_item_id == download_client_item_id
-                && client_id.map_or_else(
-                    || item.client_type.eq_ignore_ascii_case(client_type),
+            item.download_client_item_id == record.source_ref
+                && record.source_client_id.as_deref().map_or_else(
+                    || item.client_type.eq_ignore_ascii_case(&record.source_system),
                     |client_id| item.client_id.eq_ignore_ascii_case(client_id),
                 )
         }) else {
             return;
         };
-        if item.import_transfer_phase == Some(phase)
-            && item.import_transfer_bytes == Some(bytes)
-            && item.import_transfer_total_bytes == Some(total_bytes)
-        {
-            return;
+
+        if item.attention_reason == item.import_error_message {
+            item.attention_reason = None;
         }
-        let updated_at = Utc::now().to_rfc3339();
-        item.import_transfer_phase = Some(phase);
-        item.import_transfer_bytes = Some(bytes);
-        item.import_transfer_total_bytes = Some(total_bytes);
-        item.import_transfer_started_at
-            .get_or_insert_with(|| updated_at.clone());
-        item.import_transfer_updated_at = Some(updated_at);
+        item.import_status = Some(record.status);
+        item.import_error_code = error_code;
+        item.import_error_message = error_message.clone();
+        if error_message.is_some() {
+            item.attention_reason = error_message;
+        }
+        item.import_transfer_phase = record.import_transfer_phase;
+        item.import_transfer_bytes = record.import_transfer_bytes;
+        item.import_transfer_total_bytes = record.import_transfer_total_bytes;
+        item.import_transfer_started_at = record.import_transfer_started_at.clone();
+        item.import_transfer_updated_at = record.import_transfer_updated_at.clone();
+        item.imported_at = record
+            .finished_at
+            .clone()
+            .or_else(|| Some(record.updated_at.clone()));
         snapshot.updated_at = Utc::now();
         drop(pending);
         self.schedule_commit();
@@ -515,6 +518,52 @@ mod download_queue_snapshot_cache_tests {
         let snapshot = cache.snapshot().await;
         assert_eq!(snapshot.revision, 1);
         assert_eq!(snapshot.items.len(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn import_record_updates_a_cached_completed_item_without_a_client_refresh() {
+        let cache = DownloadQueueSnapshotCache::default();
+        let mut blocked = item(1);
+        blocked.state = DownloadQueueState::Completed;
+        blocked.tracked_state = Some(scryer_domain::TrackedDownloadState::ImportBlocked);
+        blocked.tracked_status_messages = vec!["needs manual import".to_string()];
+        cache.stage_success(vec![blocked]).await;
+        cache.commit_pending().await;
+
+        let record = scryer_domain::ImportRecord {
+            id: "import-1".to_string(),
+            source_client_id: Some("client-1".to_string()),
+            source_system: "qbittorrent".to_string(),
+            source_ref: "item-1".to_string(),
+            import_type: scryer_domain::ImportType::ManualImport,
+            status: scryer_domain::ImportStatus::Pending,
+            payload_json: "{}".to_string(),
+            result_json: None,
+            download_id: None,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            started_at: None,
+            finished_at: None,
+            created_at: "2026-08-27T01:48:38Z".to_string(),
+            updated_at: "2026-08-27T01:48:38Z".to_string(),
+        };
+
+        cache.stage_import_record(&record, None, None).await;
+        cache.commit_pending().await;
+
+        let snapshot = cache.snapshot().await;
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(
+            snapshot.items[0].import_status,
+            Some(scryer_domain::ImportStatus::Pending)
+        );
+        assert_eq!(
+            snapshot.items[0].tracked_state,
+            Some(scryer_domain::TrackedDownloadState::ImportBlocked)
+        );
     }
 
     #[tokio::test]

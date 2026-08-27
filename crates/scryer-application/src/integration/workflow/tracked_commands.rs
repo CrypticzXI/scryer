@@ -335,9 +335,10 @@ fn apply_tracked_download_activity_projection(
             // (a stale Failed/Skipped/Completed must not repaint the row), but
             // a manual import the operator just queued or that is copying
             // right now is live state the row has to show: keeping it is what
-            // turns the display into `Importing`, greys the actions, and lets
-            // the transfer phase render. Dropping it left blocked rows fully
-            // interactive while a manual import was in flight.
+            // turns the display into the active import state, greys the
+            // actions, and lets the transfer phase render. Dropping it left
+            // blocked rows fully interactive while a manual import was in
+            // flight.
             if !matches!(
                 item.import_status,
                 Some(ImportStatus::Pending | ImportStatus::Running | ImportStatus::Processing)

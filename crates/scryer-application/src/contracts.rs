@@ -256,6 +256,12 @@ pub struct ClientJobLocator {
     pub item_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedManualImport {
+    pub import_id: String,
+    pub source_identity: ClientJobLocator,
+}
+
 impl ClientJobLocator {
     pub fn new(
         client_id: Option<&str>,

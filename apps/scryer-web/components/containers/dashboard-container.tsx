@@ -559,7 +559,7 @@ export function DashboardContainer() {
           clientId={manualImportItem.clientId}
           clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
-          onImportComplete={() => {
+          onImportQueued={() => {
             setManualImportItem(null);
             refreshAfterImportAction();
           }}

@@ -2,8 +2,8 @@
 mod tests {
     use super::{
         DownloadQueueBucket, TrackedDownloadBackgroundWorkKind, TrackedDownloadWorkDrain,
-        apply_manual_import_record_to_queue_item, apply_tracked_download_activity_projection,
-        apply_tracked_download_queue_metadata,
+        apply_import_record_to_queue_item, apply_tracked_download_activity_projection,
+        apply_tracked_download_queue_metadata, build_download_queue_status_detail,
         canonicalize_download_queue_item_clients, classify_download_queue_item,
         collect_download_client_filter_options, dedupe_download_queue_items,
         derive_download_queue_display_state, derive_indexer_base_url_from_config_fields,
@@ -409,7 +409,7 @@ mod tests {
             updated_at: "2026-06-17T12:00:01Z".to_string(),
         };
 
-        apply_manual_import_record_to_queue_item(&mut queue_item, &record);
+        apply_import_record_to_queue_item(&mut queue_item, &record);
 
         assert_eq!(queue_item.import_status, Some(ImportStatus::Processing));
         assert_eq!(
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn import_blocked_projection_keeps_a_live_manual_import_and_drops_a_finished_one() {
         // A queued/running manual import on a blocked row is live state the
-        // row must render (Importing, actions greyed); a finished record is
+        // row must render (Pending/Importing, actions greyed); a finished record is
         // not — the block stays authoritative over stale Failed/Skipped/
         // Completed statuses.
         fn blocked_tracked(queue_item: &DownloadQueueItem) -> crate::tracked_downloads::TrackedDownload {
@@ -733,8 +733,16 @@ mod tests {
             assert_eq!(queue_item.import_status, Some(live), "{live:?} must survive the block");
             assert_eq!(
                 derive_download_queue_display_state(&queue_item),
-                DownloadDisplayState::Importing,
-                "{live:?} renders as Importing"
+                if live == ImportStatus::Pending {
+                    DownloadDisplayState::ImportPending
+                } else {
+                    DownloadDisplayState::Importing
+                },
+                "{live:?} renders with its active lifecycle state"
+            );
+            assert!(
+                build_download_queue_status_detail(&queue_item).is_empty(),
+                "{live:?} must not repeat the superseded manual-import warning"
             );
         }
 

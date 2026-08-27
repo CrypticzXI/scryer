@@ -1,16 +1,3 @@
-fn apply_manual_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
-    apply_import_record_overlay_to_queue_item(item, record);
-
-    if let Some(result_json) = record.result_json.as_deref()
-        && let Ok(result) = serde_json::from_str::<crate::ManualImportExecutionResult>(result_json)
-    {
-        item.import_error_code = result.error_code;
-        item.import_error_message = result.error_message.clone();
-        if let Some(message) = result.error_message {
-            item.attention_reason = Some(message);
-        }
-    }
-}
 async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [DownloadQueueItem]) {
     let import_sources = items
         .iter()
@@ -115,7 +102,7 @@ async fn enrich_queue_item_import_states(app: &AppUseCase, items: &mut [Download
         );
         if queue_item_import_state_eligible(item) {
             if let Some(record) = manual_records.get(&import_key) {
-                apply_manual_import_record_to_queue_item(item, record);
+                apply_import_record_to_queue_item(item, record);
             } else if let Some(record) = fallback_records.get(&import_key) {
                 apply_import_record_to_queue_item(item, record);
             }
@@ -134,7 +121,7 @@ impl AppUseCase {
         actor: &User,
         selection_id: String,
         mappings: Vec<crate::ManualImportCandidateMapping>,
-    ) -> AppResult<String> {
+    ) -> AppResult<crate::QueuedManualImport> {
         let selection = self
             .services
             .workflow
@@ -252,7 +239,11 @@ impl AppUseCase {
         .await?
         && !crate::import_workflow::manual_import_record_requires_reconciliation(&existing)
         {
-            return Ok(existing.id);
+            self.refresh_import_record_queue_snapshot(&existing.id).await;
+            return Ok(crate::QueuedManualImport {
+                import_id: existing.id,
+                source_identity,
+            });
         }
 
         let candidate_ids = mappings
@@ -317,6 +308,7 @@ impl AppUseCase {
                 selection.canonical_download_id.as_ref(),
             )
             .await?;
+        self.refresh_import_record_queue_snapshot(&import_id).await;
         let title = self
             .services
             .catalog
@@ -326,12 +318,15 @@ impl AppUseCase {
         self.emit_import_requested_event(
             actor,
             title.as_ref(),
-            source_identity.client_type,
-            source_identity.item_id,
+            source_identity.client_type.clone(),
+            source_identity.item_id.clone(),
             scryer_domain::ImportRequestKind::Manual,
         )
         .await;
-        Ok(import_id)
+        Ok(crate::QueuedManualImport {
+            import_id,
+            source_identity,
+        })
     }
 }
 impl AppUseCase {

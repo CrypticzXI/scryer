@@ -1,6 +1,10 @@
 use super::*;
-use scryer_application::{DownloadQueuePollerOptions, start_download_queue_poller_with_options};
-use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
+use scryer_application::{
+    ClientJobLocator, DownloadQueuePollerOptions, ImportRepository,
+    start_download_queue_poller_with_options,
+};
+use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState, ImportStatus};
+use scryer_infrastructure_workflow::workflow::stores::ImportStore;
 use std::collections::HashSet;
 
 #[tokio::test]
@@ -2436,6 +2440,65 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         all["data"]["downloadImport"]["items"][0]["downloadClientItemId"],
         json!(item_id)
     );
+
+    let import_id = ImportStore::new(ctx.db.datastore())
+        .queue_import_request_with_identity(
+            ClientJobLocator::new(Some("graphql-weaver-client"), "weaver", item_id),
+            "manual_import".to_string(),
+            "{}".to_string(),
+            None,
+        )
+        .await
+        .expect("queue manual import record");
+    ctx.app
+        .update_import_status_and_notify(&import_id, ImportStatus::Pending, None)
+        .await
+        .expect("stage pending manual import");
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+
+    let pending = gql(
+        &ctx,
+        r#"
+        query {
+          downloadImport(limit: 100, offset: 0, filter: PENDING) {
+            totalCount
+            items { downloadClientItemId displayState importStatus trackedState }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&pending);
+    let row = &pending["data"]["downloadImport"]["items"][0];
+    assert_eq!(row["downloadClientItemId"], json!(item_id));
+    assert_eq!(row["displayState"], json!("IMPORT_PENDING"));
+    assert_eq!(row["importStatus"], json!("PENDING"));
+    assert_eq!(row["trackedState"], json!("IMPORT_BLOCKED"));
+
+    ctx.app
+        .update_import_status_and_notify(&import_id, ImportStatus::Processing, None)
+        .await
+        .expect("stage processing manual import");
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    let processing = gql(
+        &ctx,
+        r#"
+        query {
+          downloadImport(limit: 100, offset: 0, filter: IMPORTING) {
+            totalCount
+            items { downloadClientItemId displayState importStatus }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&processing);
+    let row = &processing["data"]["downloadImport"]["items"][0];
+    assert_eq!(row["downloadClientItemId"], json!(item_id));
+    assert_eq!(row["displayState"], json!("IMPORTING"));
+    assert_eq!(row["importStatus"], json!("PROCESSING"));
 }
 
 #[tokio::test]
