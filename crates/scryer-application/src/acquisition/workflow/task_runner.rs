@@ -1,19 +1,42 @@
-/// Scheduler value hint for a hot convergence target (recent air/release/add):
-/// high value so the scope converges promptly and keeps admitting
+/// Scheduler value hint for a hot acquisition target (recent air/release/add):
+/// high value so the scope is processed promptly and keeps admitting
 /// even while the account's API quota is under pressure. Equals the neutral
 /// baseline, so hot work is never shed by the low-value pressure gate.
 const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
 
-/// Scheduler value hint for a cold convergence target (long-tail / upgrades):
+/// Scheduler value hint for a cold acquisition target (long-tail / upgrades):
 /// low value so the quota-pressure gate drains it first,
 /// yielding shared account quota to RSS polls and hot acquisition. Above the
 /// absolute `LOW_VALUE_BACKGROUND_THRESHOLD` floor, so a cold scope still
 /// admits when quota is healthy — it only defers once quota tightens.
 const BACKGROUND_COLD_TARGET_VALUE: f64 = 0.25;
 
-/// Limits orchestration work, not leaf indexer requests. The indexer client
-/// owns its own dynamic request budget across every worker.
-const CONVERGENCE_TARGET_WORKER_LIMIT: usize = 8;
+/// Maximum number of titles whose missing-media acquisition pipelines may be
+/// evaluated concurrently. Indexer strategy admission is bounded separately.
+const BACKGROUND_ACQUISITION_TITLE_LIMIT: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+struct BackgroundAcquisitionSettings {
+    max_scopes_per_cycle: usize,
+}
+
+impl AppUseCase {
+    async fn background_acquisition_settings(&self) -> AppResult<BackgroundAcquisitionSettings> {
+        let max_scopes_per_cycle = self
+            .read_setting_i64_value(
+                crate::acquisition::convergence::ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY,
+                None,
+            )
+            .await?
+            .filter(|value| *value > 0)
+            .unwrap_or(
+                crate::acquisition::convergence::DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE,
+            ) as usize;
+        Ok(BackgroundAcquisitionSettings {
+            max_scopes_per_cycle,
+        })
+    }
+}
 
 async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<MediaFacet> {
     let blocked_facets = app
@@ -58,17 +81,16 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
 
     blocked_facets
 }
-/// Run one convergence cycle: recover failed downloads, derive
-/// the target set, rotate the cursor over it, and search each selected scope's
-/// uncovered indexers. Plan-112 admission inside the search is the only rate
-/// authority; the cycle merely bounds evaluation cost and pre-skips scopes the
-/// scheduler could not serve right now.
-async fn run_convergence_cycle(app: &AppUseCase) {
+/// Run one background acquisition cycle: recover failed downloads, derive the
+/// missing-media target set, rotate the cursor, and process at most four titles
+/// concurrently. Fingerprinted convergence coverage only decides which indexer
+/// corpus searches may be skipped; it is not the activity being scheduled.
+async fn run_background_acquisition_cycle(app: &AppUseCase) {
     let blocked_facets = blocked_acquisition_facets_after_quiet_wait(app).await;
-    run_convergence_cycle_with_blocked_facets(app, &blocked_facets).await;
+    run_background_acquisition_cycle_with_blocked_facets(app, &blocked_facets).await;
 }
 
-pub(crate) async fn run_convergence_cycle_with_blocked_facets(
+pub(crate) async fn run_background_acquisition_cycle_with_blocked_facets(
     app: &AppUseCase,
     blocked_facets: &[MediaFacet],
 ) {
@@ -82,10 +104,10 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     check_grabbed_for_failures(app, &dl_snapshot).await;
 
     let now = Utc::now();
-    let settings = match app.convergence_settings().await {
+    let settings = match app.background_acquisition_settings().await {
         Ok(settings) => settings,
         Err(err) => {
-            warn!(error = %err, "failed to load convergence settings, skipping cycle");
+            warn!(error = %err, "failed to load background acquisition settings, skipping cycle");
             return;
         }
     };
@@ -112,14 +134,14 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
         return;
     }
 
-    let resume = app.convergence_cursor_resume_position().await;
-    let max_scopes = settings.long_tail_backfill_max_scopes_per_cycle.max(1) as usize;
-    let selection = crate::acquisition::targets::select_convergence_batch(
+    let resume = app.background_acquisition_resume_position().await;
+    let max_scopes = settings.max_scopes_per_cycle.max(1);
+    let selection = crate::acquisition::targets::select_background_acquisition_batch(
         &targets,
         resume.as_deref(),
         max_scopes,
     );
-    app.store_convergence_cursor_resume_position(selection.resume_after.as_deref())
+    app.store_background_acquisition_resume_position(selection.resume_after.as_deref())
         .await;
     if selection.indices.is_empty() {
         return;
@@ -128,14 +150,14 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     debug!(
         target_count = targets.len(),
         selected_count = selection.indices.len(),
-        "convergence cycle: evaluating scopes"
+        "background acquisition cycle: evaluating missing scopes"
     );
 
     // Scheduler availability, resolved once per cycle for the pre-skip.
     let availability = app.scheduler_availability().await;
     let indexer_hosts = app.indexer_scheduler_host_keys().await;
 
-    let cycle = Arc::new(ConvergenceCycleCoordinator::default());
+    let cycle = Arc::new(BackgroundAcquisitionCycleCoordinator::default());
 
     // Count selected episode scopes per (title_id, season_num). Season pack
     // search is only worthwhile when >= 2 episodes from the same season are in
@@ -156,41 +178,62 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
         }
     }
 
-    let (graph, mut ready) = ConvergenceWorkGraph::build(&targets, &selection.indices);
+    let mut ready_titles = build_background_acquisition_title_work(&targets, &selection.indices);
+    let title_ids = ready_titles
+        .iter()
+        .map(|work| work.title_id.clone())
+        .collect::<Vec<_>>();
+    let titles_by_id = match app.services.catalog.titles.get_by_ids(&title_ids).await {
+        Ok(titles) => titles
+            .into_iter()
+            .map(|title| (title.id.clone(), title))
+            .collect::<HashMap<_, _>>(),
+        Err(error) => {
+            warn!(error = %error, "background acquisition: failed to load selected titles");
+            return;
+        }
+    };
     let mut in_flight = FuturesUnordered::new();
-    let mut completed = 0usize;
     let availability = &availability;
     let indexer_hosts = &indexer_hosts;
     let season_due_counts = &season_due_counts;
     let dl_snapshot = &dl_snapshot;
     let now = &now;
+    let targets = &targets;
 
     debug!(
         selected_count = selection.indices.len(),
-        worker_limit = CONVERGENCE_TARGET_WORKER_LIMIT,
-        initial_ready = ready.len(),
-        "convergence cycle: dispatching dependency-aware target work"
+        title_count = ready_titles.len(),
+        title_limit = BACKGROUND_ACQUISITION_TITLE_LIMIT,
+        "background acquisition cycle: dispatching title work"
     );
 
     loop {
-        while in_flight.len() < CONVERGENCE_TARGET_WORKER_LIMIT {
-            let Some(work) = ready.pop_front() else {
+        while in_flight.len() < BACKGROUND_ACQUISITION_TITLE_LIMIT {
+            let Some(title_work) = ready_titles.pop_front() else {
                 break;
             };
-            let target = &targets[work.target_index];
+            let Some(title) = titles_by_id.get(&title_work.title_id).cloned() else {
+                warn!(
+                    title_id = title_work.title_id.as_str(),
+                    "background acquisition target references missing title"
+                );
+                continue;
+            };
             let cycle = Arc::clone(&cycle);
             debug!(
-                scope_key = target.scope_key.as_str(),
-                title_id = target.title_id.as_str(),
-                work = ?work.kind,
-                ready = ready.len(),
-                in_flight = in_flight.len() + 1,
-                "convergence target work started"
+                title_id = title_work.title_id.as_str(),
+                queued_titles = ready_titles.len(),
+                active_titles = in_flight.len() + 1,
+                "background acquisition title work started"
             );
             in_flight.push(async move {
-                let result = process_single_target(
+                let title_id = title_work.title_id.clone();
+                let result = process_background_acquisition_title(
                     app,
-                    target,
+                    title,
+                    title_work,
+                    &targets,
                     now,
                     availability,
                     indexer_hosts,
@@ -199,57 +242,24 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
                     dl_snapshot,
                 )
                 .await;
-                (work, result)
+                (title_id, result)
             });
         }
 
-        let Some((work, result)) = in_flight.next().await else {
+        let Some((title_id, result)) = in_flight.next().await else {
             break;
         };
-        let target = &targets[work.target_index];
         if let Err(err) = result {
             warn!(
-                scope_key = target.scope_key.as_str(),
-                title_id = target.title_id.as_str(),
+                title_id = title_id.as_str(),
                 error = %err,
-                "failed to process acquisition target"
+                "failed to process background acquisition title"
             );
-            metrics::counter!("scryer_convergence_target_work_total", "outcome" => "failed")
+            metrics::counter!("scryer_background_acquisition_title_work_total", "outcome" => "failed")
                 .increment(1);
         } else {
-            metrics::counter!("scryer_convergence_target_work_total", "outcome" => "completed")
+            metrics::counter!("scryer_background_acquisition_title_work_total", "outcome" => "completed")
                 .increment(1);
-        }
-
-        match &work.kind {
-            ConvergenceWorkKind::TitleAnchor { title_id } => {
-                cycle.complete_title_pack_stage(title_id.as_str());
-                if let Some(group) = graph.titles.get(title_id.as_str()) {
-                    for season in &group.seasons {
-                        if season.anchor_index == work.target_index {
-                            cycle.complete_season_pack_stage(&(title_id.clone(), season.season));
-                        }
-                    }
-                }
-            }
-            ConvergenceWorkKind::SeasonAnchor { title_id, season } => {
-                cycle.complete_season_pack_stage(&(title_id.clone(), *season));
-            }
-            ConvergenceWorkKind::Scope => {}
-        }
-
-        let released = graph.release_after(&work);
-        if !released.is_empty() {
-            debug!(
-                work = ?work.kind,
-                released = released.len(),
-                "convergence target work released dependent scopes"
-            );
-            ready.extend(released);
-        }
-        completed += 1;
-        if completed.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
-            tokio::task::yield_now().await;
         }
     }
 }
@@ -314,18 +324,18 @@ fn submission_blocks_search_for_wanted_item(
 
 impl AppUseCase {
     #[cfg(test)]
-    pub(crate) async fn run_convergence_cycle_once(&self) {
-        run_convergence_cycle(self).await;
+    pub(crate) async fn run_background_acquisition_cycle_once(&self) {
+        run_background_acquisition_cycle(self).await;
     }
 }
 
 #[derive(Default)]
-struct ConvergenceCycleCoordinator {
-    state: Mutex<ConvergenceCycleState>,
+struct BackgroundAcquisitionCycleCoordinator {
+    state: Mutex<BackgroundAcquisitionCycleState>,
 }
 
 #[derive(Default)]
-struct ConvergenceCycleState {
+struct BackgroundAcquisitionCycleState {
     attempted_titles: HashSet<String>,
     claimed_episode_ids: HashSet<String>,
     season_pack_attempted: HashSet<(String, u32)>,
@@ -345,8 +355,8 @@ enum SubmissionClaim {
     RouteUnavailable,
 }
 
-impl ConvergenceCycleCoordinator {
-    fn lock(&self) -> std::sync::MutexGuard<'_, ConvergenceCycleState> {
+impl BackgroundAcquisitionCycleCoordinator {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BackgroundAcquisitionCycleState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -465,160 +475,84 @@ impl ConvergenceCycleCoordinator {
 }
 
 #[derive(Clone, Debug)]
-enum ConvergenceWorkKind {
-    TitleAnchor { title_id: String },
-    SeasonAnchor { title_id: String, season: u32 },
+enum BackgroundAcquisitionWorkKind {
+    TitlePack,
+    SeasonPack { season: u32 },
     Scope,
 }
 
 #[derive(Clone, Debug)]
-struct ConvergenceWork {
+struct BackgroundAcquisitionWork {
     target_index: usize,
-    kind: ConvergenceWorkKind,
+    kind: BackgroundAcquisitionWorkKind,
 }
 
 #[derive(Debug)]
-struct SeasonWorkGroup {
-    season: u32,
-    anchor_index: usize,
-    remaining_indices: Vec<usize>,
+struct BackgroundAcquisitionTitleWork {
+    title_id: String,
+    ready: VecDeque<BackgroundAcquisitionWork>,
 }
 
-#[derive(Debug)]
-struct SeriesTitleWorkGroup {
-    anchor_index: usize,
-    seasons: Vec<SeasonWorkGroup>,
-    ungrouped_indices: Vec<usize>,
-}
-
-#[derive(Default)]
-struct ConvergenceWorkGraph {
-    titles: HashMap<String, SeriesTitleWorkGroup>,
-}
-
-impl ConvergenceWorkGraph {
-    fn build(
-        targets: &[crate::acquisition::targets::AcquisitionTarget],
-        selected_indices: &[usize],
-    ) -> (Self, VecDeque<ConvergenceWork>) {
-        let mut graph = Self::default();
-        let mut ready = VecDeque::new();
-
-        for &target_index in selected_indices {
-            let target = &targets[target_index];
-            if target.media_type != "episode" {
-                ready.push_back(ConvergenceWork {
-                    target_index,
-                    kind: ConvergenceWorkKind::Scope,
-                });
-                continue;
-            }
-
-            let title_id = target.title_id.clone();
-            let group = graph.titles.entry(title_id.clone()).or_insert_with(|| {
-                ready.push_back(ConvergenceWork {
-                    target_index,
-                    kind: ConvergenceWorkKind::TitleAnchor {
-                        title_id: title_id.clone(),
-                    },
-                });
-                SeriesTitleWorkGroup {
-                    anchor_index: target_index,
-                    seasons: Vec::new(),
-                    ungrouped_indices: Vec::new(),
-                }
-            });
-
-            let season = target
-                .season_number
-                .as_deref()
-                .and_then(|value| value.parse::<u32>().ok())
-                .filter(|season| *season > 0);
-            let Some(season) = season else {
-                if target_index != group.anchor_index {
-                    group.ungrouped_indices.push(target_index);
-                }
-                continue;
-            };
-
-            if let Some(existing) = group
-                .seasons
-                .iter_mut()
-                .find(|existing| existing.season == season)
-            {
-                if target_index != existing.anchor_index {
-                    existing.remaining_indices.push(target_index);
-                }
-            } else {
-                group.seasons.push(SeasonWorkGroup {
-                    season,
-                    anchor_index: target_index,
-                    remaining_indices: Vec::new(),
-                });
-            }
+fn build_background_acquisition_title_work(
+    targets: &[crate::acquisition::targets::AcquisitionTarget],
+    selected_indices: &[usize],
+) -> VecDeque<BackgroundAcquisitionTitleWork> {
+    let mut title_order = Vec::new();
+    let mut indices_by_title = HashMap::<String, Vec<usize>>::new();
+    for &target_index in selected_indices {
+        let title_id = targets[target_index].title_id.clone();
+        if !indices_by_title.contains_key(&title_id) {
+            title_order.push(title_id.clone());
         }
-
-        (graph, ready)
+        indices_by_title
+            .entry(title_id)
+            .or_default()
+            .push(target_index);
     }
 
-    fn release_after(&self, work: &ConvergenceWork) -> Vec<ConvergenceWork> {
-        match &work.kind {
-            ConvergenceWorkKind::TitleAnchor { title_id } => {
-                let Some(group) = self.titles.get(title_id) else {
-                    return Vec::new();
-                };
-                // Search every remaining season pack before letting the title's
-                // individual-episode backlog occupy the worker pool.
-                let mut season_anchors = Vec::new();
-                let mut scopes = group
-                    .ungrouped_indices
-                    .iter()
-                    .map(|&target_index| ConvergenceWork {
-                        target_index,
-                        kind: ConvergenceWorkKind::Scope,
-                    })
-                    .collect::<Vec<_>>();
-                for season in &group.seasons {
-                    if season.anchor_index == work.target_index {
-                        scopes.extend(season.remaining_indices.iter().map(|&target_index| {
-                            ConvergenceWork {
-                                target_index,
-                                kind: ConvergenceWorkKind::Scope,
-                            }
-                        }));
-                    } else {
-                        season_anchors.push(ConvergenceWork {
-                            target_index: season.anchor_index,
-                            kind: ConvergenceWorkKind::SeasonAnchor {
-                                title_id: title_id.clone(),
-                                season: season.season,
-                            },
-                        });
+    title_order
+        .into_iter()
+        .filter_map(|title_id| {
+            let indices = indices_by_title.remove(&title_id)?;
+            let mut ready = VecDeque::new();
+            let episode_indices = indices
+                .iter()
+                .copied()
+                .filter(|index| targets[*index].media_type == "episode")
+                .collect::<Vec<_>>();
+            if let Some(&title_pack_index) = episode_indices.first() {
+                ready.push_back(BackgroundAcquisitionWork {
+                    target_index: title_pack_index,
+                    kind: BackgroundAcquisitionWorkKind::TitlePack,
+                });
+                let mut seen_seasons = HashSet::new();
+                for target_index in episode_indices {
+                    let Some(season) = targets[target_index]
+                        .season_number
+                        .as_deref()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .filter(|season| *season > 0)
+                    else {
+                        continue;
+                    };
+                    if !seen_seasons.insert(season) || target_index == title_pack_index {
+                        continue;
                     }
+                    ready.push_back(BackgroundAcquisitionWork {
+                        target_index,
+                        kind: BackgroundAcquisitionWorkKind::SeasonPack { season },
+                    });
                 }
-                season_anchors.sort_by_key(|next| next.target_index);
-                scopes.sort_by_key(|next| next.target_index);
-                season_anchors.extend(scopes);
-                season_anchors
             }
-            ConvergenceWorkKind::SeasonAnchor { title_id, season } => self
-                .titles
-                .get(title_id)
-                .and_then(|group| group.seasons.iter().find(|entry| entry.season == *season))
-                .map(|entry| {
-                    entry
-                        .remaining_indices
-                        .iter()
-                        .map(|&target_index| ConvergenceWork {
-                            target_index,
-                            kind: ConvergenceWorkKind::Scope,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            ConvergenceWorkKind::Scope => Vec::new(),
-        }
-    }
+            ready.extend(indices.into_iter().map(|target_index| {
+                BackgroundAcquisitionWork {
+                    target_index,
+                    kind: BackgroundAcquisitionWorkKind::Scope,
+                }
+            }));
+            Some(BackgroundAcquisitionTitleWork { title_id, ready })
+        })
+        .collect()
 }
 
 fn episode_ids_for_scope(scope: &SubmissionScope) -> Option<&[String]> {
@@ -1205,9 +1139,166 @@ async fn record_series_pack_search_coverage(
     }
 }
 
+struct BackgroundAcquisitionTitleContext {
+    title: scryer_domain::Title,
+    episodes_by_id: HashMap<String, scryer_domain::Episode>,
+    submissions: Vec<DownloadSubmission>,
+    tracked_states:
+        HashMap<crate::contracts::ClientJobLocator, scryer_domain::TrackedDownloadState>,
+}
+
+impl BackgroundAcquisitionTitleContext {
+    async fn load(app: &AppUseCase, title: scryer_domain::Title) -> AppResult<Self> {
+        let episodes = app
+            .services
+            .catalog
+            .shows
+            .list_episodes_for_title(&title.id)
+            .await?;
+        let submission_guard = app
+            .runtime
+            .acquisition
+            .download_submission_guards
+            .acquire_title(&title.id)
+            .await;
+        let submissions = app
+            .services
+            .workflow
+            .download_submissions
+            .list_for_title(&title.id)
+            .await?;
+        if app
+            .services
+            .workflow
+            .download_submissions
+            .list_active_unbound_for_title(&title.id)
+            .await?
+            .is_empty()
+        {
+            app.runtime
+                .acquisition
+                .download_submission_guards
+                .prime_title_state(&title.id, submissions.clone(), episodes.clone());
+        } else {
+            app.runtime
+                .acquisition
+                .download_submission_guards
+                .clear_title_state(&title.id);
+        }
+        drop(submission_guard);
+        let submission_identities = submissions
+            .iter()
+            .map(crate::contracts::ClientJobLocator::from_submission)
+            .collect::<Vec<_>>();
+        let tracked_states = app
+            .services
+            .workflow
+            .download_submissions
+            .list_identity_tracked_states_for_client_items(&submission_identities)
+            .await?
+            .into_iter()
+            .filter_map(|(identity, state)| {
+                scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                    .map(|state| (identity, state))
+            })
+            .collect();
+
+        Ok(Self {
+            title,
+            episodes_by_id: episodes
+                .into_iter()
+                .map(|episode| (episode.id.clone(), episode))
+                .collect(),
+            submissions,
+            tracked_states,
+        })
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
-    reason = "target processing coordinates shared acquisition state across a single cycle"
+    reason = "one title coordinator owns the cycle-wide acquisition inputs"
+)]
+async fn process_background_acquisition_title(
+    app: &AppUseCase,
+    title: scryer_domain::Title,
+    mut title_work: BackgroundAcquisitionTitleWork,
+    targets: &[crate::acquisition::targets::AcquisitionTarget],
+    now: &DateTime<Utc>,
+    availability: &crate::acquisition::convergence::SchedulerAvailability,
+    indexer_hosts: &HashMap<String, String>,
+    cycle: &BackgroundAcquisitionCycleCoordinator,
+    season_due_counts: &HashMap<(String, u32), usize>,
+    dl_snapshot: &DownloadClientSnapshot,
+) -> AppResult<usize> {
+    let context = BackgroundAcquisitionTitleContext::load(app, title).await?;
+    let mut completed = 0usize;
+
+    while let Some(work) = title_work.ready.pop_front() {
+        let target = &targets[work.target_index];
+        let pack_stage_only = !matches!(work.kind, BackgroundAcquisitionWorkKind::Scope);
+        debug!(
+            title_id = title_work.title_id.as_str(),
+            scope_key = target.scope_key.as_str(),
+            work = ?work.kind,
+            "background acquisition target work started"
+        );
+        if let Err(error) = process_single_target(
+            app,
+            target,
+            now,
+            availability,
+            indexer_hosts,
+            cycle,
+            season_due_counts,
+            dl_snapshot,
+            &context,
+            pack_stage_only,
+        )
+        .await
+        {
+            warn!(
+                scope_key = target.scope_key.as_str(),
+                title_id = target.title_id.as_str(),
+                error = %error,
+                "failed to process background acquisition target"
+            );
+            metrics::counter!("scryer_background_acquisition_target_work_total", "outcome" => "failed")
+                .increment(1);
+        } else {
+            metrics::counter!("scryer_background_acquisition_target_work_total", "outcome" => "completed")
+                .increment(1);
+        }
+
+        match work.kind {
+            BackgroundAcquisitionWorkKind::TitlePack => {
+                cycle.complete_title_pack_stage(&title_work.title_id);
+                if let Some(season) = target
+                    .season_number
+                    .as_deref()
+                    .and_then(|value| value.parse::<u32>().ok())
+                {
+                    cycle.complete_season_pack_stage(&(title_work.title_id.clone(), season));
+                }
+            }
+            BackgroundAcquisitionWorkKind::SeasonPack { season } => {
+                cycle.complete_season_pack_stage(&(title_work.title_id.clone(), season));
+            }
+            BackgroundAcquisitionWorkKind::Scope => {}
+        }
+
+        completed += 1;
+        if completed.is_multiple_of(ACQUISITION_SLICE_YIELD_INTERVAL) {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    Ok(completed)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "target processing coordinates shared acquisition state across a title pass"
 )]
 async fn process_single_target(
     app: &AppUseCase,
@@ -1215,41 +1306,21 @@ async fn process_single_target(
     now: &DateTime<Utc>,
     availability: &crate::acquisition::convergence::SchedulerAvailability,
     indexer_hosts: &std::collections::HashMap<String, String>,
-    cycle: &ConvergenceCycleCoordinator,
+    cycle: &BackgroundAcquisitionCycleCoordinator,
     season_due_counts: &std::collections::HashMap<(String, u32), usize>,
     dl_snapshot: &DownloadClientSnapshot,
+    context: &BackgroundAcquisitionTitleContext,
+    pack_stage_only: bool,
 ) -> AppResult<()> {
-    // Load the title to get search context
-    let title = match app
-        .services
-        .catalog
-        .titles
-        .get_by_id(&target.title_id)
-        .await?
-    {
-        Some(t) => t,
-        None => {
-            warn!(
-                title_id = target.title_id.as_str(),
-                "acquisition target references missing title"
-            );
-            return Ok(());
-        }
-    };
+    let title = &context.title;
 
     // Load episode data for episode-scoped targets
     let episode = if target.media_type == "episode" {
-        if let Some(ep_id) = target.episode_id.as_deref() {
-            match app.services.catalog.shows.get_episode_by_id(ep_id).await {
-                Ok(ep) => ep,
-                Err(err) => {
-                    warn!(episode_id = ep_id, error = %err, "failed to load episode for acquisition target");
-                    None
-                }
-            }
-        } else {
-            None
-        }
+        target
+            .episode_id
+            .as_deref()
+            .and_then(|episode_id| context.episodes_by_id.get(episode_id))
+            .cloned()
     } else {
         None
     };
@@ -1298,50 +1369,8 @@ async fn process_single_target(
 
     // Item-aware gate: skip only when an active/recent submission blocks this
     // wanted item, not every sibling episode on the same title.
-    let submissions = match app
-        .services
-        .workflow
-        .download_submissions
-        .list_for_title(&item.title_id)
-        .await
-    {
-        Ok(submissions) => submissions,
-        Err(error) => {
-            warn!(
-                title_id = item.title_id.as_str(),
-                error = %error,
-                "background acquisition: submission lookup failed; skipping target"
-            );
-            return Ok(());
-        }
-    };
-    let submission_identities = submissions
-        .iter()
-        .map(crate::contracts::ClientJobLocator::from_submission)
-        .collect::<Vec<_>>();
-    let tracked_states = match app
-        .services
-        .workflow
-        .download_submissions
-        .list_identity_tracked_states_for_client_items(&submission_identities)
-        .await
-    {
-        Ok(states) => states
-            .into_iter()
-            .filter_map(|(identity, state)| {
-                scryer_domain::TrackedDownloadState::from_str_opt(&state)
-                    .map(|state| (identity, state))
-            })
-            .collect::<HashMap<_, _>>(),
-        Err(error) => {
-            warn!(
-                title_id = item.title_id.as_str(),
-                error = %error,
-                "background acquisition: tracked-state lookup failed; skipping target"
-            );
-            return Ok(());
-        }
-    };
+    let submissions = &context.submissions;
+    let tracked_states = &context.tracked_states;
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
     let has_blocking_download_submission = submissions.iter().any(|submission| {
@@ -1519,63 +1548,69 @@ async fn process_single_target(
         }
     }
 
-    // Convergence gate: a converged scope rides RSS; an
-    // unconverged one is searched against exactly its uncovered indexer subset.
-    // Resolved once here and reused for the restricted search below.
-    let Some(convergence) = app.resolve_scope_convergence(&search_title, &subject).await else {
-        debug!(
-            title_id = title.id.as_str(),
-            scope_key = target.scope_key.as_str(),
-            "background acquisition: scope has no routed indexers, skipping"
-        );
-        return Ok(());
-    };
-    let uncovered = match app
-        .uncovered_indexers_for_scope(
-            &convergence.scope_key,
-            &convergence.facet,
-            &convergence.fingerprint,
-            &convergence.routed_indexer_ids,
-        )
-        .await
-    {
-        Ok(uncovered) => uncovered,
-        Err(err) => {
-            warn!(
-                scope_key = convergence.scope_key.as_str(),
-                error = %err,
-                "failed to read scope coverage; searching all routed indexers"
+    // Pack stages own distinct fingerprints; only the later scope stage may be
+    // short-circuited by episode/title coverage.
+    let (uncovered, convergence_scope_key) = if pack_stage_only {
+        (HashSet::new(), None)
+    } else {
+        let Some(convergence) = app.resolve_scope_convergence(&search_title, &subject).await else {
+            debug!(
+                title_id = title.id.as_str(),
+                scope_key = target.scope_key.as_str(),
+                "background acquisition: scope has no routed indexers, skipping"
             );
-            convergence.routed_indexer_ids.clone()
+            return Ok(());
+        };
+        let uncovered = match app
+            .uncovered_indexers_for_scope(
+                &convergence.scope_key,
+                &convergence.facet,
+                &convergence.fingerprint,
+                &convergence.routed_indexer_ids,
+            )
+            .await
+        {
+            Ok(uncovered) => uncovered,
+            Err(err) => {
+                warn!(
+                    scope_key = convergence.scope_key.as_str(),
+                    error = %err,
+                    "failed to read scope coverage; searching all routed indexers"
+                );
+                convergence.routed_indexer_ids.clone()
+            }
+        };
+        if uncovered.is_empty() {
+            debug!(
+                title_id = title.id.as_str(),
+                title_name = title.name.as_str(),
+                media_type = target.media_type.as_str(),
+                "background acquisition: scope converged across routed indexers, riding RSS"
+            );
+            return Ok(());
         }
-    };
-    if uncovered.is_empty() {
-        debug!(
-            title_id = title.id.as_str(),
-            title_name = title.name.as_str(),
-            media_type = target.media_type.as_str(),
-            "background acquisition: scope converged across routed indexers, riding RSS"
-        );
-        return Ok(());
-    }
-    // Scheduler pre-skip: every uncovered indexer is cooling down or quota
-    // exhausted — spend nothing; the scope stays a target and the cursor
-    // returns to it once the scheduler frees capacity.
-    if !uncovered.iter().any(|indexer_id| {
-        availability.indexer_available(
-            indexer_hosts.get(indexer_id).map(String::as_str),
-            indexer_id,
+        // Scheduler pre-skip: every uncovered indexer is cooling down or quota
+        // exhausted — spend nothing; the scope stays a target and the cursor
+        // returns to it once the scheduler frees capacity.
+        if !uncovered.iter().any(|indexer_id| {
+            availability.indexer_available(
+                indexer_hosts.get(indexer_id).map(String::as_str),
+                indexer_id,
+            )
+        }) {
+            debug!(
+                title_id = title.id.as_str(),
+                scope_key = target.scope_key.as_str(),
+                uncovered_count = uncovered.len(),
+                "background acquisition: uncovered indexers unavailable this cycle, deferring scope"
+            );
+            return Ok(());
+        }
+        (
+            uncovered.into_iter().collect(),
+            Some(convergence.scope_key),
         )
-    }) {
-        debug!(
-            title_id = title.id.as_str(),
-            scope_key = target.scope_key.as_str(),
-            uncovered_count = uncovered.len(),
-            "background acquisition: uncovered indexers unavailable this cycle, deferring scope"
-        );
-        return Ok(());
-    }
-    let uncovered: std::collections::HashSet<String> = uncovered.into_iter().collect();
+    };
 
     // The scope is about to be searched — its state row exists from here on,
     // so release decisions and grabs have their anchor.
@@ -2084,6 +2119,9 @@ async fn process_single_target(
         }
     }
     // ── End season pack priority ──────────────────────────────────────────────
+    if pack_stage_only {
+        return Ok(());
+    }
     // Uses the per-facet default download category; the selected client's
     // explicit routing category overrides this inside the router.
     let download_cat = app.derive_download_category(&title.facet).await;
@@ -2820,11 +2858,10 @@ async fn process_single_target(
                         "download submission result is ambiguous; re-opening scope without blocklisting or failover"
                     );
 
-                    app.prune_scope_key_coverage(
-                        &convergence.scope_key,
-                        candidate.indexer_id.as_deref(),
-                    )
-                    .await;
+                    if let Some(scope_key) = convergence_scope_key.as_deref() {
+                        app.prune_scope_key_coverage(scope_key, candidate.indexer_id.as_deref())
+                            .await;
+                    }
 
                     return Ok(());
                 }
@@ -3155,14 +3192,14 @@ pub async fn start_background_acquisition_poller(
             }
             _ = wake.notified() => {
                 let app = app.clone();
-                run_task("convergence_cycle", async move {
-                    run_convergence_cycle(&app).await;
+                run_task("background_acquisition_cycle", async move {
+                    run_background_acquisition_cycle(&app).await;
                 }).await;
             }
             _ = poll_interval.tick() => {
                 let app = app.clone();
-                run_task("convergence_cycle", async move {
-                    run_convergence_cycle(&app).await;
+                run_task("background_acquisition_cycle", async move {
+                    run_background_acquisition_cycle(&app).await;
                 }).await;
             }
             _ = registry_refresh_interval.tick() => {
@@ -3598,7 +3635,11 @@ mod task_runner_tests {
         ));
     }
 
-    fn convergence_episode_target(title_id: &str, season: u32, episode: u32) -> AcquisitionTarget {
+    fn background_acquisition_episode_target(
+        title_id: &str,
+        season: u32,
+        episode: u32,
+    ) -> AcquisitionTarget {
         AcquisitionTarget {
             scope_key: format!("{title_id}-s{season}-e{episode}"),
             title_id: title_id.to_string(),
@@ -3616,50 +3657,44 @@ mod task_runner_tests {
     }
 
     #[test]
-    fn convergence_work_graph_releases_title_then_season_then_episode_work() {
+    fn background_acquisition_title_queue_enforces_pack_first_order() {
         let targets = vec![
-            convergence_episode_target("bleach", 1, 1),
-            convergence_episode_target("bleach", 1, 2),
-            convergence_episode_target("bleach", 2, 1),
-            convergence_episode_target("bleach", 2, 2),
+            background_acquisition_episode_target("synthetic-title", 1, 1),
+            background_acquisition_episode_target("synthetic-title", 1, 2),
+            background_acquisition_episode_target("synthetic-title", 2, 1),
+            background_acquisition_episode_target("synthetic-title", 2, 2),
         ];
-        let (graph, ready) = ConvergenceWorkGraph::build(&targets, &[0, 1, 2, 3]);
+        let ready_titles = build_background_acquisition_title_work(&targets, &[0, 1, 2, 3]);
 
-        assert_eq!(ready.len(), 1);
-        let title = ready.front().expect("title work").clone();
-        assert!(matches!(
-            title.kind,
-            ConvergenceWorkKind::TitleAnchor { .. }
-        ));
-
-        let after_title = graph.release_after(&title);
+        assert_eq!(ready_titles.len(), 1);
+        let title_work = ready_titles.front().expect("title work");
         assert_eq!(
-            after_title
+            title_work
+                .ready
                 .iter()
                 .map(|work| work.target_index)
                 .collect::<Vec<_>>(),
-            vec![2, 1]
+            vec![0, 2, 0, 1, 2, 3]
         );
         assert!(matches!(
-            after_title[0].kind,
-            ConvergenceWorkKind::SeasonAnchor { season: 2, .. }
+            title_work.ready[0].kind,
+            BackgroundAcquisitionWorkKind::TitlePack
         ));
-        assert!(matches!(after_title[1].kind, ConvergenceWorkKind::Scope));
-
-        let after_season = graph.release_after(&after_title[0]);
-        assert_eq!(
-            after_season
-                .iter()
-                .map(|work| work.target_index)
-                .collect::<Vec<_>>(),
-            vec![3]
+        assert!(matches!(
+            title_work.ready[1].kind,
+            BackgroundAcquisitionWorkKind::SeasonPack { season: 2 }
+        ));
+        assert!(
+            title_work.ready.iter().skip(2).all(|work| matches!(
+                &work.kind,
+                BackgroundAcquisitionWorkKind::Scope
+            ))
         );
-        assert!(matches!(after_season[0].kind, ConvergenceWorkKind::Scope));
     }
 
     #[test]
-    fn convergence_cycle_submission_claims_are_atomic_and_route_scoped() {
-        let cycle = ConvergenceCycleCoordinator::default();
+    fn background_acquisition_submission_claims_are_atomic_and_route_scoped() {
+        let cycle = BackgroundAcquisitionCycleCoordinator::default();
         let route = DownloadRouteKey {
             source_kind: Some(DownloadSourceKind::NzbUrl),
             indexer_id: Some("indexer-a".to_string()),
@@ -3686,8 +3721,8 @@ mod task_runner_tests {
     }
 
     #[test]
-    fn poisoned_convergence_cycle_state_remains_recoverable() {
-        let cycle = Arc::new(ConvergenceCycleCoordinator::default());
+    fn poisoned_background_acquisition_state_remains_recoverable() {
+        let cycle = Arc::new(BackgroundAcquisitionCycleCoordinator::default());
         let poisoned = Arc::clone(&cycle);
         assert!(
             std::thread::spawn(move || {
@@ -3711,7 +3746,7 @@ mod task_runner_tests {
     }
 
     #[test]
-    fn convergence_target_worker_limit_is_eight() {
-        assert_eq!(CONVERGENCE_TARGET_WORKER_LIMIT, 8);
+    fn background_acquisition_title_limit_is_four() {
+        assert_eq!(BACKGROUND_ACQUISITION_TITLE_LIMIT, 4);
     }
 }

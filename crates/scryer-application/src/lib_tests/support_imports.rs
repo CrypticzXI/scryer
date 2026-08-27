@@ -210,9 +210,9 @@ impl FileImporter for ProgressReportingFileImporter {
 #[derive(Default, Clone)]
 pub(super) struct MockMediaFileRepo {
     pub(super) store: Arc<Mutex<Vec<TitleMediaFile>>>,
-    /// Optional bridge for the convergence cursor: when set, the
+    /// Optional bridge for the background acquisition cursor: when set, the
     /// derived missing-target sweep reads the seeded acquisition-state rows so a
-    /// mock-backed store still yields targets for `run_convergence_cycle_once`.
+    /// mock-backed store still yields targets for `run_background_acquisition_cycle_once`.
     /// Left `None` for stores that manage their own media files directly.
     pub(super) missing_scope_source: Option<Arc<super::TrackingAcquisitionScopeStateRepo>>,
     /// The catalog the seeded scopes belong to — used to resolve each scope's

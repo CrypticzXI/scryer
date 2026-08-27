@@ -69,9 +69,31 @@ pub fn nice_thread() {
 pub fn nice_thread() {}
 
 pub(crate) fn normalize_release_attempt_hint(raw: Option<&str>) -> Option<String> {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    let raw = raw.map(str::trim).filter(|value| !value.is_empty())?;
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return Some(raw.to_string());
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_fragment(None);
+    let mut query = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            !matches!(
+                key.to_ascii_lowercase()
+                    .replace(['_', '-'], "")
+                    .as_str(),
+                "apikey" | "apiaccess" | "token" | "auth" | "password" | "passkey"
+            )
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query.sort();
+    url.set_query(None);
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
+    Some(url.to_string())
 }
 
 pub(crate) fn normalize_release_attempt_title(raw: Option<&str>) -> Option<String> {
@@ -195,26 +217,24 @@ pub(crate) fn normalize_release_selection_signature(
     source_title: Option<&str>,
     source_kind: Option<DownloadSourceKind>,
 ) -> Option<String> {
-    let source_hint = source_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let source_hint = normalize_release_attempt_hint(source_hint);
     let source_title = source_title
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string);
+        .map(str::to_ascii_lowercase);
     let source_kind = source_kind.map(|value| value.as_str().to_string());
 
     if source_hint.is_none() && source_title.is_none() && source_kind.is_none() {
         return None;
     }
 
-    Some(format!(
-        "{}|{}|{}",
+    let identity = format!(
+        "v1\0{}\0{}\0{}",
         source_kind.unwrap_or_default(),
         source_hint.unwrap_or_default(),
         source_title.unwrap_or_default()
-    ))
+    );
+    Some(format!("sha256:v1:{}", sha256_hex(identity)))
 }
 
 pub(crate) fn sha256_hex(input: impl AsRef<str>) -> String {
@@ -426,6 +446,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_selection_signature_is_credential_free_and_versioned() {
+        let signature = |key: &str, id: u8| {
+            normalize_release_selection_signature(
+                Some(&format!(
+                    "https://indexer.invalid/api?t=get&id={id}&apikey={key}"
+                )),
+                Some("Synthetic.Release.1080p"),
+                Some(DownloadSourceKind::NzbUrl),
+            )
+            .expect("signature")
+        };
+
+        assert_eq!(signature("first-secret", 1), signature("rotated-secret", 1));
+        assert_ne!(signature("first-secret", 1), signature("first-secret", 2));
+        assert!(signature("first-secret", 1).starts_with("sha256:v1:"));
+        assert!(!signature("first-secret", 1).contains("first-secret"));
+    }
 
     struct StubDownloadClientPluginProvider {
         available_types: Vec<String>,

@@ -1,5 +1,5 @@
-//! Convergence model: search-criteria fingerprints and the settings
-//! that pace the background convergence cursor.
+//! Convergence model: fingerprinted proof that an indexer's corpus was
+//! completely searched for a scope under the current acquisition policy.
 //!
 //! A scope's *fingerprint* captures what a "correct" search is — the effective
 //! quality profile (identity + a version that bumps on edits) and the required
@@ -36,21 +36,12 @@ pub(crate) const DEFAULT_LONG_TAIL_RECONVERGE_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConvergenceSettings {
-    pub long_tail_backfill_max_scopes_per_cycle: i64,
     /// `None` when the backstop is off.
     pub long_tail_reconverge: Option<chrono::Duration>,
 }
 
 impl AppUseCase {
     pub(crate) async fn convergence_settings(&self) -> AppResult<ConvergenceSettings> {
-        let long_tail_backfill_max_scopes_per_cycle = self
-            .read_setting_i64_value(
-                ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY,
-                None,
-            )
-            .await?
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE);
         let reconverge_days = self
             .read_setting_i64_value(ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY, None)
             .await?
@@ -60,7 +51,6 @@ impl AppUseCase {
             .filter(|d| *d > chrono::Duration::zero());
 
         Ok(ConvergenceSettings {
-            long_tail_backfill_max_scopes_per_cycle,
             long_tail_reconverge,
         })
     }
@@ -69,7 +59,7 @@ impl AppUseCase {
 /// System-settings key persisting the cold-lane rotation position across
 /// cycles and restarts (§D3: the cursor is keyed on the last-considered
 /// scope_key, not a numeric offset, so it survives target-set changes).
-pub(crate) const ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY: &str =
+pub(crate) const BACKGROUND_ACQUISITION_RESUME_AFTER_KEY: &str =
     "acquisition.convergence_resume_after";
 
 /// Marker set once the run-once cutover seed has completed.
@@ -291,14 +281,14 @@ impl AppUseCase {
     }
 
     /// The persisted cold-lane rotation position (§D3), if any.
-    pub(crate) async fn convergence_cursor_resume_position(&self) -> Option<String> {
+    pub(crate) async fn background_acquisition_resume_position(&self) -> Option<String> {
         let value_json = self
             .services
             .config
             .settings
             .get_setting_json_explicit(
                 SETTINGS_SCOPE_SYSTEM,
-                ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY,
+                BACKGROUND_ACQUISITION_RESUME_AFTER_KEY,
                 None,
             )
             .await
@@ -311,7 +301,10 @@ impl AppUseCase {
     }
 
     /// Persist the cold-lane rotation position for the next cycle.
-    pub(crate) async fn store_convergence_cursor_resume_position(&self, position: Option<&str>) {
+    pub(crate) async fn store_background_acquisition_resume_position(
+        &self,
+        position: Option<&str>,
+    ) {
         let value = position.unwrap_or_default();
         let Ok(value_json) = serde_json::to_string(value) else {
             return;
@@ -322,7 +315,7 @@ impl AppUseCase {
             .settings
             .upsert_setting_json(
                 SETTINGS_SCOPE_SYSTEM,
-                ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY,
+                BACKGROUND_ACQUISITION_RESUME_AFTER_KEY,
                 None,
                 value_json,
                 "system",

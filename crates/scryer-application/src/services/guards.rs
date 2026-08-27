@@ -1,5 +1,8 @@
 use super::*;
 
+const CACHED_SUBMISSION_STATE_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 /// In-process guard table for download-submission dedupe and scope ownership.
 ///
 /// Scryer is intentionally single-instance, so the database lookup remains the
@@ -8,6 +11,50 @@ use super::*;
 pub struct DownloadSubmissionGuardTable {
     locks: Arc<tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     uncertain_titles: Arc<std::sync::Mutex<HashMap<String, UncertainDownloadSubmissionClaim>>>,
+    title_states: Arc<std::sync::Mutex<HashMap<String, CanonicalSubmissionTitleState>>>,
+    client_snapshot: Arc<std::sync::Mutex<Option<CachedDownloadClientSnapshot>>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CanonicalSubmissionTitleState {
+    refreshed_at: std::time::Instant,
+    pub(crate) submissions: Vec<DownloadSubmission>,
+    pub(crate) episodes: Vec<scryer_domain::Episode>,
+    pub(crate) accepted_download_ids:
+        HashSet<scryer_domain::download_identity::DownloadId>,
+}
+
+impl CanonicalSubmissionTitleState {
+    pub(crate) fn new(
+        submissions: Vec<DownloadSubmission>,
+        episodes: Vec<scryer_domain::Episode>,
+    ) -> Self {
+        Self {
+            refreshed_at: std::time::Instant::now(),
+            submissions,
+            episodes,
+            accepted_download_ids: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn forget(&mut self, download_id: scryer_domain::download_identity::DownloadId) {
+        self.submissions
+            .retain(|submission| submission.download_id != download_id);
+        self.accepted_download_ids.remove(&download_id);
+    }
+
+    pub(crate) fn remember(&mut self, submission: DownloadSubmission) {
+        self.forget(submission.download_id);
+        self.accepted_download_ids.insert(submission.download_id);
+        self.submissions.push(submission);
+        self.refreshed_at = std::time::Instant::now();
+    }
+}
+
+#[derive(Clone)]
+struct CachedDownloadClientSnapshot {
+    refreshed_at: std::time::Instant,
+    snapshot: DownloadClientSnapshotOutcome,
 }
 
 #[derive(Clone)]
@@ -66,6 +113,76 @@ impl DownloadSubmissionGuardTable {
 
     pub async fn acquire_title(&self, title_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
         self.acquire_key(title_id.to_string()).await
+    }
+
+    pub(crate) async fn acquire_client_snapshot(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.acquire_key("download-client-snapshot".to_string()).await
+    }
+
+    pub(crate) fn cached_title_state(
+        &self,
+        title_id: &str,
+    ) -> Option<CanonicalSubmissionTitleState> {
+        let mut states = self
+            .title_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        states.retain(|_, state| {
+            state.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE
+        });
+        states.get(title_id).cloned()
+    }
+
+    pub(crate) fn store_title_state(
+        &self,
+        title_id: &str,
+        state: CanonicalSubmissionTitleState,
+    ) {
+        self.title_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(title_id.to_string(), state);
+    }
+
+    pub(crate) fn clear_title_state(&self, title_id: &str) {
+        self.title_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(title_id);
+    }
+
+    pub(crate) fn prime_title_state(
+        &self,
+        title_id: &str,
+        submissions: Vec<DownloadSubmission>,
+        episodes: Vec<scryer_domain::Episode>,
+    ) {
+        self.store_title_state(
+            title_id,
+            CanonicalSubmissionTitleState::new(submissions, episodes),
+        );
+    }
+
+    pub(crate) fn cached_client_snapshot(&self) -> Option<DownloadClientSnapshotOutcome> {
+        self.client_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|cached| {
+                cached.refreshed_at.elapsed() <= CACHED_SUBMISSION_STATE_MAX_AGE
+            })
+            .map(|cached| cached.snapshot.clone())
+    }
+
+    pub(crate) fn store_client_snapshot(&self, snapshot: DownloadClientSnapshotOutcome) {
+        *self
+            .client_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(CachedDownloadClientSnapshot {
+                refreshed_at: std::time::Instant::now(),
+                snapshot,
+            });
     }
 
     pub(crate) fn mark_uncertain(&self, title_id: &str, claim: UncertainDownloadSubmissionClaim) {

@@ -1262,9 +1262,8 @@ impl AppUseCase {
     }
 
     /// Search and evaluate `subject`, optionally restricted to a subset of
-    /// indexers. The convergence cursor passes the scope's uncovered subset
-    /// — a covered indexer's catalog holds no new information
-    /// for this scope, so re-querying it is pure spend.
+    /// indexers. Automatic acquisition passes the scope's uncovered subset;
+    /// a covered indexer's catalog holds no new information for that scope.
     #[expect(
         clippy::too_many_arguments,
         reason = "background search threads the convergence subset and value hint alongside the subject"
@@ -1329,8 +1328,8 @@ impl AppUseCase {
             )
             .await?;
 
-        // A search is a search: every generic scoped search — background,
-        // interactive, or pack — records per-indexer convergence coverage.
+        // Every generic scoped corpus search — background, interactive, or
+        // pack — may update per-indexer convergence coverage.
         // The series-pack title lane opts into its own keys through the narrow
         // lower-level helper below.
         self.record_search_coverage(title, subject, &fired_indexer_ids)

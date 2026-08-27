@@ -1023,9 +1023,47 @@ impl AppUseCase {
             .list_episodes_for_title(&title.id)
             .await?;
 
+        Self::find_blocking_download_submissions_in_state(
+            title,
+            scope,
+            submissions,
+            snapshot,
+            &episodes,
+            &HashSet::new(),
+        )
+    }
+
+    pub(crate) fn find_blocking_download_submissions_in_state(
+        title: &Title,
+        scope: &SubmissionScope,
+        submissions: &[DownloadSubmission],
+        snapshot: &DownloadClientSnapshotOutcome,
+        episodes: &[scryer_domain::Episode],
+        accepted_download_ids: &HashSet<scryer_domain::download_identity::DownloadId>,
+    ) -> AppResult<Vec<SubmissionScopeConflict>> {
+        if submissions.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut conflicts = Vec::new();
         for submission in submissions {
             if !submission_scopes_overlap(&title.id, &submission.scope, scope, &episodes) {
+                continue;
+            }
+
+            if accepted_download_ids.contains(&submission.download_id) {
+                conflicts.push(SubmissionScopeConflict {
+                    title_id: title.id.clone(),
+                    title_name: title.name.clone(),
+                    download_client_id: submission.download_client_id.clone(),
+                    download_client_type: submission.download_client_type.clone(),
+                    download_client_item_id: submission.download_client_item_id.clone(),
+                    source_title: submission.source_title.clone(),
+                    source_kind: submission.source_kind,
+                    scope: submission.scope.clone(),
+                    state: Some(DownloadQueueState::Queued),
+                    replaceable: false,
+                });
                 continue;
             }
 

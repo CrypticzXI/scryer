@@ -283,7 +283,10 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
 
     let queued_release = QueuedReleaseSelection {
         indexer_id: None,
-        source_hint: Some("https://example.invalid/releases/existing-queue.nzb".to_string()),
+        source_hint: Some(
+            "https://example.invalid/releases/existing-queue.nzb?id=7&apikey=test-secret"
+                .to_string(),
+        ),
         source_kind: Some(DownloadSourceKind::NzbUrl),
         source_title: Some("Existing.Queue.2026.1080p.WEB-DL".to_string()),
         source_password: None,
@@ -326,16 +329,26 @@ async fn queue_existing_title_download_reuses_matching_queue_submission() {
 
     assert_eq!(second.job_id, first.job_id);
     assert!(second.reused_existing);
+    assert_eq!(*download_client.queue_calls.lock().await, 1);
+    assert_eq!(
+        download_client.recent_activity_calls.lock().await.as_slice(),
+        &[100]
+    );
+    assert_eq!(download_submissions.list_for_title_calls.lock().await.len(), 1);
 
     let submissions = download_submissions.store.lock().await.clone();
     let expected_signature = normalize_release_selection_signature(
-        Some("https://example.invalid/releases/existing-queue.nzb"),
+        Some("https://example.invalid/releases/existing-queue.nzb?id=7&apikey=test-secret"),
         Some("Existing.Queue.2026.1080p.WEB-DL"),
         Some(DownloadSourceKind::NzbUrl),
     );
     assert_eq!(submissions.len(), 1);
     assert_eq!(submissions[0].title_id, title.id);
     assert_eq!(submissions[0].request_signature, expected_signature);
+    assert_eq!(
+        submissions[0].source_hint.as_deref(),
+        Some("https://example.invalid/releases/existing-queue.nzb?id=7")
+    );
     assert_eq!(
         download_client
             .submitted_release_titles
@@ -4083,7 +4096,7 @@ async fn coverage_reopen_policies_preserve_the_required_indexers() {
 }
 
 #[tokio::test]
-async fn convergence_cursor_requeries_only_the_pruned_indexer() {
+async fn background_acquisition_requeries_only_the_pruned_indexer() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -4182,7 +4195,7 @@ async fn convergence_cursor_requeries_only_the_pruned_indexer() {
         .find(|(_, _, indexer_id, _)| indexer_id == "indexer-b")
         .expect("indexer-b remains covered before the cursor runs");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         indexer_client.requested_indexer_id_sets().await,
@@ -4447,7 +4460,7 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         .await;
 
     // 2. The cursor grabs the next saved result and queries nothing.
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     assert!(
         indexer_client.requested_indexer_id_sets().await.is_empty(),
         "no indexer query while saved results remain"
@@ -4501,7 +4514,7 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     download_client.queue_items.lock().await.clear();
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     assert!(indexer_client.requested_indexer_id_sets().await.is_empty());
     let after_second = wanted_now().await;
     assert_eq!(after_second.status, AcquisitionScopeStatus::Grabbed);
@@ -4535,7 +4548,7 @@ async fn a_failed_grab_walks_the_saved_search_results_without_querying_an_indexe
         crate::acquisition_workflow::FailureHandlingOutcome::Reopened
     );
     download_client.queue_items.lock().await.clear();
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     assert!(
         indexer_client.requested_indexer_id_sets().await.is_empty(),
         "an exhausted list leaves the scope converged; no re-search"
@@ -4616,7 +4629,7 @@ async fn a_grab_saves_every_remaining_eligible_search_result() {
         .await
         .expect("seed fileless wanted movie");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let updated = wanted_items
         .get_acquisition_scope_state_by_id(&wanted.id)

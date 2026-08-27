@@ -1192,9 +1192,9 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     .with_pending_releases(pending_releases.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
-    // The convergence cursor derives targets from library state.
+    // The background acquisition cursor derives targets from library state.
     // With mock catalog stores, bridge the derivation to the seeded wanted
-    // rows so `run_convergence_cycle_once` reaches each seeded monitored scope.
+    // rows so `run_background_acquisition_cycle_once` reaches each seeded monitored scope.
     .with_media_files(Arc::new(MockMediaFileRepo::with_missing_scope_source(
         acquisition_scope_states.clone(),
         titles,

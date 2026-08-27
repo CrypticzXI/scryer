@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -377,7 +377,12 @@ impl SearchDiagnosticsContext {
         })
     }
 
-    async fn record_response(&self, branch: &str, response: &IndexerSearchResponse) {
+    async fn record_response(
+        &self,
+        branch: &str,
+        raw_result_count: usize,
+        response: &IndexerSearchResponse,
+    ) {
         let now = Utc::now();
         let run_id = uuid::Uuid::new_v4().to_string();
         let (completion_state, incomplete_reason, retry_after) = match response.completion {
@@ -412,7 +417,7 @@ impl SearchDiagnosticsContext {
             page: None,
             range_min_size: None,
             range_max_size: None,
-            result_count: response.results.len().min(u32::MAX as usize) as u32,
+            result_count: raw_result_count.min(u32::MAX as usize) as u32,
             completion_state: completion_state.to_string(),
             retry_at: retry_after
                 .and_then(|delay| Duration::from_std(delay).ok())
@@ -1032,11 +1037,10 @@ impl StrategyBatchHealth {
     }
 }
 
-/// Minimum background request budget for small installations.
-const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 12;
-/// Each target worker can query every configured indexer without waiting on an
-/// arbitrary global cap. Eight target workers × fifteen indexers is 120 leaves.
-const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_PER_CONFIGURED_INDEXER: usize = 8;
+/// Global admission limit for complete automatic indexer strategies. This is
+/// intentionally independent of the number of configured indexers: callers
+/// share one bounded background-search lane across cloned clients.
+const BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 4;
 const INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT: usize = 24;
 const LEARNED_EMPTY_SUPPRESSION_THRESHOLD: u32 = 3;
 const LEARNED_SUPPRESSION_REPROBE_INTERVAL_DAYS: i64 = 7;
@@ -1823,7 +1827,6 @@ pub struct MultiIndexerSearchClient {
     backoff_tracker: IndexerBackoffTracker,
     rss_feed_cache: RssFeedCache,
     background_search_limit: Arc<Semaphore>,
-    background_search_capacity: Arc<AtomicUsize>,
     interactive_search_limit: Arc<Semaphore>,
 }
 
@@ -1851,9 +1854,6 @@ impl MultiIndexerSearchClient {
             backoff_tracker: IndexerBackoffTracker::new(),
             rss_feed_cache: Arc::new(Mutex::new(HashMap::new())),
             background_search_limit: Arc::new(Semaphore::new(
-                BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
-            )),
-            background_search_capacity: Arc::new(AtomicUsize::new(
                 BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
             )),
             interactive_search_limit: Arc::new(Semaphore::new(
@@ -2193,40 +2193,6 @@ impl MultiIndexerSearchClient {
             self.interactive_search_limit.clone()
         } else {
             self.background_search_limit.clone()
-        }
-    }
-
-    fn background_search_capacity_for_indexer_count(indexer_count: usize) -> usize {
-        indexer_count
-            .saturating_mul(BACKGROUND_INDEXER_SEARCH_CONCURRENCY_PER_CONFIGURED_INDEXER)
-            .max(BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT)
-    }
-
-    /// Config changes are observed during ordinary searches. Capacity expands
-    /// monotonically for this process; shrinking it would require revoking
-    /// active permits and risks deadlocking already-admitted requests.
-    fn scale_background_search_capacity(&self, configured_indexer_count: usize) {
-        let desired = Self::background_search_capacity_for_indexer_count(configured_indexer_count);
-        let mut observed = self.background_search_capacity.load(Ordering::Acquire);
-        while desired > observed {
-            match self.background_search_capacity.compare_exchange_weak(
-                observed,
-                desired,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(previous) => {
-                    self.background_search_limit.add_permits(desired - previous);
-                    debug!(
-                        configured_indexer_count,
-                        previous_capacity = previous,
-                        capacity = desired,
-                        "scaled background indexer search capacity"
-                    );
-                    break;
-                }
-                Err(current) => observed = current,
-            }
         }
     }
 
@@ -2801,10 +2767,6 @@ impl IndexerClient for MultiIndexerSearchClient {
             warn!(error = %err, "failed to load indexer configs");
             vec![]
         });
-        if matches!(mode, SearchMode::Auto) {
-            self.scale_background_search_capacity(configs.len());
-        }
-
         let now = chrono::Utc::now();
         let system_backoffs = self
             .indexer_configs
@@ -3915,11 +3877,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     primary_attempted = true;
                     match outcome.response {
                         Ok(mut response) => {
-                            if let Some(diagnostics) = search_diagnostics.as_ref() {
-                                diagnostics
-                                    .record_response(&outcome.label, &response)
-                                    .await;
-                            }
+                            let raw_result_count = response.results.len();
                             batch_health.mark_success();
                             debug!(
                                 indexer = indexer_name.as_str(),
@@ -3957,6 +3915,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     is_rss_request,
                                 },
                             );
+                            if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                diagnostics
+                                    .record_response(
+                                        &outcome.label,
+                                        raw_result_count,
+                                        &response,
+                                    )
+                                    .await;
+                            }
                             if response.completion == IndexerSearchCompletion::Complete {
                                 record_strategy_learning_outcome(
                                     &search_learning,
@@ -4079,11 +4046,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         any_strategy_fired = true;
                         match outcome.response {
                             Ok(mut response) => {
-                                if let Some(diagnostics) = search_diagnostics.as_ref() {
-                                    diagnostics
-                                        .record_response(&outcome.label, &response)
-                                        .await;
-                                }
+                                let raw_result_count = response.results.len();
                                 batch_health.mark_success();
                                 debug!(
                                     indexer = indexer_name.as_str(),
@@ -4121,6 +4084,15 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         is_rss_request,
                                     },
                                 );
+                                if let Some(diagnostics) = search_diagnostics.as_ref() {
+                                    diagnostics
+                                        .record_response(
+                                            &outcome.label,
+                                            raw_result_count,
+                                            &response,
+                                        )
+                                        .await;
+                                }
                                 if response.completion == IndexerSearchCompletion::Complete {
                                     record_strategy_learning_outcome(
                                         &search_learning,
@@ -5866,7 +5838,7 @@ mod tests {
         let client = Arc::new(BlockingIndexerClient {
             probe: probe.clone(),
         });
-        let mut multi = MultiIndexerSearchClient::new(
+        let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
                 configs: indexed_mock_configs(config_count),
             }),
@@ -5876,16 +5848,6 @@ mod tests {
                 caps: movie_caps(),
             }),
         );
-        if matches!(mode, SearchMode::Auto) {
-            // Keep this test focused on the shared semaphore: production
-            // scaling is covered separately below.
-            multi.background_search_capacity = Arc::new(AtomicUsize::new(
-                MultiIndexerSearchClient::background_search_capacity_for_indexer_count(
-                    config_count,
-                ),
-            ));
-        }
-
         let first = multi.clone();
         let second = multi.clone();
         let first_search = tokio::spawn(async move {
@@ -6406,16 +6368,7 @@ mod tests {
     }
 
     #[test]
-    fn background_search_capacity_scales_with_configured_indexers() {
-        assert_eq!(
-            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(1),
-            BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT
-        );
-        assert_eq!(
-            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(15),
-            120
-        );
-
+    fn automatic_strategy_capacity_is_fixed_at_four() {
         let client = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
                 configs: Vec::new(),
@@ -6426,20 +6379,16 @@ mod tests {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
         );
-        client.scale_background_search_capacity(15);
 
         assert_eq!(
             client.background_search_limit.available_permits(),
-            MultiIndexerSearchClient::background_search_capacity_for_indexer_count(15)
+            BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT
         );
-        assert_eq!(
-            client.background_search_capacity.load(Ordering::Acquire),
-            120
-        );
+        assert_eq!(BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT, 4);
     }
 
     #[tokio::test]
-    async fn auto_search_leaf_concurrency_is_shared_across_cloned_clients() {
+    async fn automatic_strategy_concurrency_is_shared_across_cloned_clients() {
         assert_leaf_search_limit_shared_across_clones(
             SearchMode::Auto,
             BACKGROUND_INDEXER_SEARCH_CONCURRENCY_LIMIT,
@@ -6448,7 +6397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interactive_search_leaf_concurrency_is_shared_across_cloned_clients() {
+    async fn interactive_strategy_concurrency_is_shared_across_cloned_clients() {
         assert_leaf_search_limit_shared_across_clones(
             SearchMode::Interactive,
             INTERACTIVE_INDEXER_SEARCH_CONCURRENCY_LIMIT,
@@ -9111,6 +9060,8 @@ mod tests {
     #[derive(Default)]
     struct InMemorySearchLearningRepository {
         records: StdArc<StdMutex<HashMap<IndexerSearchLearningKey, IndexerSearchLearningRecord>>>,
+        diagnostics:
+            StdArc<StdMutex<Vec<(IndexerSearchRunWrite, Vec<IndexerSearchCandidateWrite>)>>>,
         cleanup_batches: StdArc<StdMutex<std::collections::VecDeque<u32>>>,
         cleanup_limits: StdArc<StdMutex<Vec<u32>>>,
     }
@@ -9168,6 +9119,18 @@ mod tests {
                 record.suppressed = false;
             }
             Ok(record.clone())
+        }
+
+        async fn record_search_diagnostics(
+            &self,
+            run: &IndexerSearchRunWrite,
+            candidates: &[IndexerSearchCandidateWrite],
+        ) -> AppResult<()> {
+            self.diagnostics
+                .lock()
+                .expect("search diagnostics mutex")
+                .push((run.clone(), candidates.to_vec()));
+            Ok(())
         }
 
         async fn cleanup_search_diagnostics(
@@ -9500,6 +9463,82 @@ mod tests {
             .await
             .expect("learning records");
         assert!(records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn automatic_search_persists_only_strategy_admitted_candidates() {
+        let repo_impl = StdArc::new(InMemorySearchLearningRepository::default());
+        let diagnostics = repo_impl.diagnostics.clone();
+        let repo: StdArc<dyn IndexerSearchLearningRepository> = repo_impl;
+        let (client, calls) = scripted_search_client(series_caps(), |call| {
+            if call.ids.contains_key("tvdb_id") {
+                response_with_titles(&["Signal.Run.S02E12.720p.WEB-DL"])
+            } else {
+                response_with_titles(&[
+                    "Signal.Run.S01E12.720p.WEB-DL",
+                    "Signal.Road.S01E12.2160p.WEB-DL",
+                ])
+            }
+        });
+        let client = client.with_search_learning_repository(repo);
+        let context = IndexerSearchLearningContext {
+            title_id: "title-1".into(),
+            facet: "series".into(),
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+            background_value: None,
+        };
+
+        let response = <MultiIndexerSearchClient as IndexerClient>::search(
+            &client,
+            "Signal Run S01E12".into(),
+            HashMap::from([("tvdb_id".to_string(), "78874".to_string())]),
+            Some("series".into()),
+            Some("series".into()),
+            None,
+            None,
+            None,
+            SearchMode::Auto,
+            IndexerErrorOperation::AutomaticSearch,
+            Some(1),
+            Some(12),
+            None,
+            vec![],
+            Some(context),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("automatic search should succeed");
+
+        assert_eq!(
+            response
+                .results
+                .iter()
+                .map(|result| result.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Signal.Run.S01E12.720p.WEB-DL"]
+        );
+        assert_eq!(calls.lock().expect("call log mutex").len(), 2);
+
+        let diagnostics = diagnostics.lock().expect("search diagnostics mutex");
+        assert_eq!(diagnostics.len(), 2);
+
+        let (primary_run, primary_candidates) = diagnostics
+            .iter()
+            .find(|(run, _)| run.branch != "freetext")
+            .expect("primary diagnostics");
+        assert_eq!(primary_run.result_count, 1);
+        assert!(primary_candidates.is_empty());
+
+        let (fallback_run, fallback_candidates) = diagnostics
+            .iter()
+            .find(|(run, _)| run.branch == "freetext")
+            .expect("fallback diagnostics");
+        assert_eq!(fallback_run.result_count, 2);
+        assert_eq!(fallback_candidates.len(), 1);
+        assert_eq!(
+            fallback_candidates[0].normalized.title,
+            "Signal.Run.S01E12.720p.WEB-DL"
+        );
     }
 
     #[test]

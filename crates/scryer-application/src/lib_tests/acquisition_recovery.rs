@@ -266,7 +266,7 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
         "Failed.Release.1080p.WEB-DL",
     )];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let updated = wanted_items
         .get_acquisition_scope_state_by_id(&wanted.id)
@@ -441,7 +441,7 @@ async fn a_gone_standby_link_expires_and_grabs_the_next_row_in_the_same_walk() {
         .await
         .expect("seed usable row");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let rows = pending_releases.store.lock().await.clone();
     assert_eq!(
@@ -904,7 +904,7 @@ async fn acquisition_failure_fallback_skips_failed_submission_for_another_episod
         .await
         .expect("restore current episode as grabbed after seeding old failure history");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_submissions
@@ -1108,7 +1108,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
     download_client
         .set_snapshot_authoritative_client_ids(["primary".to_string()])
         .await;
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let updated = wanted_items
         .get_acquisition_scope_state_by_id(&wanted.id)
@@ -1312,7 +1312,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
     // result for the cursor; with the download client unavailable the cursor
     // keeps it pending rather than expiring it.
     assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Wanted);
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     assert_eq!(
         pending_releases
             .get_pending_release(&standby_id)
@@ -2653,7 +2653,7 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
         .await
         .expect("record shared submission");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let calls = download_submissions
         .list_for_title_calls
@@ -2840,7 +2840,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         ..failed_history_item("shared-failed-season-pack", pack_title)
     }];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -3145,7 +3145,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         seeding: None,
     }];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     // **D18.** An in-flight submission no longer freezes its scope: both
     // episodes are searched, and the one with a download in the queue is
@@ -3384,7 +3384,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         seeding: None,
     }];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     // **D18.** A season pack in the queue no longer freezes its season: the
     // season is searched again, and every candidate it turns up is compared
@@ -3660,7 +3660,7 @@ async fn acquisition_cycle_submits_one_hundred_episode_fallbacks_after_empty_pac
 
     // One cycle is one default 60-second poll tick, so completing all 100 here
     // is stronger than the five-simulated-minute throughput requirement.
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = recorded_searches.lock().await.clone();
     assert!(
@@ -3965,7 +3965,7 @@ async fn exhausted_series_pack_search_restores_anchor_episode_standby_rows() {
         .await
         .expect("seed anchor standby");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let standby = app
         .services
@@ -4095,7 +4095,7 @@ async fn in_flight_series_episodes_count_as_owned_for_the_pack_ratio_gate() {
         .await
         .expect("mark season one submission active");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let submissions = app
         .services
@@ -4151,7 +4151,7 @@ async fn series_pack_candidate_overlapping_an_earlier_cycle_claim_is_not_submitt
         recovered_releases.push(recovered);
     }
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let submissions = app
         .services
@@ -4186,7 +4186,7 @@ async fn multi_season_series_pack_claims_only_its_episode_set_and_leaves_later_s
     let (app, title, indexer_client, episode_ids) =
         seed_series_pack_scope_fixture(indexer_client).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert_eq!(
@@ -4266,7 +4266,7 @@ async fn a_disjoint_series_pack_is_anchored_inside_its_own_episode_set() {
     let (app, title, _, episode_ids) =
         seed_series_pack_scope_fixture_with_persisted_seasons(indexer_client, &[1]).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let states = app
         .services
@@ -4309,7 +4309,7 @@ async fn series_pack_grab_persists_the_ranked_runner_up_in_shared_standby() {
         Arc::new(TrackingIndexerClient::default().with_title_pack_titles(pack_titles.clone()));
     let (app, title, _, _) = seed_series_pack_scope_fixture(indexer_client).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let submissions = app
         .services
@@ -4349,7 +4349,7 @@ async fn overlapping_series_pack_standby_waits_while_a_disjoint_pack_can_run() {
         Arc::new(TrackingIndexerClient::default().with_title_pack_titles(pack_titles.clone()));
     let (app, title, _, _) = seed_series_pack_scope_fixture(indexer_client).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let submissions = app
         .services
@@ -4411,7 +4411,7 @@ async fn one_missing_episode_does_not_trigger_the_series_pack_title_lane() {
             .expect("link owned episode file");
     }
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(
@@ -4432,7 +4432,7 @@ async fn title_search_success_does_not_converge_an_episode_when_scoped_queries_f
     let (app, title, indexer_client, _) =
         seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let first_searches = indexer_client.searches.lock().await.clone();
     assert_eq!(
         first_searches
@@ -4462,7 +4462,7 @@ async fn title_search_success_does_not_converge_an_episode_when_scoped_queries_f
         "a title lookup may not mutate an episode's search state"
     );
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let second_searches = indexer_client.searches.lock().await.clone();
     assert!(
         second_searches
@@ -4614,7 +4614,7 @@ async fn season_pack_grab_saves_the_remaining_ranked_packs_as_standby() {
     let (app, title, indexer_client, _) =
         seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let standby = app
         .services
@@ -4654,7 +4654,7 @@ async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query()
     );
     let (app, title, indexer_client, download_client) =
         seed_recent_failed_season_pack_fixture_with_indexer(indexer_client).await;
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let runner_up = app
         .services
         .workflow
@@ -4704,7 +4704,7 @@ async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query()
         .await;
     indexer_client.searches.lock().await.clear();
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         indexer_client.searches.lock().await.is_empty(),
@@ -4783,7 +4783,7 @@ async fn failed_season_pack_walks_the_saved_runner_up_without_an_indexer_query()
     );
     download_client.queue_items.lock().await.clear();
     indexer_client.searches.lock().await.clear();
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let searches_after_exhaustion = indexer_client.searches.lock().await.clone();
     assert!(
         searches_after_exhaustion.iter().all(|search| {
@@ -4875,7 +4875,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
         .await
         .expect("record failed season pack blocklist entry");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -4919,7 +4919,7 @@ async fn acquisition_cycle_failed_attempt_history_alone_does_not_cool_down_seaso
         .await
         .expect("record failed season pack attempt");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(
@@ -5122,7 +5122,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     );
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
     assert!(!searches.is_empty());
@@ -5170,7 +5170,7 @@ async fn acquisition_cycle_submit_unavailable_records_pending_without_failed_sig
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Deferred Movie", 2024).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -5247,7 +5247,7 @@ async fn automatic_search_parks_invalid_publication_time_for_age_review() {
         .await
         .expect("seed delay profile");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client
@@ -5312,7 +5312,7 @@ async fn automatic_search_parks_hard_minimum_age_until_publication_deadline() {
         .await
         .expect("seed delay profile");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client
@@ -5366,7 +5366,7 @@ async fn season_pack_submit_unavailable_records_pending_without_failed_signature
     )
     .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client
@@ -5441,7 +5441,7 @@ async fn season_pack_definitive_submit_error_records_failed_signature_and_blockl
     )
     .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client
@@ -5518,7 +5518,7 @@ async fn season_pack_ambiguous_submit_error_defers_without_blocklist_entry() {
     )
     .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client
@@ -5576,7 +5576,7 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
@@ -5647,7 +5647,7 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Counterfeit Feature", 2024)
             .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let attempts = release_attempts.attempts.lock().await.clone();
     let vetoed = attempts
@@ -5741,7 +5741,7 @@ async fn acquisition_cycle_allows_anime_categorized_nzb_for_a_movie_subject() {
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Tide Chart Film Gold", 2024)
             .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_client.submitted_release_titles.lock().await.len(),
@@ -5786,7 +5786,7 @@ async fn acquisition_cycle_rejected_submit_error_records_failed_signature_not_de
     let (title, _) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
@@ -5842,7 +5842,7 @@ async fn acquisition_cycle_duplicate_url_does_not_mark_second_wanted_grabbed_wit
     let (_, second_wanted_id) =
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rejected Movie", 2024).await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let submitted_titles = download_client
         .submitted_release_titles
@@ -7221,7 +7221,7 @@ async fn standby_reacquisition_re_judges_the_swarm_before_grabbing() {
         "Failed.Swarm.Release.1080p.WEB-DL",
     )];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let stored = pending_releases.store.lock().await.clone();
     let status_of = |id: &str| {
@@ -7803,7 +7803,7 @@ async fn acquisition_cycle_submits_paperman_media_request_candidate() {
         .await
         .expect("seed Paperman wanted item");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -7944,7 +7944,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
         .await
         .expect("seed Bluey wanted item");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -8092,7 +8092,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         seeding: None,
     }];
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     // **D18.** A title-scoped download in flight no longer suppresses the
     // search; it becomes a pseudo-incumbent covering everything under the
@@ -8192,7 +8192,7 @@ async fn acquisition_cycle_skips_due_search_when_no_download_clients_are_enabled
         .await
         .expect("seed due movie wanted item");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(indexer_client.searches.lock().await.is_empty());
 }
@@ -8259,7 +8259,7 @@ async fn acquisition_cycle_active_anime_scan_does_not_block_due_movie_search() {
         .await
         .expect("seed due movie wanted item");
 
-    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
+    crate::acquisition_workflow::run_background_acquisition_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -8440,7 +8440,7 @@ async fn acquisition_cycle_active_movie_scan_does_not_block_due_series_search() 
         .await
         .expect("seed due series wanted item");
 
-    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
+    crate::acquisition_workflow::run_background_acquisition_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Movie],
     )
@@ -8576,7 +8576,7 @@ async fn acquisition_cycle_active_series_scan_defers_due_series_search() {
         .await
         .expect("seed due series wanted item");
 
-    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
+    crate::acquisition_workflow::run_background_acquisition_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Series],
     )
@@ -8712,7 +8712,7 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
         "Failed.Release.1080p.WEB-DL",
     )];
 
-    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
+    crate::acquisition_workflow::run_background_acquisition_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -8837,7 +8837,7 @@ async fn acquisition_cycle_keeps_an_old_saved_result_for_an_in_flight_grab() {
         .await
         .expect("start anime scan");
 
-    crate::acquisition_workflow::run_convergence_cycle_with_blocked_facets(
+    crate::acquisition_workflow::run_background_acquisition_cycle_with_blocked_facets(
         &app,
         &[MediaFacet::Anime],
     )
@@ -9123,7 +9123,7 @@ async fn acquisition_cycle_drops_saved_results_of_a_completed_scope() {
         .await
         .expect("seed stale standby");
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         pending_releases
@@ -10253,11 +10253,11 @@ async fn ambiguous_identity_fixture_with_releases(
 }
 
 #[tokio::test]
-async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
+async fn background_acquisition_parks_ambiguous_best_candidate_for_review() {
     let (app, _user, title, wanted_id, pending_releases, _release_attempts, download_client) =
         ambiguous_identity_fixture().await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     let parked = pending_releases
         .list_pending_releases_for_title(&title.id)
@@ -10281,7 +10281,7 @@ async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
     );
 
     // Repeated cycles must not pile up review rows for the same scope.
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     assert_eq!(
         pending_releases
             .list_pending_releases_for_title(&title.id)
@@ -10293,7 +10293,7 @@ async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
 }
 
 #[tokio::test]
-async fn convergence_cycle_parks_ambiguous_candidate_without_skipping_eligible_release() {
+async fn background_acquisition_parks_ambiguous_candidate_without_skipping_eligible_release() {
     let eligible = "Tide.Chart.2023.720p.WEB-DL.AV1.AAC2.0-NTb";
     let ambiguous = "Tide.Chart.1080p.WEB-DL.x264-GRP";
 
@@ -10321,7 +10321,7 @@ async fn convergence_cycle_parks_ambiguous_candidate_without_skipping_eligible_r
         .await
         .expect("create download client config");
 
-        app.run_convergence_cycle_once().await;
+        app.run_background_acquisition_cycle_once().await;
 
         let parked = pending_releases
             .list_pending_releases_for_title(&title.id)
@@ -10453,7 +10453,7 @@ async fn needs_review_pending_release_is_never_auto_promoted() {
     let (app, _user, title, _wanted_id, pending_releases, _release_attempts, download_client) =
         ambiguous_identity_fixture().await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let parked_id = pending_releases
         .list_pending_releases_for_title(&title.id)
         .await
@@ -10491,7 +10491,7 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
     let (app, user, title, _wanted_id, pending_releases, release_attempts, _download_client) =
         ambiguous_identity_fixture().await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
     let parked_id = pending_releases
         .list_pending_releases_for_title(&title.id)
         .await
@@ -10641,7 +10641,7 @@ async fn assert_auto_search_submit_decision(submit_error: StubSubmitError, expec
         seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Typed Failover Movie", 2024)
             .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert_eq!(
         download_client
@@ -10687,7 +10687,7 @@ async fn assert_season_pack_submit_decision(submit_error: StubSubmitError, expec
     )
     .await;
 
-    app.run_convergence_cycle_once().await;
+    app.run_background_acquisition_cycle_once().await;
 
     assert!(
         download_client

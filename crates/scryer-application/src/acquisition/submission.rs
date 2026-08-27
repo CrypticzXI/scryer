@@ -4,7 +4,7 @@ use crate::catalog::workflow::queue_item_matches_submission;
 use crate::download_identity::{
     AcceptedDownloadIdentityInput, accepted_download_submission_identity,
 };
-use crate::services::UncertainDownloadSubmissionClaim;
+use crate::services::{CanonicalSubmissionTitleState, UncertainDownloadSubmissionClaim};
 
 #[derive(Clone)]
 pub(crate) struct CanonicalDownloadSubmissionIntent {
@@ -54,7 +54,7 @@ fn submission_for_grab(
         download_client_id: grab.client_id.clone(),
         download_client_type: grab.client_type.clone(),
         download_client_item_id: grab.job_id.clone(),
-        source_hint: request.source_hint.clone(),
+        source_hint: normalize_release_attempt_hint(request.source_hint.as_deref()),
         source_provider_id: request.indexer_id.clone(),
         source_provider_name: intent.source_provider_name.clone(),
         source_kind: request.source_kind,
@@ -305,50 +305,90 @@ impl AppUseCase {
             }
         }
 
-        if !self
-            .services
-            .workflow
-            .download_submissions
-            .list_active_unbound_for_title(&title_id)
-            .await?
-            .is_empty()
+        let mut state = if let Some(state) = self
+            .runtime
+            .acquisition
+            .download_submission_guards
+            .cached_title_state(&title_id)
         {
-            return Err(AppError::DownloadSubmitAmbiguous(format!(
-                "download submission acceptance is unresolved for title {title_id}"
-            )));
-        }
-
-        let submissions = self
-            .services
-            .workflow
-            .download_submissions
-            .list_for_title(&title_id)
-            .await?;
-        let existing = if let Some(signature) = intent.request_signature.as_deref() {
-            self.services
+            state
+        } else {
+            if !self
+                .services
                 .workflow
                 .download_submissions
-                .find_by_title_and_request_signature(
-                    &title_id,
-                    signature,
-                    intent.request.purpose,
-                    &intent.scope,
-                )
+                .list_active_unbound_for_title(&title_id)
                 .await?
-        } else {
-            None
+                .is_empty()
+            {
+                return Err(AppError::DownloadSubmitAmbiguous(format!(
+                    "download submission acceptance is unresolved for title {title_id}"
+                )));
+            }
+            let submissions = self
+                .services
+                .workflow
+                .download_submissions
+                .list_for_title(&title_id)
+                .await?;
+            let episodes = self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&title_id)
+                .await?;
+            let state = CanonicalSubmissionTitleState::new(submissions, episodes);
+            self.runtime
+                .acquisition
+                .download_submission_guards
+                .store_title_state(&title_id, state.clone());
+            state
         };
-
-        let snapshot = if submissions.is_empty() {
+        let existing = intent
+            .request_signature
+            .as_deref()
+            .and_then(|signature| {
+                state.submissions.iter().find(|submission| {
+                    submission.request_signature.as_deref() == Some(signature)
+                        && submission.purpose == intent.request.purpose
+                        && submission.scope == intent.scope
+                })
+            })
+            .cloned();
+        let snapshot = if state.submissions.is_empty() {
             None
         } else {
-            Some(
-                self.services
-                    .integrations
-                    .download_client
-                    .list_snapshot_outcome_excluding_client_types(100, &[])
-                    .await?,
-            )
+            let guards = &self.runtime.acquisition.download_submission_guards;
+            let snapshot_is_authoritative = |snapshot: &DownloadClientSnapshotOutcome| {
+                state.submissions.iter().all(|submission| {
+                    state.accepted_download_ids.contains(&submission.download_id)
+                        || submission_client_state_is_authoritative(snapshot, submission)
+                })
+            };
+            let cached = guards
+                .cached_client_snapshot()
+                .filter(snapshot_is_authoritative);
+            if let Some(snapshot) = cached {
+                Some(snapshot)
+            } else {
+                let _snapshot_guard = guards.acquire_client_snapshot().await;
+                let snapshot = if let Some(snapshot) = guards
+                    .cached_client_snapshot()
+                    .filter(snapshot_is_authoritative)
+                {
+                    snapshot
+                } else {
+                    let snapshot = self
+                        .services
+                        .integrations
+                        .download_client
+                        .list_snapshot_outcome_excluding_client_types(100, &[])
+                        .await?;
+                    guards.store_client_snapshot(snapshot.clone());
+                    snapshot
+                };
+                Some(snapshot)
+            }
         };
 
         if let Some(existing) = existing {
@@ -380,18 +420,24 @@ impl AppUseCase {
                 .download_submissions
                 .delete_by_client_item_id(&ClientJobLocator::from_submission(&existing))
                 .await?;
+            state.forget(existing.download_id);
+            self.runtime
+                .acquisition
+                .download_submission_guards
+                .store_title_state(&title_id, state.clone());
         }
 
         let conflicts = if intent.request.purpose.is_additional_file() {
             Vec::new()
         } else if let Some(snapshot) = snapshot.as_ref() {
-            self.find_blocking_download_submissions_from_snapshot(
+            Self::find_blocking_download_submissions_in_state(
                 &intent.request.title,
                 &intent.scope,
-                &submissions,
+                &state.submissions,
                 snapshot,
-            )
-            .await?
+                &state.episodes,
+                &state.accepted_download_ids,
+            )?
         } else {
             Vec::new()
         };
@@ -407,6 +453,13 @@ impl AppUseCase {
                 {
                     self.replace_blocking_download_submissions(&conflicts)
                         .await?;
+                    state.submissions = self
+                        .services
+                        .workflow
+                        .download_submissions
+                        .list_for_title(&title_id)
+                        .await?;
+                    state.accepted_download_ids.clear();
                 }
                 SubmissionConflictPolicy::ReplaceEarly => {
                     let conflict = conflicts
@@ -422,7 +475,7 @@ impl AppUseCase {
             AppError::Validation("canonical download submission requires a download id".to_string())
         })?;
         let source_kind = intent.request.source_kind;
-        let source_hint = intent.request.source_hint.clone();
+        let source_hint = normalize_release_attempt_hint(intent.request.source_hint.as_deref());
         let request = DownloadClientAddRequest {
             download_id: Some(download_id),
             ..intent.request.clone()
@@ -571,10 +624,30 @@ impl AppUseCase {
                 seed_goals: None,
                 ..grab
             };
-            return self
+            let outcome = self
                 .adopt_canonical_download(&intent, &request, effective_download_id, adopted_grab)
-                .await;
+                .await?;
+            if let Some(adopted) = self
+                .services
+                .workflow
+                .download_submissions
+                .find_by_canonical_download_id(&effective_download_id)
+                .await?
+            {
+                state.remember(adopted);
+                self.runtime
+                    .acquisition
+                    .download_submission_guards
+                    .store_title_state(&title_id, state);
+            }
+            return Ok(outcome);
         }
+
+        state.remember(submission);
+        self.runtime
+            .acquisition
+            .download_submission_guards
+            .store_title_state(&title_id, state);
 
         Ok(CanonicalDownloadSubmissionOutcome::Accepted(
             CanonicalDownloadSubmission {
