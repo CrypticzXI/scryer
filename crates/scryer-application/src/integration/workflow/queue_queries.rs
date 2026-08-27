@@ -374,6 +374,14 @@ fn apply_submission_to_queue_item(item: &mut DownloadQueueItem, submission: &Dow
     if crate::import_parameters::submission_has_scryer_origin(submission) {
         item.is_scryer_origin = true;
     }
+    if let Some(source_title) = submission
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        item.title_name = source_title.to_string();
+    }
     if item.source_provider.is_none() {
         item.source_provider = source_provider_label(
             submission.source_provider_name.as_deref(),
@@ -1860,5 +1868,21 @@ mod queue_query_unit_tests {
 
         apply_submission_to_queue_item(&mut item, &submission(SubmissionScope::Title));
         assert!(item.is_scryer_origin);
+    }
+
+    #[test]
+    fn submission_enrichment_prefers_raw_release_title() {
+        let mut item = queue_item();
+        let mut submitted = submission(SubmissionScope::Title);
+        submitted.source_title = Some("Judas.Bleach.252-279.BD-GROUP".to_string());
+
+        apply_submission_to_queue_item(&mut item, &submitted);
+
+        assert_eq!(item.title_name, "Judas.Bleach.252-279.BD-GROUP");
+
+        item.title_name = "Client Display Name".to_string();
+        submitted.source_title = Some("  ".to_string());
+        apply_submission_to_queue_item(&mut item, &submitted);
+        assert_eq!(item.title_name, "Client Display Name");
     }
 }
