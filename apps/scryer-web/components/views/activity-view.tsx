@@ -511,28 +511,42 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   );
 
   const renderSortableHeader = useCallback(
-    (key: ActivitySortKey, label: string, className?: string) => (
-      <TableHead
-        className={className}
-        aria-sort={
-          activeSortConfig.key === key
-            ? activeSortConfig.direction === "ASC"
-              ? "ascending"
-              : "descending"
-            : "none"
-        }
-      >
-        <button
-          type="button"
-          className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80"
-          onClick={() => handleSort(key)}
+    (key: ActivitySortKey, label: string, className?: string) => {
+      const fixedActivitySort = activeTab === "activity";
+      return (
+        <TableHead
+          className={className}
+          aria-sort={
+            fixedActivitySort
+              ? key === "PROGRESS"
+                ? "descending"
+                : "none"
+              : activeSortConfig.key === key
+                ? activeSortConfig.direction === "ASC"
+                  ? "ascending"
+                  : "descending"
+                : "none"
+          }
         >
-          <span>{label}</span>
-          {renderSortIcon(key)}
-        </button>
-      </TableHead>
-    ),
-    [activeSortConfig.direction, activeSortConfig.key, handleSort, renderSortIcon],
+          {fixedActivitySort ? (
+            <span className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground">
+              <span>{label}</span>
+              {key === "PROGRESS" ? <ArrowDown className="h-3.5 w-3.5" /> : null}
+            </span>
+          ) : (
+          <button
+            type="button"
+            className="inline-flex w-full items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-foreground/80"
+            onClick={() => handleSort(key)}
+          >
+            <span>{label}</span>
+            {renderSortIcon(key)}
+          </button>
+          )}
+        </TableHead>
+      );
+    },
+    [activeSortConfig.direction, activeSortConfig.key, activeTab, handleSort, renderSortIcon],
   );
 
   const sortedQueueItems = useMemo(() => {

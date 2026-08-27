@@ -1372,6 +1372,44 @@ mod tests {
         assert!(facts.duration_seconds.is_some_and(|duration| duration > 0));
     }
 
+    #[cfg(feature = "runtime-media-analysis")]
+    #[tokio::test]
+    async fn manual_import_known_extensions_skip_content_probing() {
+        let source = tempfile::tempdir().expect("source tempdir");
+        let known_video = source.path().join("Example.Show.S01E02.1080p.mkv");
+        copy_mediainfo_fixture(&known_video);
+        let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
+
+        let candidate = qualify_manual_import_video_candidate(&known_video, &trusted_root)
+            .await
+            .expect("qualify candidate")
+            .expect("known-extension video candidate");
+
+        assert!(candidate.video_facts.is_none());
+    }
+
+    #[cfg(feature = "runtime-media-analysis")]
+    #[tokio::test]
+    async fn manual_import_unrecognized_extensions_skip_content_probing() {
+        let source = tempfile::tempdir().expect("source tempdir");
+        let unrecognized_extension = source.path().join("Example.Show.S01E02.1080p.download");
+        copy_mediainfo_fixture(&unrecognized_extension);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&unrecognized_extension)
+            .expect("open fixture")
+            .set_len(16 * 1024 * 1024)
+            .expect("pad fixture");
+        let trusted_root = std::fs::canonicalize(source.path()).expect("canonical source root");
+
+        assert!(
+            qualify_manual_import_video_candidate(&unrecognized_extension, &trusted_root)
+                .await
+                .expect("qualify candidate")
+                .is_none()
+        );
+    }
+
     #[cfg(all(feature = "runtime-media-analysis", unix))]
     #[tokio::test]
     async fn manual_import_discovery_surfaces_an_unavailable_only_candidate() {
@@ -1442,6 +1480,7 @@ mod tests {
             candidates[0].canonical_path,
             std::fs::canonicalize(&opaque_target).expect("canonical target")
         );
+        assert!(candidates[0].video_facts.is_none());
     }
 
     #[cfg(all(feature = "runtime-media-analysis", unix))]

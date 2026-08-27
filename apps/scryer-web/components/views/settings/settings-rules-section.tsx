@@ -79,7 +79,7 @@ type SettingsRulesSectionProps = {
   editRuleSet: (record: RuleSetRecord) => void;
   toggleRuleSetEnabled: (record: RuleSetRecord) => Promise<void> | void;
   deleteRuleSet: (record: RuleSetRecord) => Promise<void> | void;
-  validateDraft: () => Promise<void> | void;
+  validateDraft: () => Promise<RuleValidationResult | null>;
   validating: boolean;
   validationResult: RuleValidationResult | null;
   applyTemplate: (template: {
@@ -166,10 +166,40 @@ function formatRuleValidationError(error: string): string {
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
-function parseRuleValidationDiagnostic(error: string): RegoEditorDiagnostic | null {
+function locationForReportedRulePath(
+  error: string,
+  regoSource: string,
+): RegoEditorDiagnostic | null {
+  const pathMatch = error.match(
+    /(?:Unknown|Unsupported dynamic) rule input path '([^']+)'/,
+  );
+  const path = pathMatch?.[1];
+  if (!path) {
+    return null;
+  }
+
+  const offset = regoSource.indexOf(path);
+  if (offset < 0) {
+    return null;
+  }
+
+  const beforePath = regoSource.slice(0, offset);
+  const line = beforePath.split("\n").length;
+  const lastNewline = beforePath.lastIndexOf("\n");
+  return {
+    line,
+    column: offset - lastNewline,
+    message: formatRuleValidationError(error),
+  };
+}
+
+function parseRuleValidationDiagnostic(
+  error: string,
+  regoSource: string,
+): RegoEditorDiagnostic | null {
   const match = error.match(/\S+\.rego:(\d+):(\d+)/);
   if (!match) {
-    return null;
+    return locationForReportedRulePath(error, regoSource);
   }
 
   const rawLine = Number.parseInt(match[1] ?? "", 10);
@@ -187,13 +217,14 @@ function parseRuleValidationDiagnostic(error: string): RegoEditorDiagnostic | nu
 
 function getRuleValidationDiagnostics(
   validationResult: RuleValidationResult | null,
+  regoSource: string,
 ): RegoEditorDiagnostic[] {
   if (!validationResult || validationResult.valid) {
     return [];
   }
 
   return validationResult.errors
-    .map(parseRuleValidationDiagnostic)
+    .map((error) => parseRuleValidationDiagnostic(error, regoSource))
     .filter((diagnostic): diagnostic is RegoEditorDiagnostic => Boolean(diagnostic));
 }
 
@@ -895,8 +926,8 @@ export function SettingsRulesSection({
 }: SettingsRulesSectionProps) {
   const t = useTranslate();
   const validationDiagnostics = React.useMemo(
-    () => getRuleValidationDiagnostics(validationResult),
-    [validationResult],
+    () => getRuleValidationDiagnostics(validationResult, ruleSetDraft.regoSource),
+    [ruleSetDraft.regoSource, validationResult],
   );
 
   return (
@@ -1176,7 +1207,11 @@ export function SettingsRulesSection({
                 ) : null}
 
                 <div className="flex gap-2">
-                  <Button id="settings-rule-save" type="submit" disabled={mutatingRuleSetId !== null}>
+                  <Button
+                    id="settings-rule-save"
+                    type="submit"
+                    disabled={mutatingRuleSetId !== null || validating}
+                  >
                     {mutatingRuleSetId !== null
                       ? t("label.saving")
                       : editingRuleSetId

@@ -8,6 +8,10 @@ const WEB_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 type DownloadQueueModule = {
   IMPORT_ATTENTION_STATUSES: string[];
+  sameDownloadQueueItem: (
+    current: DownloadQueueItem,
+    next: DownloadQueueItem,
+  ) => boolean;
   isManualImportRequiredQueueItem: (item: DownloadQueueItem) => boolean;
   mergeAuthoritativeQueueItems: (
     authoritativeItems: DownloadQueueItem[],
@@ -91,6 +95,33 @@ function queueItem(overrides: Partial<DownloadQueueItem> = {}): DownloadQueueIte
     ...overrides,
   };
 }
+
+test("queue item equality ignores regenerated equivalent payload objects", () => {
+  const current = queueItem({
+    trackedStatusMessages: ["waiting for import"],
+    queueScope: {
+      __typename: "EpisodeSetScopePayload",
+      episodeIds: ["episode-1", "episode-2"],
+    },
+  });
+  const next = {
+    ...current,
+    trackedStatusMessages: [...current.trackedStatusMessages],
+    queueScope: {
+      __typename: "EpisodeSetScopePayload" as const,
+      episodeIds: ["episode-1", "episode-2"],
+    },
+  };
+
+  assert.equal(downloadQueue.sameDownloadQueueItem(current, next), true);
+  assert.equal(
+    downloadQueue.sameDownloadQueueItem(
+      current,
+      { ...next, progressPercent: next.progressPercent + 1 },
+    ),
+    false,
+  );
+});
 
 const warnedItem = () =>
   queueItem({

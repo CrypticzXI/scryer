@@ -56,9 +56,10 @@ const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
   "POST_PROCESSING",
   "WARNING",
 ];
+const ACTIVITY_QUEUE_SORT: SortConfig = { key: "PROGRESS", direction: "DESC" };
 const DEFAULT_SORT_CONFIG_BY_TAB: SortConfigByTab = {
   import: { key: "STATUS", direction: "ASC" },
-  activity: { key: "STATUS", direction: "ASC" },
+  activity: ACTIVITY_QUEUE_SORT,
 };
 
 function arraysEqual<T>(left: T[], right: T[]): boolean {
@@ -173,7 +174,7 @@ export const ActivityContainer = memo(function ActivityContainer({
     filters: selectedActivityStatuses,
     clientIds: selectedActivityClientIds,
     scryerSubmittedOnly: activityScryerSubmittedOnly,
-    sort: sortConfigByTab.activity,
+    sort: ACTIVITY_QUEUE_SORT,
   });
   const {
     importItems,
@@ -743,6 +744,9 @@ export const ActivityContainer = memo(function ActivityContainer({
           activeTab,
           sortConfigByTab,
           toggleSort: (tab, nextKey) => {
+            if (tab === "activity") {
+              return;
+            }
             setSortConfigByTab((current) => {
               const currentConfig = current[tab];
               return {

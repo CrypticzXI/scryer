@@ -17,6 +17,72 @@ export type DownloadQueueDisplayStateInput = Pick<
   | "trackedStatusMessages"
 >;
 
+type QueueItemValueKey = Exclude<
+  keyof DownloadQueueItem,
+  "trackedStatusMessages" | "queueScope"
+>;
+
+const QUEUE_ITEM_VALUE_KEYS: readonly QueueItemValueKey[] = [
+  "id",
+  "titleId",
+  "episodeId",
+  "titleName",
+  "facet",
+  "isScryerOrigin",
+  "sourceProvider",
+  "clientId",
+  "clientName",
+  "clientType",
+  "state",
+  "displayState",
+  "progressPercent",
+  "importTransferPhase",
+  "importTransferBytes",
+  "importTransferTotalBytes",
+  "importTransferStartedAt",
+  "importTransferUpdatedAt",
+  "sizeBytes",
+  "remainingSeconds",
+  "queuedAt",
+  "lastUpdatedAt",
+  "attentionRequired",
+  "attentionReason",
+  "downloadClientItemId",
+  "downloadId",
+  "importStatus",
+  "importErrorCode",
+  "importErrorMessage",
+  "importedAt",
+  "deleteStatus",
+  "deleteErrorMessage",
+  "trackedState",
+  "trackedStatus",
+  "trackedMatchType",
+  "seedingState",
+  "seedRatio",
+  "seedRatioGoal",
+  "seedTimeSeconds",
+  "seedTimeGoalSeconds",
+  "isPrivate",
+];
+
+export function sameDownloadQueueItem(
+  current: DownloadQueueItem,
+  next: DownloadQueueItem,
+): boolean {
+  const currentStatusMessages = current.trackedStatusMessages ?? [];
+  const nextStatusMessages = next.trackedStatusMessages ?? [];
+  return (
+    current === next ||
+    (QUEUE_ITEM_VALUE_KEYS.every((key) => current[key] === next[key]) &&
+      currentStatusMessages.length === nextStatusMessages.length &&
+      currentStatusMessages.every(
+        (message, index) => message === nextStatusMessages[index],
+      ) &&
+      JSON.stringify(current.queueScope) === JSON.stringify(next.queueScope))
+  );
+}
+
 export function downloadQueueItemIdentityKey(
   item: Pick<DownloadQueueItem, "id" | "clientId" | "clientType" | "downloadClientItemId">,
 ): string {

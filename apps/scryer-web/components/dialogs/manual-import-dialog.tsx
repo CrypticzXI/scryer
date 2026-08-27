@@ -4,6 +4,10 @@ import { FileVideo, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
+  MediaInfoBadges,
+  type MediaInfoFile,
+} from "@/components/common/media-info-badges";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -35,10 +39,7 @@ import {
 } from "@/lib/graphql/mutations";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { compareManualImportSeasonLabels } from "@/lib/utils/manual-import-actions";
-import {
-  formatManualImportVideoFacts,
-  type ManualImportVideoFacts,
-} from "@/lib/utils/manual-import-video-facts";
+import { type ManualImportVideoFacts } from "@/lib/utils/manual-import-video-facts";
 import { buildViewPath } from "@/lib/utils/routing";
 import { useNavigate } from "react-router";
 import { useClient } from "urql";
@@ -61,6 +62,34 @@ type FilePreview = {
   suggestedEpisodeLabel: string | null;
   suggestedSeriesMovieLinkId: string | null;
 };
+
+function mediaInfoFileForManualImport(facts: ManualImportVideoFacts): MediaInfoFile {
+  return {
+    scanStatus: "scanned",
+    videoCodec: facts.videoCodec,
+    videoWidth: facts.videoWidth,
+    videoHeight: facts.videoHeight,
+    videoBitrateKbps: null,
+    videoBitDepth: null,
+    videoHdrFormat: null,
+    videoFrameRate: null,
+    videoProfile: null,
+    audioCodec: facts.audioCodec,
+    audioChannels: null,
+    audioBitrateKbps: null,
+    audioLanguages: [],
+    audioStreams: facts.audioCodec
+      ? [{ codec: facts.audioCodec, channels: null, language: null, bitrateKbps: null }]
+      : [],
+    subtitleLanguages: [],
+    subtitleCodecs: [],
+    subtitleStreams: [],
+    hasMultiaudio: false,
+    durationSeconds: facts.durationSeconds,
+    numChapters: null,
+    containerFormat: facts.containerFormat,
+  };
+}
 
 type AvailableEpisode = {
   id: string;
@@ -389,7 +418,7 @@ export function ManualImportDialog({
                   id="activity-manual-import-empty"
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
-                  No video files found in the download.
+                  The video files in this download do not have a recognized extension.
                 </p>
               )
             ) : (
@@ -415,9 +444,14 @@ export function ManualImportDialog({
                             <span className="block max-w-[280px] truncate font-[var(--font-code)] text-xs text-card-foreground" title={file.fileName}>
                               {file.fileName}
                             </span>
-                            <span className="mt-0.5 block max-w-[340px] truncate text-[10px] text-muted-foreground" title={formatManualImportVideoFacts(file.videoFacts)}>
-                              {formatManualImportVideoFacts(file.videoFacts)}
-                            </span>
+                            {file.videoFacts ? (
+                              <div className="mt-1">
+                                <MediaInfoBadges
+                                  file={mediaInfoFileForManualImport(file.videoFacts)}
+                                  includeContainer
+                                />
+                              </div>
+                            ) : null}
                           </div>
                         </div>
                       </TableCell>

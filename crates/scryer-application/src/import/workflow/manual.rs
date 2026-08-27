@@ -868,8 +868,22 @@ pub(crate) async fn qualify_manual_import_video_candidate(
             source_path.display()
         ))
     })?;
-    let has_known_video_extension = is_video_file(&canonical_path);
-    if !has_known_video_extension && metadata.len() < OPAQUE_MANUAL_IMPORT_PROBE_MIN_BYTES {
+    let has_known_video_extension = is_video_file(source_path);
+    let has_file_extension = source_path.extension().is_some();
+    if metadata.len() == 0 {
+        return Ok(None);
+    }
+
+    if has_known_video_extension {
+        return Ok(Some(QualifiedManualImportVideo {
+            source_entry_path: source_path.to_path_buf(),
+            canonical_path,
+            size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+            video_facts: None,
+        }));
+    }
+
+    if has_file_extension || metadata.len() < OPAQUE_MANUAL_IMPORT_PROBE_MIN_BYTES {
         return Ok(None);
     }
 
@@ -901,21 +915,7 @@ pub(crate) async fn qualify_manual_import_video_candidate(
                     duration_seconds: analysis.duration_seconds,
                 })
             }
-            // A manual import is the operator's recovery path. Native parsing
-            // is deliberately strict for opaque files, but an established video
-            // extension keeps a non-empty file selectable when the parser cannot
-            // handle an unusual yet legitimate mux.
-            Err(scryer_mediainfo::MediaInfoError::Parse(_))
-                if has_known_video_extension && metadata.len() > 0 =>
-            {
-                None
-            }
             Ok(_) | Err(scryer_mediainfo::MediaInfoError::Parse(_)) => return Ok(None),
-            Err(scryer_mediainfo::MediaInfoError::UnsupportedFormat(_))
-                if has_known_video_extension =>
-            {
-                None
-            }
             Err(scryer_mediainfo::MediaInfoError::UnsupportedFormat(_)) => return Ok(None),
             Err(scryer_mediainfo::MediaInfoError::Io(error)) => {
                 return Err(AppError::Validation(format!(
@@ -928,10 +928,7 @@ pub(crate) async fn qualify_manual_import_video_candidate(
 
     #[cfg(not(feature = "runtime-media-analysis"))]
     let video_facts = {
-        if !has_known_video_extension {
-            return Ok(None);
-        }
-        None
+        return Ok(None);
     };
 
     Ok(Some(QualifiedManualImportVideo {
