@@ -40,12 +40,6 @@ async fn run_import(
     };
 
     drop(preparation_permit.take());
-    let _title_permit = app
-        .runtime
-        .imports
-        .execution_coordinator
-        .acquire_title(&target.title.id)
-        .await;
     let result = dispatch_completed_import_target(
         app,
         actor,

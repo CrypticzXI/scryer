@@ -922,11 +922,6 @@ const MAX_CONCURRENT_IMPORT_FINALIZATIONS: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct ImportExecutionCoordinator {
-    title_permits: Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
-        >,
-    >,
     destination_permits: Arc<
         tokio::sync::Mutex<
             std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
@@ -940,7 +935,6 @@ pub(crate) struct ImportExecutionCoordinator {
 impl Default for ImportExecutionCoordinator {
     fn default() -> Self {
         Self {
-            title_permits: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             destination_permits: Arc::new(
                 tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ),
@@ -958,21 +952,6 @@ impl Default for ImportExecutionCoordinator {
 }
 
 impl ImportExecutionCoordinator {
-    pub(crate) async fn acquire_title(&self, title_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let permit = {
-            let mut permits = self.title_permits.lock().await;
-            permits.retain(|_, permit| permit.strong_count() > 0);
-            if let Some(permit) = permits.get(title_id).and_then(std::sync::Weak::upgrade) {
-                permit
-            } else {
-                let permit = Arc::new(tokio::sync::Mutex::new(()));
-                permits.insert(title_id.to_string(), Arc::downgrade(&permit));
-                permit
-            }
-        };
-        permit.lock_owned().await
-    }
-
     pub(crate) async fn acquire_destination(
         &self,
         destination: &std::path::Path,
@@ -1030,33 +1009,6 @@ mod import_execution_coordinator_tests {
         MAX_CONCURRENT_IMPORT_PREPARATIONS,
     };
     use std::time::Duration;
-
-    #[tokio::test]
-    async fn serializes_only_matching_titles() {
-        let coordinator = ImportExecutionCoordinator::default();
-        let first = coordinator.acquire_title("title-1").await;
-        let waiting = tokio::spawn({
-            let coordinator = coordinator.clone();
-            async move {
-                let _second = coordinator.acquire_title("title-1").await;
-            }
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!waiting.is_finished());
-
-        let other =
-            tokio::time::timeout(Duration::from_secs(1), coordinator.acquire_title("title-2"))
-                .await
-                .expect("different title should not wait");
-        drop(other);
-
-        drop(first);
-        tokio::time::timeout(Duration::from_secs(1), waiting)
-            .await
-            .expect("second import should acquire after the first completes")
-            .expect("waiting import task should complete");
-    }
 
     #[tokio::test]
     async fn serializes_only_matching_import_destinations() {

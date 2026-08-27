@@ -2401,39 +2401,6 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
     files: Vec<ManualImportFileMapping>,
     trusted_source_root: Option<PathBuf>,
 ) -> AppResult<Vec<ManualImportFileResult>> {
-    let _title_permit = app
-        .runtime
-        .imports
-        .execution_coordinator
-        .acquire_title(title_id)
-        .await;
-    execute_manual_import_with_release_evidence_locked(
-        app,
-        actor,
-        import_id,
-        title_id,
-        completed,
-        release_evidence,
-        files,
-        trusted_source_root,
-    )
-    .await
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "manual execution carries explicit user mappings, trusted root, and durable release evidence"
-)]
-async fn execute_manual_import_with_release_evidence_locked(
-    app: &AppUseCase,
-    actor: &User,
-    import_id: &str,
-    title_id: &str,
-    completed: Option<&CompletedDownload>,
-    release_evidence: &ReleaseEvidence,
-    files: Vec<ManualImportFileMapping>,
-    trusted_source_root: Option<PathBuf>,
-) -> AppResult<Vec<ManualImportFileResult>> {
     if let Some(submission_title_id) = release_evidence.title_id()
         && submission_title_id != title_id
     {
@@ -3314,16 +3281,10 @@ async fn execute_queued_manual_import_with_outcome_inner(
     }
 
     drop(preparation_permit);
-    let _title_permit = app
-        .runtime
-        .imports
-        .execution_coordinator
-        .acquire_title(title_id)
-        .await;
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
-    let results = execute_manual_import_with_release_evidence_locked(
+    let results = execute_manual_import_with_release_evidence(
         app,
         &actor,
         import_id,
