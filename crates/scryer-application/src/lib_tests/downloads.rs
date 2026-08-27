@@ -7358,6 +7358,199 @@ async fn automatic_import_uses_grabbed_episode_for_absolute_numbered_release() {
 }
 
 #[tokio::test]
+async fn alternate_numbered_sole_scene_file_reconciles_from_typoed_alias() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            library_dir,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let title = app
+        .services
+        .catalog
+        .titles
+        .update_title_hydrated_metadata(
+            &title.id,
+            crate::TitleMetadataUpdate {
+                aliases: vec!["Alias Numbered Story".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("add title alias");
+    let scoped_episode =
+        create_pack_episode_in_season(&app, &user, &title.id, 17, 42, Some(408), "standard").await;
+
+    let release_title = "Fail.Closed.Pack.S17E42.1080p.WEB-DL.x264";
+    let item_id = "alternate-numbered-sole-scene-file";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Episode {
+            episode_id: scoped_episode.id.clone(),
+        },
+    )
+    .await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    write_pack_video(
+        source_dir.path(),
+        "Aliaz.Numbered.Story.S01E42.1080p.WEB-DL.x264.mkv",
+    );
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+    let result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("alternate-numbered scene file should import")
+    };
+
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Imported);
+    assert_eq!(result.episode_ids, vec![scoped_episode.id.clone()]);
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list imported file");
+    assert_eq!(media_files.len(), 1, "{media_files:?}");
+    assert_eq!(
+        media_files[0].episode_id.as_deref(),
+        Some(scoped_episode.id.as_str())
+    );
+    assert!(
+        library_video_file_names(library_dir.path())
+            .iter()
+            .any(|file_name| file_name.contains("S17E42")),
+        "catalog numbering must drive the destination"
+    );
+}
+
+#[tokio::test]
+async fn manual_import_preview_reconciles_alternate_numbered_typoed_alias() {
+    let (
+        FailClosedPackFixture {
+            app, user, title, ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let title = app
+        .services
+        .catalog
+        .titles
+        .update_title_hydrated_metadata(
+            &title.id,
+            crate::TitleMetadataUpdate {
+                aliases: vec!["Alias Numbered Story".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("add title alias");
+    let scoped_episode =
+        create_pack_episode_in_season(&app, &user, &title.id, 17, 42, Some(408), "standard").await;
+    let release_title = "Fail.Closed.Pack.S17E42.1080p.WEB-DL.x264";
+    let item_id = "manual-preview-alternate-numbering";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Episode {
+            episode_id: scoped_episode.id.clone(),
+        },
+    )
+    .await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    write_pack_video(
+        source_dir.path(),
+        "Aliaz.Numbered.Story.S01E42.1080p.WEB-DL.x264.mkv",
+    );
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+    let release_evidence =
+        crate::import::workflow::resolve_release_evidence_for_completed_download(
+            &app, &completed, None,
+        )
+        .await
+        .expect("resolve durable release evidence");
+
+    let suggested_episode_ids =
+        crate::import::workflow::preview_manual_import_suggested_episode_ids_for_tests(
+            &app,
+            source_dir.path(),
+            &title,
+            &release_evidence,
+            &[scoped_episode.clone()],
+        )
+        .await
+        .expect("preview manual import");
+
+    assert_eq!(suggested_episode_ids.len(), 1, "{suggested_episode_ids:?}");
+    assert_eq!(
+        suggested_episode_ids[0].as_deref(),
+        Some(scoped_episode.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn unmatched_scene_episode_number_is_not_reconciled_from_scoped_release() {
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode: scoped_episode,
+            library_dir,
+            ..
+        },
+        download_submissions,
+    ) = fail_closed_pack_fixture_with_submissions().await;
+    let release_title = "Fail.Closed.Pack.S01E01.1080p.WEB-DL.x264";
+    let item_id = "unmatched-scene-episode-number";
+    record_pack_identity_submission(
+        &download_submissions,
+        &title.id,
+        item_id,
+        release_title,
+        SubmissionScope::Episode {
+            episode_id: scoped_episode.id.clone(),
+        },
+    )
+    .await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    write_pack_video(
+        source_dir.path(),
+        "Fail.Closed.Pack.S01E99.1080p.WEB-DL.x264.mkv",
+    );
+    let completed =
+        series_pack_completed_download(item_id, &title.id, release_title, source_dir.path());
+
+    let result = {
+        let _probe = probe_agrees_with_the_name(1920, 1080);
+        crate::import::import::import_completed_download(&app, &user, &completed)
+            .await
+            .expect("unmatched scene file should be rejected")
+    };
+
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Rejected);
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::PolicyMismatch));
+    assert!(result.episode_ids.is_empty(), "{result:?}");
+    assert!(
+        library_video_file_names(library_dir.path()).is_empty(),
+        "an unmatched file must remain outside the library"
+    );
+}
+
+#[tokio::test]
 async fn conflicting_sole_scene_file_is_rejected_against_grabbed_episode() {
     let (
         FailClosedPackFixture {

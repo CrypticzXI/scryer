@@ -1130,6 +1130,20 @@ async fn preview_manual_import(
             }
         }
 
+        if suggested_episode_id.is_none()
+            && let Some(episode) = reconcile_unresolved_scene_episode_from_scoped_release(
+                app,
+                title,
+                release_evidence,
+                path,
+                video_files.len() > 1,
+            )
+            .await?
+        {
+            suggested_episode_id = Some(episode.id.clone());
+            suggested_episode_label = Some(manual_import_episode_label(&episode));
+        }
+
         let is_grabbed_fallback_path = grabbed_fallback_path
             .as_ref()
             .is_some_and(|fallback| fallback == path);
@@ -1170,6 +1184,28 @@ async fn preview_manual_import(
     }
 
     Ok(ManualImportPreview { files: previews })
+}
+
+#[cfg(test)]
+pub(crate) async fn preview_manual_import_suggested_episode_ids_for_tests(
+    app: &AppUseCase,
+    source_dir: &Path,
+    title: &scryer_domain::Title,
+    release_evidence: &ReleaseEvidence,
+    available_episodes: &[scryer_domain::Episode],
+) -> AppResult<Vec<Option<String>>> {
+    Ok(preview_manual_import(
+        app,
+        source_dir,
+        title,
+        release_evidence,
+        available_episodes,
+    )
+    .await?
+    .files
+    .into_iter()
+    .map(|file| file.suggested_episode_id)
+    .collect())
 }
 
 /// Whether the preview may pre-select the single grabbed episode for a file.
