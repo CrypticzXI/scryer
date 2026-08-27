@@ -2616,6 +2616,62 @@ async fn graphql_movie_entity_ratings_and_credits_are_read_from_local_storage() 
 }
 
 #[tokio::test]
+async fn batch_series_movie_links_keep_shared_entity_ratings() {
+    let ctx = TestContext::new().await;
+    let first_title = create_catalog_title(
+        &ctx,
+        "First Crossover Series",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let second_title = create_catalog_title(
+        &ctx,
+        "Second Crossover Series",
+        MediaFacet::Anime,
+        vec![],
+        vec![],
+        true,
+    )
+    .await;
+    let first_link = create_test_series_movie_link(
+        &ctx,
+        &first_title,
+        "Shared Crossover Movie",
+        "7654305",
+        None,
+        None,
+    )
+    .await;
+    let second_link = create_test_series_movie_link(
+        &ctx,
+        &second_title,
+        "Shared Crossover Movie",
+        "7654305",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(first_link.movie.id, second_link.movie.id);
+
+    let links = ctx
+        .shows
+        .list_series_movie_links_for_titles(&[first_title.id, second_title.id])
+        .await
+        .expect("batch series movie links");
+    assert_eq!(links.len(), 2);
+    assert!(links.iter().all(|link| {
+        link.movie
+            .ratings
+            .as_ref()
+            .and_then(|ratings| ratings.rating)
+            == Some(8.7)
+    }));
+}
+
+#[tokio::test]
 async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
     let ctx = TestContext::new().await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
