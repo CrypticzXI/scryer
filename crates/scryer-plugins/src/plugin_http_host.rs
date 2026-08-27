@@ -154,7 +154,7 @@ impl PluginHttpRuntime {
         Ok(())
     }
 
-    fn extra_ca_bundle_pem(&self) -> HostResult<String> {
+    pub(crate) fn extra_ca_bundle_pem(&self) -> HostResult<String> {
         self.state
             .lock()
             .map_err(|error| format!("plugin HTTP runtime lock poisoned: {error}"))
@@ -633,20 +633,6 @@ impl PluginHttpHost {
             .map(|response| response.headers.clone()))
     }
 
-    pub(crate) fn take_response_metadata(
-        &self,
-        plugin_id: &str,
-    ) -> HostResult<(u16, BTreeMap<String, String>)> {
-        let response = self
-            .state
-            .lock()
-            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?
-            .last_responses
-            .remove(plugin_id)
-            .unwrap_or_default();
-        Ok((response.status_code, response.headers))
-    }
-
     pub(crate) fn rate_limit_message(&self, plugin_id: &str) -> HostResult<Option<String>> {
         let host_state = self
             .state
@@ -680,7 +666,7 @@ impl PluginHttpHost {
         }
     }
 
-    fn record_captured_response(
+    pub(crate) fn record_captured_response(
         capture: &IndexerErrorCaptureContext,
         response: CapturedIndexerHttpResponse,
     ) {
@@ -707,7 +693,7 @@ impl PluginHttpHost {
         }
     }
 
-    fn record_transport_failure(capture: &IndexerErrorCaptureContext) {
+    pub(crate) fn record_transport_failure(capture: &IndexerErrorCaptureContext) {
         tracing::warn!(
             indexer_id = capture.indexer_id.as_str(),
             operation = capture.operation.as_str(),
@@ -769,7 +755,10 @@ impl PluginHttpHost {
     }
 }
 
-fn enforce_allowed_hosts(allowed_hosts: Option<&[String]>, request_url: &str) -> HostResult<()> {
+pub(crate) fn enforce_allowed_hosts(
+    allowed_hosts: Option<&[String]>,
+    request_url: &str,
+) -> HostResult<()> {
     let url = url::Url::parse(request_url).map_err(|error| format!("Invalid URL: {error:?}"))?;
     let host = url.host_str().unwrap_or_default();
     let matches = allowed_hosts.is_some_and(|patterns| {

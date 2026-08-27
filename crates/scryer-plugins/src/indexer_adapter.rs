@@ -35,11 +35,13 @@ use crate::types::{
     normalize_indexer_info_hash, tagged_alias_to_sdk,
 };
 use crate::wasmtime_host::command_host::CommandHost;
+use crate::wasmtime_host::component_host::{ComponentActor, ComponentHost, ComponentRuntime};
+use crate::wasmtime_host::engine;
 use crate::wasmtime_host::{CommandInvocation, process_command};
 
 /// One configured indexer, backed by either runtime.
 ///
-/// Exactly one of `worker`/`command` is populated. Legacy artifacts keep the
+/// Exactly one of `worker`/`command`/`component` is populated. Legacy artifacts keep the
 /// dedicated worker thread that owns a long-lived Extism instance; command-ABI
 /// artifacts are instantiated per invocation by [`process_command`], so they
 /// need no thread of their own. Keeping both here — rather than behind a trait —
@@ -52,6 +54,7 @@ pub struct WasmIndexerClient {
     indexer_error_recorder: Arc<dyn IndexerErrorRecorder>,
     worker: Option<IndexerPluginWorker>,
     command: Option<Arc<CommandIndexer>>,
+    component: Option<Arc<ComponentIndexer>>,
 }
 
 struct CommandIndexer {
@@ -68,6 +71,16 @@ struct CommandIndexer {
     /// requests leave in order. Dropping the lock would change upstream
     /// request patterns as a side effect of a runtime migration.
     invocation_lock: tokio::sync::Mutex<()>,
+}
+
+/// A retained WASI Preview 2 instance for one configured indexer. Calls are
+/// serialized at this boundary, while the component may drive as much
+/// upstream HTTP fanout as its own policy allows.
+struct ComponentIndexer {
+    runtime: Arc<ComponentRuntime>,
+    host: ComponentHost,
+    timeout: std::time::Duration,
+    actor: tokio::sync::Mutex<Option<ComponentActor>>,
 }
 
 struct PluginSearchCallResponse {
@@ -255,6 +268,7 @@ impl WasmIndexerClient {
             indexer_error_recorder,
             worker: Some(worker),
             command: None,
+            component: None,
         })
     }
 
@@ -322,6 +336,58 @@ impl WasmIndexerClient {
                 command_host,
                 timeout: inputs.timeout,
                 invocation_lock: tokio::sync::Mutex::new(()),
+            })),
+            component: None,
+        })
+    }
+
+    /// Build an async WASI Preview 2 component indexer. The component is
+    /// compiled once for this configured client and instantiated lazily on its
+    /// first operation; its state then remains alive until a trap, timeout,
+    /// cancellation, provider reload, or configuration change replaces this
+    /// client.
+    pub fn new_component_with_indexer_error_recorder(
+        wasm_bytes: Vec<u8>,
+        descriptor: PluginDescriptor,
+        indexer_name: String,
+        config: IndexerConfig,
+        indexer_proxy_config: Option<IndexerProxyConfig>,
+        indexer_error_recorder: Arc<dyn IndexerErrorRecorder>,
+    ) -> Result<Self, AppError> {
+        let inputs =
+            build_runtime_inputs(&descriptor, &indexer_name, &config, indexer_proxy_config);
+        let host = ComponentHost::for_indexer(
+            inputs
+                .config_entries
+                .into_iter()
+                .collect::<BTreeMap<_, _>>(),
+            inputs.allowed_hosts,
+            inputs.indexer_proxy_policy,
+            inputs.timeout,
+            None,
+        )
+        .map_err(AppError::Repository)?;
+        let runtime = ComponentRuntime::new(engine::shared_async_engine(), &wasm_bytes)
+            .map_err(AppError::Repository)?;
+
+        info!(
+            indexer = indexer_name.as_str(),
+            plugin = descriptor.name.as_str(),
+            "WASI Preview 2 indexer component registered"
+        );
+
+        Ok(Self {
+            descriptor,
+            indexer_id: config.id,
+            indexer_name,
+            indexer_error_recorder,
+            worker: None,
+            command: None,
+            component: Some(Arc::new(ComponentIndexer {
+                runtime: Arc::new(runtime),
+                host,
+                timeout: inputs.timeout,
+                actor: tokio::sync::Mutex::new(None),
             })),
         })
     }
@@ -396,12 +462,147 @@ impl WasmIndexerClient {
         }
     }
 
+    /// Invoke one retained component operation. Store ownership remains inside
+    /// the actor for ordinary calls. Cancellation, timeout, and a component
+    /// trap remove the actor while holding its serialization lock, which drops
+    /// the Store and therefore every in-flight async host HTTP future before a
+    /// subsequent request recreates the instance.
+    async fn invoke_component(
+        &self,
+        command: PluginIndexerCommand,
+        operation: &'static str,
+        cancel_token: Option<&CancellationToken>,
+    ) -> AppResult<Option<PluginIndexerCommandResult>> {
+        let Some(indexer) = self.component.as_ref() else {
+            return Ok(None);
+        };
+        let request = postcard::to_allocvec(&command).map_err(|error| {
+            AppError::Repository(format!("failed to encode indexer component request: {error}"))
+        })?;
+        let is_search = matches!(&command, PluginIndexerCommand::Search(_));
+        let token = cancel_token.cloned().unwrap_or_else(CancellationToken::new);
+        let _guard = indexer.actor.lock().await;
+        indexer.host.bind_cancellation(token.clone());
+        let mut actor = _guard;
+
+        if actor.is_none() {
+            *actor = Some(
+                indexer
+                    .runtime
+                    .instantiate(&indexer.host)
+                    .await
+                    .map_err(|error| {
+                        AppError::Repository(format!(
+                            "indexer component {} could not start {operation}: {error}",
+                            self.descriptor.id
+                        ))
+                    })?,
+            );
+        }
+
+        let call = async {
+            let Some(actor) = actor.as_mut() else {
+                unreachable!("component actor was initialized above");
+            };
+            tokio::time::timeout(indexer.timeout, async move {
+                if is_search {
+                    actor.search(request).await
+                } else {
+                    actor.action(request).await
+                }
+            })
+            .await
+        };
+        let response = tokio::select! {
+            _ = token.cancelled() => {
+                actor.take();
+                return Err(AppError::canceled("plugin indexer component search canceled"));
+            }
+            result = call => match result {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    actor.take();
+                    return Err(AppError::Repository(format!(
+                        "indexer component {} {operation} failed: {error}",
+                        self.descriptor.id
+                    )));
+                }
+                Err(_) => {
+                    actor.take();
+                    return Err(AppError::Repository(format!(
+                        "indexer component {} {operation} timed out after {} ms",
+                        self.descriptor.id,
+                        indexer.timeout.as_millis(),
+                    )));
+                }
+            },
+        };
+        let bytes = match response {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Err(AppError::Repository(format!(
+                    "indexer component {} {operation} returned invocation error {error:?}",
+                    self.descriptor.id
+                )));
+            }
+        };
+        let result = if is_search {
+            postcard::from_bytes::<PluginResult<PluginSearchResponse>>(&bytes)
+                .map(PluginIndexerCommandResult::Search)
+        } else {
+            postcard::from_bytes::<PluginResult<PluginActionResponse>>(&bytes)
+                .map(PluginIndexerCommandResult::Action)
+        }
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "indexer component {} {operation} returned invalid postcard response: {error}",
+                self.descriptor.id
+            ))
+        })?;
+        Ok(Some(result))
+    }
+
     #[allow(dead_code)]
     pub async fn indexer_action(
         &self,
         action: &str,
         query: BTreeMap<String, String>,
     ) -> AppResult<Option<serde_json::Value>> {
+        if let Some(indexer) = self.component.as_ref() {
+            indexer.host.begin_indexer_error_capture(
+                self.indexer_error_capture(IndexerErrorOperation::IndexerAction),
+            );
+            let result = match self
+                .invoke_component(
+                    PluginIndexerCommand::Action(PluginActionRequest {
+                        action: action.to_string(),
+                        payload: serde_json::json!({ "query": query }),
+                    }),
+                    "indexer_action",
+                    None,
+                )
+                .await
+            {
+                Ok(Some(PluginIndexerCommandResult::Action(result))) => {
+                    decode_command_result::<PluginActionResponse>(
+                        result,
+                        "indexer indexer_action component",
+                    )
+                    .map(|response| Some(response.payload))
+                }
+                Ok(Some(_)) => Err(AppError::Repository(
+                    "indexer component returned the wrong result for indexer_action".to_string(),
+                )),
+                Ok(None) => Err(AppError::Repository(
+                    "component indexer unexpectedly selected another runtime".to_string(),
+                )),
+                Err(error) => Err(error),
+            };
+            indexer
+                .host
+                .finish_indexer_error_capture(result.is_err());
+            return result;
+        }
         if let Some(indexer) = self.command.as_ref() {
             indexer.command_host.begin_indexer_error_capture(
                 self.indexer_error_capture(IndexerErrorOperation::IndexerAction),
@@ -464,6 +665,34 @@ impl WasmIndexerClient {
             ProviderDescriptor::Indexer(descriptor)
                 if descriptor.search_semantics_version.is_some()
         );
+        if let Some(indexer) = self.component.as_ref() {
+            indexer
+                .host
+                .begin_indexer_error_capture(self.indexer_error_capture(operation));
+            let result = match self
+                .invoke_component(
+                    PluginIndexerCommand::Search(request.clone()),
+                    "indexer_search",
+                    Some(&cancel_token),
+                )
+                .await
+            {
+                Ok(Some(PluginIndexerCommandResult::Search(result))) => {
+                    decode_search_result(result, attested, "indexer indexer_search component")
+                }
+                Ok(Some(_)) => Err(AppError::Repository(
+                    "indexer component returned the wrong result for indexer_search".to_string(),
+                )),
+                Ok(None) => Err(AppError::Repository(
+                    "component indexer unexpectedly selected another runtime".to_string(),
+                )),
+                Err(error) => Err(error),
+            };
+            indexer
+                .host
+                .finish_indexer_error_capture(result.is_err());
+            return result;
+        }
         if let Some(indexer) = self.command.as_ref() {
             indexer
                 .command_host

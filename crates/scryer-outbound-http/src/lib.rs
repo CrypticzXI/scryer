@@ -1322,6 +1322,49 @@ pub async fn prepare_plugin_http_target(
     prepare_plugin_http_target_from_url(url, label).await
 }
 
+/// The trust-bundle-aware counterpart to [`prepare_plugin_http_target`].
+/// Component plugins use this path so their async requests retain the same
+/// operator-installed private roots as the legacy command host while keeping
+/// DNS pinning and redirects disabled.
+pub async fn prepare_plugin_http_target_with_extra_ca(
+    raw: &str,
+    extra_ca_bundle_pem: &str,
+    label: &'static str,
+) -> Result<PinnedPluginHttpTarget, OutboundDestinationError> {
+    let url = validate_operator_http_url(raw, label)?;
+    let resolved_addrs = resolve_plugin_http_destination(&url, label).await?;
+    let host = url
+        .host_str()
+        .ok_or(OutboundDestinationError::MissingHost { label })?
+        .to_string();
+    let mut builder = reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &resolved_addrs);
+    if !extra_ca_bundle_pem.trim().is_empty() {
+        builder = builder.tls_certs_merge(
+            uploaded_root_certificates(extra_ca_bundle_pem).map_err(|source| {
+                OutboundDestinationError::TrustBundle {
+                    label,
+                    message: source,
+                }
+            })?,
+        );
+    }
+    let client = builder
+        .build()
+        .map_err(|source| OutboundDestinationError::ClientBuild {
+            label,
+            host: host.clone(),
+            source,
+        })?;
+    Ok(PinnedPluginHttpTarget {
+        url,
+        host,
+        resolved_addrs,
+        client,
+    })
+}
+
 /// Same as [`prepare_plugin_http_target`] but for an already-parsed URL; use
 /// this to re-validate a redirect location before following it.
 pub async fn prepare_plugin_http_target_from_url(
@@ -1562,6 +1605,23 @@ pub fn blocking_indexer_proxy_reqwest_client(
     extra_ca_bundle_pem: &str,
 ) -> Result<BlockingClient, String> {
     let mut builder = blocking_reqwest_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(INDEXER_PROXY_USER_AGENT);
+    if !extra_ca_bundle_pem.trim().is_empty() {
+        builder = builder.tls_certs_merge(uploaded_root_certificates(extra_ca_bundle_pem)?);
+    }
+    builder
+        .build()
+        .map_err(|error| format!("failed to build indexer proxy HTTP client: {error}"))
+}
+
+/// Builds the async operator-managed client used by WASI Preview 2 indexer
+/// components for challenge-solver requests. Redirects stay disabled and the
+/// operator-installed private roots match the guarded target client.
+pub fn indexer_proxy_reqwest_client_with_extra_ca(
+    extra_ca_bundle_pem: &str,
+) -> Result<Client, String> {
+    let mut builder = reqwest_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(INDEXER_PROXY_USER_AGENT);
     if !extra_ca_bundle_pem.trim().is_empty() {

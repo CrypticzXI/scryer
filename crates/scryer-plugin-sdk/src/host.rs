@@ -78,23 +78,27 @@ pub struct PluginHttpResponse {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PluginHttpStartRate {
-    /// Number of request starts allowed during `interval_ms`.
-    pub starts: u32,
-    pub interval_ms: u64,
+// These wire-only types preserve the ordinal of the removed pre-release batch
+// operation in the postcard command ABI. They are deliberately hidden from the
+// SDK schema and provide no supported batch API.
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservedHttpBatchStartRate {
+    starts: u32,
+    interval_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PluginHttpBatchRequest {
-    pub requests: Vec<PluginHttpRequest>,
-    pub desired_start_rate: PluginHttpStartRate,
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservedHttpBatchRequest {
+    requests: Vec<PluginHttpRequest>,
+    desired_start_rate: ReservedHttpBatchStartRate,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PluginHttpBatchResponse {
-    /// One result for each request, in input order.
-    pub results: Vec<PluginResult<PluginHttpResponse>>,
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservedHttpBatchResponse {
+    results: Vec<PluginResult<PluginHttpResponse>>,
 }
 
 /// A process request evaluated only against the descriptor's process allowlist.
@@ -130,7 +134,9 @@ pub enum PluginHostRequest {
     StateSet(PluginStateSetRequest),
     StateDelete(PluginStateDeleteRequest),
     Http(PluginHttpRequest),
-    HttpBatch(PluginHttpBatchRequest),
+    #[doc(hidden)]
+    #[schemars(skip)]
+    ReservedHttpBatch(ReservedHttpBatchRequest),
     SocketOpen(SocketOpenRequest),
     SocketRead(SocketReadRequest),
     SocketWrite(SocketWriteRequest),
@@ -147,7 +153,9 @@ pub enum PluginHostResponse {
     StateSet(PluginResult<PluginStateMutationResponse>),
     StateDelete(PluginResult<PluginStateMutationResponse>),
     Http(PluginResult<PluginHttpResponse>),
-    HttpBatch(PluginResult<PluginHttpBatchResponse>),
+    #[doc(hidden)]
+    #[schemars(skip)]
+    ReservedHttpBatch(PluginResult<ReservedHttpBatchResponse>),
     SocketOpen(PluginResult<SocketOpenResponse>),
     SocketRead(PluginResult<SocketReadResponse>),
     SocketWrite(PluginResult<SocketWriteResponse>),
