@@ -282,11 +282,12 @@ pub use contracts::{
     MediaFileCatalogDisposition, MediaFileRole, NewBlocklistEntry, NewIndexerProxyConfig,
     NewSeedingProfile, NotificationScopeIdUpdate, ObservationResolution, ObservedClientJob,
     PendingReleasePageSort, PendingReleasesPageQuery, PendingStagedNzb, PersistedSeedGoals,
-    QueueDownloadOutcome, QueuedDownloadResult, QueuedReleaseSelection, ReleaseDecisionsQuery,
-    ResolvedDownloadArtifact, SearchMode, SeedingProfileUpdate, StagedNzbRef, StorageRootUsage,
-    SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict, SubtitleGenerationInput,
-    SubtitleProviderConfigUpdate, SubtitleProviderValidationResult, SubtitleStreamDetail,
-    SuccessfulGrabCommit, TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
+    QueueDownloadOutcome, QueuedDownloadResult, QueuedManualImport, QueuedReleaseSelection,
+    ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode, SeedingProfileUpdate,
+    StagedNzbRef, StorageRootUsage, SubmissionConflictPolicy, SubmissionScope,
+    SubmissionScopeConflict, SubtitleGenerationInput, SubtitleProviderConfigUpdate,
+    SubtitleProviderValidationResult, SubtitleStreamDetail, SuccessfulGrabCommit,
+    TitleHistoryFilter, TitleHistoryPage, WantedSearchOutcome,
 };
 pub use domain_events::DomainEventActor;
 pub use download_client_path_mappings::{

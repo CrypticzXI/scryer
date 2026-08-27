@@ -4212,7 +4212,7 @@ async fn blocked_import_outcome_is_persisted_durably() {
 }
 
 #[tokio::test]
-async fn queued_manual_import_on_blocked_bridged_row_renders_as_importing() {
+async fn queued_manual_import_on_blocked_bridged_row_renders_as_pending() {
     // Prod 2026-08-18: five Shōgun manual imports queued against blocked Weaver
     // rows ran for minutes while every row still read "Import Blocked" with all
     // actions live — the operator could re-queue or cancel an import that was
@@ -4352,12 +4352,12 @@ async fn queued_manual_import_on_blocked_bridged_row_renders_as_importing() {
     .expect("a queued manual import must reach the bridged row");
     assert_eq!(
         crate::integration::derive_download_queue_display_state(&queued_row),
-        DownloadDisplayState::Importing,
+        DownloadDisplayState::ImportPending,
         "a live manual import wins the display over the block: {queued_row:?}"
     );
 
     // A finished import record is not live state: the row must stop rendering
-    // as Importing (the tracker may meanwhile re-evaluate the re-published
+    // as ImportPending (the tracker may meanwhile re-evaluate the re-published
     // completed item, so only the import-side outcome is asserted here; the
     // block-vs-status precedence itself is pinned by
     // `import_blocked_projection_keeps_a_live_manual_import_and_drops_a_finished_one`).

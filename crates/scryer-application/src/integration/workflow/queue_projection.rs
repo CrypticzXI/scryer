@@ -28,8 +28,10 @@ fn push_queue_status_detail(
 fn build_download_queue_status_detail(item: &DownloadQueueItem) -> String {
     let mut values = Vec::new();
     let mut seen = HashSet::new();
-    for message in &item.tracked_status_messages {
-        push_queue_status_detail(&mut values, &mut seen, Some(message));
+    if !item.import_status.is_some_and(ImportStatus::is_active) {
+        for message in &item.tracked_status_messages {
+            push_queue_status_detail(&mut values, &mut seen, Some(message));
+        }
     }
     push_queue_status_detail(&mut values, &mut seen, item.attention_reason.as_deref());
     push_queue_status_detail(&mut values, &mut seen, item.delete_error_message.as_deref());
@@ -46,8 +48,12 @@ fn base_download_queue_display_state(item: &DownloadQueueItem) -> DownloadDispla
     }
 
     match item.import_status {
-        Some(ImportStatus::Pending | ImportStatus::Running | ImportStatus::Processing) => {
+        Some(ImportStatus::Pending) => return DownloadDisplayState::ImportPending,
+        Some(ImportStatus::Running | ImportStatus::Processing) => {
             return DownloadDisplayState::Importing;
+        }
+        Some(ImportStatus::Completed) if item.state != DownloadQueueState::Warning => {
+            return DownloadDisplayState::Completed;
         }
         Some(ImportStatus::Failed | ImportStatus::Skipped)
             if matches!(

@@ -333,7 +333,10 @@ export const ActivityContainer = memo(function ActivityContainer({
       return;
     }
     const authoritativeByKey = new Map(
-      activityQueueItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+      [...activityQueueItems, ...importItems].map((item) => [
+        downloadQueueItemIdentityKey(item),
+        item,
+      ]),
     );
     setOptimisticQueueStates((current) => {
       const next = Object.fromEntries(
@@ -350,7 +353,7 @@ export const ActivityContainer = memo(function ActivityContainer({
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-  }, [activityQueueItems, optimisticQueueStates]);
+  }, [activityQueueItems, importItems, optimisticQueueStates]);
 
   const decrementImportBadges = useCallback((count = 1) => {
     dispatchNavigationBadgesRefresh({ delta: -Math.max(1, count) });
@@ -803,12 +806,14 @@ export const ActivityContainer = memo(function ActivityContainer({
           clientId={manualImportItem.clientId}
           clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
-          onImportComplete={() => {
-            setOptimisticallyRemovedKeys((current) => ({
+          onImportQueued={() => {
+            setOptimisticQueueStates((current) => ({
               ...current,
-              [downloadQueueItemIdentityKey(manualImportItem)]: true,
+              [downloadQueueItemIdentityKey(manualImportItem)]: {
+                state: manualImportItem.state,
+                displayState: "IMPORT_PENDING",
+              },
             }));
-            decrementImportBadges();
             void refreshVisibleTab();
           }}
         />

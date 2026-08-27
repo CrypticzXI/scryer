@@ -1783,7 +1783,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           clientId={manualImportItem.clientId}
           clientType={manualImportItem.clientType}
           downloadClientItemId={manualImportItem.downloadClientItemId}
-          onImportComplete={() => void handleManualImportComplete()}
+          onImportQueued={() => void handleManualImportComplete()}
         />
       )}
       {replaceConflictDialog}

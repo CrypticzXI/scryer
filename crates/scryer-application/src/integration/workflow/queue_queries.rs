@@ -290,14 +290,34 @@ fn apply_import_record_overlay_to_queue_item(item: &mut DownloadQueueItem, recor
         .or(Some(record.updated_at.clone()));
 }
 
+pub(crate) fn import_record_error_overlay(
+    record: &ImportRecord,
+) -> (Option<scryer_domain::ImportErrorCode>, Option<String>) {
+    if record.import_type == ImportType::ManualImport {
+        return record
+            .result_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<crate::ManualImportExecutionResult>(json).ok())
+            .map_or((None, None), |result| {
+                (result.error_code, result.error_message)
+            });
+    }
+
+    let error_message = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<scryer_domain::ImportResult>(json).ok())
+        .and_then(|result| result.error_message);
+    (None, error_message)
+}
+
 fn apply_import_record_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
     apply_import_record_overlay_to_queue_item(item, record);
-    if let Some(result_json) = record.result_json.as_deref()
-        && let Ok(result) = serde_json::from_str::<scryer_domain::ImportResult>(result_json)
-        && let Some(error_msg) = result.error_message
-    {
-        item.import_error_message = Some(error_msg.clone());
-        item.attention_reason = Some(error_msg);
+    let (error_code, error_message) = import_record_error_overlay(record);
+    item.import_error_code = error_code;
+    item.import_error_message = error_message.clone();
+    if let Some(error_message) = error_message {
+        item.attention_reason = Some(error_message);
     }
 }
 fn apply_delete_command_to_queue_item(
@@ -1584,28 +1604,7 @@ impl AppUseCase {
             .imports
             .update_import_transfer_progress(import_id, phase, bytes, total_bytes)
             .await?;
-
-        let Some(record) = self
-            .services
-            .workflow
-            .imports
-            .get_import_by_id(import_id)
-            .await?
-        else {
-            return Ok(());
-        };
-        self.runtime
-            .acquisition
-            .download_queue_snapshot
-            .stage_import_transfer_progress(
-                record.source_client_id.as_deref(),
-                record.source_system.as_str(),
-                record.source_ref.as_str(),
-                phase,
-                bytes,
-                total_bytes,
-            )
-            .await;
+        self.refresh_import_record_queue_snapshot(import_id).await;
         Ok(())
     }
 }

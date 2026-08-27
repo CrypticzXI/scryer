@@ -190,7 +190,7 @@ type Props = {
   clientId: string;
   clientType: string;
   downloadClientItemId: string;
-  onImportComplete?: () => void;
+  onImportQueued?: () => void;
 };
 
 export function ManualImportDialog({
@@ -201,7 +201,7 @@ export function ManualImportDialog({
   clientId,
   clientType,
   downloadClientItemId,
-  onImportComplete,
+  onImportQueued,
 }: Props) {
   const client = useClient();
   const navigate = useNavigate();
@@ -335,7 +335,7 @@ export function ManualImportDialog({
       }).toPromise();
       if (mutationError) throw mutationError;
       setGlobalStatus(t("queue.manualImportQueued"));
-      onImportComplete?.();
+      onImportQueued?.();
       onOpenChange(false);
     } catch (err: unknown) {
       setImportError(err, "Import failed");
@@ -345,7 +345,7 @@ export function ManualImportDialog({
   }, [
     client,
     mappings,
-    onImportComplete,
+    onImportQueued,
     onOpenChange,
     setImportError,
     setGlobalStatus,
