@@ -308,7 +308,7 @@ export function HistoryEventTable({
                     event.id,
                   )}
                 >
-                  <TableCell className="text-center">
+                  <TableCell className="align-middle text-center">
                     {hasExpandableContent ? (
                       <button
                         type="button"
@@ -328,7 +328,7 @@ export function HistoryEventTable({
                       </button>
                     ) : null}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="align-middle">
                     <span
                       className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${meta.badgeClassName}`}
                     >
@@ -337,7 +337,7 @@ export function HistoryEventTable({
                     </span>
                   </TableCell>
                   {showTitle ? (
-                    <TableCell className="align-top">
+                    <TableCell className="align-middle">
                       {titleHref ? (
                         <Link
                           to={titleHref}
@@ -377,7 +377,7 @@ export function HistoryEventTable({
                       ) : null}
                     </TableCell>
                   ) : null}
-                  <TableCell className="align-top">
+                  <TableCell className="align-middle">
                     <div
                       className="truncate text-sm text-foreground"
                       title={primarySourceLabel(event)}
@@ -385,7 +385,7 @@ export function HistoryEventTable({
                       {primarySourceLabel(event)}
                     </div>
                   </TableCell>
-                  <TableCell className="align-top text-center text-sm">
+                  <TableCell className="align-middle text-center text-sm">
                     {source ? (
                       <Link
                         to={source.to}
@@ -395,21 +395,21 @@ export function HistoryEventTable({
                         {source.label}
                       </Link>
                     ) : (
-                      <span className="text-muted-foreground">\u2014</span>
+                      <span className="text-muted-foreground">-</span>
                     )}
                   </TableCell>
-                  <TableCell className="align-top text-center text-sm text-muted-foreground">
+                  <TableCell className="align-middle text-center text-sm text-muted-foreground">
                     {historyTypeLabel(event, t)}
                   </TableCell>
                   {showActor ? (
                     <TableCell
                       id={selectorId("history-event-actor", event.eventType, event.id)}
-                      className="align-top text-center text-sm text-muted-foreground"
+                      className="align-middle text-center text-sm text-muted-foreground"
                     >
                       {actorLabel(event)}
                     </TableCell>
                   ) : null}
-                  <TableCell className="align-top text-center text-sm text-muted-foreground">
+                  <TableCell className="align-middle text-center text-sm text-muted-foreground">
                     <div className="font-medium text-foreground">
                       {formatUiDate(event.occurredAt ?? event.createdAt, dateTimeFormat)}
                     </div>
@@ -418,7 +418,7 @@ export function HistoryEventTable({
                     </div>
                   </TableCell>
                   {showActions ? (
-                    <TableCell className="align-top text-center">
+                    <TableCell className="align-middle text-center">
                       {retryable && !event.retryRequiresPassword && !isExpanded ? (
                         <div className="flex justify-center">
                           <Button
