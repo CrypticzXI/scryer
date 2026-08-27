@@ -148,11 +148,9 @@ export type TitleMediaFileRecord = {
 
 export type TitleReleaseBlocklistEntry = {
   id: string;
-  sourceHint: string | null;
-  sourceTitle: string | null;
+  releaseName: string;
   errorMessage: string | null;
   attemptedAt: string;
-  episodeIds: string[];
 };
 
 export type TitleRecord = {

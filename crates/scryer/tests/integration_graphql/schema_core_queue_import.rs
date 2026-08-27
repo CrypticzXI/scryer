@@ -859,7 +859,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
     }
 
     for (type_alias, name) in [
-        ("titleReleaseBlocklistEntry", "episodeIds"),
         ("episodeSetScope", "episodeIds"),
         ("titleHistoryEvent", "episodeIds"),
     ] {

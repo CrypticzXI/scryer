@@ -61,7 +61,7 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
         let mut deduped = Vec::new();
         for attempt in attempts {
             let Some(normalized_title) =
-                crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+                crate::normalize_release_name(attempt.source_title.as_deref())
             else {
                 continue;
             };
@@ -83,7 +83,7 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
         &self,
         title_id: &str,
         limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
+    ) -> AppResult<Vec<crate::ReleaseDownloadFailureRecord>> {
         let mut attempts: Vec<_> = self
             .attempts
             .lock()
@@ -100,12 +100,12 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
         let mut deduped = Vec::new();
         for attempt in attempts {
             let Some(normalized_title) =
-                crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+                crate::normalize_release_name(attempt.source_title.as_deref())
             else {
                 continue;
             };
             if seen.insert(normalized_title) {
-                deduped.push(TitleReleaseBlocklistEntry {
+                deduped.push(crate::ReleaseDownloadFailureRecord {
                     id: format!(
                         "failed-attempt:{}:{}:{}",
                         attempt.attempted_at,
@@ -116,7 +116,6 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
                     source_title: attempt.source_title,
                     error_message: attempt.error_message,
                     attempted_at: attempt.attempted_at,
-                    episode_ids: Vec::new(),
                 });
             }
             if deduped.len() >= limit {
@@ -154,28 +153,41 @@ impl ReleaseAttemptRepository for MockReleaseAttemptRepo {
 
 #[async_trait]
 impl BlocklistRepository for MockBlocklistRepo {
-    async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String> {
-        let id = Id::new().0;
-        let data_json = if entry.data.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_string(&entry.data)
-                    .map_err(|err| AppError::Repository(err.to_string()))?,
-            )
+    async fn block(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
+        let Some(normalized_release_name) =
+            crate::normalize_release_name(Some(&entry.release_name))
+        else {
+            return Ok(false);
         };
-        self.entries.lock().await.push(BlocklistEntry {
-            id: id.clone(),
+        let indexer_id = entry.indexer_id.trim().to_string();
+        let info_hash = entry.info_hash.clone();
+        let mut entries = self.entries.lock().await;
+        // Mirrors the two unique indexes: infohash keys a torrent block,
+        // (indexer, name) keys everything else.
+        let already_recorded = entries.iter().any(|existing| {
+            existing.title_id == entry.title_id
+                && match (&info_hash, &existing.info_hash) {
+                    (Some(left), Some(right)) => left == right,
+                    _ => {
+                        existing.indexer_id == indexer_id
+                            && existing.normalized_release_name == normalized_release_name
+                    }
+                }
+        });
+        if already_recorded {
+            return Ok(false);
+        }
+        entries.push(BlocklistEntry {
+            id: Id::new().0,
             title_id: entry.title_id.clone(),
-            source_title: entry.source_title.clone(),
-            source_hint: entry.source_hint.clone(),
-            quality: entry.quality.clone(),
-            download_id: entry.download_id.clone(),
+            release_name: entry.release_name.trim().to_string(),
+            normalized_release_name,
+            indexer_id,
+            info_hash,
             reason: entry.reason.clone(),
-            data_json,
             created_at: Utc::now().to_rfc3339(),
         });
-        Ok(id)
+        Ok(true)
     }
 
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>> {
@@ -200,22 +212,29 @@ impl BlocklistRepository for MockBlocklistRepo {
         Ok((page, total))
     }
 
-    async fn has_recorded_download_failure(
+    async fn is_blocked(
         &self,
         title_id: &str,
-        source_title: Option<&str>,
+        indexer_id: &str,
+        release_name: &str,
+        info_hash: Option<&str>,
     ) -> AppResult<bool> {
         let entries = self.entries.lock().await;
-        let normalized_source_title = source_title
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_ascii_lowercase);
-        if normalized_source_title.is_none() {
-            return Ok(false);
+        if let Some(info_hash) = info_hash
+            && entries.iter().any(|entry| {
+                entry.title_id == title_id && entry.info_hash.as_deref() == Some(info_hash)
+            })
+        {
+            return Ok(true);
         }
-
+        let Some(normalized_release_name) = crate::normalize_release_name(Some(release_name))
+        else {
+            return Ok(false);
+        };
         Ok(entries.iter().any(|entry| {
-            entry.title_id == title_id && entry.source_title == normalized_source_title
+            entry.title_id == title_id
+                && entry.normalized_release_name == normalized_release_name
+                && (entry.indexer_id.is_empty() || entry.indexer_id == indexer_id.trim())
         }))
     }
 
@@ -224,21 +243,23 @@ impl BlocklistRepository for MockBlocklistRepo {
         Ok(())
     }
 
-    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
-        Ok(self.entries.lock().await.iter().any(|entry| {
-            entry.title_id == title_id
-                && entry
-                    .source_title
-                    .as_deref()
-                    .is_some_and(|value| value == source_title)
-        }))
-    }
-
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
         self.entries
             .lock()
             .await
             .retain(|entry| entry.title_id != title_id);
+        Ok(())
+    }
+
+    async fn delete_for_indexer(&self, indexer_id: &str) -> AppResult<()> {
+        let indexer_id = indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Ok(());
+        }
+        self.entries
+            .lock()
+            .await
+            .retain(|entry| entry.indexer_id != indexer_id);
         Ok(())
     }
 }

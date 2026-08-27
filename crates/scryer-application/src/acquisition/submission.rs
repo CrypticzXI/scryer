@@ -362,7 +362,9 @@ impl AppUseCase {
             let guards = &self.runtime.acquisition.download_submission_guards;
             let snapshot_is_authoritative = |snapshot: &DownloadClientSnapshotOutcome| {
                 state.submissions.iter().all(|submission| {
-                    state.accepted_download_ids.contains(&submission.download_id)
+                    state
+                        .accepted_download_ids
+                        .contains(&submission.download_id)
                         || submission_client_state_is_authoritative(snapshot, submission)
                 })
             };

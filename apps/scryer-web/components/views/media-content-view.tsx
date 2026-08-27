@@ -1763,8 +1763,7 @@ function TitleContextPanel({
                         dateTimeFormat,
                       );
                       const releaseLabel =
-                        entry.sourceTitle?.trim() ||
-                        entry.sourceHint?.trim() ||
+                        entry.releaseName.trim() ||
                         t("episode.untitledRelease");
 
                       return (
@@ -1781,16 +1780,8 @@ function TitleContextPanel({
                                 {attemptedAtLabel ? (
                                   <span>{attemptedAtLabel}</span>
                                 ) : null}
-                                {entry.sourceHint ? (
-                                  <span>{entry.sourceHint}</span>
-                                ) : null}
                               </div>
                             </div>
-                            {entry.episodeIds.length > 0 ? (
-                              <span className="shrink-0 rounded-[6px] border border-[var(--scry-line3)] bg-[var(--scry-card)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--scry-muted2)]">
-                                {entry.episodeIds.length}
-                              </span>
-                            ) : null}
                           </div>
                           {entry.errorMessage ? (
                             <p className="mt-2 line-clamp-3 rounded-[8px] bg-[var(--scry-danger-bg)] px-2.5 py-1.5 text-[11px] leading-4 text-[var(--scry-danger-text)]">

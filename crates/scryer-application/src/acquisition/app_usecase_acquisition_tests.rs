@@ -368,7 +368,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     let wanted = base_series_movie_wanted_item();
 
     let title_submission = DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: wanted.title_id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),
@@ -392,7 +392,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     ));
 
     let matching_series_movie_submission = DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         scope: SubmissionScope::SeriesMovie {
             series_movie_link_id: wanted
                 .series_movie_link_id
@@ -408,7 +408,7 @@ fn series_movie_blocking_is_series_movie_link_scoped() {
     ));
 
     let different_series_movie_submission = DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         scope: SubmissionScope::SeriesMovie {
             series_movie_link_id: "series-movie-link-2".to_string(),
         },
@@ -426,7 +426,7 @@ fn episode_set_submission_blocks_each_covered_episode() {
     let mut wanted = base_episode_wanted_item();
     wanted.episode_id = Some("episode-2".to_string());
     let submission = DownloadSubmission {
-    download_id: scryer_domain::download_identity::DownloadId::new(),
+        download_id: scryer_domain::download_identity::DownloadId::new(),
         title_id: wanted.title_id.clone(),
         purpose: crate::DownloadSubmissionPurpose::Standard,
         facet: "anime".to_string(),
@@ -460,7 +460,8 @@ fn effective_auto_decision_code_marks_failed_route_unavailable() {
         "eligible",
     );
 
-    let empty_db_blocklist = std::collections::HashSet::new();
+    let empty_db_blocklist =
+        crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
     let failed_routes = vec![DownloadRouteKey::for_candidate(&candidate).unwrap()];
     let decision =
         effective_auto_decision_code_for_route(&candidate, &failed_routes, &empty_db_blocklist);
@@ -482,7 +483,8 @@ fn effective_auto_decision_code_suppresses_only_failed_indexer_route() {
     other_source.source_kind = Some(DownloadSourceKind::MagnetUri);
 
     let failed_routes = vec![DownloadRouteKey::for_candidate(&failed_indexer).unwrap()];
-    let empty_db_blocklist = std::collections::HashSet::new();
+    let empty_db_blocklist =
+        crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
 
     assert_eq!(
         effective_auto_decision_code_for_route(
@@ -505,7 +507,13 @@ fn effective_auto_decision_code_suppresses_only_failed_indexer_route() {
 #[test]
 fn effective_auto_decision_code_marks_db_blocklisted_release() {
     let candidate = test_search_result_with_decision("Blocked.Release", None, "eligible");
-    let db_blocklist = std::collections::HashSet::from(["blocked.release".to_string()]);
+    let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures {
+        release_names: std::collections::HashSet::from([(
+            String::new(),
+            "blocked.release".to_string(),
+        )]),
+        info_hashes: std::collections::HashSet::new(),
+    };
 
     let decision = effective_auto_decision_code_for_route(&candidate, &[], &db_blocklist);
 

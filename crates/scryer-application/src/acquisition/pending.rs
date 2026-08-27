@@ -1,7 +1,5 @@
 use super::*;
-use crate::acquisition_decision_helpers::{
-    blocklist_entry_data, is_download_submit_unavailable_error,
-};
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
 use chrono::{Duration, Utc};
 use scryer_domain::{DomainEventPayload, ReleaseGrabbedEventData};
@@ -762,36 +760,16 @@ impl AppUseCase {
                     crate::normalize_release_password(pr.source_password.as_deref()),
                 )
                 .await;
-            let wanted = self
-                .services
-                .workflow
-                .acquisition_scope_states
-                .get_acquisition_scope_state_by_id(&pr.wanted_item_id)
-                .await
-                .ok()
-                .flatten();
-            let data = wanted
-                .as_ref()
-                .map(|wanted| {
-                    blocklist_entry_data(
-                        wanted.episode_id.as_slice(),
-                        wanted.collection_id.as_deref(),
-                        wanted.series_movie_link_id.as_deref(),
-                    )
-                })
-                .unwrap_or_default();
             if let Err(error) = self
                 .services
                 .workflow
                 .blocklist_repo
-                .add(&NewBlocklistEntry {
+                .block(&NewBlocklistEntry {
                     title_id: title.id.clone(),
-                    source_title: Some(pr.release_title.clone()),
-                    source_hint: pr.release_url.clone(),
-                    quality: None,
-                    download_id: None,
+                    release_name: pr.release_title.clone(),
+                    indexer_id: pr.indexer_id.clone().unwrap_or_default(),
+                    info_hash: pr.info_hash.clone(),
                     reason: Some(reason),
-                    data,
                 })
                 .await
             {
@@ -827,11 +805,12 @@ impl AppUseCase {
         // Check the per-title blocklist (the single, removable exclusion source).
         let db_blocklist = self
             .load_title_release_blocklist_signatures(&title.id)
-            .await
-            .source_titles;
+            .await;
 
-        if crate::app_usecase_discovery::is_release_title_blocklisted(
+        if crate::app_usecase_discovery::is_release_blocklisted(
+            pr.indexer_id.as_deref(),
             &pr.release_title,
+            pr.info_hash.as_deref(),
             &db_blocklist,
         ) {
             return Ok(PendingGrabOutcome::Rejected);
@@ -1509,24 +1488,19 @@ impl AppUseCase {
                 // the per-title blocklist entry is what search-time exclusion
                 // consults (and what the operator can remove); the Failed
                 // attempt above is the audit record.
-                if let Err(error) = self
-                    .services
-                    .workflow
-                    .blocklist_repo
-                    .add(&NewBlocklistEntry {
-                        title_id: title.id.clone(),
-                        source_title,
-                        source_hint,
-                        quality: None,
-                        download_id: None,
-                        reason: Some(format!("grab failed: {err}")),
-                        data: blocklist_entry_data(
-                            wanted.episode_id.as_slice(),
-                            wanted.collection_id.as_deref(),
-                            wanted.series_movie_link_id.as_deref(),
-                        ),
-                    })
-                    .await
+                if let Some(release_name) = source_title.clone()
+                    && let Err(error) = self
+                        .services
+                        .workflow
+                        .blocklist_repo
+                        .block(&NewBlocklistEntry {
+                            title_id: title.id.clone(),
+                            release_name,
+                            indexer_id: pr.indexer_id.clone().unwrap_or_default(),
+                            info_hash: pr.info_hash.clone(),
+                            reason: Some(format!("grab failed: {err}")),
+                        })
+                        .await
                 {
                     warn!(
                         error = %error,

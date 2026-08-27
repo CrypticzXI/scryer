@@ -544,12 +544,14 @@ fn build_background_acquisition_title_work(
                     });
                 }
             }
-            ready.extend(indices.into_iter().map(|target_index| {
-                BackgroundAcquisitionWork {
-                    target_index,
-                    kind: BackgroundAcquisitionWorkKind::Scope,
-                }
-            }));
+            ready.extend(
+                indices
+                    .into_iter()
+                    .map(|target_index| BackgroundAcquisitionWork {
+                        target_index,
+                        kind: BackgroundAcquisitionWorkKind::Scope,
+                    }),
+            );
             Some(BackgroundAcquisitionTitleWork { title_id, ready })
         })
         .collect()
@@ -795,10 +797,7 @@ async fn try_series_pack_for_title(
         &qualifying_collection_ids,
     )
     .await;
-    let blocklist = app
-        .load_title_release_blocklist_signatures(&title.id)
-        .await
-        .source_titles;
+    let blocklist = app.load_title_release_blocklist_signatures(&title.id).await;
 
     for (candidate_index, candidate) in evaluated_candidates.iter().enumerate() {
         let key = crate::app_usecase_discovery::release_search_key(candidate);
@@ -1082,7 +1081,7 @@ async fn persist_series_pack_runner_ups(
     anchors: &HashMap<String, AcquisitionScopeState>,
     now: &DateTime<Utc>,
     failed_routes: &[DownloadRouteKey],
-    blocklist: &HashSet<String>,
+    blocklist: &crate::app_usecase_discovery::TitleReleaseBlocklistSignatures,
 ) {
     let mut anchor_ids = candidates
         .iter()
@@ -1606,10 +1605,7 @@ async fn process_single_target(
             );
             return Ok(());
         }
-        (
-            uncovered.into_iter().collect(),
-            Some(convergence.scope_key),
-        )
+        (uncovered.into_iter().collect(), Some(convergence.scope_key))
     };
 
     // The scope is about to be searched — its state row exists from here on,
@@ -1802,8 +1798,7 @@ async fn process_single_target(
                         );
                         let pack_title = Some(best_pack.title.clone());
                         let pack_hint = normalize_release_attempt_hint(pack_url.as_deref());
-                        let pack_title_norm =
-                            normalize_release_attempt_title(pack_title.as_deref());
+                        let pack_title_norm = normalize_release_name(pack_title.as_deref());
                         let pack_password =
                             normalize_release_password(best_pack.password_hint.as_deref());
                         let request_signature = normalize_release_selection_signature(
@@ -1811,11 +1806,7 @@ async fn process_single_target(
                             pack_title.as_deref(),
                             best_pack.source_kind,
                         );
-                        let info_hash_hint = best_pack
-                            .extra
-                            .get("info_hash")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string);
+                        let info_hash_hint = best_pack.info_hash().map(str::to_string);
                         let seed_minimums =
                             crate::ReleaseSeedMinimums::from_release_extra(&best_pack.extra);
                         let download_id = scryer_domain::download_identity::DownloadId::new();
@@ -1864,14 +1855,14 @@ async fn process_single_target(
                             .await;
 
                         let canonical_submission = match canonical_result {
-                                Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => {
-                                    Ok(submission)
-                                }
-                                Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => {
-                                    break 'season_pack_candidates;
-                                }
-                                Err(error) => Err(error),
-                            };
+                            Ok(CanonicalDownloadSubmissionOutcome::Accepted(submission)) => {
+                                Ok(submission)
+                            }
+                            Ok(CanonicalDownloadSubmissionOutcome::Conflict(_)) => {
+                                break 'season_pack_candidates;
+                            }
+                            Err(error) => Err(error),
+                        };
 
                         match canonical_submission {
                             Ok(canonical_submission) => {
@@ -1955,10 +1946,8 @@ async fn process_single_target(
                                         grabbed_at: Some(now.to_rfc3339()),
                                     })
                                     .await?;
-                                let pack_blocklist = app
-                                    .load_title_release_blocklist_signatures(&title.id)
-                                    .await
-                                    .source_titles;
+                                let pack_blocklist =
+                                    app.load_title_release_blocklist_signatures(&title.id).await;
                                 persist_standby_candidates(
                                     app,
                                     item,
@@ -2060,28 +2049,20 @@ async fn process_single_target(
                                         pack_password,
                                     )
                                     .await;
-                                if !defer {
-                                    let pack_scope =
-                                        collection_download_submission_scope_for_wanted_item(
-                                            item,
-                                            episode.as_ref(),
-                                        );
+                                if !defer && let Some(release_name) = pack_title_norm {
                                     if let Err(error) = app
                                         .services
                                         .workflow
                                         .blocklist_repo
-                                        .add(&NewBlocklistEntry {
+                                        .block(&NewBlocklistEntry {
                                             title_id: title.id.clone(),
-                                            source_title: pack_title_norm,
-                                            source_hint: pack_hint,
-                                            quality: None,
-                                            download_id: None,
+                                            release_name,
+                                            indexer_id: best_pack
+                                                .indexer_id
+                                                .clone()
+                                                .unwrap_or_default(),
+                                            info_hash: best_pack.info_hash().map(str::to_string),
                                             reason: Some(format!("season pack grab failed: {err}")),
-                                            data: blocklist_entry_data(
-                                                item.episode_id.as_slice(),
-                                                pack_scope.collection_id(),
-                                                pack_scope.series_movie_link_id(),
-                                            ),
                                         })
                                         .await
                                     {
@@ -2229,10 +2210,7 @@ async fn process_single_target(
     // Load the per-title blocklist (covers post-import failures like fake/non-video
     // files, in addition to the download-client snapshot checked below). It is the
     // single, removable exclusion source; the failed-attempt log never gates.
-    let db_blocklist = app
-        .load_title_release_blocklist_signatures(&title.id)
-        .await
-        .source_titles;
+    let db_blocklist = app.load_title_release_blocklist_signatures(&title.id).await;
     let existing_files = app
         .services
         .library
@@ -2626,7 +2604,7 @@ async fn process_single_target(
             .map(|(_, kind)| *kind)
             .or(candidate.source_kind);
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
-        let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
+        let source_title_for_attempt = normalize_release_name(source_title.as_deref());
         let source_password = normalize_release_password(candidate.password_hint.as_deref());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
@@ -2666,11 +2644,7 @@ async fn process_single_target(
             "auto-grabbing release"
         );
 
-        let info_hash_hint = candidate
-            .extra
-            .get("info_hash")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
+        let info_hash_hint = candidate.info_hash().map(str::to_string);
         let seed_minimums = crate::ReleaseSeedMinimums::from_release_extra(&candidate.extra);
         // This path used to hardcode `season_pack: false`; the scored candidate
         // already carries a parse, so the seeding resolver can see a real pack.
@@ -2930,6 +2904,8 @@ async fn process_single_target(
                         &attribution,
                         Some(candidate.title.clone()),
                         Some(candidate_source_hint),
+                        candidate.indexer_id.clone().unwrap_or_default(),
+                        candidate.info_hash().map(str::to_string),
                         None,
                         None,
                         None,
@@ -3686,10 +3662,11 @@ mod task_runner_tests {
             BackgroundAcquisitionWorkKind::SeasonPack { season: 2 }
         ));
         assert!(
-            title_work.ready.iter().skip(2).all(|work| matches!(
-                &work.kind,
-                BackgroundAcquisitionWorkKind::Scope
-            ))
+            title_work
+                .ready
+                .iter()
+                .skip(2)
+                .all(|work| matches!(&work.kind, BackgroundAcquisitionWorkKind::Scope))
         );
     }
 

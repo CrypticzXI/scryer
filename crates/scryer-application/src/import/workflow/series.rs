@@ -487,7 +487,6 @@ impl DownloadBlocklistLedger {
                 title,
                 write.release_title,
                 Some(reason.to_string()),
-                write.attribution,
             )
             .await;
         }
@@ -2092,7 +2091,8 @@ async fn persist_file_import_artifact(
     );
     let artifacts = episode_rows
         .into_iter()
-        .map(|(episode_id, season_number, episode_number)| ImportArtifact {
+        .map(
+            |(episode_id, season_number, episode_number)| ImportArtifact {
                 id: Id::new().0,
                 source_client_id: source_identity.client_id.clone(),
                 source_system: source_identity.client_type.clone(),
@@ -2109,7 +2109,8 @@ async fn persist_file_import_artifact(
                 reason_code: reason_code.map(str::to_string),
                 imported_media_file_id: imported_media_file_id.map(str::to_string),
                 created_at: Utc::now(),
-            })
+            },
+        )
         .collect();
     if let Err(error) = app
         .services

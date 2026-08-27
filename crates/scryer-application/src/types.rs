@@ -1619,14 +1619,26 @@ pub struct ReleaseDownloadFailureSignature {
     pub source_title: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TitleReleaseBlocklistEntry {
+/// One recorded failed download attempt for a title.
+///
+/// History and audit only: `release_download_attempts` never gates acquisition.
+/// The per-title blocklist is the single exclusion source, and this listing used
+/// to borrow its entry type, which read as though the two were the same thing.
+#[derive(Clone, Debug)]
+pub struct ReleaseDownloadFailureRecord {
     pub id: String,
     pub source_hint: Option<String>,
     pub source_title: Option<String>,
     pub error_message: Option<String>,
     pub attempted_at: String,
-    pub episode_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleReleaseBlocklistEntry {
+    pub id: String,
+    pub release_name: String,
+    pub error_message: Option<String>,
+    pub attempted_at: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1794,6 +1806,14 @@ impl IndexerSearchResult {
     /// Selects the source that should be submitted to a download client.
     /// Explicit NZB results retain their HTTP source; torrent results prefer
     /// a validated magnet emitted by the plugin.
+    /// The BitTorrent v1 infohash the indexer announced, if any.
+    ///
+    /// Indexers report it inside `extra` rather than as a typed field, so this
+    /// is the single place that key is read.
+    pub fn info_hash(&self) -> Option<&str> {
+        self.extra.get("info_hash").and_then(|value| value.as_str())
+    }
+
     pub fn canonical_download_source(&self) -> Option<(String, DownloadSourceKind)> {
         let explicit_nzb = matches!(
             self.source_kind,
@@ -1825,36 +1845,6 @@ impl IndexerSearchResult {
                 };
                 (value.to_string(), source_kind)
             })
-    }
-
-    pub fn source_aliases(&self) -> Vec<String> {
-        let mut aliases = Vec::new();
-        let explicit_nzb = matches!(
-            self.source_kind,
-            Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl)
-        );
-        if !explicit_nzb {
-            for key in ["magnet_uri", "magnet_url"] {
-                if let Some(value) = self.extra.get(key).and_then(serde_json::Value::as_str)
-                    && is_valid_magnet_uri(value)
-                {
-                    let value = value.trim();
-                    if !aliases.iter().any(|alias| alias == value) {
-                        aliases.push(value.to_string());
-                    }
-                }
-            }
-        }
-        for value in [self.download_url.as_deref(), self.link.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            let value = value.trim();
-            if !value.is_empty() && !aliases.iter().any(|alias| alias == value) {
-                aliases.push(value.to_string());
-            }
-        }
-        aliases
     }
 }
 
@@ -1927,7 +1917,6 @@ mod canonical_download_source_tests {
             result.canonical_download_source().unwrap().1,
             DownloadSourceKind::MagnetUri
         );
-        assert_eq!(result.source_aliases().len(), 3);
     }
 
     #[test]
@@ -1941,7 +1930,6 @@ mod canonical_download_source_tests {
                 DownloadSourceKind::TorrentFile,
             )
         );
-        assert_eq!(result.source_aliases().len(), 2);
     }
 
     #[test]
@@ -1958,7 +1946,6 @@ mod canonical_download_source_tests {
                 DownloadSourceKind::NzbUrl,
             )
         );
-        assert_eq!(result.source_aliases().len(), 2);
     }
 
     #[test]

@@ -1,39 +1,3 @@
-fn blocklist_episode_ids(data_json: Option<&str>) -> Vec<String> {
-    let Some(raw) = data_json else {
-        return Vec::new();
-    };
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Vec::new();
-    };
-
-    let mut ids = Vec::new();
-
-    if let Some(episode_id) = value.get("episode_id").and_then(serde_json::Value::as_str) {
-        let trimmed = episode_id.trim();
-        if !trimmed.is_empty() {
-            ids.push(trimmed.to_string());
-        }
-    }
-
-    if let Some(episode_ids) = value
-        .get("episode_ids")
-        .and_then(serde_json::Value::as_array)
-    {
-        for episode_id in episode_ids
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            if !ids.iter().any(|existing| existing == episode_id) {
-                ids.push(episode_id.to_string());
-            }
-        }
-    }
-
-    ids
-}
 fn anibridge_scoped_external_ids_from_mappings(
     anime_mappings: &[AnimeMapping],
     season_number_to_collection: &HashMap<i32, String>,

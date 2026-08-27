@@ -474,8 +474,8 @@ impl PendingReleaseRepository for TestLibraryStateStore {
 
 #[async_trait]
 impl BlocklistRepository for TestLibraryStateStore {
-    async fn add(&self, entry: &scryer_application::NewBlocklistEntry) -> AppResult<String> {
-        self.blocklist.add(entry).await
+    async fn block(&self, entry: &scryer_application::NewBlocklistEntry) -> AppResult<bool> {
+        self.blocklist.block(entry).await
     }
 
     async fn list_for_title(
@@ -494,13 +494,15 @@ impl BlocklistRepository for TestLibraryStateStore {
         self.blocklist.list_all(limit, offset).await
     }
 
-    async fn has_recorded_download_failure(
+    async fn is_blocked(
         &self,
         title_id: &str,
-        source_title: Option<&str>,
+        indexer_id: &str,
+        release_name: &str,
+        info_hash: Option<&str>,
     ) -> AppResult<bool> {
         self.blocklist
-            .has_recorded_download_failure(title_id, source_title)
+            .is_blocked(title_id, indexer_id, release_name, info_hash)
             .await
     }
 
@@ -508,12 +510,12 @@ impl BlocklistRepository for TestLibraryStateStore {
         self.blocklist.remove(id).await
     }
 
-    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
-        self.blocklist.is_blocklisted(title_id, source_title).await
-    }
-
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
         self.blocklist.delete_for_title(title_id).await
+    }
+
+    async fn delete_for_indexer(&self, indexer_id: &str) -> AppResult<()> {
+        self.blocklist.delete_for_indexer(indexer_id).await
     }
 }
 

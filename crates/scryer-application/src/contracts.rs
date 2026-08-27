@@ -1025,15 +1025,21 @@ pub struct StorageRootUsage {
     pub total_bytes: Option<i64>,
 }
 
+/// A release to block for a title.
+///
+/// `release_name` is required: acquisition's title guard means a grabbed
+/// release always had a name that resolved to its title, so a caller that
+/// cannot name the release has nothing to block.
 #[derive(Clone, Debug)]
 pub struct NewBlocklistEntry {
     pub title_id: String,
-    pub source_title: Option<String>,
-    pub source_hint: Option<String>,
-    pub quality: Option<String>,
-    pub download_id: Option<String>,
+    pub release_name: String,
+    /// The indexer the release failed on. Empty blocks it on every indexer --
+    /// correct when the caller has no stable indexer identity to record.
+    pub indexer_id: String,
+    /// The torrent's infohash when known; keys the block indexer-independently.
+    pub info_hash: Option<String>,
     pub reason: Option<String>,
-    pub data: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

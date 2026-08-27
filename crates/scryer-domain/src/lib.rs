@@ -2463,16 +2463,30 @@ pub struct TitleHistoryRecord {
     pub created_at: String,
 }
 
+/// One blocked release for one title.
+///
+/// A blocklist row blocks a *release*, not an episode and not a download. Its
+/// identity is the infohash when the release has one -- content identity is the
+/// same wherever the torrent came from -- and otherwise the indexer it failed
+/// on plus its normalized name.
 #[derive(Clone, Debug)]
 pub struct BlocklistEntry {
     pub id: String,
     pub title_id: String,
-    pub source_title: Option<String>,
-    pub source_hint: Option<String>,
-    pub quality: Option<String>,
-    pub download_id: Option<String>,
+    /// The release name as the indexer presented it. Display only.
+    pub release_name: String,
+    /// `release_name` trimmed and ASCII-lowercased: the matcher and the key.
+    pub normalized_release_name: String,
+    /// The indexer this release failed on; empty blocks it on every indexer.
+    ///
+    /// Empty is not only a pre-migration shim: a manual replacement blocklists
+    /// a name read off a file on disk, where the only recorded provenance is
+    /// the indexer's display name rather than a stable id.
+    pub indexer_id: String,
+    /// Set for a torrent whose infohash was known, which keys the block
+    /// independently of the indexer that served it.
+    pub info_hash: Option<String>,
     pub reason: Option<String>,
-    pub data_json: Option<String>,
     pub created_at: String,
 }
 

@@ -10,12 +10,14 @@ use scryer_application::{
     LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleaseObservation,
     PendingReleasePageSort, PendingReleaseRepository, PendingReleaseRole, PendingReleaseStatus,
     PendingReleasesPageQuery, ReleaseDecision, ReleaseSeedMinimums, SubtitleDownloadRepository,
+    normalize_release_name,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
     BlocklistEntry, DomainEventType, ExternalSubtitleSourceKind, Id, SubtitleBlocklistEntry,
     SubtitleDownload,
 };
+use scryer_plugin_sdk::torrent::normalize_info_hash;
 
 use crate::config_store::{current_encryption_key, decrypt_optional_value, encrypt_optional_value};
 use crate::encryption::{EncryptionKey, is_encrypted};
@@ -2254,19 +2256,17 @@ impl PendingReleaseRepository for PendingReleaseStore {
     }
 }
 
-const BLOCKLIST_COLUMNS: &str =
-    "id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at";
+const BLOCKLIST_COLUMNS: &str = "id, title_id, release_name, normalized_release_name, indexer_id, info_hash, reason, created_at";
 
 fn blocklist_row_to_entry_sql(row: &SqlRow) -> AppResult<BlocklistEntry> {
     Ok(BlocklistEntry {
         id: row.text("id")?,
         title_id: row.text("title_id")?,
-        source_title: row.opt_text("source_title")?,
-        source_hint: row.opt_text("source_hint")?,
-        quality: row.opt_text("quality")?,
-        download_id: row.opt_text("download_id")?,
+        release_name: row.text("release_name")?,
+        normalized_release_name: row.text("normalized_release_name")?,
+        indexer_id: row.text("indexer_id")?,
+        info_hash: row.opt_text("info_hash")?,
         reason: row.opt_text("reason")?,
-        data_json: json_text_from_row(row, "data_json")?,
         created_at: required_timestamp_text(row, "created_at")?,
     })
 }
@@ -2293,130 +2293,35 @@ async fn fetch_exists(exec: SqlExec<'_, '_>, sql: &str, args: &[SqlArg]) -> AppR
 
 #[async_trait]
 impl BlocklistRepository for BlocklistStore {
-    async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String> {
-        let id = Id::new().0;
-        let now = Utc::now().to_rfc3339();
-        let data_json = serde_json::to_string(&entry.data).map_err(repo_err)?;
-        execute_datastore_write(
+    async fn block(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
+        let Some(normalized_release_name) = normalize_release_name(Some(&entry.release_name))
+        else {
+            return Ok(false);
+        };
+        // `ON CONFLICT DO NOTHING` against the two unique indexes, rather than a
+        // read-then-write in application code: two writers recording the same
+        // failure cannot both insert, and neither needs a lock to find out.
+        let rows_written = execute_datastore_write(
             &self.datastore,
             "insert_blocklist_entry",
             "INSERT INTO blocklist
-             (id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+             (id, title_id, release_name, normalized_release_name, indexer_id,
+              info_hash, reason, created_at)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {})
+             ON CONFLICT DO NOTHING",
             vec![
-                SqlArg::Text(id.clone()),
+                SqlArg::Text(Id::new().0),
                 SqlArg::Text(entry.title_id.clone()),
-                SqlArg::OptText(entry.source_title.clone()),
-                SqlArg::OptText(entry.source_hint.clone()),
-                SqlArg::OptText(entry.quality.clone()),
-                SqlArg::OptText(entry.download_id.clone()),
+                SqlArg::Text(entry.release_name.trim().to_string()),
+                SqlArg::Text(normalized_release_name),
+                SqlArg::Text(entry.indexer_id.trim().to_string()),
+                SqlArg::OptText(normalize_info_hash(entry.info_hash.as_deref())),
                 SqlArg::OptText(entry.reason.clone()),
-                opt_json_arg_for_datastore(&self.datastore, Some(&data_json))?,
-                timestamp_arg_for_datastore(&self.datastore, &now)?,
+                timestamp_arg_for_datastore(&self.datastore, &Utc::now().to_rfc3339())?,
             ],
         )
         .await?;
-        Ok(id)
-    }
-
-    async fn add_failed_download_if_absent(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
-        let id = Id::new().0;
-        let now = Utc::now().to_rfc3339();
-        let title_id = entry.title_id.clone();
-        let source_title = entry.source_title.clone();
-        let source_hint = entry.source_hint.clone();
-        let download_id = entry.download_id.clone();
-        let quality = entry.quality.clone();
-        let reason = entry.reason.clone();
-        let data_json = serde_json::to_string(&entry.data).map_err(repo_err)?;
-        let data_arg = opt_json_arg_for_datastore(&self.datastore, Some(&data_json))?;
-        let created_at_arg = timestamp_arg_for_datastore(&self.datastore, &now)?;
-        let use_postgres_advisory_lock = matches!(&self.datastore, StoreDatastore::Postgres { .. });
-
-        let dedupe_key = source_title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| ("source_title", value.to_ascii_lowercase()))
-            .or_else(|| {
-                source_hint
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| ("source_hint", value.to_ascii_lowercase()))
-            })
-            .or_else(|| {
-                download_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| ("download_id", value.to_ascii_lowercase()))
-            });
-
-        let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&datastore, "insert_failed_download_blocklist_entry", move |tx| {
-            let title_id = title_id.clone();
-            let source_title = source_title.clone();
-            let source_hint = source_hint.clone();
-            let download_id = download_id.clone();
-            let quality = quality.clone();
-            let reason = reason.clone();
-            let id = id.clone();
-            let data_arg = data_arg.clone();
-            let created_at_arg = created_at_arg.clone();
-            let dedupe_key = dedupe_key.clone();
-            let use_postgres_advisory_lock = use_postgres_advisory_lock;
-            Box::pin(async move {
-                if let Some((column, value)) = dedupe_key {
-                    if use_postgres_advisory_lock {
-                        let lock_key = format!("{title_id}:{column}:{value}");
-                        let _ = SqlRuntime::fetch_optional(
-                            SqlExec::Tx(&mut *tx),
-                            "SELECT pg_advisory_xact_lock(hashtext({}))",
-                            &[SqlArg::Text(lock_key)],
-                        )
-                        .await?;
-                    }
-
-                    let matched = fetch_exists(
-                        SqlExec::Tx(&mut *tx),
-                        &format!(
-                            "SELECT EXISTS(
-                                 SELECT 1 FROM blocklist
-                                  WHERE title_id = {{}}
-                                    AND LOWER(TRIM(COALESCE({column}, ''))) = {{}}
-                             ) AS matched"
-                        ),
-                        &[SqlArg::Text(title_id.clone()), SqlArg::Text(value)],
-                    )
-                    .await?;
-                    if matched {
-                        return Ok(false);
-                    }
-                }
-
-                SqlRuntime::execute(
-                    SqlExec::Tx(&mut *tx),
-                    "INSERT INTO blocklist
-                     (id, title_id, source_title, source_hint, quality, download_id, reason, data_json, created_at)
-                     VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
-                    &[
-                        SqlArg::Text(id),
-                        SqlArg::Text(title_id),
-                        SqlArg::OptText(source_title),
-                        SqlArg::OptText(source_hint),
-                        SqlArg::OptText(quality),
-                        SqlArg::OptText(download_id),
-                        SqlArg::OptText(reason),
-                        data_arg,
-                        created_at_arg,
-                    ],
-                )
-                .await?;
-                Ok(true)
-            })
-        })
-        .await
+        Ok(rows_written > 0)
     }
 
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>> {
@@ -2463,28 +2368,44 @@ impl BlocklistRepository for BlocklistStore {
         Ok((entries, total))
     }
 
-    async fn has_recorded_download_failure(
+    async fn is_blocked(
         &self,
         title_id: &str,
-        source_title: Option<&str>,
+        indexer_id: &str,
+        release_name: &str,
+        info_hash: Option<&str>,
     ) -> AppResult<bool> {
-        let Some(source_title) = source_title
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_ascii_lowercase)
-        else {
+        // Infohash first: content identity is the same wherever the torrent
+        // came from, so it answers without consulting the indexer at all.
+        if let Some(info_hash) = normalize_info_hash(info_hash)
+            && fetch_exists(
+                self.datastore.read_exec(),
+                "SELECT EXISTS(
+                     SELECT 1 FROM blocklist
+                      WHERE title_id = {} AND info_hash = {}
+                 ) AS matched",
+                &[SqlArg::Text(title_id.to_string()), SqlArg::Text(info_hash)],
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+        let Some(normalized_release_name) = normalize_release_name(Some(release_name)) else {
             return Ok(false);
         };
+        // An empty stored indexer blocks the name on every indexer.
         fetch_exists(
             self.datastore.read_exec(),
             "SELECT EXISTS(
                  SELECT 1 FROM blocklist
                   WHERE title_id = {}
-                    AND LOWER(TRIM(COALESCE(source_title, ''))) = {}
+                    AND normalized_release_name = {}
+                    AND (indexer_id = '' OR indexer_id = {})
              ) AS matched",
             &[
                 SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(source_title),
+                SqlArg::Text(normalized_release_name),
+                SqlArg::Text(indexer_id.trim().to_string()),
             ],
         )
         .await
@@ -2501,28 +2422,29 @@ impl BlocklistRepository for BlocklistStore {
         Ok(())
     }
 
-    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool> {
-        fetch_exists(
-            self.datastore.read_exec(),
-            "SELECT EXISTS(
-                 SELECT 1 FROM blocklist
-                  WHERE title_id = {}
-                    AND LOWER(TRIM(COALESCE(source_title, ''))) = LOWER(TRIM({}))
-             ) AS matched",
-            &[
-                SqlArg::Text(title_id.to_string()),
-                SqlArg::Text(source_title.to_string()),
-            ],
-        )
-        .await
-    }
-
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
             "delete_blocklist_for_title",
             "DELETE FROM blocklist WHERE title_id = {}",
             vec![SqlArg::Text(title_id.to_string())],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_for_indexer(&self, indexer_id: &str) -> AppResult<()> {
+        let indexer_id = indexer_id.trim();
+        if indexer_id.is_empty() {
+            // The empty indexer is the every-indexer wildcard, not a row a
+            // deleted indexer owns.
+            return Ok(());
+        }
+        execute_datastore_write(
+            &self.datastore,
+            "delete_blocklist_for_indexer",
+            "DELETE FROM blocklist WHERE indexer_id = {}",
+            vec![SqlArg::Text(indexer_id.to_string())],
         )
         .await?;
         Ok(())

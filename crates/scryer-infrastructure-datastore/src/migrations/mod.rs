@@ -3,6 +3,9 @@ pub mod blake3_identities;
 #[cfg(test)]
 #[path = "blake3_identities_upgrade_tests.rs"]
 mod blake3_identities_upgrade_tests;
+#[cfg(test)]
+#[path = "blocklist_release_identity_upgrade_tests.rs"]
+mod blocklist_release_identity_upgrade_tests;
 pub mod canonical_download_identity;
 pub mod hook_ids;
 pub mod known_bad;

@@ -985,6 +985,25 @@ impl AppUseCase {
             .indexer_configs
             .delete(root_id)
             .await?;
+        // A deleted indexer's blocklist rows can never match again -- the key
+        // carries its id -- but they would still render in the UI as blocks the
+        // operator cannot reason about. Managed children churn ids on re-sync,
+        // so this is the path that keeps that from accumulating.
+        for id in &deleted_ids {
+            if let Err(error) = self
+                .services
+                .workflow
+                .blocklist_repo
+                .delete_for_indexer(id)
+                .await
+            {
+                tracing::warn!(
+                    config_id = %id,
+                    error = %error,
+                    "failed to drop blocklist entries for deleted indexer"
+                );
+            }
+        }
         self.publish_indexers_changed();
         Ok(deleted_ids)
     }

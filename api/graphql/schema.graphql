@@ -5141,13 +5141,13 @@ type EpisodePayload {
 	"""
 	monitored: Boolean!
 	"""
-	Provider-native playback links for this episode, when an exact catalog mapping exists.
-	"""
-	playbackLinks: [MediaServerPlaybackLinkPayload!]!
-	"""
 	Time when the episode record was created, in UTC.
 	"""
 	createdAt: DateTime!
+	"""
+	Provider-native playback links for this episode, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
 	"""
 	Parent title for this episode, or null if it is no longer available to the caller.
 	"""
@@ -6571,6 +6571,10 @@ enum ImportSkipReasonValue {
 	"""
 	NO_VIDEO_FILES
 	"""
+	The download client is still writing or unpacking the source file.
+	"""
+	DOWNLOAD_IN_PROGRESS
+	"""
 	Storage is full.
 	"""
 	DISK_FULL
@@ -7039,7 +7043,7 @@ enum IndexerErrorClassificationValue {
 }
 
 """
-A newest-first page of persisted indexer HTTP errors.
+A newest-first page of persisted indexer errors.
 """
 type IndexerErrorConnectionPayload {
 	"""
@@ -7053,7 +7057,7 @@ type IndexerErrorConnectionPayload {
 }
 
 """
-A persisted error event together with its complete HTTP response.
+A persisted error event and, when available, its complete HTTP response.
 """
 type IndexerErrorDetailPayload {
 	"""
@@ -7061,9 +7065,9 @@ type IndexerErrorDetailPayload {
 	"""
 	error: IndexerErrorSummaryPayload!
 	"""
-	Complete response data available only through this detail query.
+	Complete response data when the upstream returned one.
 	"""
-	response: IndexerErrorResponsePayload!
+	response: IndexerErrorResponsePayload
 }
 
 """
@@ -7137,7 +7141,7 @@ type IndexerErrorResponsePayload {
 }
 
 """
-List-safe metadata for a persisted indexer HTTP error.
+List-safe metadata for a persisted indexer error.
 """
 type IndexerErrorSummaryPayload {
 	"""
@@ -7161,9 +7165,9 @@ type IndexerErrorSummaryPayload {
 	"""
 	occurredAt: String!
 	"""
-	HTTP response status code.
+	HTTP response status code, when the upstream returned a response.
 	"""
-	httpStatus: Int!
+	httpStatus: Int
 	"""
 	Safe error classification derived from the response.
 	"""
@@ -8787,18 +8791,6 @@ input ManualImportCandidateMappingInput {
 }
 
 """
-Media facts obtained while qualifying a manual-import candidate.
-"""
-type ManualImportVideoFactsPayload {
-	containerFormat: String
-	videoCodec: String
-	audioCodec: String
-	videoWidth: Int
-	videoHeight: Int
-	durationSeconds: Int
-}
-
-"""
 Candidate file details used to preview a manual import selection.
 """
 type ManualImportFilePreviewPayload {
@@ -8890,6 +8882,36 @@ type ManualImportSeriesMovieTargetPayload {
 	Runtime in minutes, or null when unavailable.
 	"""
 	runtimeMinutes: Int
+}
+
+"""
+Media facts obtained while qualifying a manual-import candidate.
+"""
+type ManualImportVideoFactsPayload {
+	"""
+	Detected container format, or null when unavailable.
+	"""
+	containerFormat: String
+	"""
+	Detected video codec, or null when unavailable.
+	"""
+	videoCodec: String
+	"""
+	Detected audio codec, or null when unavailable.
+	"""
+	audioCodec: String
+	"""
+	Detected video width in pixels, or null when unavailable.
+	"""
+	videoWidth: Int
+	"""
+	Detected video height in pixels, or null when unavailable.
+	"""
+	videoHeight: Int
+	"""
+	Detected runtime in seconds, or null when unavailable.
+	"""
+	durationSeconds: Int
 }
 
 """
@@ -9535,28 +9557,6 @@ type MediaServerConnectionTestPayload {
 }
 
 """
-A provider-native playback link for a server linked to the current user.
-"""
-type MediaServerPlaybackLinkPayload {
-	"""
-	Connection identity. This is not a credential or provider token.
-	"""
-	connectionId: ID!
-	"""
-	User-configured server name.
-	"""
-	displayName: String!
-	"""
-	Provider that owns the destination item.
-	"""
-	provider: MediaServerProviderValue!
-	"""
-	Browser URL for the exact provider media item.
-	"""
-	href: String!
-}
-
-"""
 Default library permission grant to create with a media-server connection.
 """
 input MediaServerDefaultLibraryGrantInput {
@@ -9610,6 +9610,28 @@ type MediaServerPathMappingPayload {
 	Corresponding local filesystem path.
 	"""
 	destinationPath: String!
+}
+
+"""
+A provider-native playback link for a server linked to the current user.
+"""
+type MediaServerPlaybackLinkPayload {
+	"""
+	Connection identity. This is not a credential or provider token.
+	"""
+	connectionId: ID!
+	"""
+	User-configured server name.
+	"""
+	displayName: String!
+	"""
+	Provider that owns the destination item.
+	"""
+	provider: MediaServerProviderValue!
+	"""
+	Browser URL for the exact provider media item.
+	"""
+	href: String!
 }
 
 """
@@ -12695,6 +12717,20 @@ type PendingReleasePayload {
 }
 
 """
+Arbitration role of an active pending release candidate.
+"""
+enum PendingReleaseRoleValue {
+	"""
+	The highest-ranked active candidate for its overlap group.
+	"""
+	PRIMARY
+	"""
+	A lower-ranked active candidate retained as a fallback.
+	"""
+	FALLBACK
+}
+
+"""
 Count of pending releases grouped by lifecycle status.
 """
 type PendingReleaseStatusCountPayload {
@@ -12744,20 +12780,6 @@ enum PendingReleaseStatusValue {
 	Candidate needs manual review.
 	"""
 	NEEDS_REVIEW
-}
-
-"""
-Arbitration role of an active pending release candidate.
-"""
-enum PendingReleaseRoleValue {
-	"""
-	The highest-ranked active candidate for its overlap group.
-	"""
-	PRIMARY
-	"""
-	A lower-ranked active candidate retained as a fallback.
-	"""
-	FALLBACK
 }
 
 """
@@ -18428,10 +18450,6 @@ type TitlePayload {
 	"""
 	monitored: Boolean!
 	"""
-	Provider-native playback links for this title, when an exact catalog mapping exists.
-	"""
-	playbackLinks: [MediaServerPlaybackLinkPayload!]!
-	"""
 	Source tag values associated with the title.
 	"""
 	tags: [String!]!
@@ -18559,6 +18577,10 @@ type TitlePayload {
 	Policy for recap episodes, or null when unset.
 	"""
 	recapPolicy: RecapPolicyValue
+	"""
+	Provider-native playback links for this title, when an exact catalog mapping exists.
+	"""
+	playbackLinks: [MediaServerPlaybackLinkPayload!]!
 	"""
 	Effective target quality-profile label for the title.
 	"""
@@ -18763,7 +18785,7 @@ type TitleRatingPayload {
 }
 
 """
-One title release blocklist entry and the episodes it affects.
+One blocked release for a title.
 """
 type TitleReleaseBlocklistEntryPayload {
 	"""
@@ -18771,13 +18793,9 @@ type TitleReleaseBlocklistEntryPayload {
 	"""
 	id: ID!
 	"""
-	Download source locator used to identify the blocked release, or null when unavailable.
+	The blocked release's name, as the indexer presented it.
 	"""
-	sourceHint: String
-	"""
-	Release title recorded with the entry, or null when unavailable.
-	"""
-	sourceTitle: String
+	releaseName: String!
 	"""
 	Failure or blocklist reason, or null when unavailable.
 	"""
@@ -18786,10 +18804,6 @@ type TitleReleaseBlocklistEntryPayload {
 	UTC time when the release was attempted.
 	"""
 	attemptedAt: DateTime!
-	"""
-	Episode IDs targeted by this blocklist entry.
-	"""
-	episodeIds: [ID!]!
 }
 
 """

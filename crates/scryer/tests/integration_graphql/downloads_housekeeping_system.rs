@@ -103,8 +103,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl() {
         query($titleId: ID!) {
           titleReleaseBlocklist(titleId: $titleId) {
             id
-            sourceHint
-            sourceTitle
+            releaseName
             errorMessage
           }
         }
@@ -119,8 +118,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl() {
         .expect("blocklist entries array");
     assert!(
         entries.iter().any(|entry| {
-            entry["sourceHint"].as_str() == Some(source_hint.as_str())
-                && entry["sourceTitle"].as_str() == Some("Broken.NZB.Movie.2024")
+            entry["releaseName"].as_str() == Some("Broken.NZB.Movie.2024")
                 && entry["errorMessage"].as_str().is_some_and(|message| {
                     message.contains("did not look like xml")
                         || message.contains("root element must be <nzb>")
@@ -140,6 +138,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid-clear.nzb", ctx.nzbget_server.uri());
+    let release_title = "Clear.Blocklist.Movie.2024";
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let candidate_token = ctx
         .app
@@ -197,7 +196,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
         query($titleId: ID!) {
           titleReleaseBlocklist(titleId: $titleId) {
             id
-            sourceHint
+            releaseName
           }
         }
         "#,
@@ -210,7 +209,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
         .as_array()
         .and_then(|entries| {
             entries.iter().find_map(|entry| {
-                (entry["sourceHint"].as_str() == Some(source_hint.as_str()))
+                (entry["releaseName"].as_str() == Some(release_title))
                     .then(|| entry["id"].as_str().map(ToOwned::to_owned))
                     .flatten()
             })
@@ -240,7 +239,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
         r#"
         query($titleId: ID!) {
           titleReleaseBlocklist(titleId: $titleId) {
-            sourceHint
+            releaseName
           }
         }
         "#,
@@ -255,7 +254,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
     assert!(
         !entries_after
             .iter()
-            .any(|entry| entry["sourceHint"].as_str() == Some(source_hint.as_str())),
+            .any(|entry| entry["releaseName"].as_str() == Some(release_title)),
         "expected cleared release to be removed from titleReleaseBlocklist: {blocklist_after}"
     );
 }
@@ -274,14 +273,12 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
     scryer_infrastructure_library::media::libraries::state_store::BlocklistStore::new(
         ctx.db.datastore(),
     )
-    .add(&scryer_application::NewBlocklistEntry {
+    .block(&scryer_application::NewBlocklistEntry {
         title_id: title_id.clone(),
-        source_title: Some("pals.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
-        source_hint: Some("weaver://job-1".to_string()),
-        quality: None,
-        download_id: Some("job-1".to_string()),
+        release_name: "pals.s05.720p.bluray.dd5.1.x264-ntb".to_string(),
+        indexer_id: String::new(),
+        info_hash: None,
         reason: Some("download client failure: corrupt archive".to_string()),
-        data: HashMap::new(),
     })
     .await
     .expect("seed blocklist entry");
@@ -307,8 +304,7 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
         r#"
         query($titleId: ID!) {
           titleReleaseBlocklist(titleId: $titleId) {
-            sourceTitle
-            sourceHint
+            releaseName
           }
         }
         "#,
@@ -321,8 +317,7 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
         .as_array()
         .expect("blocklist entries array");
     assert!(entries.iter().any(|entry| {
-        entry["sourceTitle"].as_str() == Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
-            && entry["sourceHint"].as_str() == Some("weaver://job-1")
+        entry["releaseName"].as_str() == Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     }));
 }
 

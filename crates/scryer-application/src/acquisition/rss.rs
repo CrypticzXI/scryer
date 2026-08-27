@@ -2,9 +2,7 @@ use super::*;
 use crate::acquisition::submission::{
     CanonicalDownloadSubmissionIntent, CanonicalDownloadSubmissionOutcome,
 };
-use crate::acquisition_decision_helpers::{
-    blocklist_entry_data, is_download_submit_unavailable_error,
-};
+use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, CandidateTitleMatch, ReleaseAutoDecisionCode,
     annotate_auto_decision, candidate_presents_identity_disambiguator, canonical_title_evidence,
@@ -1904,8 +1902,7 @@ impl AppUseCase {
         // exclusion source), never the failed-attempt history.
         let db_blocklist = self
             .load_title_release_blocklist_signatures(&title.id)
-            .await
-            .source_titles;
+            .await;
         let episode = match wanted.episode_id.as_deref() {
             Some(episode_id) => self
                 .services
@@ -2362,7 +2359,7 @@ impl AppUseCase {
 
         let source_title = Some(best.title.clone());
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
-        let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
+        let source_title_for_attempt = normalize_release_name(source_title.as_deref());
         let source_password = normalize_release_password(best.password_hint.as_deref());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
@@ -2399,11 +2396,7 @@ impl AppUseCase {
             "RSS sync: auto-grabbing release"
         );
 
-        let info_hash_hint = best
-            .extra
-            .get("info_hash")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
+        let info_hash_hint = best.info_hash().map(str::to_string);
         let seed_minimums = crate::ReleaseSeedMinimums::from_release_extra(&best.extra);
         let download_id = scryer_domain::download_identity::DownloadId::new();
 
@@ -2460,14 +2453,6 @@ impl AppUseCase {
         };
         grabbed_episode_ids.sort();
         grabbed_episode_ids.dedup();
-        // Blocklist attribution for a definitive failure below; captured before
-        // the submission scope moves into the persisted download submission.
-        let blocklist_data = blocklist_entry_data(
-            &grabbed_episode_ids,
-            submission_scope.collection_id(),
-            submission_scope.series_movie_link_id(),
-        );
-
         let canonical_result = self
             .submit_canonical_download(CanonicalDownloadSubmissionIntent {
                 request: DownloadClientAddRequest {
@@ -2749,20 +2734,19 @@ impl AppUseCase {
                     .await;
                     return;
                 }
-                if let Err(error) = self
-                    .services
-                    .workflow
-                    .blocklist_repo
-                    .add(&NewBlocklistEntry {
-                        title_id: title.id.clone(),
-                        source_title: source_title_for_attempt,
-                        source_hint: source_hint_for_attempt,
-                        quality: None,
-                        download_id: None,
-                        reason: Some(format!("grab failed: {err}")),
-                        data: blocklist_data,
-                    })
-                    .await
+                if let Some(release_name) = source_title_for_attempt
+                    && let Err(error) = self
+                        .services
+                        .workflow
+                        .blocklist_repo
+                        .block(&NewBlocklistEntry {
+                            title_id: title.id.clone(),
+                            release_name,
+                            indexer_id: best.indexer_id.clone().unwrap_or_default(),
+                            info_hash: best.info_hash().map(str::to_string),
+                            reason: Some(format!("grab failed: {err}")),
+                        })
+                        .await
                 {
                     warn!(
                         error = %error,

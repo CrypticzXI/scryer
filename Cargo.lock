@@ -5933,6 +5933,7 @@ dependencies = [
  "scryer-infrastructure-sql",
  "scryer-infrastructure-workflow",
  "scryer-outbound-http",
+ "scryer-plugin-sdk",
  "serde",
  "serde_json",
  "sqlx",

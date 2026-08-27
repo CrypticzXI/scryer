@@ -7,7 +7,7 @@ use crate::release_parser::AudioCodec;
 use crate::{
     AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome,
     acquisition::convergence::CoverageReopen, normalize_release_attempt_hint,
-    normalize_release_attempt_title,
+    normalize_release_name,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -1339,38 +1339,36 @@ pub(crate) struct BlocklistAttribution<'a> {
 
 /// Blocklist a release for one title. The single writer, shared by the rejection
 /// path and by an accepted-but-mis-advertised import.
+///
+/// No indexer is recorded. A release rejected here failed on its *content* --
+/// it is not what it advertised -- so it is equally bad whoever served it, and
+/// the empty indexer blocks it on all of them.
 pub(crate) async fn blocklist_release_for_title(
     app: &AppUseCase,
     title: &Title,
     release_title: &str,
     reason: Option<String>,
-    attribution: BlocklistAttribution<'_>,
 ) {
-    let normalized_source_title = normalize_release_attempt_title(Some(release_title));
-    let blocklist_data = crate::acquisition::decision_helpers::blocklist_entry_data(
-        attribution.episode_ids,
-        attribution.collection_id,
-        attribution.series_movie_link_id,
-    );
+    let Some(release_name) = normalize_release_name(Some(release_title)) else {
+        return;
+    };
     if let Err(error) = app
         .services
         .workflow
         .blocklist_repo
-        .add(&NewBlocklistEntry {
+        .block(&NewBlocklistEntry {
             title_id: title.id.clone(),
-            source_title: normalized_source_title.clone(),
-            source_hint: None,
-            quality: crate::parse_release_metadata(release_title).quality,
-            download_id: None,
+            release_name: release_name.clone(),
+            indexer_id: String::new(),
+            info_hash: None,
             reason,
-            data: blocklist_data,
         })
         .await
     {
         warn!(
             error = %error,
             title_id = %title.id,
-            source_title = normalized_source_title.as_deref().unwrap_or(""),
+            release_name = release_name.as_str(),
             "failed to persist blocklist entry for rejected import"
         );
     }
@@ -1600,7 +1598,7 @@ async fn finalize_import_rejection(
     rejection: &ImportedFileRejection,
 ) {
     let episode_ids = attribution.episode_ids;
-    let normalized_source_title = normalize_release_attempt_title(Some(completed_name));
+    let normalized_source_title = normalize_release_name(Some(completed_name));
     let failure_reason = Some(rejection.message.clone());
     let _ = app
         .services
@@ -1625,7 +1623,7 @@ async fn finalize_import_rejection(
             format!(" [{}]", rejection.blocking_rule_codes.join(", "))
         }
     ));
-    blocklist_release_for_title(app, title, completed_name, reason.clone(), attribution).await;
+    blocklist_release_for_title(app, title, completed_name, reason.clone()).await;
 
     // Re-open the refused scopes under their existing coverage: the cursor
     // walks each scope's saved search results before it would spend an indexer

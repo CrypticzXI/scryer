@@ -2194,8 +2194,8 @@ pub struct NullBlocklistRepository;
 
 #[async_trait]
 impl BlocklistRepository for NullBlocklistRepository {
-    async fn add(&self, _: &NewBlocklistEntry) -> AppResult<String> {
-        Ok(String::new())
+    async fn block(&self, _: &NewBlocklistEntry) -> AppResult<bool> {
+        Ok(false)
     }
     async fn list_for_title(&self, _: &str, _: usize) -> AppResult<Vec<BlocklistEntry>> {
         Ok(vec![])
@@ -2203,16 +2203,16 @@ impl BlocklistRepository for NullBlocklistRepository {
     async fn list_all(&self, _: usize, _: usize) -> AppResult<(Vec<BlocklistEntry>, i64)> {
         Ok((vec![], 0))
     }
-    async fn has_recorded_download_failure(&self, _: &str, _: Option<&str>) -> AppResult<bool> {
+    async fn is_blocked(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> AppResult<bool> {
         Ok(false)
     }
     async fn remove(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn is_blocklisted(&self, _: &str, _: &str) -> AppResult<bool> {
-        Ok(false)
-    }
     async fn delete_for_title(&self, _: &str) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete_for_indexer(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
 }
@@ -3131,8 +3131,8 @@ pub mod test_nulls {
         EpisodeUpdate, IndexerClient, IndexerRoutingPlan, IndexerSearchResponse,
         PendingTitleHydration, PrimaryCollectionSummary, QualityProfile, QualityProfileRepository,
         ReleaseAttemptRepository, ReleaseDownloadAttemptOutcome, ReleaseDownloadFailureSignature,
-        ScopedExternalId, SearchMode, ShowRepository, TitleMetadataUpdate,
-        TitleReleaseBlocklistEntry, TitleRepository, UserRepository,
+        ScopedExternalId, SearchMode, ShowRepository, TitleMetadataUpdate, TitleRepository,
+        UserRepository,
     };
     use async_trait::async_trait;
     use scryer_domain::{
@@ -3541,7 +3541,7 @@ pub mod test_nulls {
             &self,
             _: &str,
             _: usize,
-        ) -> AppResult<Vec<TitleReleaseBlocklistEntry>> {
+        ) -> AppResult<Vec<crate::ReleaseDownloadFailureRecord>> {
             Ok(vec![])
         }
         async fn get_latest_source_password(

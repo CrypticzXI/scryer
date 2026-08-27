@@ -282,56 +282,28 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::View,
         )
         .await?;
-        let bounded_limit = limit.clamp(1, 1_000);
-        let submissions = self
-            .services
-            .workflow
-            .download_submissions
-            .list_for_title(title_id)
-            .await
-            .unwrap_or_default();
-        let episode_ids_by_download_id: HashMap<String, Vec<String>> = submissions
-            .into_iter()
-            .filter_map(|submission| {
-                let episode_ids = submission.scope.episode_ids()?.to_vec();
-                if episode_ids.is_empty() {
-                    None
-                } else {
-                    Some((submission.download_client_item_id, episode_ids))
-                }
-            })
-            .collect();
         let entries = self
             .services
             .workflow
             .blocklist_repo
-            .list_for_title(title_id, bounded_limit)
+            .list_for_title(title_id, limit.clamp(1, 1_000))
             .await?;
         Ok(entries
             .into_iter()
-            .map(|entry| {
-                let mut episode_ids = blocklist_episode_ids(entry.data_json.as_deref());
-                if episode_ids.is_empty()
-                    && let Some(download_id) = entry.download_id.as_deref()
-                    && let Some(submission_episode_ids) =
-                        episode_ids_by_download_id.get(download_id)
-                {
-                    episode_ids = submission_episode_ids.clone();
-                }
-
-                TitleReleaseBlocklistEntry {
-                    id: entry.id,
-                    source_hint: entry.source_hint,
-                    source_title: entry.source_title,
-                    error_message: entry.reason,
-                    attempted_at: entry.created_at,
-                    episode_ids,
-                }
+            .map(|entry| TitleReleaseBlocklistEntry {
+                id: entry.id,
+                release_name: entry.release_name,
+                error_message: entry.reason,
+                attempted_at: entry.created_at,
             })
             .collect())
     }
 }
 impl AppUseCase {
+    /// Clears one blocked release, re-allowing it for the title immediately.
+    ///
+    /// One delete is the whole operation: the schema keys a block on its
+    /// release, so there is no second row naming the same one to sweep up.
     pub async fn clear_title_release_blocklist_entry(
         &self,
         actor: &User,
@@ -353,45 +325,7 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        self.services.workflow.blocklist_repo.remove(id).await?;
-
-        // Removal re-allows the release for this title immediately, so it must
-        // also clear every sibling entry that names the same release (the same
-        // failure is often recorded from more than one path, e.g. a grab-time
-        // `add` and a client-failure `add_failed_download_if_absent`). Siblings
-        // match on the normalized source title or source hint; both sides are
-        // normalized because grab-path writers keep the indexer casing.
-        // `release_download_attempts` history is left untouched.
-        let removed_source_title = normalize_release_attempt_title(entry.source_title.as_deref());
-        let removed_source_hint = normalize_release_attempt_hint(entry.source_hint.as_deref());
-        if removed_source_title.is_none() && removed_source_hint.is_none() {
-            return Ok(());
-        }
-        let siblings = self
-            .services
-            .workflow
-            .blocklist_repo
-            .list_for_title(&entry.title_id, 1_000)
-            .await?;
-        for sibling in siblings {
-            if sibling.id == entry.id {
-                continue;
-            }
-            let same_title = removed_source_title.is_some()
-                && normalize_release_attempt_title(sibling.source_title.as_deref())
-                    == removed_source_title;
-            let same_hint = removed_source_hint.is_some()
-                && normalize_release_attempt_hint(sibling.source_hint.as_deref())
-                    == removed_source_hint;
-            if same_title || same_hint {
-                self.services
-                    .workflow
-                    .blocklist_repo
-                    .remove(&sibling.id)
-                    .await?;
-            }
-        }
-        Ok(())
+        self.services.workflow.blocklist_repo.remove(id).await
     }
 }
 impl AppUseCase {
@@ -614,27 +548,21 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
-                if !submit_unavailable {
+                if !submit_unavailable && let Some(release_name) = source_title_for_attempt.clone()
+                {
                     // The per-title blocklist entry is what search-time
                     // exclusion consults (and what the operator can remove);
                     // the Failed attempt above is the audit record.
-                    let blocklist_episode_ids = episode_ids_for_queue_scope(self, &scope).await;
                     let _ = self
                         .services
                         .workflow
                         .blocklist_repo
-                        .add(&NewBlocklistEntry {
+                        .block(&NewBlocklistEntry {
                             title_id: title.id.clone(),
-                            source_title: source_title_for_attempt.clone(),
-                            source_hint: source_hint_for_attempt.clone(),
-                            quality: None,
-                            download_id: None,
+                            release_name,
+                            indexer_id: indexer_id.clone().unwrap_or_default(),
+                            info_hash: info_hash_hint.clone(),
                             reason: Some(error_message.clone()),
-                            data: blocklist_entry_data(
-                                &blocklist_episode_ids,
-                                scope.collection_id(),
-                                scope.series_movie_link_id(),
-                            ),
                         })
                         .await;
                 }
@@ -955,14 +883,16 @@ impl AppUseCase {
                 .services
                 .workflow
                 .blocklist_repo
-                .add(&crate::NewBlocklistEntry {
+                // No indexer: the release name comes off a file on disk, whose
+                // only recorded provenance is the indexer's display name. The
+                // empty indexer blocks it everywhere, which is what a manual
+                // replacement wants.
+                .block(&crate::NewBlocklistEntry {
                     title_id: title.id.clone(),
-                    source_title: Some(release_title),
-                    source_hint: None,
-                    quality: None,
-                    download_id: None,
+                    release_name: release_title,
+                    indexer_id: String::new(),
+                    info_hash: None,
                     reason: Some("manual_replacement".to_string()),
-                    data: std::collections::HashMap::new(),
                 })
                 .await;
         }

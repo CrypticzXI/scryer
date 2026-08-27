@@ -710,11 +710,9 @@ const TITLE_EVENT_FIELDS = `
 
 const TITLE_RELEASE_BLOCKLIST_FIELDS = `
     id
-    sourceHint
-    sourceTitle
+    releaseName
     errorMessage
-    attemptedAt
-    episodeIds`;
+    attemptedAt`;
 
 const EXTERNAL_SUBTITLE_FIELDS = `
     id

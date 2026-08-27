@@ -205,57 +205,88 @@ fn cross_indexer_release_dedup_prefers_profile_protocol_before_indexer_priority(
 }
 
 #[test]
-fn release_blocklist_matches_magnet_and_legacy_http_aliases_without_changing_search_key() {
-    let mut result = make_search_result(
-        "Torrent Indexer",
-        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
-        "https://example.test/download/123",
-        DownloadSourceKind::TorrentFile,
-    );
-    let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
-    result
-        .extra
-        .insert("magnet_uri".to_string(), serde_json::json!(magnet));
+fn release_blocklist_matches_the_release_name_case_and_whitespace_insensitively() {
+    // Grab paths keep the indexer's casing and failure paths lowercase, so the
+    // stored key and the candidate are both normalized before comparison.
+    let blocklist = TitleReleaseBlocklistSignatures {
+        release_names: HashSet::from([(
+            "idx-1".to_string(),
+            "signal.run.s01e12.1080p.web-dl.x265-ntb".to_string(),
+        )]),
+        info_hashes: HashSet::new(),
+    };
 
-    assert_eq!(
-        release_search_key(&result),
-        "https://example.test/download/123"
-    );
     assert!(is_release_blocklisted(
-        &result,
-        &HashSet::from([magnet.to_string()]),
-        &HashSet::new(),
+        Some("idx-1"),
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        None,
+        &blocklist,
     ));
     assert!(is_release_blocklisted(
-        &result,
-        &HashSet::from(["https://example.test/download/123".to_string()]),
-        &HashSet::new(),
+        Some("idx-1"),
+        "  signal.run.s01e12.1080p.web-dl.x265-ntb\n",
+        None,
+        &blocklist,
+    ));
+    assert!(!is_release_blocklisted(
+        Some("idx-1"),
+        "Signal.Run.S01E13.1080p.WEB-DL.x265-NTb",
+        None,
+        &blocklist,
+    ));
+    assert!(!is_release_blocklisted(Some("idx-1"), "", None, &blocklist));
+    assert!(!is_release_blocklisted(
+        Some("idx-1"),
+        "   ",
+        None,
+        &blocklist
+    ));
+    assert!(!is_release_blocklisted(
+        Some("idx-1"),
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        None,
+        &TitleReleaseBlocklistSignatures::default(),
     ));
 }
 
 #[test]
-fn release_title_blocklist_check_normalizes_case_and_whitespace_on_both_sides() {
-    // Blocklist source titles are stored with mixed casing (grab paths keep the
-    // indexer casing, failure paths lowercase); the read side must compare
-    // trimmed + lowercased on both sides.
-    let blocklisted = HashSet::from(["signal.run.s01e12.1080p.web-dl.x265-ntb".to_string()]);
-    assert!(is_release_title_blocklisted(
-        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
-        &blocklisted
+fn a_block_is_scoped_to_its_indexer_unless_it_names_none() {
+    let name = "signal.run.s01e12.1080p.web-dl.x265-ntb";
+    let scoped = TitleReleaseBlocklistSignatures {
+        release_names: HashSet::from([("idx-1".to_string(), name.to_string())]),
+        info_hashes: HashSet::new(),
+    };
+    assert!(is_release_blocklisted(Some("idx-1"), name, None, &scoped));
+    // The same release from a different indexer is still grabbable.
+    assert!(!is_release_blocklisted(Some("idx-2"), name, None, &scoped));
+
+    // An empty stored indexer is the every-indexer wildcard.
+    let wildcard = TitleReleaseBlocklistSignatures {
+        release_names: HashSet::from([(String::new(), name.to_string())]),
+        info_hashes: HashSet::new(),
+    };
+    assert!(is_release_blocklisted(Some("idx-2"), name, None, &wildcard));
+    assert!(is_release_blocklisted(None, name, None, &wildcard));
+}
+
+#[test]
+fn an_infohash_block_ignores_both_the_indexer_and_the_name() {
+    let info_hash = "0123456789abcdef0123456789abcdef01234567";
+    let blocklist = TitleReleaseBlocklistSignatures {
+        release_names: HashSet::new(),
+        info_hashes: HashSet::from([info_hash.to_string()]),
+    };
+    assert!(is_release_blocklisted(
+        Some("idx-2"),
+        "Signal.Run.S01E12.REPACK.1080p.WEB-DL.x265-NTb",
+        Some(&info_hash.to_ascii_uppercase()),
+        &blocklist,
     ));
-    assert!(is_release_title_blocklisted(
-        "  signal.run.s01e12.1080p.web-dl.x265-ntb\n",
-        &blocklisted
-    ));
-    assert!(!is_release_title_blocklisted(
-        "Signal.Run.S01E13.1080p.WEB-DL.x265-NTb",
-        &blocklisted
-    ));
-    assert!(!is_release_title_blocklisted("", &blocklisted));
-    assert!(!is_release_title_blocklisted("   ", &blocklisted));
-    assert!(!is_release_title_blocklisted(
-        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
-        &HashSet::new()
+    assert!(!is_release_blocklisted(
+        Some("idx-2"),
+        "Signal.Run.S01E12.REPACK.1080p.WEB-DL.x265-NTb",
+        Some("fedcba9876543210fedcba9876543210fedcba98"),
+        &blocklist,
     ));
 }
 

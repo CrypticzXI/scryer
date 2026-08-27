@@ -8,20 +8,16 @@ use async_graphql::{Enum, ID, InputObject, MaybeUndefined, SimpleObject};
 use chrono::{DateTime, Utc};
 
 #[derive(SimpleObject, Clone)]
-/// One title release blocklist entry and the episodes it affects.
+/// One blocked release for a title.
 pub struct TitleReleaseBlocklistEntryPayload {
     /// Blocklist entry ID.
     pub id: ID,
-    /// Download source locator used to identify the blocked release, or null when unavailable.
-    pub source_hint: Option<String>,
-    /// Release title recorded with the entry, or null when unavailable.
-    pub source_title: Option<String>,
+    /// The blocked release's name, as the indexer presented it.
+    pub release_name: String,
     /// Failure or blocklist reason, or null when unavailable.
     pub error_message: Option<String>,
     /// UTC time when the release was attempted.
     pub attempted_at: DateTime<Utc>,
-    /// Episode IDs targeted by this blocklist entry.
-    pub episode_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]

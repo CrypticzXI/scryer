@@ -1059,12 +1059,12 @@ async fn queue_existing_title_download_definitive_submit_error_records_failed_an
         "a definitive interactive submit failure must blocklist the release: {blocklist:?}"
     );
     assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("Manual.Rejected.Queue.2026.1080p.WEB-DL")
+        blocklist[0].release_name.as_str(),
+        "Manual.Rejected.Queue.2026.1080p.WEB-DL"
     );
     assert_eq!(
-        blocklist[0].source_hint.as_deref(),
-        Some("https://example.invalid/releases/manual-rejected.nzb")
+        blocklist[0].normalized_release_name.as_str(),
+        "manual.rejected.queue.2026.1080p.web-dl"
     );
     assert!(
         blocklist[0]
@@ -5015,7 +5015,7 @@ async fn assert_queue_existing_title_submit_decision(
         assert!(
             blocklist
                 .iter()
-                .any(|entry| entry.source_title.as_deref() == Some(source_title)),
+                .any(|entry| entry.release_name == source_title),
             "{blocklist:?}"
         );
     }

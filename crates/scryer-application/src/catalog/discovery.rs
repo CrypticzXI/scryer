@@ -617,10 +617,7 @@ impl AppUseCase {
         // for one title never hides the same release from another title, and
         // removing the entry re-allows the release immediately. The
         // `release_download_attempts` log is history/audit and never gates.
-        let TitleReleaseBlocklistSignatures {
-            source_hints: blocklisted_source_hints,
-            source_titles: blocklisted_source_titles,
-        } = self.load_title_release_blocklist_signatures(title_id).await;
+        let blocklist = self.load_title_release_blocklist_signatures(title_id).await;
 
         let (has_usenet_client, has_torrent_client, client_preferred_source_kind) =
             self.download_source_capabilities().await;
@@ -696,9 +693,10 @@ impl AppUseCase {
             }
 
             if is_release_blocklisted(
-                &result,
-                &blocklisted_source_hints,
-                &blocklisted_source_titles,
+                result.indexer_id.as_deref(),
+                &result.title,
+                result.info_hash(),
+                &blocklist,
             ) {
                 continue;
             }
@@ -1687,22 +1685,22 @@ impl AppUseCase {
 /// Upper bound on blocklist entries read per title for search-time exclusion.
 const TITLE_RELEASE_BLOCKLIST_READ_LIMIT: usize = 1_000;
 
-/// A title's blocklisted release signatures, normalized exactly the way
-/// [`is_release_blocklisted`] normalizes candidates (hints trimmed, titles
-/// trimmed + lowercased). The per-title `blocklist` table is the single
-/// search-time exclusion source; `release_download_attempts` is history only.
+/// A title's blocked releases, keyed the way [`is_release_blocklisted`] keys a
+/// candidate. The per-title `blocklist` table is the single search-time
+/// exclusion source; `release_download_attempts` is history only.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TitleReleaseBlocklistSignatures {
-    pub(crate) source_hints: HashSet<String>,
-    pub(crate) source_titles: HashSet<String>,
+    /// `(indexer_id, normalized_release_name)`. An empty indexer id blocks the
+    /// name on every indexer -- see [`scryer_domain::BlocklistEntry::indexer_id`].
+    pub(crate) release_names: HashSet<(String, String)>,
+    /// Infohashes of blocked torrents, which match regardless of indexer.
+    pub(crate) info_hashes: HashSet<String>,
 }
 
 impl AppUseCase {
-    /// Loads and normalizes the title's blocklist entries. Entries are stored
-    /// with mixed casing (grab-time writers keep the indexer casing, failure
-    /// writers lowercase), so both sides normalize here. A repository error
-    /// warns and yields an empty set: a storage hiccup degrades to "nothing
-    /// excluded" rather than failing the search.
+    /// Loads the title's blocked releases. A repository error warns and yields
+    /// an empty set: a storage hiccup degrades to "nothing excluded" rather
+    /// than failing the search.
     pub(crate) async fn load_title_release_blocklist_signatures(
         &self,
         title_id: &str,
@@ -1726,47 +1724,45 @@ impl AppUseCase {
         };
 
         let mut signatures = TitleReleaseBlocklistSignatures::default();
-        for entry in &entries {
-            if let Some(hint) = normalize_release_attempt_hint(entry.source_hint.as_deref()) {
-                signatures.source_hints.insert(hint);
+        for entry in entries {
+            if let Some(info_hash) = entry.info_hash {
+                signatures.info_hashes.insert(info_hash);
             }
-            if let Some(title) = normalize_release_attempt_title(entry.source_title.as_deref()) {
-                signatures.source_titles.insert(title);
-            }
+            signatures
+                .release_names
+                .insert((entry.indexer_id, entry.normalized_release_name));
         }
         signatures
     }
 }
 
-/// Whether a release title matches a normalized per-title blocklist title set
-/// (see [`TitleReleaseBlocklistSignatures::source_titles`]).
-pub(crate) fn is_release_title_blocklisted(
-    release_title: &str,
-    blocklisted_source_titles: &HashSet<String>,
-) -> bool {
-    normalize_release_attempt_title(Some(release_title))
-        .is_some_and(|title| blocklisted_source_titles.contains(&title))
-}
-
+/// Whether this release is blocked for the title these signatures belong to.
+///
+/// Infohash first -- content identity is the same wherever the torrent came
+/// from -- then the release name scoped to the indexer offering it. A signature
+/// carrying an empty indexer id blocks the name on every indexer.
 pub(crate) fn is_release_blocklisted(
-    result: &IndexerSearchResult,
-    failed_source_hints: &std::collections::HashSet<String>,
-    failed_source_titles: &std::collections::HashSet<String>,
+    indexer_id: Option<&str>,
+    release_name: &str,
+    info_hash: Option<&str>,
+    blocklist: &TitleReleaseBlocklistSignatures,
 ) -> bool {
-    if result.source_aliases().iter().any(|alias| {
-        normalize_release_attempt_hint(Some(alias.as_str()))
-            .is_some_and(|alias| failed_source_hints.contains(&alias))
-    }) {
-        return true;
-    }
-
-    if let Some(title) = normalize_release_attempt_title(Some(result.title.as_str()))
-        && failed_source_titles.contains(&title)
+    if let Some(info_hash) = scryer_plugin_sdk::torrent::normalize_info_hash(info_hash)
+        && blocklist.info_hashes.contains(&info_hash)
     {
         return true;
     }
-
-    false
+    let Some(release_name) = normalize_release_name(Some(release_name)) else {
+        return false;
+    };
+    blocklist
+        .release_names
+        .contains(&(String::new(), release_name.clone()))
+        || indexer_id.is_some_and(|indexer_id| {
+            blocklist
+                .release_names
+                .contains(&(indexer_id.trim().to_string(), release_name.clone()))
+        })
 }
 
 #[derive(Clone, Copy)]

@@ -437,7 +437,9 @@ impl IndexerClient for FixedReleaseIndexerClient {
             completion: crate::IndexerSearchCompletion::Complete,
             indexer_outcomes,
             results: vec![IndexerSearchResult {
-                indexer_id: None,
+                // A real search names the indexer that served the result; the
+                // blocklist attributes a failure to it.
+                indexer_id: Some("indexer-a".to_string()),
                 source: "nzbgeek".into(),
                 title: self.release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),

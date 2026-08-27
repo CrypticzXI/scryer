@@ -383,11 +383,11 @@ pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
 pub use helpers::{
     HashDomain, accepted_inputs_for_client, blake3_identity_hex, nice_thread,
-    normalize_release_password,
+    normalize_release_name, normalize_release_password,
 };
 pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
-    await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
+    await_cancellable_app_result, normalize_release_attempt_hint,
     normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
     parsed_episode_lookup_season, sanitize_ids, to_hex,
 };
@@ -596,8 +596,8 @@ pub use types::{
     PendingTitleHydration, PrimaryCollectionSummary, RecycleBinBatchJobAccepted,
     RecycleBinSettings, RecycleRestoreConflictPolicy, RecycleRestorePreview,
     RecycleRestorePreviewItem, RecycledItem, ReleaseDecision, ReleaseDownloadAttemptOutcome,
-    ReleaseDownloadFailureSignature, ResolvePendingImportResult, RuntimePathStyle,
-    ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
+    ReleaseDownloadFailureRecord, ReleaseDownloadFailureSignature, ResolvePendingImportResult,
+    RuntimePathStyle, ScopedExternalId, SortDirection, SystemHealth, TitleAcquisitionDiagnostics,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
     TitleCatalogTagFilterOption, TitleCredit, TitleEpisodeProgressSummary, TitleExternalRating,

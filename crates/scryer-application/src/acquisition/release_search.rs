@@ -326,7 +326,7 @@ pub(crate) struct AutoCandidateEvaluationContext<'a> {
     pub(crate) oldest_overlapping_pending_published_at: Option<DateTime<Utc>>,
     pub(crate) now: &'a DateTime<Utc>,
     pub(crate) dl_snapshot: Option<&'a crate::acquisition_workflow::DownloadClientSnapshot>,
-    pub(crate) db_blocklist: &'a HashSet<String>,
+    pub(crate) db_blocklist: &'a crate::app_usecase_discovery::TitleReleaseBlocklistSignatures,
     pub(crate) existing_files: &'a [TitleMediaFile],
     pub(crate) delay_profiles: &'a [DelayProfile],
     pub(crate) failed_routes: Option<&'a [crate::acquisition_workflow::DownloadRouteKey]>,
@@ -1543,8 +1543,10 @@ pub(crate) fn evaluate_auto_candidate(
 
     // Burned releases report as blocklisted BEFORE the ambiguity gate runs: a
     // release that already failed must never be re-parked for review.
-    if crate::app_usecase_discovery::is_release_title_blocklisted(
+    if crate::app_usecase_discovery::is_release_blocklisted(
+        candidate.indexer_id.as_deref(),
         &candidate.title,
+        candidate.info_hash(),
         context.db_blocklist,
     ) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
@@ -1885,8 +1887,7 @@ impl AppUseCase {
         // exclusion source), never the failed-attempt history.
         let db_blocklist = self
             .load_title_release_blocklist_signatures(&title.id)
-            .await
-            .source_titles;
+            .await;
 
         let dl_snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(self).await;
         let existing_files = self
@@ -2870,7 +2871,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
@@ -2948,7 +2949,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let mut minimum_seeders = HashMap::new();
         minimum_seeders.insert("idx-private".to_string(), 1);
         let no_unmonitored_episodes = HashSet::new();
@@ -3057,7 +3058,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
@@ -3097,7 +3098,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
@@ -3140,7 +3141,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
@@ -3351,7 +3352,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title,
@@ -3628,7 +3629,13 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::from(["tide.chart.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures {
+            release_names: HashSet::from([(
+                String::new(),
+                "tide.chart.s02e01.1080p.web-dl.x264-grp".to_string(),
+            )]),
+            info_hashes: HashSet::new(),
+        };
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &live_action,
@@ -4035,7 +4042,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let context = AutoCandidateEvaluationContext {
             title: &title,
@@ -4185,7 +4192,8 @@ mod tests {
             let profile = QualityProfile::default();
             let thresholds = AcquisitionThresholds::default();
             let now = Utc::now();
-            let db_blocklist = HashSet::new();
+            let db_blocklist =
+                crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
             let no_minimum_seeders = HashMap::new();
             let no_unmonitored = HashSet::new();
 
@@ -4470,7 +4478,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let admission = empty_admission();
         let unmonitored: HashSet<String> = ["episode-2".to_string()].into_iter().collect();
@@ -4530,7 +4538,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::new();
+        let db_blocklist = crate::app_usecase_discovery::TitleReleaseBlocklistSignatures::default();
         let no_minimum_seeders = HashMap::new();
         let admission = empty_admission();
         let unmonitored: HashSet<String> = ["episode-2".to_string()].into_iter().collect();

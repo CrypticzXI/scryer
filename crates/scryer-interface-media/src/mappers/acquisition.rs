@@ -124,14 +124,12 @@ pub fn from_title_release_blocklist_entry(
 ) -> TitleReleaseBlocklistEntryPayload {
     TitleReleaseBlocklistEntryPayload {
         id: entry.id.into(),
-        source_hint: entry.source_hint,
-        source_title: entry.source_title,
+        release_name: entry.release_name,
         error_message: entry.error_message,
         attempted_at: parse_required_datetime(
             &entry.attempted_at,
             "title release blocklist attempted_at",
         ),
-        episode_ids: entry.episode_ids.into_iter().map(Into::into).collect(),
     }
 }
 

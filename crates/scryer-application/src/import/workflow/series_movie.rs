@@ -1058,15 +1058,15 @@ async fn import_additional_movie_download(
     )
     .await?;
     persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
-    let destination_ownership = series_movie_context.as_ref().map_or_else(
-        ImportDestinationOwnership::title,
-        |context| {
-            ImportDestinationOwnership::series_movie(
-                context.series_movie_link_id,
-                context.linked_episode_id,
-            )
-        },
-    );
+    let destination_ownership =
+        series_movie_context
+            .as_ref()
+            .map_or_else(ImportDestinationOwnership::title, |context| {
+                ImportDestinationOwnership::series_movie(
+                    context.series_movie_link_id,
+                    context.linked_episode_id,
+                )
+            });
     let file_result = import_file_with_record_progress(
         app,
         import_id,
@@ -1556,7 +1556,6 @@ async fn import_movie_download(
             title,
             &prepared.parsed.raw_title,
             Some(directive.reason.clone()),
-            crate::post_download_gate::BlocklistAttribution::default(),
         )
         .await;
     }
@@ -2334,11 +2333,6 @@ async fn import_series_movie_download(
             title,
             &prepared.parsed.raw_title,
             Some(directive.reason.clone()),
-            crate::post_download_gate::BlocklistAttribution {
-                episode_ids: &linked_episode_ids,
-                collection_id: None,
-                series_movie_link_id: Some(series_movie_link_id),
-            },
         )
         .await;
     }

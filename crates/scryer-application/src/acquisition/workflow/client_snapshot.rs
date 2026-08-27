@@ -128,6 +128,10 @@ async fn record_failed_release_outcome(
     attribution: &FailedReleaseAttribution,
     source_title: Option<String>,
     source_hint: Option<String>,
+    // Both halves of the blocklist key: the indexer the release came from
+    // (empty when unattributed) and the torrent's infohash when it had one.
+    blocklist_indexer_id: String,
+    blocklist_info_hash: Option<String>,
     download_id: Option<String>,
     client_id: Option<String>,
     client_name: Option<String>,
@@ -137,7 +141,7 @@ async fn record_failed_release_outcome(
     blocklist_reason: Option<String>,
     source_password: Option<String>,
 ) {
-    let normalized_source_title = normalize_release_attempt_title(source_title.as_deref());
+    let normalized_source_title = normalize_release_name(source_title.as_deref());
     let normalized_source_hint = normalize_release_attempt_hint(source_hint.as_deref());
     let normalized_client_id = normalized_non_empty_owned(client_id);
     let normalized_client_name = normalized_non_empty_owned(client_name);
@@ -159,39 +163,29 @@ async fn record_failed_release_outcome(
             )
             .await;
 
-        if let Some(reason) = blocklist_reason.clone() {
-            let mut blocklist_data = HashMap::new();
-            if !attribution.episode_ids.is_empty() {
-                blocklist_data.insert(
-                    "episode_ids".to_string(),
-                    serde_json::json!(attribution.episode_ids),
-                );
-            }
-            if let Some(collection_id) = attribution.collection_id.as_deref() {
-                blocklist_data.insert(
-                    "collection_id".to_string(),
-                    serde_json::json!(collection_id),
-                );
-            }
+        if let Some(reason) = blocklist_reason.clone()
+            && let Some(release_name) = normalized_source_title.clone()
+        {
+            // `block` is idempotent against the schema, so a failure already
+            // recorded by another path returns Ok(false) rather than
+            // duplicating the row -- and that answer is what decides whether
+            // the ReleaseBlocklisted event fires.
             match app
                 .services
                 .workflow
                 .blocklist_repo
-                .add_failed_download_if_absent(&NewBlocklistEntry {
+                .block(&NewBlocklistEntry {
                     title_id: title_id.to_string(),
-                    source_title: normalized_source_title.clone(),
-                    source_hint: normalized_source_hint.clone(),
-                    quality: quality.clone(),
-                    download_id: download_id.clone(),
+                    release_name,
+                    indexer_id: blocklist_indexer_id,
+                    info_hash: blocklist_info_hash,
                     reason: Some(reason),
-                    data: blocklist_data,
                 })
                 .await
             {
-                Ok(true) => {
-                    blocklist_persisted = true;
+                Ok(written) => {
+                    blocklist_persisted = written;
                 }
-                Ok(false) => {}
                 Err(error) => {
                     warn!(
                         title_id,
@@ -603,7 +597,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
         } else {
             None
         };
-        let preferred_release = normalize_release_attempt_title(Some(release_title.as_str()));
+        let preferred_release = normalize_release_name(Some(release_title.as_str()));
         let mut failed = submissions
             .iter()
             .filter(|submission| {
@@ -620,8 +614,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
             .collect::<Vec<_>>();
         failed.sort_by_key(|(_, submission)| {
             preferred_release.is_none()
-                || normalize_release_attempt_title(submission.source_title.as_deref())
-                    != preferred_release
+                || normalize_release_name(submission.source_title.as_deref()) != preferred_release
         });
 
         for (failed_item, submission) in failed {
@@ -738,9 +731,9 @@ async fn resolve_failed_pack_episode_wanted_items(
                 AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed
             ) && item.media_type == "episode"
                 && item
-                .episode_id
-                .as_ref()
-                .is_some_and(|episode_id| episode_ids.contains(episode_id))
+                    .episode_id
+                    .as_ref()
+                    .is_some_and(|episode_id| episode_ids.contains(episode_id))
         })
         .collect())
 }
@@ -787,9 +780,17 @@ pub(crate) async fn process_download_failure_for_download(
     let download_id = normalized_non_empty_owned(Some(context.client_item_id.clone()));
     let preferred_source_title =
         preferred_failed_release_title(&context, failed_submission.as_ref());
-    let normalized_source_title =
-        normalize_release_attempt_title(preferred_source_title.as_deref());
+    let normalized_source_title = normalize_release_name(preferred_source_title.as_deref());
     let normalized_source_hint = resolved_failed_release_hint(failed_submission.as_ref());
+    // Both halves of the blocklist key come off the submission: source_provider_id
+    // has carried the indexer id since 0150, info_hash since 0192.
+    let blocklist_indexer_id = failed_submission
+        .as_ref()
+        .and_then(|submission| submission.source_provider_id.clone())
+        .unwrap_or_default();
+    let blocklist_info_hash = failed_submission
+        .as_ref()
+        .and_then(|submission| submission.info_hash.clone());
     let quality = failed_submission
         .as_ref()
         .and_then(|submission| release_quality_hint(submission.source_title.as_deref()))
@@ -815,7 +816,12 @@ pub(crate) async fn process_download_failure_for_download(
             .services
             .workflow
             .blocklist_repo
-            .has_recorded_download_failure(title_id, normalized_source_title.as_deref())
+            .is_blocked(
+                title_id,
+                &blocklist_indexer_id,
+                normalized_source_title.as_deref().unwrap_or_default(),
+                blocklist_info_hash.as_deref(),
+            )
             .await
         {
             Ok(true) => {
@@ -966,6 +972,8 @@ pub(crate) async fn process_download_failure_for_download(
             &attribution,
             normalized_source_title.clone(),
             normalized_source_hint.clone(),
+            blocklist_indexer_id.clone(),
+            blocklist_info_hash.clone(),
             download_id.clone(),
             Some(context.client_id.clone()),
             context.client_name.clone(),
@@ -1004,6 +1012,8 @@ pub(crate) async fn process_download_failure_for_download(
             &attribution,
             normalized_source_title.clone(),
             normalized_source_hint.clone(),
+            blocklist_indexer_id.clone(),
+            blocklist_info_hash.clone(),
             download_id.clone(),
             Some(context.client_id.clone()),
             context.client_name.clone(),
@@ -1041,6 +1051,8 @@ pub(crate) async fn process_download_failure_for_download(
             &attribution,
             normalized_source_title.clone(),
             normalized_source_hint.clone(),
+            blocklist_indexer_id.clone(),
+            blocklist_info_hash.clone(),
             download_id.clone(),
             Some(context.client_id.clone()),
             context.client_name.clone(),
@@ -1250,100 +1262,100 @@ pub(crate) async fn try_saved_candidates(
             .ok()
             .flatten();
         if let (Some(target_episode), Some(title)) = (target_episode, title) {
-        let catalog_episodes = app
-            .services
-            .catalog
-            .shows
-            .list_episodes_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-        let catalog_collections = app
-            .services
-            .catalog
-            .shows
-            .list_collections_for_title(&title.id)
-            .await
-            .unwrap_or_default();
-        let parse_context = crate::release_parser::build_release_parse_context_for_title(
-            &title,
-            &catalog_episodes,
-            Some(title.facet.as_str()),
-        );
-        let parse_coverage = |pending: &PendingRelease| {
-            let parsed = crate::release_parser::parse_release_metadata_for_target(
-                &pending.release_title,
-                &parse_context,
-            );
-            let is_season_pack = parsed
-                .episode
-                .as_ref()
-                .is_some_and(|episode| episode.full_season);
-            let is_series_pack = parsed
-                .episode
-                .as_ref()
-                .is_some_and(|episode| episode.is_series_pack);
-            let coverage = crate::acquisition_coverage::resolve_release_coverage(
-                &parsed,
+            let catalog_episodes = app
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let catalog_collections = app
+                .services
+                .catalog
+                .shows
+                .list_collections_for_title(&title.id)
+                .await
+                .unwrap_or_default();
+            let parse_context = crate::release_parser::build_release_parse_context_for_title(
+                &title,
                 &catalog_episodes,
-                &catalog_collections,
-                None,
+                Some(title.facet.as_str()),
             );
-            let covers_item = coverage.covers_episode(&target_episode);
-            let scope = coverage.submission_scope_or(&item.submission_scope());
-            (covers_item, is_season_pack, is_series_pack, scope)
-        };
+            let parse_coverage = |pending: &PendingRelease| {
+                let parsed = crate::release_parser::parse_release_metadata_for_target(
+                    &pending.release_title,
+                    &parse_context,
+                );
+                let is_season_pack = parsed
+                    .episode
+                    .as_ref()
+                    .is_some_and(|episode| episode.full_season);
+                let is_series_pack = parsed
+                    .episode
+                    .as_ref()
+                    .is_some_and(|episode| episode.is_series_pack);
+                let coverage = crate::acquisition_coverage::resolve_release_coverage(
+                    &parsed,
+                    &catalog_episodes,
+                    &catalog_collections,
+                    None,
+                );
+                let covers_item = coverage.covers_episode(&target_episode);
+                let scope = coverage.submission_scope_or(&item.submission_scope());
+                (covers_item, is_season_pack, is_series_pack, scope)
+            };
 
-        let title_pending = app
-            .services
-            .workflow
-            .pending_releases
-            .list_pending_releases_for_title(&item.title_id)
-            .await
-            .unwrap_or_default();
-        if let Some(scope) = title_pending.iter().find_map(|pending| {
-            let metadata = parse_coverage(pending);
-            (pending.status == PendingReleaseStatus::Waiting
-                && pending.wanted_item_id != item.id
-                && metadata.0)
-                .then_some(metadata.3)
-        }) {
-            return StandbyRecoveryOutcome::Parked { scope: Some(scope) };
-        }
-
-        let mut known_ids = standby_releases
-            .iter()
-            .map(|pending| pending.id.clone())
-            .collect::<HashSet<_>>();
-        let title_standby = app
-            .services
-            .workflow
-            .pending_releases
-            .list_standby_pending_releases_for_title(&item.title_id)
-            .await
-            .unwrap_or_default();
-        let mut title_standby_metadata = std::collections::HashMap::new();
-        for pending in title_standby {
-            let metadata = parse_coverage(&pending);
-            standby_scopes.insert(pending.id.clone(), metadata.3.clone());
-            let covers_item = metadata.0;
-            title_standby_metadata.insert(pending.id.clone(), metadata);
-            if known_ids.insert(pending.id.clone())
-                && pending.wanted_item_id != item.id
-                && covers_item
-            {
-                standby_releases.push(pending);
+            let title_pending = app
+                .services
+                .workflow
+                .pending_releases
+                .list_pending_releases_for_title(&item.title_id)
+                .await
+                .unwrap_or_default();
+            if let Some(scope) = title_pending.iter().find_map(|pending| {
+                let metadata = parse_coverage(pending);
+                (pending.status == PendingReleaseStatus::Waiting
+                    && pending.wanted_item_id != item.id
+                    && metadata.0)
+                    .then_some(metadata.3)
+            }) {
+                return StandbyRecoveryOutcome::Parked { scope: Some(scope) };
             }
-        }
+
+            let mut known_ids = standby_releases
+                .iter()
+                .map(|pending| pending.id.clone())
+                .collect::<HashSet<_>>();
+            let title_standby = app
+                .services
+                .workflow
+                .pending_releases
+                .list_standby_pending_releases_for_title(&item.title_id)
+                .await
+                .unwrap_or_default();
+            let mut title_standby_metadata = std::collections::HashMap::new();
+            for pending in title_standby {
+                let metadata = parse_coverage(&pending);
+                standby_scopes.insert(pending.id.clone(), metadata.3.clone());
+                let covers_item = metadata.0;
+                title_standby_metadata.insert(pending.id.clone(), metadata);
+                if known_ids.insert(pending.id.clone())
+                    && pending.wanted_item_id != item.id
+                    && covers_item
+                {
+                    standby_releases.push(pending);
+                }
+            }
 
             season_pack_ids.extend(
-            standby_releases
-                .iter()
-                .filter(|pending| {
-                    title_standby_metadata
-                        .get(&pending.id)
-                        .is_some_and(|metadata| metadata.1)
-                })
-                .map(|pending| pending.id.clone()),
+                standby_releases
+                    .iter()
+                    .filter(|pending| {
+                        title_standby_metadata
+                            .get(&pending.id)
+                            .is_some_and(|metadata| metadata.1)
+                    })
+                    .map(|pending| pending.id.clone()),
             );
             series_pack_ids.extend(
                 standby_releases
@@ -1362,17 +1374,12 @@ pub(crate) async fn try_saved_candidates(
     // single-episode and episode-set standby releases are exhausted first; only
     // then does the walk consider packs. Each partition keeps the canonical
     // persistence order (score descending, then oldest first).
-    order_standby_releases(
-        &mut standby_releases,
-        &season_pack_ids,
-        &series_pack_ids,
-    );
+    order_standby_releases(&mut standby_releases, &season_pack_ids, &series_pack_ids);
     // Standby candidates are re-checked against the per-title blocklist (the
     // single, removable exclusion source), never the failed-attempt history.
     let db_blocklist = app
         .load_title_release_blocklist_signatures(&item.title_id)
-        .await
-        .source_titles;
+        .await;
     let mut stale_indexer_ids = HashSet::new();
 
     for standby in standby_releases {
@@ -1410,8 +1417,10 @@ pub(crate) async fn try_saved_candidates(
             continue;
         }
 
-        if crate::app_usecase_discovery::is_release_title_blocklisted(
+        if crate::app_usecase_discovery::is_release_blocklisted(
+            standby.indexer_id.as_deref(),
             &standby.release_title,
+            standby.info_hash.as_deref(),
             &db_blocklist,
         ) {
             let _ = app
@@ -1537,11 +1546,7 @@ pub(crate) async fn try_saved_candidates(
                     .services
                     .workflow
                     .pending_releases
-                    .update_pending_release_status(
-                        &standby.id,
-                        PendingReleaseStatus::Expired,
-                        None,
-                    )
+                    .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                     .await;
             }
             Ok(super::pending::PendingGrabOutcome::Rejected) | Err(_) => {
@@ -1572,7 +1577,7 @@ async fn persist_standby_candidates<F>(
     start_index: usize,
     now: &DateTime<Utc>,
     failed_routes: &[DownloadRouteKey],
-    db_blocklist: &std::collections::HashSet<String>,
+    db_blocklist: &crate::app_usecase_discovery::TitleReleaseBlocklistSignatures,
     include_candidate: F,
 ) -> bool
 where
@@ -1853,7 +1858,13 @@ mod client_snapshot_tests {
     #[test]
     fn standby_order_keeps_all_groups_ordered_in_a_large_mixed_list() {
         let mut standby = (0..8)
-            .map(|index| standby(&format!("episode-{index}"), index, &format!("2026-01-01T00:00:{index:02}Z")))
+            .map(|index| {
+                standby(
+                    &format!("episode-{index}"),
+                    index,
+                    &format!("2026-01-01T00:00:{index:02}Z"),
+                )
+            })
             .chain((0..8).map(|index| {
                 standby(
                     &format!("series-{index}"),

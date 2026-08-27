@@ -3470,7 +3470,7 @@ pub trait ReleaseAttemptRepository: Send + Sync {
         &self,
         title_id: &str,
         limit: usize,
-    ) -> AppResult<Vec<TitleReleaseBlocklistEntry>>;
+    ) -> AppResult<Vec<crate::ReleaseDownloadFailureRecord>>;
 
     async fn get_latest_source_password(
         &self,
@@ -5161,34 +5161,34 @@ pub trait PendingReleaseRepository: Send + Sync {
 
 #[async_trait]
 pub trait BlocklistRepository: Send + Sync {
-    async fn add(&self, entry: &NewBlocklistEntry) -> AppResult<String>;
-
-    async fn add_failed_download_if_absent(&self, entry: &NewBlocklistEntry) -> AppResult<bool> {
-        if self
-            .has_recorded_download_failure(&entry.title_id, entry.source_title.as_deref())
-            .await?
-        {
-            return Ok(false);
-        }
-        self.add(entry).await?;
-        Ok(true)
-    }
+    /// Records the block, or does nothing when it is already recorded.
+    ///
+    /// `Ok(true)` means a new row was written. Idempotence is the schema's job
+    /// -- two unique indexes, one per key shape -- not a read-then-write in
+    /// application code, so concurrent writers cannot both insert.
+    async fn block(&self, entry: &NewBlocklistEntry) -> AppResult<bool>;
 
     async fn list_for_title(&self, title_id: &str, limit: usize) -> AppResult<Vec<BlocklistEntry>>;
 
     async fn list_all(&self, limit: usize, offset: usize) -> AppResult<(Vec<BlocklistEntry>, i64)>;
 
-    async fn has_recorded_download_failure(
+    /// Whether this release is already blocked for the title, using the same
+    /// key [`BlocklistRepository::block`] writes.
+    async fn is_blocked(
         &self,
         title_id: &str,
-        source_title: Option<&str>,
+        indexer_id: &str,
+        release_name: &str,
+        info_hash: Option<&str>,
     ) -> AppResult<bool>;
 
     async fn remove(&self, id: &str) -> AppResult<()>;
 
-    async fn is_blocklisted(&self, title_id: &str, source_title: &str) -> AppResult<bool>;
-
     async fn delete_for_title(&self, title_id: &str) -> AppResult<()>;
+
+    /// Drops every block recorded against one indexer. Called when the indexer
+    /// is deleted: its rows can never match again, but they would still render.
+    async fn delete_for_indexer(&self, indexer_id: &str) -> AppResult<()>;
 }
 
 #[async_trait]

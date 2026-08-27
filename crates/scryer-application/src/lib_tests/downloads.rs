@@ -3201,11 +3201,12 @@ async fn external_failed_snapshot_dispatches_failure_worker_without_completed_ro
         .await
         .expect("publish failed-only external update");
 
-    let expected_source_title = crate::normalize_release_attempt_title(Some(release_title));
+    let expected_source_title = crate::normalize_release_name(Some(release_title));
     timeout(Duration::from_secs(5), async {
         loop {
             if blocklist_repo.entries.lock().await.iter().any(|entry| {
-                entry.title_id == title.id && entry.source_title == expected_source_title
+                entry.title_id == title.id
+                    && Some(&entry.normalized_release_name) == expected_source_title.as_ref()
             }) {
                 break;
             }
@@ -9425,7 +9426,7 @@ impl DispositionFixture {
             .lock()
             .await
             .iter()
-            .map(|entry| entry.source_title.clone().unwrap_or_default())
+            .map(|entry| entry.normalized_release_name.clone())
             .collect()
     }
 
@@ -9780,7 +9781,7 @@ async fn a_release_that_lied_about_its_quality_is_blocklisted_and_the_scope_reop
         scryer_domain::ImportDecision::Rejected,
         "{result:?}"
     );
-    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
+    let expected = crate::normalize_release_name(Some(release_title)).unwrap_or_default();
     assert!(
         fixture.blocklisted_titles().await.contains(&expected),
         "a proven quality lie must be blocklisted, got {:?}",
@@ -9858,7 +9859,7 @@ score_entry["operator_refuses_this_file"] := -10000 if {
         "{result:?}"
     );
     assert!(result.release_burned, "{result:?}");
-    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
+    let expected = crate::normalize_release_name(Some(release_title)).unwrap_or_default();
     assert!(
         fixture.blocklisted_titles().await.contains(&expected),
         "an undisclosed veto must burn this release: {:?}",
@@ -10624,19 +10625,11 @@ async fn a_refused_link_import_blocklists_and_reopens_the_link_scope() {
     );
 
     let entries = blocklist_repo.entries.lock().await.clone();
-    let expected = crate::normalize_release_attempt_title(Some(release_title)).unwrap_or_default();
-    let entry = entries
+    let expected = crate::normalize_release_name(Some(release_title)).unwrap_or_default();
+    entries
         .iter()
-        .find(|entry| entry.source_title.as_deref() == Some(expected.as_str()))
+        .find(|entry| entry.normalized_release_name == expected)
         .expect("the lying release is blocklisted for the title");
-    assert!(
-        entry
-            .data_json
-            .as_deref()
-            .is_some_and(|data| data.contains(&link.id)),
-        "the blocklist entry must be filed under the link it belongs to: {:?}",
-        entry.data_json
-    );
 
     let reopened = app
         .services

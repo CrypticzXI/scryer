@@ -1481,11 +1481,7 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .list_for_title(&title.id, 10)
         .await
         .expect("list blocklist before duplicate handling");
-    assert!(
-        blocklist_before_duplicate
-            .iter()
-            .any(|entry| { entry.download_id.as_deref() == Some("failed-duplicate") })
-    );
+    assert_eq!(blocklist_before_duplicate.len(), 1);
 
     let second = crate::acquisition_workflow::process_download_failure(
         &app,
@@ -1521,10 +1517,10 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
         .list_for_title(&title.id, 10)
         .await
         .expect("list blocklist");
-    assert_eq!(blocklist.len(), 1);
     assert_eq!(
-        blocklist[0].download_id.as_deref(),
-        Some("failed-duplicate")
+        blocklist.len(),
+        1,
+        "the duplicate failure recorded no second row"
     );
 
     let failed_attempts = app
@@ -1694,7 +1690,6 @@ async fn operator_client_failure_is_recorded_without_reopening_scope() {
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(blocklist[0].download_id.as_deref(), Some("failed-only"));
     assert_eq!(
         coverage.indexers_for_scope(&scope_key).await,
         vec!["indexer-a".to_string(), "indexer-b".to_string()],
@@ -1816,10 +1811,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
-    );
+    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
 
     let failed_attempts = app
         .services
@@ -1926,10 +1918,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
-    );
+    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
 
     let failed_attempts = app
         .services
@@ -2345,10 +2334,6 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(
-        blocklist[0].download_id.as_deref(),
-        Some("failed-season-pack")
-    );
 
     let failed_attempts = app
         .services
@@ -2884,12 +2869,7 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
         .await
         .expect("list title release blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert!(
-        blocklist[0]
-            .source_title
-            .as_deref()
-            .is_some_and(|title| title.eq_ignore_ascii_case(pack_title))
-    );
+    assert!(blocklist[0].release_name.eq_ignore_ascii_case(pack_title));
     assert!(
         blocklist[0]
             .error_message
@@ -4878,14 +4858,12 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
     app.services
         .workflow
         .blocklist_repo
-        .add(&NewBlocklistEntry {
+        .block(&NewBlocklistEntry {
             title_id: title.id.clone(),
-            source_title: Some("recent.failed.season.pack.s07.1080p.web-dl".to_string()),
-            source_hint: None,
-            quality: None,
-            download_id: None,
+            release_name: "recent.failed.season.pack.s07.1080p.web-dl".to_string(),
+            indexer_id: String::new(),
+            info_hash: None,
             reason: Some("download client failure: corrupt archive".to_string()),
-            data: HashMap::new(),
         })
         .await
         .expect("record failed season pack blocklist entry");
@@ -5133,10 +5111,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         .await
         .expect("list blocklist");
     assert_eq!(blocklist.len(), 1);
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
-    );
+    assert_eq!(blocklist[0].normalized_release_name, "pals.s05.720p.bluray.dd5.1.x264-ntb");
 
     app.run_background_acquisition_cycle_once().await;
 
@@ -5406,7 +5381,7 @@ async fn season_pack_submit_unavailable_records_pending_without_failed_signature
             .map(|attempt| (&attempt.source_title, &attempt.outcome))
             .collect::<Vec<_>>()
     );
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     assert!(attempts.iter().any(|attempt| {
         attempt.source_title.as_deref() == normalized_release_title.as_deref()
             && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
@@ -5470,7 +5445,7 @@ async fn season_pack_definitive_submit_error_records_failed_signature_and_blockl
     );
     assert!(download_submissions.store.lock().await.is_empty());
 
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
@@ -5484,7 +5459,9 @@ async fn season_pack_definitive_submit_error_records_failed_signature_and_blockl
     let blocklist = title_blocklist_entries(&app, &title.id).await;
     let entry = blocklist
         .iter()
-        .find(|entry| entry.source_title.as_deref() == normalized_release_title.as_deref())
+        .find(|entry| {
+            Some(&entry.normalized_release_name) == normalized_release_title.as_ref()
+        })
         .unwrap_or_else(|| {
             panic!("a definitive season-pack submit failure must blocklist the pack: {blocklist:?}")
         });
@@ -5496,7 +5473,7 @@ async fn season_pack_definitive_submit_error_records_failed_signature_and_blockl
         entry.reason
     );
     assert!(
-        entry.source_hint.is_some(),
+        !entry.indexer_id.is_empty(),
         "the entry must carry the pack's download source hint"
     );
 }
@@ -5556,7 +5533,7 @@ async fn season_pack_ambiguous_submit_error_defers_without_blocklist_entry() {
             .map(|attempt| (&attempt.source_title, &attempt.outcome))
             .collect::<Vec<_>>()
     );
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     assert!(attempts.iter().any(|attempt| {
         attempt.source_title.as_deref() == normalized_release_title.as_deref()
             && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
@@ -5611,10 +5588,7 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
         1,
         "expected one blocklist entry: {blocklist:?}"
     );
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("rejected.movie.2024.1080p.web-dl-grp")
-    );
+    assert_eq!(blocklist[0].normalized_release_name, "rejected.movie.2024.1080p.web-dl-grp");
     assert!(
         blocklist[0].reason.as_deref().is_some_and(|reason| {
             reason.starts_with("grab failed:")
@@ -5696,10 +5670,7 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
         1,
         "the vetoed release must be blocklisted for this title: {blocklist:?}"
     );
-    assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        Some("counterfeit.feature.2024.1080p.web-dl-grp")
-    );
+    assert_eq!(blocklist[0].normalized_release_name, "counterfeit.feature.2024.1080p.web-dl-grp");
     assert!(
         blocklist[0]
             .reason
@@ -6862,7 +6833,7 @@ async fn expired_pending_release_non_unavailable_error_expires_release() {
         1,
         "expected one blocklist entry: {blocklist:?}"
     );
-    assert_eq!(blocklist[0].source_title.as_deref(), Some(release_title));
+    assert_eq!(blocklist[0].release_name.as_str(), release_title);
     assert!(
         blocklist[0].reason.as_deref().is_some_and(|reason| {
             reason.starts_with("grab failed:")
@@ -6870,11 +6841,6 @@ async fn expired_pending_release_non_unavailable_error_expires_release() {
         }),
         "the entry must say what happened: {:?}",
         blocklist[0].reason
-    );
-    assert!(
-        blocklist[0].data_json.is_none(),
-        "a movie-scoped failure carries no episode/collection attribution: {:?}",
-        blocklist[0].data_json
     );
 }
 
@@ -7421,21 +7387,28 @@ async fn pending_release_grab_is_gated_by_the_blocklist_until_the_entry_is_clear
         .await
         .expect("seed pending release");
     // Grab-path writers keep the indexer casing; the gate normalizes.
+    app.services
+        .workflow
+        .blocklist_repo
+        .block(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            release_name: release_title.to_ascii_uppercase(),
+            indexer_id: String::new(),
+            info_hash: None,
+            reason: Some("download client failure: corrupt archive".to_string()),
+        })
+        .await
+        .expect("seed blocklist entry");
     let entry_id = app
         .services
         .workflow
         .blocklist_repo
-        .add(&NewBlocklistEntry {
-            title_id: title.id.clone(),
-            source_title: Some(release_title.to_ascii_uppercase()),
-            source_hint: None,
-            quality: None,
-            download_id: None,
-            reason: Some("download client failure: corrupt archive".to_string()),
-            data: HashMap::new(),
-        })
+        .list_for_title(&title.id, 10)
         .await
-        .expect("seed blocklist entry");
+        .expect("list blocklist")
+        .first()
+        .map(|entry| entry.id.clone())
+        .expect("the seeded block is listed");
 
     let grabbed = app
         .force_grab_pending_release(&user, &pending_id)
@@ -7545,7 +7518,7 @@ async fn rss_submit_unavailable_records_pending_without_failed_signature() {
             .map(|attempt| (&attempt.source_title, &attempt.outcome))
             .collect::<Vec<_>>()
     );
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     assert!(
         attempts.iter().any(|attempt| {
             attempt.source_title.as_deref() == normalized_release_title.as_deref()
@@ -7613,7 +7586,7 @@ async fn rss_ambiguous_submit_error_defers_without_failed_signature_or_blocklist
             .map(|attempt| (&attempt.source_title, &attempt.outcome))
             .collect::<Vec<_>>()
     );
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     assert!(attempts.iter().any(|attempt| {
         attempt.source_title.as_deref() == normalized_release_title.as_deref()
             && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
@@ -7652,7 +7625,7 @@ async fn rss_definitive_submit_error_records_failed_signature_and_blocklist_entr
     assert_eq!(report.releases_matched, 1);
     assert_eq!(report.releases_grabbed, 0);
     assert!(download_submissions.store.lock().await.is_empty());
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
@@ -7673,8 +7646,8 @@ async fn rss_definitive_submit_error_records_failed_signature_and_blocklist_entr
         "a definitive RSS submit failure must blocklist the release: {blocklist:?}"
     );
     assert_eq!(
-        blocklist[0].source_title.as_deref(),
-        normalized_release_title.as_deref()
+        Some(blocklist[0].normalized_release_name.as_str()),
+        normalized_release_title.as_deref(),
     );
     assert!(
         blocklist[0].reason.as_deref().is_some_and(|reason| {
@@ -7684,7 +7657,7 @@ async fn rss_definitive_submit_error_records_failed_signature_and_blocklist_entr
         blocklist[0].reason
     );
     assert!(
-        blocklist[0].source_hint.is_some(),
+        !blocklist[0].indexer_id.is_empty(),
         "the entry must carry the release's download source hint"
     );
 }
@@ -10550,7 +10523,7 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
     let blocklist = title_blocklist_entries(&app, &title.id).await;
     let entry = blocklist
         .iter()
-        .find(|entry| entry.source_title.as_deref() == Some("Tide.Chart.1080p.WEB-DL.x264-GRP"))
+        .find(|entry| entry.release_name == "Tide.Chart.1080p.WEB-DL.x264-GRP")
         .unwrap_or_else(|| {
             panic!("dismissing a review row must blocklist the release: {blocklist:?}")
         });
@@ -10863,13 +10836,13 @@ async fn assert_typed_submit_decision(
     release_title: &str,
     expect_deferred: bool,
 ) {
-    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let normalized_release_title = crate::normalize_release_name(Some(release_title));
     let attempts = release_attempts.attempts.lock().await.clone();
     // Paths record the title raw or normalized; readers normalize, so do we.
     let outcomes = attempts
         .iter()
         .filter(|attempt| {
-            crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+            crate::normalize_release_name(attempt.source_title.as_deref())
                 == normalized_release_title
         })
         .map(|attempt| attempt.outcome.clone())
@@ -10899,15 +10872,14 @@ async fn assert_typed_submit_decision(
         );
         assert!(
             failed.iter().any(|entry| {
-                crate::normalize_release_attempt_title(entry.source_title.as_deref())
+                crate::normalize_release_name(entry.source_title.as_deref())
                     == normalized_release_title
             }),
             "{failed:?}"
         );
         assert!(
             blocklist.iter().any(|entry| {
-                crate::normalize_release_attempt_title(entry.source_title.as_deref())
-                    == normalized_release_title
+                Some(&entry.normalized_release_name) == normalized_release_title.as_ref()
             }),
             "the legacy failover text must blocklist like any definitive failure: {blocklist:?}"
         );

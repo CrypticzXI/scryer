@@ -1409,7 +1409,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         .expect("list blocklist");
     assert!(
         blocklist.iter().any(|entry| {
-            entry.source_title.as_deref() == Some(blocklisted_title.as_str())
+            entry.normalized_release_name == blocklisted_title
                 && entry
                     .reason
                     .as_deref()
@@ -2228,7 +2228,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
         .expect("list blocklist");
     assert!(
         blocklist.iter().any(|entry| {
-            entry.source_title.as_deref() == Some(blocklisted_title.as_str())
+            entry.normalized_release_name == blocklisted_title
                 && entry
                     .reason
                     .as_deref()

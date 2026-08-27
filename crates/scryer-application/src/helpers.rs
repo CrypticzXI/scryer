@@ -94,7 +94,14 @@ pub(crate) fn normalize_release_attempt_hint(raw: Option<&str>) -> Option<String
     Some(url.to_string())
 }
 
-pub(crate) fn normalize_release_attempt_title(raw: Option<&str>) -> Option<String> {
+/// The canonical form of a release name: trimmed and ASCII-lowercased.
+///
+/// This is the blocklist's matcher and its unique key, so the writer and every
+/// reader must agree on it exactly. It is deliberately ASCII-only and
+/// deliberately never expressed in SQL: SQLite's `LOWER` is ASCII-only while
+/// Postgres' `lower()` is locale-aware, so a normalization computed in the
+/// database would differ between the two engines on a non-ASCII name.
+pub fn normalize_release_name(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_lowercase())
