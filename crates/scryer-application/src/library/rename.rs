@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use aws_lc_rs::digest as aws_lc_digest;
 use scryer_domain::{
     Collection, DomainEventPayload, Episode, ImportType, MediaFacet, MediaFileRenamedEventData,
     Title, User,
@@ -1993,8 +1992,10 @@ pub fn build_rename_plan_fingerprint(
         items,
     ))
     .unwrap_or_default();
-    let hash = aws_lc_digest::digest(&aws_lc_digest::SHA256, &bytes);
-    crate::to_hex(hash.as_ref())
+    crate::helpers::blake3_identity_hex(
+        crate::helpers::HashDomain::RenamePlan,
+        String::from_utf8_lossy(&bytes),
+    )
 }
 
 struct GroupedTitleMediaFile {

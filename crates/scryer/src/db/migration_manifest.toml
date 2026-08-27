@@ -1423,6 +1423,29 @@ file = "postgres/migrations/0190_movie_entity_metadata_ownership.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 191
+description = "retire v1 password hashes and re-key identity digests to blake3"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0191_blake3_identity_migration.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0191_blake3_identity_migration.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "backfill_blake3_identities"
+engine = "all"
+scope = "upgrade_only"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

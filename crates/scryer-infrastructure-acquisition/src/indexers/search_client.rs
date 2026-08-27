@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use scryer_application::{
-    AppError, AppResult, DownloadSourceKind, EstimatedCost, ExpectedValueHint,
+    AppError, AppResult, DownloadSourceKind, EstimatedCost, ExpectedValueHint, HashDomain,
     INDEXER_CAPS_REFRESH_ERROR_PREFIX, IndexerClient, IndexerConfigRepository,
     IndexerErrorClassification, IndexerErrorOperation, IndexerErrorRepository,
     IndexerPluginProvider, IndexerProxyConfigRepository, IndexerQueryOutcome,
@@ -21,14 +21,14 @@ use scryer_application::{
     ReusableIndexerSearchCandidate, RssFreshnessContext, SchedulerAdmission, SchedulerBatchRequest,
     SchedulerCandidate, SchedulerCandidateId, SchedulerFeedback, SchedulerFeedbackOutcome,
     SchedulerIntent, SchedulerLease, SchedulerOperation, SchedulerPluginKind, SchedulerSnapshot,
-    SearchLearningContext, SearchMode, UpstreamScheduler, indexer_search_identity,
+    SearchLearningContext, SearchMode, UpstreamScheduler, blake3_identity_hex,
+    indexer_search_identity,
 };
 use scryer_domain::{
     IndexerCapsSearchNode, IndexerCapsSnapshot, IndexerConfig, IndexerProviderCapabilities,
     IndexerSearchInputCapability, NabTransportKind,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -352,18 +352,23 @@ impl SearchDiagnosticsContext {
             } else {
                 scope_key.clone()
             };
-        let query_signature = digest_json(&serde_json::json!({
-            "query": query,
-            "ids": ids,
-            "category": category,
-            "facet": facet,
-            "id_search_facet": id_search_facet,
-            "season": season,
-            "episode": episode,
-            "absolute_episode": absolute_episode,
-        }));
-        let indexer_fingerprint =
-            digest_json(&indexer_search_identity(config, search_semantics_version));
+        let query_signature = digest_json(
+            HashDomain::IndexerQuerySignature,
+            &serde_json::json!({
+                "query": query,
+                "ids": ids,
+                "category": category,
+                "facet": facet,
+                "id_search_facet": id_search_facet,
+                "season": season,
+                "episode": episode,
+                "absolute_episode": absolute_episode,
+            }),
+        );
+        let indexer_fingerprint = digest_json(
+            HashDomain::IndexerSearchIdentity,
+            &indexer_search_identity(config, search_semantics_version),
+        );
 
         Some(Self {
             repository,
@@ -526,19 +531,16 @@ impl SearchDiagnosticsContext {
     }
 }
 
-fn digest_json(value: &serde_json::Value) -> String {
+/// Domain-separated BLAKE3 digest of a JSON value.
+///
+/// Note the serialization is `serde_json::to_vec`, which with the workspace's
+/// `preserve_order` feature is key-order sensitive. That is tolerable here: a
+/// reordered value yields a different digest, which only costs a reuse cache
+/// miss and a live search. The convergence ledger, where an order flap would
+/// force a re-sweep, canonicalizes instead.
+fn digest_json(domain: HashDomain, value: &serde_json::Value) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
-    hex_encode(&Sha256::digest(bytes))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[usize::from(byte >> 4)] as char);
-        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    encoded
+    blake3_identity_hex(domain, String::from_utf8_lossy(&bytes))
 }
 
 fn normalized_credential_key(key: &str) -> String {

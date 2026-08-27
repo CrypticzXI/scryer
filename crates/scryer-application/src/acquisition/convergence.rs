@@ -349,13 +349,13 @@ pub(crate) fn compute_search_fingerprint(
     langs.sort();
     langs.dedup();
     let canonical = format!(
-        "v3;profile={};version={};audio={};match={}",
+        "v4;profile={};version={};audio={};match={}",
         profile_id.trim(),
         profile_version.trim(),
         langs.join(","),
         match_identity.trim(),
     );
-    crate::sha256_hex(canonical)
+    crate::helpers::blake3_identity_hex(crate::helpers::HashDomain::ConvergenceScope, canonical)
 }
 
 fn indexer_coverage_fingerprint(
@@ -370,7 +370,10 @@ fn indexer_coverage_fingerprint(
             serde_json::Value::String(scope_fingerprint.to_string()),
         );
     }
-    crate::sha256_hex(canonical_json_string(&identity))
+    crate::helpers::blake3_identity_hex(
+        crate::helpers::HashDomain::IndexerCoverage,
+        canonical_json_string(&identity),
+    )
 }
 
 /// Canonical identity of a scope's SMG match — its resolved external ids. A rematch
@@ -512,7 +515,15 @@ pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> 
                 .collect();
             ids.sort_unstable();
             ids.dedup();
-            (!ids.is_empty()).then(|| format!("episode_set:{}", crate::sha256_hex(ids.join(","))))
+            (!ids.is_empty()).then(|| {
+                format!(
+                    "episode_set:b3:{}",
+                    crate::helpers::blake3_identity_hex(
+                        crate::helpers::HashDomain::EpisodeSetScope,
+                        ids.join(","),
+                    )
+                )
+            })
         }
         SubmissionScope::Orphan => None,
     }
@@ -528,7 +539,15 @@ pub(crate) fn series_pack_set_scope_key(collection_ids: &[String]) -> Option<Str
         .collect::<Vec<_>>();
     ids.sort_unstable();
     ids.dedup();
-    (!ids.is_empty()).then(|| format!("series_pack_set:{}", crate::sha256_hex(ids.join(","))))
+    (!ids.is_empty()).then(|| {
+        format!(
+            "series_pack_set:b3:{}",
+            crate::helpers::blake3_identity_hex(
+                crate::helpers::HashDomain::SeriesPackSetScope,
+                ids.join(","),
+            )
+        )
+    })
 }
 
 /// Stable per-collection receipt for a qualifying series pack. This is kept
@@ -561,7 +580,10 @@ pub(crate) fn convergence_scope_key_for_state(item: &AcquisitionScopeState) -> O
 /// regardless of map iteration order.
 pub(crate) fn profile_criteria_version(criteria: &QualityProfileCriteria) -> String {
     let value = serde_json::to_value(criteria).unwrap_or(serde_json::Value::Null);
-    crate::sha256_hex(canonical_json_string(&value))
+    crate::helpers::blake3_identity_hex(
+        crate::helpers::HashDomain::QualityProfileCriteria,
+        canonical_json_string(&value),
+    )
 }
 
 fn canonical_json_string(value: &serde_json::Value) -> String {
@@ -1082,13 +1104,18 @@ mod tests {
     /// absent from the serialization entirely — which is what makes the
     /// hard-coded value the same one the profile hashed to before the field
     /// existed. Any future criteria field has to clear both.
+    ///
+    /// The constant was re-pinned once, for the deliberate SHA-256 → BLAKE3
+    /// switch (plan 149). That is the only reason it may ever change: a moved
+    /// value with the algorithm unchanged is the library-wide re-sweep this
+    /// test exists to catch.
     #[test]
     fn an_unset_new_criteria_field_does_not_move_the_profile_fingerprint() {
         let base = test_criteria();
         assert_eq!(base.cutoff_score, None);
         assert_eq!(
             profile_criteria_version(&base),
-            "797bd8459663cb2b52ed3bd9601946f5f8baf570a93f59d686eb959cd987c3f8",
+            "6e2467debec3f7f9e89e6711611e6fabc694ceae4f9418624cc24e250331e74e",
             "the fingerprint of a profile that sets no new field must not move"
         );
 

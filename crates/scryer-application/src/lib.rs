@@ -195,7 +195,6 @@ pub const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize =
     library::discovery::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH;
 
-use aws_lc_rs::digest as aws_lc_digest;
 use chrono::{DateTime, Duration, Utc};
 use scryer_domain::{
     AppPermission, AppPermissionMask, BlocklistEntry, CalendarEpisode, Collection, CollectionType,
@@ -382,13 +381,16 @@ pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 
 pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
+pub use helpers::{
+    HashDomain, accepted_inputs_for_client, blake3_identity_hex, nice_thread,
+    normalize_release_password,
+};
 pub(crate) use helpers::{
     INHERIT_QUALITY_PROFILE_VALUE, NATIVE_DOWNLOAD_CLIENT_TYPES, await_cancellable,
     await_cancellable_app_result, normalize_release_attempt_hint, normalize_release_attempt_title,
     normalize_release_selection_signature, normalize_show_text_opt, normalize_tags,
-    parsed_episode_lookup_season, sanitize_ids, sha256_hex, to_hex,
+    parsed_episode_lookup_season, sanitize_ids, to_hex,
 };
-pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
 pub(crate) use helpers::{filesystem_space, filesystem_space_raw};
 pub use image_proxy::image_proxy_source_token;
 pub use indexer_errors::{

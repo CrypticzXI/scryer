@@ -2041,10 +2041,9 @@ pub fn indexer_search_identity(
         .as_deref()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         .unwrap_or(serde_json::Value::Null);
-    let secret_fingerprint = config
-        .api_key_encrypted
-        .as_deref()
-        .map(|secret| crate::sha256_hex(format!("indexer-secret-v1:{secret}")));
+    let secret_fingerprint = config.api_key_encrypted.as_deref().map(|secret| {
+        crate::helpers::blake3_identity_hex(crate::helpers::HashDomain::IndexerSecret, secret)
+    });
     let direct_caps = config
         .caps_snapshot_json
         .as_deref()

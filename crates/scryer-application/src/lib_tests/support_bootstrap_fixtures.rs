@@ -2314,11 +2314,14 @@ pub(super) fn test_derive_jwt_key(
         })
         .collect::<Vec<_>>();
     library_claims.sort();
-    let authorization_fingerprint = sha256_hex(format!(
-        "app\n{}\nlibrary\n{}",
-        app_claims.join("\n"),
-        library_claims.join("\n")
-    ));
+    let authorization_fingerprint = crate::helpers::blake3_identity_hex(
+        crate::helpers::HashDomain::AuthorizationFingerprint,
+        format!(
+            "app\n{}\nlibrary\n{}",
+            app_claims.join("\n"),
+            library_claims.join("\n")
+        ),
+    );
     let signing_material = format!("{password_hash}\n{authorization_fingerprint}");
     let hmac_key = hmac::Key::new(hmac::HMAC_SHA256, salt.as_bytes());
     hmac::sign(&hmac_key, signing_material.as_bytes())

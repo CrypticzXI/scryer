@@ -907,7 +907,8 @@ pub(crate) fn normalize_media_request_external_ids(
 }
 
 fn media_request_identity_fingerprint(external_ids: &[ExternalId]) -> String {
-    sha256_hex(
+    crate::helpers::blake3_identity_hex(
+        crate::helpers::HashDomain::MediaRequestIdentity,
         external_ids
             .iter()
             .map(|external_id| format!("{}:{}", external_id.source, external_id.value))

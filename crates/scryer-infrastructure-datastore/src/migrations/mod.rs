@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod blake3_identities;
 pub mod canonical_download_identity;
 pub mod hook_ids;
 pub mod known_bad;
@@ -776,6 +777,9 @@ async fn run_rust_hook(
         }
         "disable_invalid_user_rule_runtime_wrappers" => {
             rule_set_runtime_wrapper::disable_invalid_user_rule_runtime_wrappers_sqlite(tx).await
+        }
+        "backfill_blake3_identities" => {
+            blake3_identities::backfill_blake3_identities_sqlite(tx).await
         }
         #[cfg(test)]
         "test_insert_hook_marker" => {

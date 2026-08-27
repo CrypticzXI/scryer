@@ -521,6 +521,9 @@ async fn run_postgres_rust_hook(
             crate::migrations::rule_set_runtime_wrapper::disable_invalid_user_rule_runtime_wrappers_postgres(tx)
                 .await
         }
+        "backfill_blake3_identities" => {
+            crate::migrations::blake3_identities::backfill_blake3_identities_postgres(tx).await
+        }
         #[cfg(test)]
         "test_insert_hook_marker" => {
             let marker = match install_kind {
