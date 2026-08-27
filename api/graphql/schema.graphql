@@ -6587,6 +6587,10 @@ enum ImportSkipReasonValue {
 	"""
 	PASSWORD_REQUIRED
 	"""
+	An archive extractor must be installed or enabled before retrying.
+	"""
+	ARCHIVE_EXTRACTION_PLUGIN_REQUIRED
+	"""
 	Archive extraction exceeded its configured time limit.
 	"""
 	ARCHIVE_EXTRACTION_TIMED_OUT

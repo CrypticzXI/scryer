@@ -592,13 +592,7 @@ async fn finalize_completed_import_error(
 ) -> AppResult<ImportResult> {
     let requires_reconciliation = matches!(&error, AppError::ManualReconciliationRequired(_));
     let cancelled = matches!(&error, AppError::Canceled(_));
-    let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
-        Some(ImportSkipReason::PasswordRequired)
-    } else if crate::archive_extractor::is_timeout_error(&error) {
-        Some(ImportSkipReason::ArchiveExtractionTimedOut)
-    } else {
-        None
-    };
+    let skip_reason = completed_import_error_skip_reason(&error);
     let result = ImportResult {
         decision: if cancelled {
             ImportDecision::Skipped
@@ -635,4 +629,31 @@ async fn finalize_completed_import_error(
         return Err(error);
     }
     Ok(result)
+}
+
+fn completed_import_error_skip_reason(error: &AppError) -> Option<ImportSkipReason> {
+    if crate::archive_extractor::is_password_required_error(error) {
+        Some(ImportSkipReason::PasswordRequired)
+    } else if matches!(error, AppError::ArchiveExtractionPluginRequired { .. }) {
+        Some(ImportSkipReason::ArchiveExtractionPluginRequired)
+    } else if crate::archive_extractor::is_timeout_error(error) {
+        Some(ImportSkipReason::ArchiveExtractionTimedOut)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod poller_tests {
+    use super::*;
+
+    #[test]
+    fn missing_archive_extractor_is_not_an_automatic_retry() {
+        let error = AppError::archive_extraction_plugin_required(None);
+
+        assert_eq!(
+            completed_import_error_skip_reason(&error),
+            Some(ImportSkipReason::ArchiveExtractionPluginRequired)
+        );
+    }
 }

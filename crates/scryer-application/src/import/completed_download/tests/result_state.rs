@@ -923,6 +923,19 @@ async fn apply_result_blocks_archive_extraction_timeout_without_retry() {
 }
 
 #[tokio::test]
+async fn apply_result_blocks_missing_archive_extractor_without_retry() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut result = failed_execution_result("archive extractor plugin is required");
+    result.skip_reason = Some(ImportSkipReason::ArchiveExtractionPluginRequired);
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert_eq!(td.status, TrackedDownloadStatus::Error);
+    assert!(td.import_execution_retry.is_none());
+}
+
+#[tokio::test]
 async fn apply_result_retries_disk_full_skip_and_clears_counter_on_import() {
     let title = build_title("title-1", "Show", MediaFacet::Series);
     let collection = build_collection("season-1", "title-1", "1");

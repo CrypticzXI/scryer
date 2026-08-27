@@ -2096,6 +2096,7 @@ pub enum ImportSkipReason {
     DiskFull,
     PermissionDenied,
     PasswordRequired,
+    ArchiveExtractionPluginRequired,
     ArchiveExtractionTimedOut,
 }
 
@@ -2113,6 +2114,7 @@ impl ImportSkipReason {
             Self::DiskFull => "disk_full",
             Self::PermissionDenied => "permission_denied",
             Self::PasswordRequired => "password_required",
+            Self::ArchiveExtractionPluginRequired => "archive_extraction_plugin_required",
             Self::ArchiveExtractionTimedOut => "archive_extraction_timed_out",
         }
     }

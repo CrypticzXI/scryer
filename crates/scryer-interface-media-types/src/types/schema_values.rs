@@ -1102,6 +1102,8 @@ pub enum ImportSkipReasonValue {
     PermissionDenied,
     /// A password is required before retrying.
     PasswordRequired,
+    /// An archive extractor must be installed or enabled before retrying.
+    ArchiveExtractionPluginRequired,
     /// Archive extraction exceeded its configured time limit.
     ArchiveExtractionTimedOut,
 }
@@ -1120,6 +1122,9 @@ impl ImportSkipReasonValue {
             ImportSkipReason::DiskFull => Self::DiskFull,
             ImportSkipReason::PermissionDenied => Self::PermissionDenied,
             ImportSkipReason::PasswordRequired => Self::PasswordRequired,
+            ImportSkipReason::ArchiveExtractionPluginRequired => {
+                Self::ArchiveExtractionPluginRequired
+            }
             ImportSkipReason::ArchiveExtractionTimedOut => Self::ArchiveExtractionTimedOut,
         }
     }

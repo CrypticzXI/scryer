@@ -646,7 +646,9 @@ pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> boo
         ImportDecision::Failed => !matches!(
             result.skip_reason,
             Some(
-                ImportSkipReason::PasswordRequired | ImportSkipReason::ArchiveExtractionTimedOut
+                ImportSkipReason::PasswordRequired
+                    | ImportSkipReason::ArchiveExtractionPluginRequired
+                    | ImportSkipReason::ArchiveExtractionTimedOut
             )
         ),
         _ => {
