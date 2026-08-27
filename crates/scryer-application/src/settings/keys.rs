@@ -146,8 +146,7 @@ pub const DEFAULT_ANIME_LIBRARY_PATH: &str = "/data/anime";
 pub const DEFAULT_RENAME_TEMPLATE_MOVIE: &str = "{title} ({year}) - {quality}.{ext}";
 pub const DEFAULT_RENAME_TEMPLATE_SERIES: &str =
     "{title} - S{season:2}E{episode:2} - {quality}.{ext}";
-pub const DEFAULT_RENAME_TEMPLATE_ANIME: &str =
-    "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";
+pub const DEFAULT_RENAME_TEMPLATE_ANIME: &str = "{title} - S{season_order:2}E{episode:2}{?absolute_episode: ({absolute_episode})}{?episode_title: - {episode_title|truncate:64}} - {quality}.{ext}";
 pub const DEFAULT_FOLDER_TEMPLATE_MOVIE: &str = "{title} ({year})";
 pub const DEFAULT_FOLDER_TEMPLATE_SERIES: &str = "{title} ({year})";
 pub const DEFAULT_FOLDER_TEMPLATE_ANIME: &str = "{title} ({year})";

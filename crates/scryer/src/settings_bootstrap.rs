@@ -425,7 +425,7 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
             data_type: "string",
-            default_value_json: "\"{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}\"",
+            default_value_json: "\"{title} - S{season_order:2}E{episode:2}{?absolute_episode: ({absolute_episode})}{?episode_title: - {episode_title|truncate:64}} - {quality}.{ext}\"",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -1935,6 +1935,111 @@ mod tests {
         assert_eq!(
             builtin_default_quality_profile().id,
             scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn anime_rename_template_default_migrates_without_overwriting_explicit_overrides() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        let old_default =
+            "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}";
+        store
+            .batch_ensure_setting_definitions(vec![
+                scryer_infrastructure_sql::types::SettingDefinitionSeed {
+                    category: SETTINGS_CATEGORY_MEDIA.to_string(),
+                    scope: SETTINGS_SCOPE_SYSTEM.to_string(),
+                    key_name: RENAME_TEMPLATE_ANIME_GLOBAL_KEY.to_string(),
+                    data_type: "string".to_string(),
+                    default_value_json: serde_json::json!(old_default).to_string(),
+                    is_sensitive: false,
+                    validation_json: None,
+                },
+            ])
+            .await
+            .expect("seed the previous inherited default");
+
+        seed_service_setting_definitions(store.clone())
+            .await
+            .expect("seed the updated default");
+        let inherited = store
+            .get_setting_with_defaults(
+                SETTINGS_SCOPE_SYSTEM,
+                RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+                None,
+            )
+            .await
+            .expect("read inherited template")
+            .expect("inherited template definition");
+        assert_eq!(
+            inherited.effective_value_json,
+            serde_json::json!(scryer_application::DEFAULT_RENAME_TEMPLATE_ANIME).to_string()
+        );
+
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+                None,
+                serde_json::json!(old_default).to_string(),
+                "user",
+                None,
+            )
+            .await
+            .expect("save an explicit legacy template override");
+        seed_service_setting_definitions(store.clone())
+            .await
+            .expect("reseed definitions without touching overrides");
+
+        let explicit = store
+            .get_setting_with_defaults(
+                SETTINGS_SCOPE_SYSTEM,
+                RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
+                None,
+            )
+            .await
+            .expect("read explicit template")
+            .expect("explicit template value");
+        assert_eq!(
+            explicit.effective_value_json,
+            serde_json::json!(old_default).to_string()
+        );
+        assert_eq!(
+            explicit.value_json,
+            Some(serde_json::json!(old_default).to_string())
+        );
+
+        let scoped_template = "{title} - {episode_title}.{ext}";
+        store
+            .upsert_setting_value(
+                SETTINGS_SCOPE_SYSTEM,
+                RENAME_TEMPLATE_KEY,
+                Some("anime".to_string()),
+                serde_json::json!(scoped_template).to_string(),
+                "user",
+                None,
+            )
+            .await
+            .expect("save an explicit scoped template override");
+        seed_service_setting_definitions(store.clone())
+            .await
+            .expect("reseed definitions without touching scoped overrides");
+
+        let scoped = store
+            .get_setting_with_defaults(
+                SETTINGS_SCOPE_SYSTEM,
+                RENAME_TEMPLATE_KEY,
+                Some("anime".to_string()),
+            )
+            .await
+            .expect("read scoped template")
+            .expect("scoped template value");
+        assert_eq!(
+            scoped.effective_value_json,
+            serde_json::json!(scoped_template).to_string()
+        );
+        assert_eq!(
+            scoped.value_json,
+            Some(serde_json::json!(scoped_template).to_string())
         );
     }
 

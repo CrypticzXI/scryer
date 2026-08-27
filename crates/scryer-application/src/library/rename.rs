@@ -1390,6 +1390,94 @@ struct MovieRenamePlanOptions<'a> {
 const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
 const RENAME_LITERAL_COLON_SENTINEL: char = '\u{E001}';
 
+enum RenameTemplateOptionalGroupParseError {
+    UnmatchedOpen,
+    InvalidGuard,
+    NestedOptionalGroup,
+    UnsupportedFallback,
+}
+
+struct RenameTemplateOptionalGroup {
+    guard: String,
+    body: String,
+    end_index: usize,
+}
+
+fn parse_rename_template_optional_group(
+    chars: &[char],
+    start_index: usize,
+) -> Result<RenameTemplateOptionalGroup, RenameTemplateOptionalGroupParseError> {
+    let mut cursor = start_index + 2;
+    let guard_start = cursor;
+    while cursor < chars.len() && chars[cursor] != ':' {
+        if matches!(chars[cursor], '{' | '}') {
+            return Err(RenameTemplateOptionalGroupParseError::InvalidGuard);
+        }
+        cursor += 1;
+    }
+    if cursor == chars.len() {
+        return Err(RenameTemplateOptionalGroupParseError::UnmatchedOpen);
+    }
+
+    let guard_spec: String = chars[guard_start..cursor].iter().collect();
+    let Some(parsed_guard) = parse_rename_template_token_spec(guard_spec.trim()) else {
+        return Err(RenameTemplateOptionalGroupParseError::InvalidGuard);
+    };
+    if parsed_guard.pad_width.is_some() || !parsed_guard.filters.is_empty() {
+        return Err(RenameTemplateOptionalGroupParseError::InvalidGuard);
+    }
+
+    let body_start = cursor + 1;
+    cursor = body_start;
+    let mut escaped_literal_open_count = 0usize;
+    while cursor < chars.len() {
+        match chars[cursor] {
+            '{' if chars.get(cursor + 1).is_some_and(|next| *next == '{') => {
+                escaped_literal_open_count += 1;
+                cursor += 2;
+            }
+            '{' if chars.get(cursor + 1).is_some_and(|next| *next == '?') => {
+                return Err(RenameTemplateOptionalGroupParseError::NestedOptionalGroup);
+            }
+            '{' => {
+                let Some(end) = chars[cursor + 1..].iter().position(|value| *value == '}') else {
+                    return Err(RenameTemplateOptionalGroupParseError::UnmatchedOpen);
+                };
+                let end_index = cursor + 1 + end;
+                if chars[cursor + 1..end_index].contains(&'{') {
+                    return Err(RenameTemplateOptionalGroupParseError::UnmatchedOpen);
+                }
+                cursor = end_index + 1;
+            }
+            '}' if escaped_literal_open_count > 0 => {
+                if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                    cursor += 2;
+                } else {
+                    cursor += 1;
+                }
+                escaped_literal_open_count -= 1;
+            }
+            '|' if escaped_literal_open_count == 0
+                && (chars[cursor + 1..].starts_with(&['e', 'l', 's', 'e', ':'])
+                    || chars.get(cursor + 1).is_some_and(|next| *next == '?')) =>
+            {
+                return Err(RenameTemplateOptionalGroupParseError::UnsupportedFallback);
+            }
+            '}' => {
+                let body: String = chars[body_start..cursor].iter().collect();
+                return Ok(RenameTemplateOptionalGroup {
+                    guard: parsed_guard.name,
+                    body,
+                    end_index: cursor,
+                });
+            }
+            _ => cursor += 1,
+        }
+    }
+
+    Err(RenameTemplateOptionalGroupParseError::UnmatchedOpen)
+}
+
 fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     let chars: Vec<char> = template.chars().collect();
@@ -1403,6 +1491,19 @@ fn render_rename_template_tokens(template: &str, tokens: &BTreeMap<String, Strin
                 out.push('{');
                 escaped_literal_open_count += 1;
                 cursor += 2;
+                continue;
+            }
+
+            if chars.get(cursor + 1).is_some_and(|next| *next == '?')
+                && let Ok(group) = parse_rename_template_optional_group(&chars, cursor)
+            {
+                if tokens
+                    .get(&group.guard)
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    out.push_str(&render_rename_template_tokens(&group.body, tokens));
+                }
+                cursor = group.end_index + 1;
                 continue;
             }
 
@@ -1509,25 +1610,47 @@ fn is_illegal_folder_template_literal(ch: char) -> bool {
     matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch.is_control()
 }
 
-fn validate_folder_component_template(
+#[derive(Default)]
+struct RenameTemplateValidationState {
+    saw_token: bool,
+    saw_required_token: bool,
+}
+
+fn invalid_optional_group_error(
+    template_label: &str,
+    error: RenameTemplateOptionalGroupParseError,
+) -> AppError {
+    let message = match error {
+        RenameTemplateOptionalGroupParseError::UnmatchedOpen => {
+            format!("{template_label} template contains an unmatched '{{'")
+        }
+        RenameTemplateOptionalGroupParseError::InvalidGuard => {
+            format!("{template_label} template contains an invalid optional group")
+        }
+        RenameTemplateOptionalGroupParseError::NestedOptionalGroup => {
+            format!("{template_label} template does not support nested optional groups")
+        }
+        RenameTemplateOptionalGroupParseError::UnsupportedFallback => {
+            format!("{template_label} template does not support optional-group fallback branches")
+        }
+    };
+    AppError::Validation(message)
+}
+
+fn validate_rename_template_fragment<F>(
     template: &str,
     template_label: &str,
-    is_supported_token: impl Fn(&str) -> bool,
+    is_supported_token: &F,
+    is_illegal_literal: Option<fn(char) -> bool>,
     required_token: Option<&str>,
-    require_any_token: bool,
-) -> AppResult<()> {
-    let trimmed = template.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::Validation(format!(
-            "{template_label} template is required"
-        )));
-    }
-
-    let chars: Vec<char> = trimmed.chars().collect();
+    state: &mut RenameTemplateValidationState,
+) -> AppResult<()>
+where
+    F: Fn(&str) -> bool,
+{
+    let chars: Vec<char> = template.chars().collect();
     let mut cursor = 0usize;
     let mut escaped_literal_open_count = 0usize;
-    let mut saw_token = false;
-    let mut saw_required_token = required_token.is_none();
 
     while cursor < chars.len() {
         let ch = chars[cursor];
@@ -1552,12 +1675,37 @@ fn validate_folder_component_template(
             )));
         }
         if ch != '{' {
-            if is_illegal_folder_template_literal(ch) {
+            if is_illegal_literal.is_some_and(|is_illegal| is_illegal(ch)) {
                 return Err(AppError::Validation(format!(
                     "{template_label} template contains an illegal filesystem character: {ch:?}"
                 )));
             }
             cursor += 1;
+            continue;
+        }
+
+        if chars.get(cursor + 1).is_some_and(|next| *next == '?') {
+            let group = parse_rename_template_optional_group(&chars, cursor)
+                .map_err(|error| invalid_optional_group_error(template_label, error))?;
+            if !is_supported_token(&group.guard) {
+                return Err(AppError::Validation(format!(
+                    "unsupported {template_label} template token: {{{}}}",
+                    group.guard
+                )));
+            }
+            state.saw_token = true;
+            if required_token.is_some_and(|required| group.guard == required) {
+                state.saw_required_token = true;
+            }
+            validate_rename_template_fragment(
+                &group.body,
+                template_label,
+                is_supported_token,
+                is_illegal_literal,
+                required_token,
+                state,
+            )?;
+            cursor = group.end_index + 1;
             continue;
         }
 
@@ -1585,19 +1733,49 @@ fn validate_folder_component_template(
                 token_spec.trim()
             )));
         }
-        saw_token = true;
+        state.saw_token = true;
         if required_token.is_some_and(|required| parsed_token.name == required) {
-            saw_required_token = true;
+            state.saw_required_token = true;
         }
         cursor = end_index + 1;
     }
 
-    if require_any_token && !saw_token {
+    Ok(())
+}
+
+fn validate_folder_component_template(
+    template: &str,
+    template_label: &str,
+    is_supported_token: impl Fn(&str) -> bool,
+    required_token: Option<&str>,
+    require_any_token: bool,
+) -> AppResult<()> {
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{template_label} template is required"
+        )));
+    }
+
+    let mut state = RenameTemplateValidationState {
+        saw_token: false,
+        saw_required_token: required_token.is_none(),
+    };
+    validate_rename_template_fragment(
+        trimmed,
+        template_label,
+        &is_supported_token,
+        Some(is_illegal_folder_template_literal),
+        required_token,
+        &mut state,
+    )?;
+
+    if require_any_token && !state.saw_token {
         return Err(AppError::Validation(format!(
             "{template_label} template must include at least one supported token"
         )));
     }
-    if !saw_required_token {
+    if !state.saw_required_token {
         return Err(AppError::Validation(format!(
             "{template_label} template must include {{{}}}",
             required_token.unwrap_or_default()
@@ -1632,60 +1810,14 @@ fn validate_rename_template_with_token_checker(
         ));
     }
 
-    let chars: Vec<char> = trimmed.chars().collect();
-    let mut cursor = 0usize;
-    let mut escaped_literal_open_count = 0usize;
-
-    while cursor < chars.len() {
-        let ch = chars[cursor];
-        if ch == '{' {
-            if chars.get(cursor + 1).is_some_and(|next| *next == '{') {
-                escaped_literal_open_count += 1;
-                cursor += 2;
-                continue;
-            }
-
-            let Some(end) = chars[cursor + 1..].iter().position(|value| *value == '}') else {
-                return Err(AppError::Validation(
-                    "rename template contains an unmatched '{'".to_string(),
-                ));
-            };
-            let end_index = cursor + 1 + end;
-            let token_spec: String = chars[cursor + 1..end_index].iter().collect();
-            if token_spec.contains('{') {
-                return Err(AppError::Validation(
-                    "rename template contains an unmatched '{'".to_string(),
-                ));
-            }
-            let Some(parsed_token) = parse_rename_template_token_spec(token_spec.trim()) else {
-                return Err(AppError::Validation(format!(
-                    "unsupported rename template token: {{{}}}",
-                    token_spec.trim()
-                )));
-            };
-            if !is_supported_token(&parsed_token.name) {
-                return Err(AppError::Validation(format!(
-                    "unsupported rename template token: {{{}}}",
-                    token_spec.trim()
-                )));
-            }
-            cursor = end_index + 1;
-        } else if ch == '}' {
-            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
-                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
-                cursor += 2;
-            } else if escaped_literal_open_count > 0 {
-                escaped_literal_open_count -= 1;
-                cursor += 1;
-            } else {
-                return Err(AppError::Validation(
-                    "rename template contains an unmatched '}'".to_string(),
-                ));
-            }
-        } else {
-            cursor += 1;
-        }
-    }
+    validate_rename_template_fragment(
+        trimmed,
+        "rename",
+        &is_supported_token,
+        None,
+        None,
+        &mut RenameTemplateValidationState::default(),
+    )?;
 
     Ok(())
 }

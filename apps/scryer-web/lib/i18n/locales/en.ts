@@ -872,6 +872,9 @@ const en: LocaleDictionary = {
   "settings.renameReferenceFolders": "Folders",
   "settings.renameLiteralBracesLabel": "Literal braces",
   "settings.renameFunctionTruncateTitle": "Length",
+  "settings.renameFunctionOptionalGroupTitle": "Optional group",
+  "settings.renameOptionalGroupDescription":
+    "Render the group only when its guard token has a value. Optional groups cannot be nested.",
   "settings.renameFunctionWhitespaceTitle": "Whitespace",
   "settings.renameFunctionWhitespaceDescription":
     "Use one space filter to choose the separator for token text.",
@@ -913,6 +916,10 @@ const en: LocaleDictionary = {
     "Numeric padding must be an ASCII integer from 0 to 240: {{padding}}",
   "settings.renameValidationInvalidFilter": "Invalid token filter: {{filter}}",
   "settings.renameValidationEmpty": "Rename template cannot be empty",
+  "settings.renameValidationInvalidOptionalGroup": "Invalid optional group",
+  "settings.renameValidationNestedOptionalGroup": "Optional groups cannot be nested",
+  "settings.renameValidationUnsupportedOptionalFallback":
+    "Optional groups do not support fallback branches",
   "settings.mediaSettingsSaved": "Media settings saved.",
   "rename.previewButton": "Preview Rename",
   "rename.previewing": "Previewing…",
