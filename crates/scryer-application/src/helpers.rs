@@ -309,6 +309,33 @@ impl HashDomain {
 ///
 /// The domain label is absorbed first, followed by a NUL byte that cannot
 /// appear in a label, so no input can impersonate a different domain.
+///
+/// # This is the only hash first-party code may use
+///
+/// Every identity, fingerprint, signature, dedup key, cache key, and content
+/// digest Scryer computes for its own purposes goes through here. Add a
+/// [`HashDomain`] variant rather than reaching for another algorithm.
+///
+/// There is deliberately no `sha256_hex` beside it. SHA-256 survives in this
+/// codebase **only** where an external contract fixes the algorithm and we have
+/// no choice:
+///
+/// - WebAuthn `rpIdHash` and ECDSA-P256-SHA256 verification (`scryer-webauthn`)
+/// - TOTP, where the algorithm is user-selectable per RFC 6238 and stored
+///   (`security/totp.rs`)
+/// - HMAC-SHA256 signing for JWTs, sessions, API keys, and OAuth
+/// - OAuth PKCE `S256` challenges, fixed by RFC 7636 (`oauth.rs`)
+/// - GraphQL Automatic Persisted Queries, where the server keys on SHA-256 of
+///   the query text (`scryer-infrastructure-metadata`)
+/// - Sigstore/Rekor `hashedrekord` verification, which recomputes a digest the
+///   transparency log already recorded (`plugins/catalog.rs`)
+/// - SHA-384 migration-asset integrity (`scryer-infrastructure-datastore`)
+/// - The trusted-certificate `fingerprint_sha256` a human compares against what
+///   a browser or `openssl` prints (`settings/runtime/general.rs`)
+///
+/// Those are compatibility surfaces, not a precedent. If a new hash is *ours* —
+/// nobody outside Scryer computes or verifies it — it belongs here. If you think
+/// you need SHA-256 for something first-party, the answer is that you do not.
 pub fn blake3_identity_hex(domain: HashDomain, input: impl AsRef<str>) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain.as_str().as_bytes());

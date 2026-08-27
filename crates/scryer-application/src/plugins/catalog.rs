@@ -1120,6 +1120,10 @@ fn verify_rekor_hashedrekord_binding(
         &["spec", "data", "hash", "value"],
         "Rekor hashedrekord digest",
     )?;
+    // Compatibility only: Rekor recorded a SHA-256 digest of the artifact in the
+    // transparency log, and verification means recomputing exactly that. The
+    // algorithm is asserted against the entry above. First-party hashing uses
+    // `crate::helpers::blake3_identity_hex`.
     let digest = Sha256::digest(raw);
     let expected_hex = digest
         .iter()

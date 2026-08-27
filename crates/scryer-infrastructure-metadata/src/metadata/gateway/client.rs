@@ -71,6 +71,15 @@ impl ApqCache {
 use crate::metadata::response_body::{ResponseBodyPreview, read_response_body_preview};
 use crate::{graphql::metadata_gateway as graphql_docs, smg_enrollment};
 
+/// SHA-256 of a GraphQL query document, for Automatic Persisted Queries.
+///
+/// **Compatibility only.** The APQ protocol fixes the algorithm: the gateway
+/// keys its query registry on SHA-256 of the exact query text and rejects any
+/// other digest, so this cannot be BLAKE3 no matter what we prefer.
+///
+/// Do not reuse it for anything else. First-party hashing goes through
+/// `scryer_application::blake3_identity_hex` — see `blake3_digest` just below,
+/// which is what the *local* half of the APQ cache key uses.
 fn sha256_hex(input: &str) -> String {
     let hash = digest::digest(&digest::SHA256, input.as_bytes());
     hash.as_ref()
