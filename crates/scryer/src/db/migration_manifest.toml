@@ -1497,6 +1497,23 @@ file = "postgres/migrations/0194_blocklist_release_identity.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 195
+description = "application migration success ledger"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0195_application_migrations.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0195_application_migrations.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

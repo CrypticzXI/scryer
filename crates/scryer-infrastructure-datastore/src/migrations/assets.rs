@@ -1056,6 +1056,25 @@ mod tests {
     }
 
     #[test]
+    fn migration_0195_creates_application_migration_ledgers_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 195"));
+
+        for relative_path in [
+            "migrations/0195_application_migrations.sql",
+            "postgres/migrations/0195_application_migrations.sql",
+        ] {
+            assert!(manifest.contains(relative_path));
+            let sql = fs::read_to_string(db_root.join(relative_path))
+                .expect("0195 migration should be readable");
+            assert!(sql.contains("CREATE TABLE application_migrations"));
+            assert!(sql.contains("migration_id TEXT PRIMARY KEY"));
+        }
+    }
+
+    #[test]
     fn source_manifest_defaults_missing_step_engine_to_all() {
         let manifest = r#"
 format_version = 1

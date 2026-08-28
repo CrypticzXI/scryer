@@ -36,24 +36,15 @@ async fn mark_completed(settings_store: Arc<SettingsStore>) -> Result<(), String
 /// Clears only the legacy system-written explicit zero so the new 30-day
 /// definition default applies. A user-attributed zero remains an explicit
 /// opt-out.
-pub(crate) async fn migrate(settings_store: Arc<SettingsStore>) {
+pub(crate) async fn migrate(settings_store: Arc<SettingsStore>) -> Result<(), String> {
     if read_state(settings_store.clone()).await == STATE_COMPLETED {
-        return;
+        return Ok(());
     }
 
-    let record = match settings_store
+    let record = settings_store
         .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, RECONVERGE_DAYS_KEY, None)
         .await
-    {
-        Ok(record) => record,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "failed to read long-tail reconvergence setting; retrying migration next start"
-            );
-            return;
-        }
-    };
+        .map_err(|error| error.to_string())?;
 
     if let Some(record) = record {
         let system_written = record
@@ -65,24 +56,14 @@ pub(crate) async fn migrate(settings_store: Arc<SettingsStore>) {
             .as_deref()
             .and_then(|value| serde_json::from_str::<i64>(value).ok())
             == Some(0);
-        if system_written
-            && explicit_zero
-            && let Err(error) = settings_store
+        if system_written && explicit_zero {
+            settings_store
                 .delete_setting_value(SETTINGS_SCOPE_SYSTEM, RECONVERGE_DAYS_KEY, None)
                 .await
-        {
-            tracing::warn!(
-                error = %error,
-                "failed to clear the legacy system-written reconvergence default; retrying next start"
-            );
-            return;
+                .map_err(|error| error.to_string())?;
         }
     }
 
-    if let Err(error) = mark_completed(settings_store).await {
-        tracing::warn!(
-            error = %error,
-            "long-tail reconvergence default migration completed but its marker was not saved"
-        );
-    }
+    mark_completed(settings_store).await?;
+    Ok(())
 }

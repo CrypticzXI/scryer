@@ -426,6 +426,10 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "_sqlx_migrations",
         classification: BackupTableClassification::Ignore,
     },
+    BackupTableCatalogEntry {
+        table: "application_migrations",
+        classification: BackupTableClassification::Export,
+    },
     // Legacy: no current migration creates this table, but installs that
     // upgraded through the pre-0122 schema may still carry it. The entry is
     // deliberately retained — an `Ignore` entry for an absent table costs
@@ -1914,6 +1918,15 @@ mod tests {
                 entry.table
             );
         }
+    }
+
+    #[test]
+    fn backup_table_catalog_preserves_application_migration_successes() {
+        let entry = BACKUP_TABLE_CATALOG
+            .iter()
+            .find(|entry| entry.table == "application_migrations")
+            .expect("application migration ledger should be classified");
+        assert_eq!(entry.classification, BackupTableClassification::Export);
     }
 
     #[test]

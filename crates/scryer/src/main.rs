@@ -970,13 +970,20 @@ async fn bootstrap_application(
 
     // Detect version upgrades by comparing with last-run version stored in DB
     let version_lifecycle = check_version_upgrade(bootstrap_settings_store.clone()).await;
+    let customization_store = datastore.customization_store();
+    let mut application_migrator = startup_migrations::runner::ApplicationMigrator::load(
+        datastore.datastore(),
+        bootstrap_settings_store.clone(),
+    )
+    .await
+    .map_err(|error| format!("failed to initialize application migrator: {error}"))?;
+    application_migrator
+        .run_early(datastore.indexer_configs(), &customization_store)
+        .await
+        .map_err(|error| format!("required early application migration failed: {error}"))?;
     record_post_upgrade_auto_backup_pending_if_needed(
         bootstrap_settings_store.clone(),
         &version_lifecycle,
-    )
-    .await;
-    startup_migrations::_0001_legacy_history_retention_forever_override::clear_legacy_history_retention_forever_override(
-        bootstrap_settings_store.clone(),
     )
     .await;
 
@@ -1093,7 +1100,6 @@ async fn bootstrap_application(
         .map_err(|error| {
             format!("failed to initialize plugin HTTP trusted certificates: {error}")
         })?;
-    let customization_store = datastore.customization_store();
     let staged_nzb_store = Arc::new(
         FileSystemStagedNzbStore::new_with_startup_purge(datastore.staged_nzb_path(), true)
             .await
@@ -1456,55 +1462,14 @@ async fn bootstrap_application(
         VersionLifecycle::Upgraded { previous } => Some(previous.as_str()),
         VersionLifecycle::FirstRun | VersionLifecycle::Unchanged => None,
     };
-    startup_migrations::_0002_enhanced_subsync_plugin_016::migrate_enhanced_subsync_plugin_for_016_upgrade(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-        previous_version,
-        VERSION,
-    )
-    .await;
-    startup_migrations::_0003_title_image_artwork_url_refresh::refresh_title_image_artwork_urls_for_upgrade(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-        previous_version,
-        VERSION,
-    )
-    .await;
-    startup_migrations::_0004_auto_backup_missing_key_disable::disable_auto_backups_without_key(
-        bootstrap_settings_store.clone(),
-    )
-    .await;
-    startup_migrations::_0005_title_metadata_rehydration_017::rehydrate_title_metadata_for_017_upgrade(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-        VERSION,
-    )
-    .await;
-    startup_migrations::_0006_quality_profile_default_1080p::clear_system_written_legacy_default_global_profile(
-        bootstrap_settings_store.clone(),
-        bootstrap_quality_profile_store.clone(),
-    )
-    .await;
-    startup_migrations::_0007_emby_plugin_compatibility::migrate_emby_plugin_compatibility(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-    )
-    .await;
-    startup_migrations::_0008_title_credits_rehydration_018::rehydrate_title_credits_for_018_upgrade(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-        VERSION,
-    )
-    .await;
-    startup_migrations::_0010_download_client_remove_failed_default::flip_download_client_remove_failed_default(
-        &app_use_case,
-        bootstrap_settings_store.clone(),
-    )
-    .await;
-    startup_migrations::_0011_long_tail_reconverge_default::migrate(
-        bootstrap_settings_store.clone(),
-    )
-    .await;
+    application_migrator
+        .run_application_ready(
+            &app_use_case,
+            bootstrap_quality_profile_store.clone(),
+            previous_version,
+            VERSION,
+        )
+        .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),

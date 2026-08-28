@@ -1005,6 +1005,13 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn datastore(&self) -> StoreDatastore {
+        match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => db.datastore(),
+            DatastoreStores::Postgres { db, .. } => db.datastore(),
+        }
+    }
+
     pub fn settings_store(&self) -> Arc<SettingsStore> {
         match &self.stores {
             DatastoreStores::Sqlite { settings_store, .. } => settings_store.clone(),
