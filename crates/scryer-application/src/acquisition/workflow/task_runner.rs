@@ -1155,13 +1155,30 @@ async fn plan_series_pack_for_title(
         claimed_episode_ids,
     )
     .await;
-    app.finalize_evaluated_search_session(
-        &search_outcome.search_session_id,
-        &evaluated_candidates,
-    )
-    .await?;
+    let session_finalized = app
+        .finalize_evaluated_search_session_or_warn(
+            &search_outcome.search_session_id,
+            &evaluated_candidates,
+            &title.id,
+        )
+        .await;
 
     if evaluated_candidates.is_empty() {
+        if session_finalized {
+            record_series_pack_search_coverage(
+                app,
+                &convergence,
+                &search_outcome.complete_indexer_ids,
+                &qualifying_collection_ids,
+            )
+            .await;
+        }
+        return Ok(None);
+    }
+
+    let anchors =
+        series_pack_candidate_anchors(app, title, &evaluated_candidates, &episodes).await?;
+    if session_finalized {
         record_series_pack_search_coverage(
             app,
             &convergence,
@@ -1169,18 +1186,7 @@ async fn plan_series_pack_for_title(
             &qualifying_collection_ids,
         )
         .await;
-        return Ok(None);
     }
-
-    let anchors =
-        series_pack_candidate_anchors(app, title, &evaluated_candidates, &episodes).await?;
-    record_series_pack_search_coverage(
-        app,
-        &convergence,
-        &search_outcome.complete_indexer_ids,
-        &qualifying_collection_ids,
-    )
-    .await;
     let blocklist = app.load_title_release_blocklist_signatures(&title.id).await;
 
     // Only the *best* candidate's coverage here, not the union across the list.
@@ -2769,23 +2775,24 @@ async fn process_single_target(
     let results = app
         .evaluate_search_results_for_subject(&search_title, &subject, scored, false)
         .await;
-    if let Err(error) = app
-        .finalize_evaluated_search_session(&search_outcome.search_session_id, &results)
+    // A finalize failure withholds coverage (the scope re-searches next cycle)
+    // but never the grab walk below: these are live results in hand, and
+    // retention bookkeeping does not outrank acquiring with them.
+    if app
+        .finalize_evaluated_search_session_or_warn(
+            &search_outcome.search_session_id,
+            &results,
+            &title.id,
+        )
         .await
     {
-        warn!(
-            title_id = title.id.as_str(),
-            error = %error,
-            "background search candidate cache finalization failed"
-        );
-        return Ok(());
+        app.record_search_coverage(
+            &search_title,
+            &subject,
+            &search_outcome.complete_indexer_ids,
+        )
+        .await;
     }
-    app.record_search_coverage(
-        &search_title,
-        &subject,
-        &search_outcome.complete_indexer_ids,
-    )
-    .await;
 
     // Cooldown state, not cadence: the upgrade policy and failed-grab handling
     // read when this scope last actually searched.

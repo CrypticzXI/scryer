@@ -3370,8 +3370,10 @@ pub struct IndexerSearchCandidateWrite {
     pub indexer_id: String,
     pub scope_key: String,
     pub query_signature: String,
-    /// A one-way digest of the canonical release URL/title used for first-seen
-    /// suppression within one streaming search session.
+    /// The release's cross-indexer content identity
+    /// ([`crate::release_candidate_fingerprint`]): the durable candidate key
+    /// the store dedups by across runs, sessions, and indexers — no longer
+    /// session-scoped despite the field name.
     pub session_identity_hash: String,
     pub normalized: NormalizedIndexerSearchCandidate,
     pub created_at: chrono::DateTime<chrono::Utc>,

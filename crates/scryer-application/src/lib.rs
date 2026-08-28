@@ -251,6 +251,7 @@ pub(crate) use audio_requirements::{
     required_audio_languages_match, resolve_required_audio_requirements,
     title_audio_language_context,
 };
+pub use catalog::discovery::release_candidate_fingerprint;
 pub use catalog::facets::handler::{
     FacetHandler, HydrationResult, movie_to_hydration_result, series_to_hydration_result,
 };

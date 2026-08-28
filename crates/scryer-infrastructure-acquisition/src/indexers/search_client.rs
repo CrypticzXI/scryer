@@ -770,34 +770,13 @@ fn digest_json(domain: HashDomain, value: &serde_json::Value) -> String {
     blake3_identity_hex(domain, String::from_utf8_lossy(&bytes))
 }
 
+/// Delegates to the one canonical fingerprint. Staging writes under this value
+/// and `finalize_search_session` retains by it, so this must be the same
+/// function the discovery layer computes admissible fingerprints with — a
+/// local reimplementation that drifted would silently discard every session's
+/// corpus at finalize.
 fn candidate_session_identity_hash(candidate: &IndexerSearchResult) -> String {
-    let info_hash = candidate_extra_string(candidate, "info_hash")
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty());
-    let normalized_title = candidate
-        .title
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|part| !part.is_empty())
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let identity = if let Some(info_hash) = info_hash {
-        format!("torrent\0{info_hash}")
-    } else if !normalized_title.is_empty() && candidate.size_bytes.is_some_and(|size| size > 0) {
-        format!(
-            "nzb\0{normalized_title}\0{}",
-            candidate.size_bytes.unwrap_or_default()
-        )
-    } else {
-        format!(
-            "scoped\0{}\0{}\0{}\0{}",
-            candidate.source,
-            candidate.guid.as_deref().unwrap_or_default(),
-            normalized_title,
-            candidate.size_bytes.unwrap_or_default()
-        )
-    };
-    blake3_identity_hex(HashDomain::CandidateSessionIdentity, identity)
+    scryer_application::release_candidate_fingerprint(candidate)
 }
 
 fn candidate_extra_string(candidate: &IndexerSearchResult, key: &str) -> Option<String> {

@@ -33,7 +33,19 @@ pub(crate) struct ScoredSearchOutcome {
     pub search_session_id: String,
 }
 
-fn reusable_candidate_fingerprint(candidate: &IndexerSearchResult) -> String {
+/// The release's cross-indexer content identity — THE fingerprint, singular.
+///
+/// This is both what the search client stages candidates under and what
+/// `finalize_evaluated_search_session` retains by. The two sides must agree
+/// byte-for-byte or every finalize silently discards its whole session's
+/// corpus (no fingerprint ever matches), so there is exactly one
+/// implementation and the infrastructure crate calls this one.
+///
+/// Identity tiers: a torrent is its infohash wherever it came from; an NZB is
+/// its normalized title plus exact announced size (conservative — indexers
+/// that disagree on size yield separate candidates rather than a false merge);
+/// anything else is scoped to its indexer and guid.
+pub fn release_candidate_fingerprint(candidate: &IndexerSearchResult) -> String {
     let info_hash = candidate
         .extra
         .get("info_hash")
@@ -1480,10 +1492,17 @@ impl AppUseCase {
                 matches!(mode, SearchMode::Interactive),
             )
             .await;
-        self.finalize_evaluated_search_session(&outcome.search_session_id, &evaluated)
-            .await?;
-        self.record_search_coverage(title, subject, &outcome.complete_indexer_ids)
-            .await;
+        if self
+            .finalize_evaluated_search_session_or_warn(
+                &outcome.search_session_id,
+                &evaluated,
+                &title.id,
+            )
+            .await
+        {
+            self.record_search_coverage(title, subject, &outcome.complete_indexer_ids)
+                .await;
+        }
         Ok(evaluated)
     }
 
@@ -1573,7 +1592,7 @@ impl AppUseCase {
         let mut fingerprints = evaluated
             .iter()
             .filter(|candidate| candidate_is_reusable(candidate))
-            .map(reusable_candidate_fingerprint)
+            .map(release_candidate_fingerprint)
             .collect::<Vec<_>>();
         fingerprints.sort_unstable();
         fingerprints.dedup();
@@ -1582,6 +1601,36 @@ impl AppUseCase {
             .indexer_client
             .finalize_search_session(search_session_id, &fingerprints)
             .await
+    }
+
+    /// Finalization is retention bookkeeping and must never veto acquisition:
+    /// a search that just returned live candidates still grabs, whatever the
+    /// corpus tables did. `false` means the session was not finalized — the
+    /// caller must then withhold convergence coverage, because coverage
+    /// without a pruned corpus behind it is the claim the retention model
+    /// forbids. Nothing else is owed: the staged runs stay `received_*`, which
+    /// excludes them from reuse, and the scope simply re-searches next cycle.
+    pub(crate) async fn finalize_evaluated_search_session_or_warn(
+        &self,
+        search_session_id: &str,
+        evaluated: &[IndexerSearchResult],
+        title_id: &str,
+    ) -> bool {
+        match self
+            .finalize_evaluated_search_session(search_session_id, evaluated)
+            .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(
+                    title_id,
+                    search_session_id,
+                    error = %error,
+                    "search candidate cache finalization failed; withholding coverage and continuing"
+                );
+                false
+            }
+        }
     }
 
     /// Interactive search for a title (movie or standalone). Resolves all
